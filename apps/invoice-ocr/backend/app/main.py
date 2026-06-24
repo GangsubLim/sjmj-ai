@@ -30,8 +30,8 @@ def _mount_static(application: FastAPI) -> None:
     @application.get("/{full_path:path}")
     def spa_fallback(full_path: str) -> FileResponse:
         """API/정적 미매칭 GET → 실파일 우선, 없으면 SPA index.html."""
-        candidate = static_dir / full_path
-        if full_path and candidate.is_file():
+        candidate = (static_dir / full_path).resolve()
+        if full_path and candidate.is_relative_to(static_dir.resolve()) and candidate.is_file():
             return FileResponse(candidate)
         return FileResponse(index_file)
 
