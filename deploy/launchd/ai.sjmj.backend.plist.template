@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>ai.sjmj.backend</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__WRAPPER_PATH__</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SJMJ_ENV_FILE</key>
+    <string>__ENV_FILE__</string>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_ROOT__</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>__LOG_DIR__/backend.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>__LOG_DIR__/backend.err.log</string>
+</dict>
+</plist>
