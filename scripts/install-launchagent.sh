@@ -26,8 +26,8 @@ if [[ ! -f "$ENV_FILE" ]]; then
 fi
 
 mkdir -p "$STATE_DIR" "$LOG_DIR" "$HOME/Library/LaunchAgents"
-chmod 700 "$STATE_DIR" || true
-chmod 600 "$ENV_FILE" || true
+chmod 700 "$STATE_DIR" || echo "warn: chmod 700 failed for $STATE_DIR — verify perms manually" >&2
+chmod 600 "$ENV_FILE" || echo "warn: chmod 600 failed for $ENV_FILE — verify perms manually" >&2
 
 python3 - "$TEMPLATE_PATH" "$PLIST_PATH" "$WRAPPER_PATH" "$PROJECT_ROOT" "$ENV_FILE" "$LOG_DIR" <<'PY'
 from pathlib import Path
@@ -56,6 +56,10 @@ for _ in $(seq 1 15); do
   launchctl print "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 || break
   sleep 1
 done
+
+# If still registered after the poll budget, warn but proceed (bootstrap retry handles it).
+launchctl print "$GUI_DOMAIN/$LABEL" >/dev/null 2>&1 \
+  && echo "warn: $LABEL still registered after 15s teardown poll; proceeding to bootstrap" >&2
 
 # retry bootstrap to ride out transient I/O errors during teardown.
 for attempt in $(seq 1 5); do
