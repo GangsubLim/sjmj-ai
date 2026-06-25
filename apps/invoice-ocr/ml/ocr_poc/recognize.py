@@ -69,3 +69,13 @@ class PaddleOCRNumeric:
                 return str(cand[0])
             return str(cand)
         return str(first)
+
+
+class PaddleOCRText(PaddleOCRNumeric):
+    """post-filter 없이 raw 텍스트 반환(references 날짜 추출용)."""
+
+    def recognize(self, crop) -> str:
+        engine = self._ensure_engine()
+        arr = self._np.asarray(crop.convert("RGB"))
+        result = engine.ocr(arr, det=False, cls=False)
+        return self._first_text(result)
