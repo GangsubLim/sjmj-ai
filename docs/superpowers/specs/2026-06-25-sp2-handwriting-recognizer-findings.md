@@ -203,9 +203,15 @@
 - **수정(best-of-candidates)** — 회전불변 후보 다수를 만들어 **결과로 고른다**: `extreme`(구버전 극점, near-axis 보존)·`approxPolyDP`(convex hull 4꼭짓점, dilate/tight blob)·`minAreaRect`(tight)·**`de-rotated 극점`**(minAreaRect 각도로 펴서 극점법 적용 후 역회전 — 회전+원근 동시 케이스의 사다리꼴 코너를 정확히). 각 후보를 워프+deskew해 **직사각성 점수 = DATA_Y full-width 수평선 수 − 2.5·hstd**(선완성도+직진성, 가중 2.5로 직진 우대)로 최댓값 채택. tight blob(`dilate 9×9×2` 제거)이 코너 부풀림(~18px)을 없애 최다 채택. extreme를 첫 후보로 둬 동점 시 구버전 byte-동일 보존.
 - **결과** — 전체 74장 **다수 개선·회귀 0**(extreme이 항상 후보라 구조적 무회귀). inv011 hstd 4.78→**0.26**, inv087 1.79→**0.50**, inv066 3.06→**0.27**, **inv050 2.02→0.41**(de-rotated). 워프 육안 확인: 전단되던 폼이 정립 직사각. 다운스트림 — trusted 49→**68**, clean crop **314**, 고유라벨 **142**(few-shot 어휘↑). **잔여 미해결 4(inv045·018·074·135)**: 영수증이 동종 파랑격자 종이더미 위에 겹쳐 blob이 더미로 번지는 **가림(occlusion)** — 코너검출 범위 밖, 근본해는 재촬영 가이드(plain 대비 배경). homography 자체 한계라 전부 개선·동등이되 완전치 않음.
 
-**다음.** (1) 이미지 품질 robustness — 워프 코너검출 교정 완료(위), 남은 건 **2장 동시촬영 분리**(전수검사 2장워프의심 3·저면적 8)·**가림 4케이스 재촬영 가이드**. (2) 한글 손글씨 인코더 / 작성자 파인튜닝(이제 **314 clean crop·142 라벨** 확보 — 파인튜닝 연료 충분). (3) 그룹핑 전표 라벨 amount 연속합 앵커 확장(§6). (4) 게이트 비용 기준(§8-7).
+**robustness 패스 — 2장 동시촬영(연속 영수증) 정규화 검토 (2026-06-26).** 한 사진에 영수증 두 매가 나란히 찍힌 1건(inv042, DB 13품목)을 검토. **정규화 가능 — 스키마 변경 0**: 거래명세서 1건 = invoice 1건 = **순서 보존 단일 품목리스트**이고(DB가 이미 그렇게 모델·photomatch도 사진↔invoice 1:1), 물리적 장수는 의미 없는 표현상 오버플로우다. 규칙 — **우측 시트는 좌측의 연속**이므로 시트를 읽기순서(좌→우, 각 시트 내 위→아래)로 이어붙이면 DB 순서에 정렬된다(§4 빈칸=위행합산 grouping의 **가로 아날로그**; 연속 시트의 합계칸은 공란 — inv042 우측 합계 공란으로 일치).
 
-코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(**best-of-candidates 코너검출**·deskew), `canon.py`(고정피치 그리드), `labelset.py`(**윈도우드 행선택**), `fewshot.py`(인코더 비교), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋), `crop_inspect.py`(crop 전수검사·실패모드 census).
+- **현재 능동 오염(실측)** — `form_quad_robust`가 두 영수증을 한 quad로 묶음(6후보 전부 asp 0.88~0.91 vs 단일 0.43, rect_score 전부 음수). 병합워프를 900×2100에 욱여넣어 격자 어긋남에도 `select_items`가 **trusted=True**로 판정 → 13개 **오정렬 crop**이 킹핀·하부·라이닝… 라벨로 dataset_v2에 주입돼 **뱅크를 능동 오염**(§7 silent data loss의 실교란). 전수검사 "2장워프의심 3" 중 진짜 연속은 **inv042 단독**(inv054=단일 거래명세표 붉은배경, inv153=단일 영수증 근접촬영+옆 노트 — 둘 다 오탐, asp>0.6 정밀도 1/3).
+- **수동 분할 수확 검증** — 좌/우 대략 박스를 잘라 각각 `form_quad_robust`하면 단일 영수증으로 분리됨(asp 0.90→0.48/0.51, 워프 육안 양호). 그러나 절반워프는 파랑 격자선이 옅어 hline **1~2개**뿐 → `fit_phase` 위상잠금 실패(상단 연속채움 자동집계 12+10=22≠13). **템플릿 고정 위상(φ=Y0%P)** 폴백 시 좌측은 대체로 안착하나 **우측은 거침** — 박스+시트수만으론 **셀-완벽 crop 미달**(흐린격자 한계, §199의 "남은 레버=이미지 품질" 재확인).
+- **조치** — `dataset_build.py`가 `twoup_split.json` 등재 cname을 정상경로에서 **제외**(병합워프 13 라벨노이즈 차단; 이게 핵심 수정). 수확은 `twoup.py`(박스 분할 수확·검수 HTML)로 분리. **권고: 뱅크에서 inv042 제외**(품질>1건 수량; 근사 crop은 §185식 라벨노이즈 위험). `twoup.py`는 박스/시트수 튜닝 또는 **재촬영(1장=1시트, 근본해)** 시 13crop 복구용 도구로 보존.
+
+**다음.** (1) 이미지 품질 robustness — 워프 코너검출·**2장 분리 검토 완료**(위), 남은 건 **가림 4케이스+2장 셀정렬의 공통 선결조건 = hline/위상 robustness**(흐린격자)·재촬영 가이드. (2) 한글 손글씨 인코더 / 작성자 파인튜닝(이제 **314 clean crop·142 라벨** 확보 — 파인튜닝 연료 충분). (3) 그룹핑 전표 라벨 amount 연속합 앵커 확장(§6). (4) 게이트 비용 기준(§8-7).
+
+코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(**best-of-candidates 코너검출**·deskew), `canon.py`(고정피치 그리드), `labelset.py`(**윈도우드 행선택**), `fewshot.py`(인코더 비교), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋·**2장 제외**), `crop_inspect.py`(crop 전수검사·실패모드 census), `twoup.py`+`twoup_split.json`(**2장 동시촬영 수동 분할 수확**).
 
 ---
 
