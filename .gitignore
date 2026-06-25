@@ -19,3 +19,5 @@ dist/
 # OS / editor
 .DS_Store
 *.log
+
+apps/invoice-ocr/ml/data/
