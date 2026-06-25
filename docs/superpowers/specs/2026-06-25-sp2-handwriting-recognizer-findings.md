@@ -15,7 +15,7 @@
 5. **방향 = 작성자-특화 닫힌어휘 인식** — "전사"가 아니라 "글씨 패턴 → DB 마스터 386 품목 분류/검색". few-shot exemplar 최근접 → 표본 쌓이면 파인튜닝. 인식→DB매칭→저신뢰/신규는 사람등록→재학습 루프. (§5)
 6. **데이터 계획** — 손글씨 표본 102/386은 38장만 이관된 탓. 사진 최대한 이관 시 마스터 대부분에 실표본 → 파인튜닝 연료. (§5)
 7. **금액은 OCR만** — 단가 변동으로 DB 단가 금액 역산 보류. DB는 grouping 합검증 앵커로만. (§6)
-8. **few-shot 품목 인식 PoC 실행 완료 — 가설 입증** — rectify(deskew+적응 quad+고정피치 그리드)로 행정렬 해결, 그룹핑 대응 라벨 25/36 trusted. 작성자 손글씨 retrieval **가능**: 다수라벨 베이스라인 13.3% → **손글씨 인코더(TrOCR) top-1 36%/top-3 60%**(자연이미지 DINOv2 20~25%). **인코더 도메인이 결정적**. 게이트(70/85%) 미달이나 한글 인코더+파인튜닝으로 가시권. 이후 사진 54장 추가 이관·통합(타임스탬프+검수 매칭, 74장 GT)했으나 **신규 사진 crop 품질 저하로 few-shot은 32.4/42.6%로 하락** — rectify robustness가 표본 확대의 **선결조건**. (§8-B)
+8. **few-shot 품목 인식 PoC 실행 완료 — 가설 입증** — rectify(deskew+적응 quad+고정피치 그리드)로 행정렬 해결, 그룹핑 대응 라벨 25/36 trusted. 작성자 손글씨 retrieval **가능**: 다수라벨 베이스라인 13.3% → **손글씨 인코더(TrOCR) top-1 36%/top-3 60%**(자연이미지 DINOv2 20~25%). **인코더 도메인이 결정적**. 게이트(70/85%) 미달이나 한글 인코더+파인튜닝으로 가시권. 이후 사진 54장 추가 이관·통합(타임스탬프+검수 매칭, 74장 GT) + robustness 패스(**윈도우드 행선택**으로 하단 합계·메모 노이즈 오선택 교정: trusted 49→**64**, clean crop **299**, 라벨 **133**; 전수검사 `crop_inspect.py`). few-shot은 30.4/44.1%로 **평탄** — 행선택은 해결, 남은 천장은 **이미지 품질·인코더**. (§8-B)
 9. **측정 무결성·검출 완전성이 선결 리스크** — 위 84.8%·80.4%·4.4%p와 §8 게이트 임계는 채점이 grouping·정렬을 못 보는 set-recall이라 **잠정**이다. ① 채점을 DB 순서보존+연속합으로 재정의, ② 모델 선택을 GT-정렬 strip isolated 인식으로 재측정해야 확정(§8-A). 또한 end-to-end 운영 정확도는 인식 천장이 아니라 **검출 세로 완전성**(행 누락=복구불가 손실)에 캡되고, **작성자 단일성 가정도 38장으론 미검증**. (§7·§8)
 
 ---
@@ -192,9 +192,15 @@
 - **통합 정리** — 신규 38 + 기존 36(OneDrive, date+total_supply DB 유니크) = **74장** → `data/image_dataset/<date>_inv<id>.jpg`(날짜형 통일) + `manifest.json`. 라벨(GT)은 DB `invoice_items` 단일출처. 라벨셋 재빌드: trusted **49/74**, clean crop **214**, 재현 라벨 **31**(기존 25/136/19 대비 ~2배).
 - **그러나 few-shot 하락(중요)** — 동일 TrOCR로 통합셋 **top-1 32.4%/top-3 42.6%** (기존 36/60% 대비 ↓). 양·재현라벨은 늘었으나 **새 사진 crop 품질이 뱅크를 오염**: 신규 사진은 파랑 격자가 흐리고 기울기·원근이 크며 2장 동시촬영이 섞여 rectify가 거칠다(inv049 15품목→0행, inv042 2장 워프). → **rectify robustness가 표본 확대의 선결조건**이다. §7의 검출 완전성(silent data loss)이 신규 사진에서 실제화한 것.
 
-**다음.** (1) **rectify robustness 패스(선결)** — 흐린격자·강기울기·다장촬영 분리에 강건한 검출(검출 완전성 = §7). 이게 되어야 표본 확대가 정확도로 전환된다. (2) 한글 손글씨 인코더 평가(예: Korean PP-OCRv5 rec backbone) / 작성자 파인튜닝(이제 74장 GT 확보). (3) 그룹핑 전표 라벨을 **amount 연속합 앵커**로 확장(§6). (4) 게이트 비용 기준 확정(§8-7).
+**robustness 패스 — 행선택 교정 + 전수검사 (2026-06-25).** crop 품질 전수검사(`crop_inspect.py`, 74장 원본↔워프+그리드↔추출crop + 실패모드 자동진단·필터)로 census를 냄: 지배적 실패는 **not_contig 23**(연속블록 깨짐). 진단 결과 — 양식 고정상 품목은 **헤더 직후부터 연속**으로 내려가는데, 기존 *전역 top-DBn stroke* 선택이 폼 **하단의 합계·전화메모·도장** 노이즈 행을 흐린 상단 실품목 대신 잡았다(inv032 [4–8]+노이즈11, inv169 하단 전화번호 픽업).
 
-코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(robust quad·deskew), `canon.py`(고정피치 그리드), `labelset.py`(그룹핑 대응 라벨), `fewshot.py`(인코더 비교), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋).
+- **수정(윈도우드 선택)** — 헤더 이후 행에서 `DBn개 연속 + 전부 stroke≥TRUST_MIN` 윈도우의 **최상단**을 품목으로 선택. 하단 노이즈는 빈 행으로 분리돼 자연 배제. A/B 측정: top-DBn 49 → **윈도우드 64/74 trusted**(앵커드-런 변형은 13으로 과엄격, 기각). 회복 사례 inv032·inv169 오버레이로 라벨 안착 **육안 확인**(허수 아님).
+- **결과** — clean crop 214→**299**, 고유라벨 109→**133**, 재현(≥2전표) 31→**38**. 잔여 skip 10장(no_window 9·count_short 1=inv049)은 흐린항목·grouping·15품목초과로 **정상 사람개입**.
+- **그러나 few-shot은 평탄** — 통합셋 TrOCR top-1 30.4%/top-3 44.1%(top-DBn 32.4/42.6과 동률). 행선택은 고쳤으나 정확도 정체: 회복분이 더 흐린 전표라 뱅크 신호가 약하고, 라벨 공간이 2배(재현 38)로 커져 혼동↑. → **남은 레버는 행선택이 아니라 이미지 품질(deskew·2장분리)·인코더**다(few-shot 천장은 이미지/인코더가 캡).
+
+**다음.** (1) 이미지 품질 robustness — 강기울기 deskew·**2장 동시촬영 분리**(전수검사 2장워프의심 3·저면적 6). (2) 한글 손글씨 인코더 / 작성자 파인튜닝(이제 **299 clean crop·133 라벨** 확보 — 파인튜닝 연료 충분). (3) 그룹핑 전표 라벨 amount 연속합 앵커 확장(§6). (4) 게이트 비용 기준(§8-7).
+
+코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(robust quad·deskew), `canon.py`(고정피치 그리드), `labelset.py`(**윈도우드 행선택**), `fewshot.py`(인코더 비교), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋), `crop_inspect.py`(crop 전수검사·실패모드 census).
 
 ---
 
@@ -204,7 +210,7 @@
 - **데이터/DB**: `SJMJ_DATA_DIR`, `SJMJ_DB_BACKUP` 환경변수(`apps/invoice-ocr/ml/.env`). labels 미사용 — GT는 references→DB. 마스터 품목 = DB `invoice_items` 전체.
 - **모델**(HF): `mlx-community/{Qwen3-VL-8B-Instruct-4bit, Qwen2.5-VL-7B-Instruct-4bit, PaddleOCR-VL-bfloat16}`.
 - **숫자 스크립트**: `apps/invoice-ocr/ml/report/sp2_spike/` (gitignore·로컬, README 동봉) — `grid_v4.py`(검출), `build_strips.py`(strip 생성), `bench.py`(벤치), `rescore.py`(grouping 재채점), `make_review.py`(검수 HTML), `probe_vlm.py`(단발 probe).
-- **품목 스크립트**: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `item_gt.py`(DB 품명 GT), `cols.py`(열 경계 수직선), `build_item_strips.py`(품목 strip), `item_bench.py`(품목 인식 벤치 12.3%), `item_blank.py`·`align.py`·`bands.py`(행분할 시행착오 <14%), `ground.py`(VLM 그라운딩 — 헤더 오인/등간격 추측으로 부적합), `rectify.py`(robust quad·deskew), `canon.py`(고정피치 행그리드), `cellview.py`(셀 검수), `labelset.py`(그룹핑 대응 라벨), `fewshot.py`(인코더 비교; `fewshot.py <model> <dataset_dir>`), `photomatch.py`(사진↔DB 타임스탬프 매칭·검수 HTML), `dataset_build.py`(신규+기존 두 소스 통합 정리·라벨셋). 산출 `item_gt.json`·`preds_item_qwen3vl.json`·`dataset/`(기존 36)·`dataset_v2/`(통합 74) 동봉.
+- **품목 스크립트**: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `item_gt.py`(DB 품명 GT), `cols.py`(열 경계 수직선), `build_item_strips.py`(품목 strip), `item_bench.py`(품목 인식 벤치 12.3%), `item_blank.py`·`align.py`·`bands.py`(행분할 시행착오 <14%), `ground.py`(VLM 그라운딩 — 헤더 오인/등간격 추측으로 부적합), `rectify.py`(robust quad·deskew), `canon.py`(고정피치 행그리드), `cellview.py`(셀 검수), `labelset.py`(그룹핑 대응 라벨), `fewshot.py`(인코더 비교; `fewshot.py <model> <dataset_dir>`), `photomatch.py`(사진↔DB 타임스탬프 매칭·검수 HTML), `dataset_build.py`(신규+기존 두 소스 통합 정리·라벨셋), `crop_inspect.py`(crop 품질 전수검사 — 원본↔워프↔crop + 실패모드 census·필터). 산출 `item_gt.json`·`preds_item_qwen3vl.json`·`dataset/`(기존 36)·`dataset_v2/`(통합 74, clean crop 299) + `crop_inspect.html` 동봉.
 - **통합 원본/DB**(gitignore·로컬): `apps/invoice-ocr/ml/data/` — `image/`(이관 사진 `Resized_*`), `image_dataset/<date>_inv<id>.jpg`+`manifest.json`(통합 74장, `_unmatched/`에 고아 16장), `db-2026-06-24-backup.sql`(DB 백업). 매칭은 파일명 KST ↔ `created_at`(UTC+9).
 - **PoC venv**: `uv venv poc --python 3.12 && uv pip install --python poc/bin/python opencv-python-headless numpy Pillow mlx-vlm torch torchvision transformers`. 인코더(HF): `facebook/dinov2-{small,base}`, `microsoft/trocr-base-handwritten`.
 - **산출물**(gitignore·로컬): `apps/invoice-ocr/ml/review/` — `crop_review.html`·`item_review.html`(36장 검수 시트), `strips_all.png`·`item_strips_all.png`(몽타주).
