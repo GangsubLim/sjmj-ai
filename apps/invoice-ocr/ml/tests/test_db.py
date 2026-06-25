@@ -34,6 +34,21 @@ def test_items_ordered_by_item_order(tiny_invoices_sql):
     assert orders == [1, 2]
 
 
+def test_semicolon_inside_value_does_not_drop_rows():
+    sql = (
+        "INSERT INTO `invoices` (`id`, `document_title`, `issue_date`, `recipient`, "
+        "`recipient2`, `vehicle_no`, `memo`, `show_stamp`, `issuer_id`, `total_supply`, "
+        "`total_vat`, `grand_total`, `created_at`, `updated_at`) VALUES\n"
+        "(11, '거래명세서', '2026-05-12', 'A;B 상사', '이희원', '5608', '', 1, NULL, "
+        "300000, 30000, 330000, '2026-05-12 05:57:39', '2026-05-12 05:57:39'),\n"
+        "(12, '거래명세서', '2026-05-13', '성우항공', NULL, '3102', 'x;y', 1, NULL, "
+        "120000, 12000, 132000, '2026-05-13 08:48:53', '2026-05-13 08:48:53');\n"
+    )
+    db = parse_backup(sql)
+    assert len(db.invoices) == 2
+    assert {i.id for i in db.invoices} == {11, 12}
+
+
 def test_unquote_handles_escape_sequences():
     from ocr_poc.db import _unquote
     assert _unquote("NULL") is None

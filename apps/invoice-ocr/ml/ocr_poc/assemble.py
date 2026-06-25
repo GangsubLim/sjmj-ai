@@ -10,7 +10,7 @@ from .detect import DetectedCell
 _HEADER_KEYWORDS = {
     "quantity": ("수량", "수 량"),
     "unit_price": ("단가", "단 가"),
-    "amount": ("공급가", "공급가액", "금액", "공 급 가"),
+    "amount": ("공급가액", "공급가", "금액", "공 급 가"),
 }
 
 
@@ -23,15 +23,28 @@ class AssembledRow:
 
 
 def infer_column_map(header_texts: dict[int, str]) -> dict[str, int]:
-    """헤더 텍스트(열 인덱스→문자열) → {field: col_index}. 못 찾은 field 는 제외."""
+    """헤더 텍스트(열 인덱스→문자열) → {field: col_index}. 못 찾은 field 는 제외.
+
+    일반 키워드("금액")가 특정 열("부가세금액")에 먼저 걸리지 않도록, field 당
+    더 구체적인 키워드를 먼저 시도하고, 이미 점유된 열은 다른 field 가 다시 잡지 않는다."""
     norm = {ci: t.replace(" ", "") for ci, t in header_texts.items()}
     out: dict[str, int] = {}
+    claimed: set[int] = set()
     for field, keywords in _HEADER_KEYWORDS.items():
-        kws = tuple(k.replace(" ", "") for k in keywords)
-        for ci in sorted(norm):
-            if any(k in norm[ci] for k in kws):
-                out[field] = ci
+        found = None
+        for kw in keywords:
+            k = kw.replace(" ", "")
+            for ci in sorted(norm):
+                if ci in claimed:
+                    continue
+                if k in norm[ci]:
+                    found = ci
+                    break
+            if found is not None:
                 break
+        if found is not None:
+            out[field] = found
+            claimed.add(found)
     return out
 
 

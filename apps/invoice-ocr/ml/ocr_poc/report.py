@@ -26,6 +26,7 @@ def render_markdown(data: ReportData) -> str:
     for key, label in _METRIC_LABELS.items():
         if key in data.metrics:
             lines.append(f"| {label} | {data.metrics[key]:.2f} |")
+    lines += ["", "> 주: SP1 1차 리포트는 검산 미반영 — “검산 후 정확도(게인)”는 인식 정확도와 동일(검산 게인 통합은 후속 second-pass)."]
     lines += ["", "## 약식 규칙 적용", "", "| 규칙 | 횟수 |", "| --- | --- |"]
     for rule, cnt in sorted(data.rule_counts.items()):
         lines.append(f"| {rule} | {cnt} |")

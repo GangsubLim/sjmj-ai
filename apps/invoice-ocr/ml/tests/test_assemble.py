@@ -12,6 +12,11 @@ def test_infer_column_map_tolerates_금액_synonym():
     assert infer_column_map(headers) == {"quantity": 2, "unit_price": 4, "amount": 5}
 
 
+def test_infer_column_map_prefers_supply_over_vat_amount_column():
+    headers = {0: "수량", 1: "단가", 2: "부가세금액", 3: "공급가액"}
+    assert infer_column_map(headers) == {"quantity": 0, "unit_price": 1, "amount": 3}
+
+
 def test_assemble_groups_cells_into_rows_by_column_map():
     cmap = {"quantity": 1, "unit_price": 2, "amount": 3}
     cells = [

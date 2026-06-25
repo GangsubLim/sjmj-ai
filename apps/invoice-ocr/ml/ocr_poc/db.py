@@ -43,14 +43,48 @@ class InvoiceDB:
         return [i for i in self.invoices
                 if i.issue_date == date and i.grand_total == grand_total]
 
+    def find_by_total_supply(self, total_supply: int) -> list[Invoice]:
+        return [i for i in self.invoices if i.total_supply == total_supply]
+
+    def find_by_date_and_total_supply(self, date: str, total_supply: int) -> list[Invoice]:
+        return [i for i in self.invoices
+                if i.issue_date == date and i.total_supply == total_supply]
+
     def items_for(self, invoice_id: int) -> tuple[InvoiceItem, ...]:
         return self.items_by_invoice.get(invoice_id, ())
 
 
-_INSERT_RE = re.compile(
-    r"INSERT INTO `(?P<table>\w+)` \((?P<cols>[^)]*)\) VALUES\s*(?P<body>.*?);",
-    re.DOTALL,
-)
+_INSERT_HEADER_RE = re.compile(r"INSERT INTO `(?P<table>\w+)` \((?P<cols>[^)]*)\) VALUES\s*")
+
+
+def _read_statement_body(text: str, start: int) -> tuple[str, int]:
+    """start(=VALUES 직후)부터 따옴표/괄호를 인지하며 스캔해, 문자열 밖·괄호 depth 0
+    에서 처음 만나는 ';' 직전까지를 본문으로 반환. 값 내부의 ';'는 종결자로 보지 않는다."""
+    in_str = False
+    esc = False
+    depth = 0
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == "'":
+                in_str = False
+        else:
+            if ch == "'":
+                in_str = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == ";" and depth == 0:
+                return text[start:i], i
+        i += 1
+    return text[start:i], i
 
 
 def _split_top_level_groups(blob: str) -> list[str]:
@@ -159,11 +193,12 @@ def _to_int(field: str) -> int:
 def _rows_for_table(sql_text: str, table: str) -> list[tuple[list[str], list[str]]]:
     """(컬럼명 리스트, 필드 토큰 리스트) 행들."""
     out: list[tuple[list[str], list[str]]] = []
-    for m in _INSERT_RE.finditer(sql_text):
+    for m in _INSERT_HEADER_RE.finditer(sql_text):
         if m.group("table") != table:
             continue
         cols = [c.strip().strip("`") for c in m.group("cols").split(",")]
-        for group in _split_top_level_groups(m.group("body")):
+        body, _ = _read_statement_body(sql_text, m.end())
+        for group in _split_top_level_groups(body):
             out.append((cols, _split_fields(group)))
     return out
 

@@ -1,6 +1,6 @@
-"""references 인쇄일자 추출 → 사용자 검수(CSV) → 일자+grand_total DB 유일조회.
+"""references 인쇄일자 추출 → 사용자 검수(CSV) → 일자+total_supply DB 유일조회.
 
-손라벨 행순서·geometry 를 쓰지 않는 정답지 매칭(§3). grand_total 은 라벨
+손라벨 행순서·geometry 를 쓰지 않는 정답지 매칭(§3). total_supply 는 라벨
 amount_text 합에서 독립 산출(인식 결과 미사용 → 순환참조 없음).
 """
 from __future__ import annotations
@@ -23,7 +23,7 @@ _DATE_PATTERNS = [
 class ReviewRow:
     image_id: str
     extracted_date: str | None
-    grand_total: int
+    total_supply: int
     db_match_count: int
     status: str   # unique | ambiguous | no_match
 
@@ -46,8 +46,12 @@ def extract_date(texts: list[str]) -> str | None:
     return None
 
 
-def grand_total_from_labels(rows: Iterable[LabelRow]) -> int:
-    """라벨 amount_text 합(공급가 합 = grand_total 의 공급가 기반 근사)."""
+def total_supply_from_labels(rows: Iterable[LabelRow]) -> int:
+    """라벨 amount_text 합(공급가합 = total_supply). DB 정답지 매칭키로 쓰인다.
+
+    라벨 amount 는 공급가(VAT 제외)이므로 그 합은 DB total_supply 와 같다.
+    VAT 포함 grand_total 과는 다르므로 매칭키로 grand_total 을 쓰면 안 된다.
+    """
     total = 0
     for r in rows:
         digits = re.sub(r"[^0-9]", "", r.amount)
@@ -68,25 +72,25 @@ def build_review_rows(
     per_image: list[tuple[str, list[str], int]],
     db: dbmod.InvoiceDB,
 ) -> list[ReviewRow]:
-    """per_image: (image_id, references_ocr_texts, grand_total) → 검수행."""
+    """per_image: (image_id, references_ocr_texts, total_supply) → 검수행."""
     rows: list[ReviewRow] = []
-    for image_id, texts, grand_total in per_image:
+    for image_id, texts, total_supply in per_image:
         date = extract_date(texts)
         if date is not None:
-            hits = db.find_by_date_and_total(date, grand_total)
+            hits = db.find_by_date_and_total_supply(date, total_supply)
         else:
-            hits = db.find_by_grand_total(grand_total)
+            hits = db.find_by_total_supply(total_supply)
         rows.append(ReviewRow(
             image_id=image_id,
             extracted_date=date,
-            grand_total=grand_total,
+            total_supply=total_supply,
             db_match_count=len(hits),
             status=_status_for(len(hits)),
         ))
     return rows
 
 
-_CSV_FIELDS = ["image_id", "extracted_date", "grand_total", "db_match_count", "status"]
+_CSV_FIELDS = ["image_id", "extracted_date", "total_supply", "db_match_count", "status"]
 
 
 def write_review_csv(rows: list[ReviewRow], path: Path) -> None:
@@ -98,7 +102,7 @@ def write_review_csv(rows: list[ReviewRow], path: Path) -> None:
             w.writerow({
                 "image_id": r.image_id,
                 "extracted_date": r.extracted_date or "",
-                "grand_total": r.grand_total,
+                "total_supply": r.total_supply,
                 "db_match_count": r.db_match_count,
                 "status": r.status,
             })
@@ -111,7 +115,7 @@ def read_review_csv(path: Path) -> list[ReviewRow]:
             rows.append(ReviewRow(
                 image_id=rec["image_id"],
                 extracted_date=rec["extracted_date"] or None,
-                grand_total=int(rec["grand_total"]),
+                total_supply=int(rec["total_supply"]),
                 db_match_count=int(rec["db_match_count"]),
                 status=rec["status"],
             ))
@@ -122,13 +126,13 @@ def resolve_ground_truth(
     reviewed: list[ReviewRow],
     db: dbmod.InvoiceDB,
 ) -> dict[str, GroundTruth]:
-    """검수된 행 중 일자+총액으로 유일 식별되는 것만 정답지로 채택."""
+    """검수된 행 중 일자+공급가합(total_supply)으로 유일 식별되는 것만 정답지로 채택."""
     out: dict[str, GroundTruth] = {}
     for r in reviewed:
         if r.extracted_date is None:
-            hits = db.find_by_grand_total(r.grand_total)
+            hits = db.find_by_total_supply(r.total_supply)
         else:
-            hits = db.find_by_date_and_total(r.extracted_date, r.grand_total)
+            hits = db.find_by_date_and_total_supply(r.extracted_date, r.total_supply)
         if len(hits) != 1:
             continue
         inv = hits[0]

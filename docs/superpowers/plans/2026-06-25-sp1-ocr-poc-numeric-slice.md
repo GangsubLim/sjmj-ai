@@ -1387,7 +1387,7 @@ from ocr_poc.recognize import numeric_postfilter, FakeRecognizer
 
 def test_numeric_postfilter_strips_non_digits():
     assert numeric_postfilter("₩25,000") == "25000"
-    assert numeric_postfilter("o3o oo0") == "3000"   # 오인식 문자 사이 숫자만
+    assert numeric_postfilter("o3o oo0") == "30"   # 오인식 문자 사이 숫자만(3,0)
     assert numeric_postfilter("없음") == ""
     assert numeric_postfilter("100 000") == "100000"
 

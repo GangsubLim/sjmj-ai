@@ -130,9 +130,9 @@ def _cmd_run() -> None:
 
 
 def _cmd_match_extract() -> None:
-    """references OCR → grand_total(라벨 합) → reviewed_dates.csv. (검수 전)"""
+    """references OCR → total_supply(라벨 합) → reviewed_dates.csv. (검수 전)"""
     from .db import parse_backup
-    from .match import build_review_rows, grand_total_from_labels, write_review_csv
+    from .match import build_review_rows, total_supply_from_labels, write_review_csv
     from .recognize import PaddleOCRText
     from .detect import PPStructureDetector  # references 도 표라 PP-Structure 텍스트 활용 가능
     from PIL import Image
@@ -151,8 +151,8 @@ def _cmd_match_extract() -> None:
                 crop = crop_cell(image, cell.bbox)
                 if crop is not None:
                     texts.append(recognizer.recognize(crop))
-        grand_total = grand_total_from_labels(sample.label_rows)
-        per_image.append((sample.image_id, texts, grand_total))
+        total_supply = total_supply_from_labels(sample.label_rows)
+        per_image.append((sample.image_id, texts, total_supply))
     rows = build_review_rows(per_image, db)
     write_review_csv(rows, _RESULTS / "reviewed_dates.csv")
     print(f"[match-extract] reviewed_dates.csv → {_RESULTS}  ({len(rows)}행) — 검수 후 run")
