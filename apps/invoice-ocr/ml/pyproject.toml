@@ -9,8 +9,9 @@ dependencies = [
 
 [project.optional-dependencies]
 ml = [
-    "paddleocr>=2.7",
-    "paddlepaddle>=2.6",
+    "paddleocr>=3.0",
+    "paddlepaddle>=3.0",
+    "paddlex[ocr]>=3.4",
     "numpy>=1.26",
 ]
 

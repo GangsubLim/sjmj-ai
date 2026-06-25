@@ -36,7 +36,11 @@ class FakeRecognizer:
 
 
 class PaddleOCRNumeric:
-    """PP-OCRv5 인식 + 숫자 post-filter. 엔진 지연 로딩."""
+    """PaddleOCR 3.x TextRecognition(rec-only) + 숫자 post-filter. 엔진 지연 로딩.
+
+    2.x 의 PaddleOCR(...).ocr(det=False) 는 3.x 에서 제거됐다. 3.x 는 단계별
+    컴포넌트(TextRecognition)를 직접 호출한다. crop(PIL.RGB)→BGR ndarray.
+    """
 
     def __init__(self, lang: str = "korean"):
         self._lang = lang
@@ -45,37 +49,70 @@ class PaddleOCRNumeric:
     def _ensure_engine(self):
         if self._engine is None:
             import numpy as np  # noqa: PLC0415
-            from paddleocr import PaddleOCR  # noqa: PLC0415
+            from paddleocr import TextRecognition  # noqa: PLC0415
             self._np = np
-            self._engine = PaddleOCR(show_log=False, lang=self._lang, use_angle_cls=False)
+            self._engine = TextRecognition()
         return self._engine
 
-    def recognize(self, crop) -> str:
+    def _raw_text(self, crop) -> str:
         engine = self._ensure_engine()
-        arr = self._np.asarray(crop.convert("RGB"))
-        result = engine.ocr(arr, det=False, cls=False)
-        raw = self._first_text(result)
-        return numeric_postfilter(raw)
+        arr = self._np.asarray(crop.convert("RGB"))[:, :, ::-1]  # RGB→BGR
+        results = list(engine.predict(arr))
+        return self._first_text(results)
+
+    def recognize(self, crop) -> str:
+        return numeric_postfilter(self._raw_text(crop))
 
     @staticmethod
-    def _first_text(result) -> str:
-        """PaddleOCR rec-only 출력에서 첫 텍스트. 버전별 형태 방어적 처리."""
-        if not result:
+    def _first_text(results) -> str:
+        """TextRecognition 출력에서 첫 rec_text. 결과객체 .json 구조 방어적 처리."""
+        if not results:
             return ""
-        first = result[0]
-        if isinstance(first, (list, tuple)) and first:
-            cand = first[0]
-            if isinstance(cand, (list, tuple)) and cand:
-                return str(cand[0])
-            return str(cand)
-        return str(first)
+        data = getattr(results[0], "json", None)
+        if isinstance(data, dict):
+            r = data.get("res", data)
+            if isinstance(r, dict):
+                return str(r.get("rec_text", ""))
+        return ""
 
 
 class PaddleOCRText(PaddleOCRNumeric):
-    """post-filter 없이 raw 텍스트 반환(references 날짜 추출용)."""
+    """post-filter 없이 raw 텍스트 반환(단일 crop 텍스트용)."""
 
     def recognize(self, crop) -> str:
+        return self._raw_text(crop)
+
+
+class ReferenceOCR:
+    """references(인쇄 거래명세서) 전체 OCR → 텍스트 리스트.
+
+    손글씨 원본과 달리 references 는 깨끗한 인쇄체라 PaddleOCR 3.x 파이프라인
+    (det+rec)이 잘 읽는다. 결과 텍스트에서 match 가 발행일·금액후보를 뽑는다.
+    엔진 지연 로딩."""
+
+    def __init__(self, lang: str = "korean"):
+        self._lang = lang
+        self._engine = None
+
+    def _ensure_engine(self):
+        if self._engine is None:
+            from paddleocr import PaddleOCR  # noqa: PLC0415
+            self._engine = PaddleOCR(
+                lang=self._lang,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+            )
+        return self._engine
+
+    def texts(self, image_path: str) -> list[str]:
         engine = self._ensure_engine()
-        arr = self._np.asarray(crop.convert("RGB"))
-        result = engine.ocr(arr, det=False, cls=False)
-        return self._first_text(result)
+        results = list(engine.predict(str(image_path)))
+        if not results:
+            return []
+        data = getattr(results[0], "json", None)
+        if isinstance(data, dict):
+            r = data.get("res", data)
+            if isinstance(r, dict):
+                return list(r.get("rec_texts", []) or [])
+        return []

@@ -60,6 +60,58 @@ def total_supply_from_labels(rows: Iterable[LabelRow]) -> int:
     return total
 
 
+_AMOUNT_RE = re.compile(r"\d[\d,]{2,}")
+
+
+def candidate_amounts(texts: Iterable[str], minimum: int = 1000) -> list[int]:
+    """references OCR 텍스트에서 콤마 포함 정수 후보(>= minimum)를 오름차순으로.
+
+    인쇄 거래명세서엔 라인아이템 금액·세액·합계 등 여러 숫자가 찍혀 있고,
+    그중 어느 것이 공급가합(total_supply)인지는 텍스트만으론 모른다 →
+    resolve_reference 가 DB 조회로 가린다."""
+    out: set[int] = set()
+    for t in texts:
+        for m in _AMOUNT_RE.finditer(t):
+            v = int(m.group().replace(",", ""))
+            if v >= minimum:
+                out.add(v)
+    return sorted(out)
+
+
+def resolve_reference(texts: list[str], db: dbmod.InvoiceDB) -> tuple[str | None, int]:
+    """references 텍스트 → (발행일, total_supply). 라벨 미사용.
+
+    total_supply 는 (발행일+후보)로 DB 유일조회되는 후보 중 최댓값으로 정한다:
+    공급가합은 라인아이템 합이라 개별 금액보다 크고, grand_total(VAT포함)은 DB
+    total_supply 와 달라 조회 0건이 되므로, 최댓값-유일hit 가 공급가합을 가린다.
+    못 정하면 0."""
+    date = extract_date(texts)
+    if date is None:
+        return None, 0
+    uhits = [c for c in candidate_amounts(texts)
+             if len(db.find_by_date_and_total_supply(date, c)) == 1]
+    return date, (max(uhits) if uhits else 0)
+
+
+def build_review_rows_from_references(
+    per_image: list[tuple[str, list[str]]],
+    db: dbmod.InvoiceDB,
+) -> list[ReviewRow]:
+    """per_image: (image_id, references_ocr_texts) → 검수행. 라벨 미사용(§ references→DB)."""
+    rows: list[ReviewRow] = []
+    for image_id, texts in per_image:
+        date, ts = resolve_reference(texts, db)
+        hits = db.find_by_date_and_total_supply(date, ts) if (date and ts) else []
+        rows.append(ReviewRow(
+            image_id=image_id,
+            extracted_date=date,
+            total_supply=ts,
+            db_match_count=len(hits),
+            status=_status_for(len(hits)),
+        ))
+    return rows
+
+
 def _status_for(count: int) -> str:
     if count == 1:
         return "unique"

@@ -5,6 +5,7 @@ from ocr_poc.db import parse_backup
 from ocr_poc.match import (
     extract_date, total_supply_from_labels, build_review_rows,
     write_review_csv, read_review_csv, resolve_ground_truth, ReviewRow,
+    candidate_amounts, resolve_reference, build_review_rows_from_references,
 )
 
 
@@ -72,6 +73,40 @@ def test_review_csv_roundtrip_with_none_date(tmp_path: Path):
     p = tmp_path / "reviewed_dates.csv"
     write_review_csv(rows, p)
     assert read_review_csv(p) == rows
+
+
+def test_candidate_amounts_parses_and_filters():
+    texts = ["300,000", "30,000", "5 EA", "₩1,159,000", "999", "abc"]
+    # 콤마 제거·중복 제거·>=1000 필터·오름차순. "999"·"5"는 제외.
+    assert candidate_amounts(texts) == [30000, 300000, 1159000]
+
+
+def test_resolve_reference_picks_max_unique_hit(tiny_invoices_sql):
+    # references 텍스트에 날짜+여러 금액. 공급가합(300000)만이 (날짜+값) 유일조회.
+    # 작은 값(30000)·grand_total(330000)은 DB total_supply 와 안 맞아 hit 0 → 제외.
+    db = parse_backup(tiny_invoices_sql)
+    texts = ["발행일 2026-05-12", "300,000", "30,000", "330,000"]
+    assert resolve_reference(texts, db) == ("2026-05-12", 300000)
+
+
+def test_resolve_reference_no_date_returns_zero(tiny_invoices_sql):
+    db = parse_backup(tiny_invoices_sql)
+    assert resolve_reference(["금액 300,000", "날짜없음"], db) == (None, 0)
+
+
+def test_build_review_rows_from_references_resolves(tiny_invoices_sql):
+    db = parse_backup(tiny_invoices_sql)
+    per_image = [
+        ("inv_a", ["2026-05-12", "300,000", "30,000"]),   # inv 11 유일
+        ("inv_z", ["2026-05-12", "111", "222"]),           # 후보 없음 → no_match
+    ]
+    rows = build_review_rows_from_references(per_image, db)
+    by_id = {r.image_id: r for r in rows}
+    assert by_id["inv_a"].total_supply == 300000
+    assert by_id["inv_a"].status == "unique"
+    assert by_id["inv_z"].status == "no_match"
+    gt = resolve_ground_truth(rows, db)
+    assert set(gt) == {"inv_a"} and gt["inv_a"].invoice_id == 11
 
 
 def test_label_sum_resolves_ground_truth_against_db(tiny_invoices_sql):

@@ -1,14 +1,15 @@
-"""PP-Structure 환경·표인식 스파이크 (일회성).
+"""표인식 환경·셀검출 스파이크 (일회성, paddleocr 3.x).
 
 usage: uv run python -m tools.spike_ppstructure inv_003   (cwd = apps/invoice-ocr/ml)
-한 장에 PP-Structure 표인식을 돌려 (1) 환경이 서는지 (2) 셀 박스가
-쓸만하게 잡히는지를 raw 출력 덤프 + 시각화로 확인한다. 결과로 detect.py의
-DetectorAdapter가 PP-Structure 출력에서 무엇을 어떻게 뽑을지 확정한다.
+한 장에 표인식을 돌려 (1) 환경이 서는지 (2) 셀 박스가 쓸만하게 잡히는지를
+raw 구조 덤프 + 시각화로 확인한다. 결과로 detect.py 의 DetectorAdapter 가
+3.x 출력에서 무엇을 어떻게 뽑을지 확정한다.
+
+paddleocr 2.x 의 PPStructure 는 3.x 에서 제거됐다. 3.x 표인식은
+TableRecognitionPipelineV2(표 검출 → 셀 검출 → 구조인식)로 대체됐다.
 """
 import sys
 from pathlib import Path
-
-from PIL import Image, ImageDraw
 
 from ocr_poc import config
 
@@ -17,37 +18,36 @@ def main(image_id: str) -> None:
     img_path = config.images_dir() / f"{image_id}.jpg"
     print(f"[spike] image = {img_path}")
 
-    # PP-Structure 호출 — 실제 API 시그니처는 설치된 paddleocr 버전에서 확인.
-    # paddleocr 2.7 계열: from paddleocr import PPStructure
-    from paddleocr import PPStructure  # noqa: PLC0415
+    from paddleocr import TableRecognitionPipelineV2  # noqa: PLC0415
 
-    engine = PPStructure(show_log=False, lang="korean")
-    result = engine(str(img_path))
+    pipeline = TableRecognitionPipelineV2()
+    out_dir = Path("report")
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"[spike] result blocks = {len(result)}")
-    overlay = Image.open(img_path).convert("RGB")
-    draw = ImageDraw.Draw(overlay)
-    for block in result:
-        print("  block.type =", block.get("type"), " bbox =", block.get("bbox"))
-        res = block.get("res")
-        # table 블록이면 res에 cell 박스/html이 들어옴 — 구조를 그대로 덤프.
-        if isinstance(res, dict):
-            print("    res.keys =", list(res.keys()))
-            for cell in res.get("cell_bbox", []) or []:
-                draw.polygon([tuple(p) for p in _as_points(cell)], outline=(255, 0, 0))
-    out = Path("report") / f"spike-{image_id}.png"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    overlay.save(out)
-    print(f"[spike] overlay saved → {out}")
+    results = list(pipeline.predict(str(img_path)))
+    print(f"[spike] result objects = {len(results)}")
+    for i, res in enumerate(results):
+        data = getattr(res, "json", None)
+        if isinstance(data, dict):
+            payload = data.get("res", data)
+            print(f"[spike] result[{i}] keys = {list(payload.keys())}")
+            _dump_table_summary(payload)
+        # 주석 오버레이·json 자동 저장 (시각 게이트용)
+        res.save_to_img(str(out_dir))
+        res.save_to_json(str(out_dir))
+    print(f"[spike] overlays/json saved → {out_dir}")
 
 
-def _as_points(cell):
-    """cell_bbox 항목을 (x,y) 점 리스트로. [x1,y1,x2,y2] 또는 8-좌표 모두 수용."""
-    flat = list(cell)
-    if len(flat) == 4:
-        x1, y1, x2, y2 = flat
-        return [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-    return [(flat[i], flat[i + 1]) for i in range(0, len(flat), 2)]
+def _dump_table_summary(payload: dict) -> None:
+    """셀 박스 개수·구조 길이 등 게이트 판단에 필요한 수치만 덤프."""
+    tables = payload.get("table_res_list") or payload.get("table_recognition_result") or []
+    print(f"[spike]   tables = {len(tables)}")
+    for ti, t in enumerate(tables):
+        if not isinstance(t, dict):
+            continue
+        cells = t.get("cell_box_list") or t.get("cell_bbox") or []
+        html = t.get("pred_html") or t.get("html") or ""
+        print(f"[spike]   table[{ti}] cells = {len(cells)}  html_len = {len(html)}")
 
 
 if __name__ == "__main__":
