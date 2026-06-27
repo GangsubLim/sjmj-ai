@@ -58,6 +58,23 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 | 운영 데이터 이전 | **Phase 1에서 이전** | ML 피드백 루프의 GT(정답지)가 운영DB(`total_supply` 매칭)이므로 일찍 옮길수록 Phase 2 학습데이터 축적이 즉시 가능. 민감정보는 on-prem이라 오히려 안전. |
 | Phase 1 ML 선반영 | **이음새만** | 스키마 자리·env 경계·매칭키 인덱스·분리 서빙 자리만 확보. 실제 ML 코드·worker는 Phase 2. |
 
+### 단계별 구현 도구 선택
+
+가르는 기준 한 줄: **"독립 단위로 병렬 쪼개지나?"** → dynamic workflow(팬아웃). **"하나의 응집된 변경이고 리뷰·머지가 핵심인가?"** → standard pipeline(순차 TDD + 리뷰 게이트).
+
+| 단계 | 권장 도구 | 한 줄 이유 |
+|---|---|---|
+| 1A DB 이전·정본화 | **standard pipeline** | 운영데이터 무결성 critical·병렬 불가 → 리뷰 게이트가 보험 |
+| 1B 백엔드 API 포팅 | **workflow → pipeline (하이브리드)** | 6 리소스 독립 → 병렬 포팅+계약검증, 머지는 PR 리뷰 게이트 |
+| 1C 프론트 이식·연결 | **직접 (+ e2e만 workflow)** | 무변경 이식이라 TDD 적음, 7페이지 e2e만 병렬 검증 |
+| 1D macmini 배포 검증 | **직접** | launchd·env·Tailscale은 스크립트+수동 검증, 파이프라인 부적합 |
+| 2A ML 서비스화 | **standard pipeline** (+앞단 workflow 설계패널) | 어댑터 승격·분리 서빙 응집 변경, 토폴로지는 판정패널 비교 |
+| 2B worker 추론 큐 | **standard pipeline** | 큐·잡 상태머신 단일 응집 신규 컴포넌트 |
+| 2C 검수 UI | **standard pipeline** | HITL 흐름·상태 정확성 중요 |
+| 2D 피드백 루프 자동화 | **standard pipeline** | 재학습 자동 트리거·검산 게이트 리뷰가 핵심 |
+
+> workflow가 빛나는 폭(breadth) 작업은 사실상 **1B 하나**(+ 검증 스윕·설계 패널 보조). 나머지 구현 단계는 리뷰 게이트가 보험이 되는 응집 변경이라 standard pipeline.
+
 ---
 
 ## 3. 원본 자산 인벤토리 (이전 대상, 2026-06-27 실측)
@@ -93,6 +110,8 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 
 ### 1A. DB 이전 & 스키마 정본화 (scaffold SP2-DB)
 
+> **구현 도구: standard pipeline** — 단일·운영데이터(400건+) 무결성 critical, 병렬 불가. 규모는 작아도 eng-review/PR 리뷰 게이트가 데이터 손상 보험.
+
 - `SJMJ-Web/database/`(schema.sql + 마이그레이션 11종) → `sjmj-ai/db/`로 이전. 마이그레이션 도구는 **기존 순번 .sql 관습 유지**(KISS — 이미 11개가 그 형식, Alembic 신규 도입 안 함).
 - 운영 덤프 `db-2026-06-24-backup.sql`을 macmini MySQL에 적재.
 - **ML 이음새 선반영(이것만, 코드 없음)**:
@@ -102,6 +121,8 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 
 ### 1B. 백엔드 API 포팅 (FastAPI, 계약 1:1) (scaffold SP2)
 
+> **구현 도구: dynamic workflow → standard pipeline (하이브리드)** — 6 리소스 × 4계층이 서로 독립이라 workflow 팬아웃이 핵심 레버리지(리소스당 1 에이전트가 포팅+계약 골든검증 병렬). 산출은 standard pipeline의 PR→리뷰→merge 게이트에 태운다. 본 로드맵에서 workflow가 빛나는 유일한 폭(breadth) 작업.
+
 - PHP 4-layer → FastAPI `router → service → repository` 대응. 6 리소스 30 라우트 전수 포팅.
 - **합격 기준 = 계약 동등성**: 응답 JSON 필드명·envelope·상태코드가 PHP와 1:1 (기존 React가 무수정으로 붙어야 함). PHP 226 테스트는 **명세 참고용**으로 읽고, FastAPI 테스트는 신규 작성(80% 커버리지, TDD).
 - **ML 이음새**: `SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP` env를 `config.py` 경계에 통합(ocr_poc와 동일 규약), stamp 업로드 등 파일 경계 정리.
@@ -109,11 +130,15 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 
 ### 1C. 프론트 이식 & 연결 (scaffold SP3)
 
+> **구현 도구: 직접 (+ e2e만 workflow)** — 무변경 이식이라 TDD 로직이 적어 두 파이프라인 모두 과함. 파일 복사 + api base URL 조정은 직접, 단 7페이지 e2e 검증 스윕은 workflow로 병렬화 가치 있음.
+
 - `SJMJ-Web/frontend/src` → `apps/invoice-ocr/frontend`로 **그대로 이식**(shadcn·Tailwind v4·Zustand·react-router·PDF 의존 동일). 7페이지 무변경.
 - API 클라이언트 **base URL/proxy만 조정**(`/api`→:8400). SP0의 Vite proxy·정적 dist 서빙이 그대로 수용.
 - **검증**: 7페이지 e2e(작성·수정·목록·거래처·품목·실적·설정) + PDF 생성 동작.
 
 ### 1D. macmini 통합 배포 & 컷오버 검증
+
+> **구현 도구: 직접** — launchd·env·Tailscale은 코드 TDD가 아니라 스크립트 + 환경 의존 수동 검증. 순차·환경 의존이라 두 파이프라인 모두 부적합.
 
 - launchd 서비스(`ai.sjmj.backend`)에 DB 연결 env 주입, frontend dist 빌드 서빙. Tailscale 내부 접속 실사용 검증.
 - 정식 tag-CI·백업·롤백은 **Phase 3로 미룸**(YAGNI — 우선 동작하는 단일 서비스 + 실데이터).
@@ -128,6 +153,8 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 
 ### 2A. ML 서비스화
 
+> **구현 도구: standard pipeline (+ 앞단 workflow 설계패널)** — 어댑터 승격·분리 서빙은 응집·정확성 critical 변경. 단 torch/MLX 서빙 토폴로지는 workflow judge-panel로 안 N개 비교 후 pipeline 구현.
+
 - `ml/infer_photo.process_one`(사진→품목+금액 JSON)을 추론 계약으로 감싼다.
 - **SP2 spike를 `RecognizerAdapter` 뒤로 승격**(production 규약·테스트 부여, 현재 gitignore spike).
 - **torch/MLX 분리 서빙(필수 제약, §8)**: 단일 프로세스에서 transformers ViT(품목 인코더) MPS forward 후 MLX(Qwen) generate 호출 시 출력 깨짐(`!!!`). 품목(torch CPU)·금액(MLX Metal)을 **분리 프로세스/서비스**로.
@@ -135,14 +162,20 @@ Phase 3  운영 굳히기  (tag-CI·자동롤백·백업·모니터링·Tailscal
 
 ### 2B. worker 추론 큐 (scaffold SP4)
 
+> **구현 도구: standard pipeline** — 큐·잡 상태 머신은 단일 응집 신규 컴포넌트, 순차 TDD + 리뷰.
+
 - 사진 업로드 → worker 큐 → ML 추론 → 초안 JSON(품목 top-5 + 금액). 1A의 `ocr_jobs` 테이블 사용.
 
 ### 2C. 검수 UI & 운영DB 확정 저장 (scaffold SP4)
+
+> **구현 도구: standard pipeline** — HITL 교정 흐름·상태 정확성이 중요한 UI 신규(기존 작성페이지 연계).
 
 - 검수 화면(spike의 `grouping_editor`/`label_inspect` 역할)을 프론트에 추가. **기존 작성 페이지와 연계한 HITL 입력보조**(pre-fill + top-5 드롭다운 — 재현 행 타이핑 ~60% 절감).
 - 사람 교정 → 운영DB 확정 + `ocr_corrections` 적재.
 
 ### 2D. 피드백 루프 자동화
+
+> **구현 도구: standard pipeline** — 재학습 자동 트리거·검산 게이트는 안전장치 리뷰가 핵심인 응집 변경.
 
 - 교정 누적 임계 트리거 → `train_contrastive --production` 재학습 잡 → `ft_prod.pt`+`bank.npz` 갱신(DB 쌓일수록 신규→재현 전환으로 정확도 자동 개선).
 - `group_amounts.py` 금액합 자동검산 게이트(현재 미구현, §8) 구현.
