@@ -209,9 +209,33 @@
 - **수동 분할 수확 검증** — 좌/우 대략 박스를 잘라 각각 `form_quad_robust`하면 단일 영수증으로 분리됨(asp 0.90→0.48/0.51, 워프 육안 양호). 그러나 절반워프는 파랑 격자선이 옅어 hline **1~2개**뿐 → `fit_phase` 위상잠금 실패(상단 연속채움 자동집계 12+10=22≠13). **템플릿 고정 위상(φ=Y0%P)** 폴백 시 좌측은 대체로 안착하나 **우측은 거침** — 박스+시트수만으론 **셀-완벽 crop 미달**(흐린격자 한계, §199의 "남은 레버=이미지 품질" 재확인).
 - **조치** — `dataset_build.py`가 `twoup_split.json` 등재 cname을 정상경로에서 **제외**(병합워프 13 라벨노이즈 차단; 이게 핵심 수정). 수확은 `twoup.py`(박스 분할 수확·검수 HTML)로 분리. **권고: 뱅크에서 inv042 제외**(품질>1건 수량; 근사 crop은 §185식 라벨노이즈 위험). `twoup.py`는 박스/시트수 튜닝 또는 **재촬영(1장=1시트, 근본해)** 시 13crop 복구용 도구로 보존.
 
-**다음.** (1) 이미지 품질 robustness — 워프 코너검출·**2장 분리 검토 완료**(위), 남은 건 **가림 4케이스+2장 셀정렬의 공통 선결조건 = hline/위상 robustness**(흐린격자)·재촬영 가이드. (2) 한글 손글씨 인코더 / 작성자 파인튜닝(이제 **314 clean crop·142 라벨** 확보 — 파인튜닝 연료 충분). (3) 그룹핑 전표 라벨 amount 연속합 앵커 확장(§6). (4) 게이트 비용 기준(§8-7).
+**robustness 패스 — 흐림격자 per-sheet 회수 (2026-06-26).** §199·§212가 지목한 "남은 레버=이미지 품질(흐린격자)"을 처리. 재워프 22장 진단(`rewarp_diag.py`·`rewarp_montage.py`, 후보 quad별 rect_score 시각화) 결과 **근본원인이 이질적**임을 실측: 과노출로 청색격자가 바래 `blue_mask`(b−r>10)가 무너진 군집(코너검출 아님, **hline 검출 실패**가 근본 — inv038 1선 vs 대비향상 14선)·2장촬영·책상비스듬·그룹핑전용 등. `docs/research/2026-06-26-image-rectification-dewarp-survey.md` 적용성 평가: 서베이 헤드라인(학습 세그·piecewise 휨)은 22장 주레버 아님(정상 68장 curl용).
 
-코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(**best-of-candidates 코너검출**·deskew), `canon.py`(고정피치 그리드), `labelset.py`(**윈도우드 행선택**), `fewshot.py`(인코더 비교), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋·**2장 제외**), `crop_inspect.py`(crop 전수검사·실패모드 census), `twoup.py`+`twoup_split.json`(**2장 동시촬영 수동 분할 수확**).
+- **수정(per-sheet 대비향상 마스크)** — `grid_v4.blue_mask_enh`((b−r) 양수부 per-image 정규화+CLAHE+적응threshold). **전역 적용 금지**(흐림이 흔해 91중 29장 표준<10선 → 정상전표 위상 교란, trusted 66→63·crop 265→244 회귀 실측) → `grid_v4.faint_on` 컨텍스트(기본 OFF)로 `review_flags` **`faint` 명단 전표 처리 중에만** 켬. **무회귀**(정상 68장 byte-identical). 회수 4장(inv045·074·187·048) → trusted 66→**70**, crop 265→**280**, 고유라벨 130→**135**, 2+표본 37→**39**. 크롭↔라벨 정합 육안검증(쇼바·엔진오일·마그넷·베어링·원터치 매칭). 미회수: inv038·131(손글씨까지 흐려 ink 미검출), inv042(2장→twoup), inv444(책상비스듬). (상세 `docs/superpowers/2026-06-26-sp2-grouping-progress.md` §3)
+
+**인코더 비교 — 한글 OCR 인코더가 결정적 (2026-06-26).** 개선 라벨셋(`dataset_grouped` 280 crop·재현 39)에 few-shot leave-one-invoice-out 재측정. **인코더가 천장임을 확정**(crop 품질 개선에도 top-1 평탄):
+
+| 인코더 | top-1 | top-3 |
+|---|---|---|
+| 다수라벨 베이스라인 | 13.0% | — |
+| daekeun-ml/ko-trocr-base-nsmc-news (한글, 비-OCR 파인튜닝) | 22.8% | 37.5% |
+| team-lucid/trocr-small-korean (한글 small) | 27.7% | 42.4% |
+| TrOCR-base-handwritten (영어 손글씨) | 29.9% | 47.8% |
+| **ddobokki/ko-trocr (한글 OCR)** ⭐ | **47.3%** | **58.7%** |
+
+- **결정적 발견** — "한글이면 다 좋다"가 아니라 **OCR 도메인으로 학습된 한글 인코더**여야 한다. ddobokki/ko-trocr가 영어 TrOCR 대비 **top-1 +17.4pp**(29.9→47.3). 반면 nsmc-news 파인튜닝본·small 한글본은 영어보다도 낮음(인코더가 OCR에서 멀어졌거나 용량 부족). 흘린체라 "읽기"는 못 해도 한글 획 패턴을 일관 임베딩해 retrieval이 큼.
+- **선택 = `ddobokki/ko-trocr`** (47.3%/58.7% 무학습 출발점). 게이트(70/85%)까지 잔여 격차는 **작성자 패턴 파인튜닝**으로 좁힌다.
+
+**✅ 완료 (2026-06-26). 작성자 파인튜닝 (contrastive 메트릭 러닝).** 상세: 진행문서 `2026-06-26-sp2-grouping-progress.md` §9.
+- **검수 게이트 선행**(`label_inspect.py`): 임베딩 outlier+병합후보+넓은 strip 인터랙티브 검수 → 교정 drop8·ditto1·relabel10·merge5 → clean **271 crop**.
+- **학습**(`train_contrastive.py`): ddobokki ViT 마지막2층+128d head만 SupCon(2-view·손글씨안전 증강), 전표 K-fold(누수 방지). 평가=projection.
+- **운영 시나리오 정정**: 사진→인식→UI→검수→DB라 **추론 시 DB 비어있음** → 개방 retrieval(작성자 어휘)이 곧 운영 메트릭(per-invoice 후보 narrowing 불가).
+- **결과(4-fold CV, 184 crop)**: 베이스라인 49.5/63.6/67.9% → **파인튜닝 59.8/72.8/76.6%**(top-1/3/5), **+10pp robust**. 게이트(70/85) 미달이나 입력보조로 유효(재현행 타이핑 ~60%↓). 신뢰도 자동채움 6%@95%·28%@90%.
+- **배포 산출물**: `runs/ft_prod.pt`(전체 271 학습) + `runs/bank.npz`(뱅크) + `infer_demo.py`. `--production` 1회 ~5분.
+- **다음 레버**(progress §9.7): 데이터 확대(운영 DB 성장 시 자동 개선)·금액/단가 prior 후보 narrowing·학습 튜닝.
+- 후속(미해결): (a) 작성자 단일성 0단계 확인(§5·§7), (b) 그룹핑 amount 연속합 앵커(§6), (c) 게이트 비용 기준(§8-7).
+
+코드: `apps/invoice-ocr/ml/report/sp2_spike/item/` — `rectify.py`(**best-of-candidates 코너검출**·deskew), `canon.py`(고정피치 그리드), `labelset.py`(**윈도우드 행선택**), `fewshot.py`(인코더 비교; `MODEL`·`DS` 인자), `photomatch.py`(사진↔DB 매칭·검수 HTML), `dataset_build.py`(두 소스 통합 정리·라벨셋·**2장 제외**·`faint_set`), `group_editor.py`(그룹핑 교정 에디터·faint 배지), `crop_inspect.py`(crop 전수검사·실패모드 census), `twoup.py`+`twoup_split.json`(**2장 동시촬영 수동 분할 수확**), `rewarp_diag.py`·`rewarp_montage.py`(**재워프 진단**). **파인튜닝(2026-06-26)**: `label_inspect.py`(라벨 품질 인터랙티브 검수판·임베딩 outlier·병합후보), `train_contrastive.py`(SupCon 파인튜닝·전표 K-fold·`--production`), `infer_demo.py`(추론 데모); 산출 `runs/ft_prod.pt`·`runs/bank.npz`·`review/dataset_corrections.json`. 코어: `grid_v4.py`(`blue_mask_enh`·`faint_on` per-sheet 흐림 회수). few-shot 베이스 인코더 **`ddobokki/ko-trocr`**(HF 캐시됨).
 
 ---
 

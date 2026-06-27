@@ -1,5 +1,9 @@
 # SP2 품목·금액 결합 그룹핑 라벨링 — 설계 (2026-06-26)
 
+> ⚠️ **일부 SUPERSEDED.** §2 "금액칸 척추" 접근은 구현 중 폐기(인쇄 격자선 오검출)되고
+> **Path B(고정 φ-그리드 + 이중신호)** 로 전환됨. 현재 구현·진행상황의 정본은
+> `docs/superpowers/2026-06-26-sp2-grouping-progress.md`. 이 문서는 초기 설계 기록으로 남김.
+
 > 워프 crop 점검 이후, **품목·금액 라벨링 품질**(박스 위치/크기 + 그룹핑)을 개선하는 설계.
 > 입력 spec: `2026-06-25-sp2-handwriting-recognizer-findings.md`(§3 그룹핑 규칙, §8-B 라벨셋).
 > 대상 코드: `apps/invoice-ocr/ml/report/sp2_spike/item/`(gitignore·로컬 실험).
