@@ -5,7 +5,14 @@ from fastapi.staticfiles import StaticFiles
 
 from app.config import APP_VERSION, get_static_dir
 from app.core.errors import register_error_handlers
-from app.routers import invoices
+from app.routers import (
+    companies,
+    invoices,
+    items,
+    sales_records,
+    salespeople,
+    settings,
+)
 
 
 def health() -> dict[str, str]:
@@ -46,6 +53,11 @@ def create_app() -> FastAPI:
     application.add_api_route("/api/health", health, methods=["GET"])
     # API 라우터는 SPA catch-all(_mount_static)보다 먼저 등록되어야 우선 매칭된다.
     application.include_router(invoices.router, prefix="/api")
+    application.include_router(companies.router, prefix="/api")
+    application.include_router(items.router, prefix="/api")
+    application.include_router(settings.router, prefix="/api")
+    application.include_router(salespeople.router, prefix="/api")
+    application.include_router(sales_records.router, prefix="/api")
     _mount_static(application)
     return application
 
