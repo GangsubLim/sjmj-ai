@@ -40,12 +40,18 @@ def reset_engine() -> None:
 
 @contextmanager
 def connection():
-    """현재 바인딩된 conn이 있으면 재사용, 없으면 엔진에서 새로 연다."""
+    """현재 바인딩된 conn이 있으면 재사용, 없으면 엔진에서 새 트랜잭션을 연다.
+
+    바인딩이 없을 때 `engine.begin()`을 쓰는 이유: SQLAlchemy 2.0의 Connection은
+    자동 커밋이 아니므로(블록 종료 시 롤백), PHP PDO(문장별 autocommit)와 동등하게
+    하려면 standalone repo 호출이 블록 종료 시 커밋되도록 begin()으로 감싼다.
+    바인딩이 있으면(= service.transaction() 안) 그 단일 tx에 합류한다.
+    """
     existing = _conn_var.get()
     if existing is not None:
         yield existing
         return
-    with get_engine().connect() as conn:
+    with get_engine().begin() as conn:
         yield conn
 
 
