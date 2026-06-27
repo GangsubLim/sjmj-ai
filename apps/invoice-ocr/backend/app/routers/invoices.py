@@ -12,6 +12,8 @@ from fastapi.responses import Response
 from app.core import envelope
 from app.core.errors import bad_request, not_found
 from app.core.validators import Validator
+from app.repositories.companies_repository import CompanyRepository
+from app.repositories.items_repository import ItemRepository
 from app.services.export_service import ExportService
 from app.services.invoice_service import InvoiceService
 
@@ -22,7 +24,8 @@ _SORT_ORDER = ("asc", "desc")
 
 
 def _service() -> InvoiceService:
-    return InvoiceService()
+    # create/update 시 거래처·품목 usage_count 증가(PHP modern 부수효과 동치)
+    return InvoiceService(company_repo=CompanyRepository(), item_repo=ItemRepository())
 
 
 def _qint(request: Request, key: str, default: int) -> int:

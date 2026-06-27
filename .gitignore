@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+.coverage
+
+# 백엔드 업로드 산출물(도장 이미지 등 — 런타임/테스트 생성)
+apps/invoice-ocr/backend/uploads/
 
 # Node
 node_modules/
