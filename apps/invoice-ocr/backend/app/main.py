@@ -4,6 +4,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import APP_VERSION, get_static_dir
+from app.core.errors import register_error_handlers
+from app.routers import invoices
 
 
 def health() -> dict[str, str]:
@@ -39,8 +41,11 @@ def _mount_static(application: FastAPI) -> None:
 def create_app() -> FastAPI:
     """FastAPI 앱 팩토리."""
     application = FastAPI(title="sjmj-ai invoice-ocr API", version=APP_VERSION)
+    register_error_handlers(application)
     application.add_api_route("/health", health, methods=["GET"])
     application.add_api_route("/api/health", health, methods=["GET"])
+    # API 라우터는 SPA catch-all(_mount_static)보다 먼저 등록되어야 우선 매칭된다.
+    application.include_router(invoices.router, prefix="/api")
     _mount_static(application)
     return application
 
