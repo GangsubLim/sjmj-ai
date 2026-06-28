@@ -1,0 +1,525 @@
+/* Tailwind border-color override for PDF document */
+.invoice-document *,
+.invoice-document *::before,
+.invoice-document *::after {
+  border-color: black;
+}
+
+/* 거래명세서 문서 - A4 크기 고정 */
+.invoice-document {
+  background: white;
+  padding: 30px;
+  width: 595px;
+  min-height: 842px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+  font-family:
+    "Noto Serif KR", "AppleMyungjo", "KoPubWorldBatang", "Batang", "바탕", serif;
+  font-size: 9pt;
+  line-height: 1.4;
+  color: black;
+  margin: 0 auto;
+}
+
+/* 문서 제목 */
+.document-title {
+  text-align: center;
+  font-size: 22pt;
+  font-weight: bold;
+  margin: 0 0 20px 0;
+  letter-spacing: 10px;
+}
+
+/* 통합 테이블 래퍼 */
+.invoice-tables-wrapper {
+  width: 535px;
+  margin: 0 auto;
+}
+
+/* 상단 정보 섹션 */
+.top-info-section {
+  width: 100%;
+  margin: 0 0 20px 0;
+}
+
+/* 발행일 행 */
+.issue-date-row {
+  margin-bottom: 6px;
+  font-size: 8pt;
+}
+
+.issue-date-row .label {
+  font-weight: 500;
+  margin-right: 5px;
+}
+
+/* Grid 기반 좌우 정보 테이블 */
+.info-table-grid {
+  display: grid;
+  grid-template-columns: 26px 244px 80px 185px;
+  grid-template-rows: repeat(7, 24px);
+  width: 100%;
+  box-sizing: content-box;
+  border: 0.5px solid black;
+  grid-template-areas:
+    "recipient-label recipient-content business-label business-value"
+    "recipient-label recipient-content company-label company-value"
+    "recipient-label recipient-content representative-label representative-value"
+    "recipient-label recipient-content address-label address-value"
+    "recipient-label recipient-content business-type-label business-type-value"
+    "recipient-label recipient-content bank-label bank-value"
+    "recipient-label vehicle-extra tel-label tel-value";
+}
+
+.info-table-grid.no-vehicle {
+  grid-template-areas:
+    "recipient-label recipient-content business-label business-value"
+    "recipient-label recipient-content company-label company-value"
+    "recipient-label recipient-content representative-label representative-value"
+    "recipient-label recipient-content address-label address-value"
+    "recipient-label recipient-content business-type-label business-type-value"
+    "recipient-label recipient-content bank-label bank-value"
+    "recipient-label recipient-content tel-label tel-value";
+}
+
+.info-table-grid.no-vehicle .grid-recipient-content {
+  border-bottom: none;
+}
+
+/* 수직 정렬 보정 — line-height 기반 중앙 정렬 */
+.info-table-grid > div {
+  line-height: 24px;
+  text-align: center;
+}
+
+/* 수신처 라벨 */
+.grid-recipient-label {
+  grid-area: recipient-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-right: 0.5px solid black;
+  background: white;
+}
+
+.vertical-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  font-size: 8pt;
+  line-height: 1;
+}
+
+/* 수신처 내용 */
+.grid-recipient-content {
+  grid-area: recipient-content;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.recipient-name-section {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px 0 4px;
+  position: relative;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.recipient-lines {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: calc(100% - 50px);
+  padding-right: 10px;
+}
+
+.recipient-name {
+  font-size: 12pt;
+  word-break: break-word;
+  text-align: center;
+  line-height: 1.3;
+}
+
+.recipient-name-2 {
+  font-size: 10pt;
+  margin-top: 2px;
+}
+
+.recipient-suffix {
+  position: absolute;
+  right: 8px;
+  font-size: 10pt;
+  white-space: nowrap;
+}
+
+/* 차량번호 영역 */
+.grid-vehicle-section {
+  grid-area: vehicle-extra;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  gap: 6px;
+  border-right: 0.5px solid black;
+}
+
+.vehicle-label {
+  font-size: 9pt;
+  font-weight: 500;
+}
+
+.vehicle-value {
+  font-size: 9pt;
+}
+
+/* 사업자 정보 라벨 셀들 */
+.grid-label-business-number {
+  grid-area: business-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-company-name {
+  grid-area: company-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-representative {
+  grid-area: representative-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-address {
+  grid-area: address-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-business-type {
+  grid-area: business-type-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-bank-account {
+  grid-area: bank-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-label-tel-fax {
+  grid-area: tel-label;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 9pt;
+  border-right: 0.5px solid black;
+}
+
+/* 사업자 정보 값 셀들 */
+.grid-value-business-number {
+  grid-area: business-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-company-name {
+  grid-area: company-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-representative {
+  grid-area: representative-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  position: relative;
+  overflow: visible;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-address {
+  grid-area: address-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-business-type {
+  grid-area: business-type-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-bank-account {
+  grid-area: bank-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+  border-bottom: 0.5px solid black;
+}
+
+.grid-value-tel-fax {
+  grid-area: tel-value;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 6px;
+  font-size: 8pt;
+  font-weight: 500;
+}
+
+/* 도장 이미지 */
+.stamp-area {
+  margin-left: 20px;
+  color: #666;
+  position: relative;
+  display: inline-block;
+}
+
+.stamp-image {
+  width: 40px;
+  height: 40px;
+  position: absolute;
+  left: 65%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  opacity: 1;
+  transition: opacity 0.3s ease;
+  z-index: 1;
+}
+
+.stamp-image:not([src]),
+.stamp-image[src=""],
+.stamp-image[src="undefined"] {
+  display: none;
+}
+
+/* 합계금액 박스 */
+.total-amount-box {
+  display: flex;
+  width: 100%;
+  height: 34px;
+  margin: 0 0 20px 0;
+  border: 0.5px solid black;
+}
+
+.total-label-cell {
+  width: 80px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 10pt;
+  font-weight: bold;
+  line-height: 34px;
+  border-right: 0.5px solid black;
+}
+
+.total-value-cell {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 8px;
+  line-height: 34px;
+  gap: 6px;
+}
+
+.korean-amount {
+  font-size: 10pt;
+  font-weight: bold;
+}
+
+.numeric-amount {
+  font-size: 10pt;
+  font-weight: bold;
+}
+
+.vat-included {
+  font-size: 8pt;
+}
+
+/* 품목 테이블 - Grid 구조 */
+.items-grid-container {
+  width: 100%;
+  margin: 0;
+  border-left: 0.5px solid black;
+}
+
+.items-grid-header {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1fr) 50px 1fr minmax(75px, 1fr) minmax(75px, 1fr)
+    minmax(80px, 1fr);
+  width: 100%;
+}
+
+.items-grid-header > div {
+  height: 26px;
+  background: rgba(128, 128, 128, 0.15);
+  border-right: 0.5px solid black;
+  border-top: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+  font-size: 10pt;
+  font-weight: 500;
+  text-align: center;
+  padding: 0 4px;
+  line-height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.items-grid-body {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1fr) 50px 1fr minmax(75px, 1fr) minmax(75px, 1fr)
+    minmax(80px, 1fr);
+  width: 100%;
+}
+
+.items-grid-body > div {
+  height: 20px;
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+  font-size: 9pt;
+  text-align: center;
+  padding: 0 2px;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.items-grid-body .grid-item-name {
+  text-align: center;
+}
+
+.items-grid-body .grid-item-deduction {
+  background: rgba(239, 68, 68, 0.05);
+  color: rgb(185, 28, 28);
+}
+
+/* 공제 뱃지 - design-system 5-A.2 */
+.deduction-badge {
+  display: inline-block;
+  font-size: 7pt;
+  font-weight: bold;
+  color: rgb(220, 38, 38);
+  background: rgb(254, 226, 226);
+  border-radius: 2px;
+  padding: 0 2px;
+  margin-right: 3px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+.items-grid-body strong {
+  font-weight: bold;
+}
+
+.items-grid-footer {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1fr) 50px 1fr minmax(75px, 1fr) minmax(75px, 1fr)
+    minmax(80px, 1fr);
+  width: 100%;
+}
+
+.items-grid-footer > div {
+  height: 20px;
+  background: rgba(128, 128, 128, 0.1);
+  border-right: 0.5px solid black;
+  border-bottom: 0.5px solid black;
+  font-size: 9pt;
+  font-weight: bold;
+  text-align: center;
+  padding: 0 4px;
+  line-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.grid-sum-label {
+  grid-column: 1 / 4;
+  text-align: center;
+}
+
+.grid-sum-empty {
+  display: none;
+}
+
+/* 인쇄 스타일 */
+@media print {
+  .invoice-document {
+    box-shadow: none;
+    margin: 0;
+    width: 100%;
+    padding: 20mm;
+  }
+
+  @page {
+    size: A4;
+    margin: 0;
+  }
+}
