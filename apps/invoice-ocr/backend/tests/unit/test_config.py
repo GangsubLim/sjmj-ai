@@ -11,13 +11,17 @@ def _settings(monkeypatch, env: dict):
 
 
 def test_db_env_override(monkeypatch):
-    s = _settings(monkeypatch, {"DB_HOST": "db1", "DB_NAME": "n", "DB_USER": "u", "DB_PASS": "p"})
+    s = _settings(
+        monkeypatch, {"DB_HOST": "db1", "DB_NAME": "n", "DB_USER": "u", "DB_PASS": "p"}
+    )
     assert (s.db_host, s.db_name, s.db_user, s.db_pass) == ("db1", "n", "u", "p")
 
 
 def test_empty_password_respected(monkeypatch):
     # 빈 비밀번호는 유효한 값 — 미설정과 구분(AppConfig 골든 동치)
-    s = _settings(monkeypatch, {"DB_HOST": "db1", "DB_NAME": "n", "DB_USER": "u", "DB_PASS": ""})
+    s = _settings(
+        monkeypatch, {"DB_HOST": "db1", "DB_NAME": "n", "DB_USER": "u", "DB_PASS": ""}
+    )
     assert s.db_pass == ""
 
 

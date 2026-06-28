@@ -1,4 +1,5 @@
 """service 골든 — PHP CompanyServiceTest 동치(mock repo)."""
+
 from unittest.mock import MagicMock
 
 from app.services.companies_service import CompanyService

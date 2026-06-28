@@ -105,11 +105,7 @@ export default function SettingsPage() {
 
   return (
     <>
-      <PageHeader
-        title="설정"
-        showBack={false}
-        rightAction={saveButton}
-      />
+      <PageHeader title="설정" showBack={false} rightAction={saveButton} />
       <PageContainer className="py-4">
         {/* PC 전용 페이지 헤더 */}
         <div className="hidden lg:flex lg:items-center lg:justify-between lg:pb-4">
@@ -118,7 +114,10 @@ export default function SettingsPage() {
         </div>
         <div className="space-y-6 lg:grid lg:grid-cols-2 lg:gap-8 lg:space-y-0">
           <IssuerSettings issuer={localIssuer} onChange={setLocalIssuer} />
-          <SystemSettings settings={localSettings} onChange={setLocalSettings} />
+          <SystemSettings
+            settings={localSettings}
+            onChange={setLocalSettings}
+          />
           <SalespeopleSection />
         </div>
       </PageContainer>

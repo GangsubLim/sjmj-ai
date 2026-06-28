@@ -157,7 +157,7 @@ const InvoiceDocument = React.forwardRef<HTMLDivElement, InvoiceDocumentProps>(
                 .map((item, index) => (
                   <React.Fragment key={index}>
                     <div
-                      className={`grid-item-name${item.deduction ? " grid-item-deduction" : ""}`}
+                      className={`grid-item-name${item.deduction ? "grid-item-deduction" : ""}`}
                     >
                       {item.name}
                     </div>

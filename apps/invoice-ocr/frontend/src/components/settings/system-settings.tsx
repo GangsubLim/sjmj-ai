@@ -24,7 +24,10 @@ function SystemSettings({ settings, onChange }: SystemSettingsProps) {
         <SectionHeader title="기본 설정" />
         <div className="mt-2 space-y-3">
           <div className="space-y-1">
-            <Label htmlFor="system-default-title" className="text-muted-foreground text-xs">
+            <Label
+              htmlFor="system-default-title"
+              className="text-muted-foreground text-xs"
+            >
               기본 문서 제목
             </Label>
             <Input

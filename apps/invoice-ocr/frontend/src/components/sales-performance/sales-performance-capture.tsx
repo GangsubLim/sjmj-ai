@@ -318,7 +318,9 @@ export const SalesPerformanceCapture = forwardRef<HTMLDivElement, Props>(
                     <td style={gapCell} />
                     {week.map((cell) => {
                       if (!cell.inMonth)
-                        return <td key={cell.date} style={{ border: "none" }} />;
+                        return (
+                          <td key={cell.date} style={{ border: "none" }} />
+                        );
                       const dt = dailyTotalOf(cell);
                       return (
                         <td

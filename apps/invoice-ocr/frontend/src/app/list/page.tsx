@@ -11,7 +11,11 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useCompanies } from "@/hooks/use-companies";
 import { invoiceAPI } from "@/services/api";
 import type { Company } from "@/types/company";
-import { buildSmsCustomerMessage, buildSmsInternalMessage, getCompanySmsTargetLabel } from "@/utils/formatters";
+import {
+  buildSmsCustomerMessage,
+  buildSmsInternalMessage,
+  getCompanySmsTargetLabel,
+} from "@/utils/formatters";
 import { copyText } from "@/utils/clipboard";
 
 import { PageContainer, PageHeader } from "@/components/layout";
@@ -46,7 +50,12 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { InvoiceCard, InvoicePreview, MonthCalendar, type DaySummary } from "@/components/invoice";
+import {
+  InvoiceCard,
+  InvoicePreview,
+  MonthCalendar,
+  type DaySummary,
+} from "@/components/invoice";
 
 const PERIOD_OPTIONS = [
   { label: "전체", value: "all" },
@@ -123,13 +132,19 @@ function sortInvoices(invoices: Invoice[], sortKey: string): Invoice[] {
     case "amount_asc":
       return sorted.sort((a, b) => a.grand_total - b.grand_total);
     case "company_asc":
-      return sorted.sort((a, b) => (a.recipient ?? "").localeCompare(b.recipient ?? ""));
+      return sorted.sort((a, b) =>
+        (a.recipient ?? "").localeCompare(b.recipient ?? ""),
+      );
     default:
       return sorted;
   }
 }
 
-function getVisiblePages(current: number, total: number, maxVisible = 5): number[] {
+function getVisiblePages(
+  current: number,
+  total: number,
+  maxVisible = 5,
+): number[] {
   let start = Math.max(1, current - Math.floor(maxVisible / 2));
   const end = Math.min(total, start + maxVisible - 1);
   start = Math.max(1, end - maxVisible + 1);
@@ -154,7 +169,8 @@ export default function InvoiceListPage() {
   );
   const [searchParams, setSearchParams] = useSearchParams();
   const scopeParam = searchParams.get("scope");
-  const searchScope: SearchScope = scopeParam === "month" || scopeParam === "day" ? scopeParam : "year";
+  const searchScope: SearchScope =
+    scopeParam === "month" || scopeParam === "day" ? scopeParam : "year";
 
   // PDF preview state
   const [previewInvoice, setPreviewInvoice] = React.useState<Invoice | null>(
@@ -186,7 +202,9 @@ export default function InvoiceListPage() {
 
   const handleSmsCustomer = async (invoice: Invoice) => {
     if (!issuer) {
-      toast.error("발행자 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.");
+      toast.error(
+        "발행자 정보를 불러오는 중입니다. 잠시 후 다시 시도해주세요.",
+      );
       return;
     }
     const company = findCompanyByRecipient(invoice.recipient);
@@ -201,7 +219,11 @@ export default function InvoiceListPage() {
 
   const handleSmsInternal = async (invoice: Invoice) => {
     const company = findCompanyByRecipient(invoice.recipient);
-    const message = buildSmsInternalMessage(invoice, company, company?.sms_number_type);
+    const message = buildSmsInternalMessage(
+      invoice,
+      company,
+      company?.sms_number_type,
+    );
     try {
       await copyText(message);
       toast.success("내부 SMS 메시지가 복사되었습니다");
@@ -232,7 +254,10 @@ export default function InvoiceListPage() {
   const { data: invoices, total, loading, refetch } = useInvoices(filters);
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
-  const visiblePages = React.useMemo(() => getVisiblePages(page, totalPages), [page, totalPages]);
+  const visiblePages = React.useMemo(
+    () => getVisiblePages(page, totalPages),
+    [page, totalPages],
+  );
 
   // Selection
   const [selected, setSelected] = React.useState<Set<number>>(new Set());
@@ -299,7 +324,13 @@ export default function InvoiceListPage() {
 
   const { data: calInvoices } = useInvoices(
     isDesktop
-      ? { date_from: calDateFrom, date_to: calDateTo, limit: 500, sort_by: "date", sort_order: "desc" }
+      ? {
+          date_from: calDateFrom,
+          date_to: calDateTo,
+          limit: 500,
+          sort_by: "date",
+          sort_order: "desc",
+        }
       : { limit: 0 },
   );
 
@@ -347,7 +378,11 @@ export default function InvoiceListPage() {
   const yearLimit = 20;
 
   const yearSortOpt = parseSortOption(sort);
-  const { data: yearInvoices, total: yearTotal, loading: yearLoading } = useInvoices(
+  const {
+    data: yearInvoices,
+    total: yearTotal,
+    loading: yearLoading,
+  } = useInvoices(
     isDesktop && searchScope === "year"
       ? {
           search: debouncedSearch || undefined,
@@ -371,25 +406,36 @@ export default function InvoiceListPage() {
       case "year":
         return yearInvoices; // 서버에서 이미 정렬됨
     }
-  }, [searchScope, selectedDayInvoices, monthFilteredInvoices, yearInvoices, sort]);
+  }, [
+    searchScope,
+    selectedDayInvoices,
+    monthFilteredInvoices,
+    yearInvoices,
+    sort,
+  ]);
 
   // scope에 따른 건수
-  const displayCount = searchScope === "year" ? yearTotal : displayInvoices.length;
+  const displayCount =
+    searchScope === "year" ? yearTotal : displayInvoices.length;
 
   // scope 변경 핸들러
   const handleScopeChange = (scope: SearchScope) => {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (scope === "year") next.delete("scope");
-      else next.set("scope", scope);
-      return next;
-    }, { replace: true });
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (scope === "year") next.delete("scope");
+        else next.set("scope", scope);
+        return next;
+      },
+      { replace: true },
+    );
     if (scope === "year") setYearPage(1);
   };
 
   // 연도 모드 페이지네이션
   const yearVisiblePages = React.useMemo(
-    () => searchScope === "year" ? getVisiblePages(yearPage, yearTotalPages) : [],
+    () =>
+      searchScope === "year" ? getVisiblePages(yearPage, yearTotalPages) : [],
     [searchScope, yearPage, yearTotalPages],
   );
 
@@ -441,12 +487,18 @@ export default function InvoiceListPage() {
                 <div aria-live="polite">
                   <h2 className="mb-3 text-base font-semibold">
                     {searchScope === "year" && `${calYear}년`}
-                    {searchScope === "month" && `${calYear}년 ${calMonth + 1}월`}
+                    {searchScope === "month" &&
+                      `${calYear}년 ${calMonth + 1}월`}
                     {searchScope === "day" &&
                       (selectedDate
                         ? (() => {
                             const d = new Date(selectedDate + "T00:00:00");
-                            return new Intl.DateTimeFormat("ko-KR", { year: "numeric", month: "long", day: "numeric", weekday: "short" }).format(d);
+                            return new Intl.DateTimeFormat("ko-KR", {
+                              year: "numeric",
+                              month: "long",
+                              day: "numeric",
+                              weekday: "short",
+                            }).format(d);
                           })()
                         : "날짜를 선택하세요")}
                     {` · ${displayCount}건`}
@@ -454,13 +506,21 @@ export default function InvoiceListPage() {
                 </div>
 
                 <div className="flex items-center gap-2 pb-3">
-                  <Select value={searchScope} onValueChange={(v) => handleScopeChange(v as SearchScope)}>
-                    <SelectTrigger aria-label="검색 범위" className="h-12 w-auto shrink-0 gap-1 rounded-xl text-sm">
+                  <Select
+                    value={searchScope}
+                    onValueChange={(v) => handleScopeChange(v as SearchScope)}
+                  >
+                    <SelectTrigger
+                      aria-label="검색 범위"
+                      className="h-12 w-auto shrink-0 gap-1 rounded-xl text-sm"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {scopeOptions.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
@@ -474,67 +534,79 @@ export default function InvoiceListPage() {
                     placeholder="거래처명 또는 차량번호 검색"
                   />
                   <Select value={sort} onValueChange={setSort}>
-                    <SelectTrigger aria-label="정렬" className="h-12 w-auto shrink-0 gap-1 rounded-xl text-sm">
+                    <SelectTrigger
+                      aria-label="정렬"
+                      className="h-12 w-auto shrink-0 gap-1 rounded-xl text-sm"
+                    >
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
                       {SORT_OPTIONS.map((o) => (
-                        <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+                        <SelectItem key={o.value} value={o.value}>
+                          {o.label}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
 
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                {searchScope === "year" && yearLoading ? (
-                  <div className="space-y-3">
-                    {Array.from({ length: 3 }).map((_, i) => (
-                      <Skeleton key={i} className="h-28 w-full rounded-xl" />
-                    ))}
-                  </div>
-                ) : displayInvoices.length === 0 ? (
-                  <EmptyState
-                    icon={FileTextIcon}
-                    title={
-                      searchScope === "day"
-                        ? "해당 날짜에 발행된 명세서가 없습니다"
-                        : debouncedSearch
-                          ? "검색 결과가 없습니다"
-                          : "해당 기간에 발행된 명세서가 없습니다"
-                    }
-                    description={
-                      searchScope === "day"
-                        ? "다른 날짜를 선택하거나 새 명세서를 작성해보세요"
-                        : "검색어를 변경하거나 다른 기간을 선택해보세요"
-                    }
-                  />
-                ) : (
-                  <div className="space-y-3">
-                    {displayInvoices.map((inv) => {
-                      const company = findCompanyByRecipient(inv.recipient);
-                      return (
-                      <InvoiceCard
-                        key={inv.id}
-                        invoice={inv}
-                        selected={inv.id ? selected.has(inv.id) : false}
-                        smsTargetLabel={getCompanySmsTargetLabel(company, company?.sms_number_type)}
-                        onSelect={handleSelect}
-                        onClone={handleClone}
-                        onDelete={(id) => setDeleteTarget(id)}
-                        onPdf={handlePdf}
-                        onSmsCustomer={handleSmsCustomer}
-                        onSmsInternal={handleSmsInternal}
-                      />
-                      );
-                    })}
-                  </div>
-                )}
+                  {searchScope === "year" && yearLoading ? (
+                    <div className="space-y-3">
+                      {Array.from({ length: 3 }).map((_, i) => (
+                        <Skeleton key={i} className="h-28 w-full rounded-xl" />
+                      ))}
+                    </div>
+                  ) : displayInvoices.length === 0 ? (
+                    <EmptyState
+                      icon={FileTextIcon}
+                      title={
+                        searchScope === "day"
+                          ? "해당 날짜에 발행된 명세서가 없습니다"
+                          : debouncedSearch
+                            ? "검색 결과가 없습니다"
+                            : "해당 기간에 발행된 명세서가 없습니다"
+                      }
+                      description={
+                        searchScope === "day"
+                          ? "다른 날짜를 선택하거나 새 명세서를 작성해보세요"
+                          : "검색어를 변경하거나 다른 기간을 선택해보세요"
+                      }
+                    />
+                  ) : (
+                    <div className="space-y-3">
+                      {displayInvoices.map((inv) => {
+                        const company = findCompanyByRecipient(inv.recipient);
+                        return (
+                          <InvoiceCard
+                            key={inv.id}
+                            invoice={inv}
+                            selected={inv.id ? selected.has(inv.id) : false}
+                            smsTargetLabel={getCompanySmsTargetLabel(
+                              company,
+                              company?.sms_number_type,
+                            )}
+                            onSelect={handleSelect}
+                            onClone={handleClone}
+                            onDelete={(id) => setDeleteTarget(id)}
+                            onPdf={handlePdf}
+                            onSmsCustomer={handleSmsCustomer}
+                            onSmsInternal={handleSmsInternal}
+                          />
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {displayInvoices.length > 0 && (
                   <div className="border-border mt-3 flex shrink-0 items-center justify-between rounded-lg border px-3 py-2">
                     <span className="text-muted-foreground text-sm">
-                      {searchScope === "year" ? "연간 합계" : searchScope === "month" ? "월간 합계" : "일별 합계"}
+                      {searchScope === "year"
+                        ? "연간 합계"
+                        : searchScope === "month"
+                          ? "월간 합계"
+                          : "일별 합계"}
                     </span>
                     <span className="text-sm font-semibold">
                       {displayInvoices
@@ -553,28 +625,46 @@ export default function InvoiceListPage() {
                           onClick={() => setYearPage((p) => Math.max(1, p - 1))}
                           aria-disabled={yearPage <= 1}
                           tabIndex={yearPage <= 1 ? -1 : undefined}
-                          className={yearPage <= 1 ? "pointer-events-none opacity-50" : ""}
+                          className={
+                            yearPage <= 1
+                              ? "pointer-events-none opacity-50"
+                              : ""
+                          }
                         />
                       </PaginationItem>
                       {yearVisiblePages[0] > 1 && (
-                        <PaginationItem><PaginationEllipsis /></PaginationItem>
+                        <PaginationItem>
+                          <PaginationEllipsis />
+                        </PaginationItem>
                       )}
                       {yearVisiblePages.map((p) => (
                         <PaginationItem key={p}>
-                          <PaginationLink isActive={p === yearPage} onClick={() => setYearPage(p)}>
+                          <PaginationLink
+                            isActive={p === yearPage}
+                            onClick={() => setYearPage(p)}
+                          >
                             {p}
                           </PaginationLink>
                         </PaginationItem>
                       ))}
-                      {yearVisiblePages[yearVisiblePages.length - 1] < yearTotalPages && (
-                        <PaginationItem><PaginationEllipsis /></PaginationItem>
+                      {yearVisiblePages[yearVisiblePages.length - 1] <
+                        yearTotalPages && (
+                        <PaginationItem>
+                          <PaginationEllipsis />
+                        </PaginationItem>
                       )}
                       <PaginationItem>
                         <PaginationNext
-                          onClick={() => setYearPage((p) => Math.min(yearTotalPages, p + 1))}
+                          onClick={() =>
+                            setYearPage((p) => Math.min(yearTotalPages, p + 1))
+                          }
                           aria-disabled={yearPage >= yearTotalPages}
                           tabIndex={yearPage >= yearTotalPages ? -1 : undefined}
-                          className={yearPage >= yearTotalPages ? "pointer-events-none opacity-50" : ""}
+                          className={
+                            yearPage >= yearTotalPages
+                              ? "pointer-events-none opacity-50"
+                              : ""
+                          }
                         />
                       </PaginationItem>
                     </PaginationContent>
@@ -606,10 +696,17 @@ export default function InvoiceListPage() {
               }}
             />
 
-            <div className="flex items-center justify-between" aria-live="polite">
+            <div
+              className="flex items-center justify-between"
+              aria-live="polite"
+            >
               <span className="text-muted-foreground text-xs">{total}건</span>
               <Select value={sort} onValueChange={setSort}>
-                <SelectTrigger size="sm" aria-label="정렬" className="w-auto gap-1 text-xs">
+                <SelectTrigger
+                  size="sm"
+                  aria-label="정렬"
+                  className="w-auto gap-1 text-xs"
+                >
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -633,7 +730,10 @@ export default function InvoiceListPage() {
                 icon={FileTextIcon}
                 title="거래명세서가 없습니다"
                 description="새 거래명세서를 작성해보세요"
-                action={{ label: "새 거래명세서", onClick: () => navigate("/") }}
+                action={{
+                  label: "새 거래명세서",
+                  onClick: () => navigate("/"),
+                }}
               />
             ) : (
               <div className="space-y-3">
@@ -661,7 +761,9 @@ export default function InvoiceListPage() {
                       onClick={() => setPage((p) => Math.max(1, p - 1))}
                       aria-disabled={page <= 1}
                       tabIndex={page <= 1 ? -1 : undefined}
-                      className={page <= 1 ? "pointer-events-none opacity-50" : ""}
+                      className={
+                        page <= 1 ? "pointer-events-none opacity-50" : ""
+                      }
                     />
                   </PaginationItem>
                   {visiblePages[0] > 1 && (
@@ -686,11 +788,15 @@ export default function InvoiceListPage() {
                   )}
                   <PaginationItem>
                     <PaginationNext
-                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      onClick={() =>
+                        setPage((p) => Math.min(totalPages, p + 1))
+                      }
                       aria-disabled={page >= totalPages}
                       tabIndex={page >= totalPages ? -1 : undefined}
                       className={
-                        page >= totalPages ? "pointer-events-none opacity-50" : ""
+                        page >= totalPages
+                          ? "pointer-events-none opacity-50"
+                          : ""
                       }
                     />
                   </PaginationItem>

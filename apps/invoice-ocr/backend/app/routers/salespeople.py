@@ -3,6 +3,7 @@
 index는 PHP 컨트롤러처럼 가짜 pagination(page=1, limit=total=count, totalPages=1)을
 컨트롤러 레벨에서 구성한다. 검증은 Validator(required name), 응답은 구조화 envelope.
 """
+
 from fastapi import APIRouter, Body
 
 from app.core import envelope
@@ -21,12 +22,15 @@ def _service() -> SalespersonService:
 def index():
     items = _service().get_list()
     count = len(items)
-    return envelope.list_response(items, {
-        "page": 1,
-        "limit": count,
-        "total": count,
-        "totalPages": 1,
-    })
+    return envelope.list_response(
+        items,
+        {
+            "page": 1,
+            "limit": count,
+            "total": count,
+            "totalPages": 1,
+        },
+    )
 
 
 @router.post("/salespeople")

@@ -120,7 +120,8 @@ export function buildSmsInternalMessage(
   const amount = `${formatPrice(invoice.grand_total)}원`;
   const smsTarget = getCompanySmsTargetValue(company, smsNumberType);
 
-  const sendType = (smsNumberType ?? company?.sms_number_type) === "fax" ? "팩스" : "문자";
+  const sendType =
+    (smsNumberType ?? company?.sms_number_type) === "fax" ? "팩스" : "문자";
 
   return `${invoice.recipient}${contactSuffix}
 ${amount}(부가세포함)

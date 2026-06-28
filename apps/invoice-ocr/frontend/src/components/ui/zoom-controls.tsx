@@ -23,13 +23,23 @@ function ZoomControls({
         className,
       )}
     >
-      <Button variant="ghost" size="icon-xs" onClick={onZoomIn} aria-label="확대">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={onZoomIn}
+        aria-label="확대"
+      >
         <PlusIcon />
       </Button>
       <span className="text-muted-foreground text-xs font-medium tabular-nums">
         {Math.round(scale * 100)}%
       </span>
-      <Button variant="ghost" size="icon-xs" onClick={onZoomOut} aria-label="축소">
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        onClick={onZoomOut}
+        aria-label="축소"
+      >
         <MinusIcon />
       </Button>
     </div>

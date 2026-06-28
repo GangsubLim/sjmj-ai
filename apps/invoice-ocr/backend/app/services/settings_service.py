@@ -3,6 +3,7 @@
 uploadStamp의 파일 저장은 PHP core/FileUpload.php 동형(issuer 확인 → 크기·MIME
 검증 → 고정 파일명 덮어쓰기). 검증 실패는 app.core.errors.bad_request(400).
 """
+
 from pathlib import Path
 
 from app.core.errors import bad_request

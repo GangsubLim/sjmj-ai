@@ -21,7 +21,10 @@ function SearchInput({
       data-slot="search-input"
       className={cn("relative flex items-center", className)}
     >
-      <SearchIcon className="text-muted-foreground pointer-events-none absolute left-4 size-5" aria-hidden="true" />
+      <SearchIcon
+        className="text-muted-foreground pointer-events-none absolute left-4 size-5"
+        aria-hidden="true"
+      />
       <input
         type="text"
         value={value}

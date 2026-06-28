@@ -91,15 +91,26 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     initialData?.vehicle_no ?? "",
   );
   const [memo, setMemo] = React.useState(initialData?.memo ?? "");
-  const [items, setItems] = React.useState<ItemWithKey[]>(buildInitialItems(initialData));
+  const [items, setItems] = React.useState<ItemWithKey[]>(
+    buildInitialItems(initialData),
+  );
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
   const isInitialMount = React.useRef(true);
 
-  const itemsKey = JSON.stringify(items.map(i => ({ n: i.name, q: i.quantity, p: i.unit_price, d: i.deduction })));
+  const itemsKey = JSON.stringify(
+    items.map((i) => ({
+      n: i.name,
+      q: i.quantity,
+      p: i.unit_price,
+      d: i.deduction,
+    })),
+  );
 
   React.useEffect(() => {
-    setDocumentTitle(initialData?.document_title ?? appSettings.default_document_title);
+    setDocumentTitle(
+      initialData?.document_title ?? appSettings.default_document_title,
+    );
     setIssueDate(initialData?.issue_date ?? getDefaultIssueDate());
     setShowStamp(initialData?.show_stamp ?? true);
     setRecipient(initialData?.recipient ?? "");
@@ -109,15 +120,36 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     setItems(buildInitialItems(initialData));
     setIsDirty(false);
     isInitialMount.current = true;
-  }, [initialData, appSettings.default_document_title, getDefaultIssueDate, buildInitialItems]);
+  }, [
+    initialData,
+    appSettings.default_document_title,
+    getDefaultIssueDate,
+    buildInitialItems,
+  ]);
 
   React.useEffect(() => {
-    if (isInitialMount.current) { isInitialMount.current = false; return; }
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     setIsDirty(true);
-  }, [documentTitle, issueDate, showStamp, recipient, recipient2, vehicleNo, memo, itemsKey]);
+  }, [
+    documentTitle,
+    issueDate,
+    showStamp,
+    recipient,
+    recipient2,
+    vehicleNo,
+    memo,
+    itemsKey,
+  ]);
 
   React.useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => { if (isDirty) { e.preventDefault(); } };
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+      }
+    };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
@@ -323,7 +355,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         <SectionHeader title="문서 정보" />
         <div className="mt-2 space-y-3">
           <div className="space-y-1">
-            <Label htmlFor="invoice-document-title" className="text-muted-foreground text-xs">
+            <Label
+              htmlFor="invoice-document-title"
+              className="text-muted-foreground text-xs"
+            >
               문서 제목
             </Label>
             <Input
@@ -338,19 +373,36 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="invoice-issue-date" className="text-muted-foreground text-xs">
+              <Label
+                htmlFor="invoice-issue-date"
+                className="text-muted-foreground text-xs"
+              >
                 발행일
               </Label>
-              <DateInput id="invoice-issue-date" name="issue_date" value={issueDate} onChange={setIssueDate} />
+              <DateInput
+                id="invoice-issue-date"
+                name="issue_date"
+                value={issueDate}
+                onChange={setIssueDate}
+              />
             </div>
             <div className="flex h-12 items-center justify-end gap-2 self-end">
-              <Switch id="invoice-show-stamp" checked={showStamp} onCheckedChange={setShowStamp} />
-              <Label htmlFor="invoice-show-stamp" className="text-sm">도장 표시</Label>
+              <Switch
+                id="invoice-show-stamp"
+                checked={showStamp}
+                onCheckedChange={setShowStamp}
+              />
+              <Label htmlFor="invoice-show-stamp" className="text-sm">
+                도장 표시
+              </Label>
             </div>
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="invoice-recipient" className="text-muted-foreground text-xs">
+            <Label
+              htmlFor="invoice-recipient"
+              className="text-muted-foreground text-xs"
+            >
               거래처 (수신)
             </Label>
             <Autocomplete
@@ -365,7 +417,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
           {recipient2 && (
             <div className="space-y-1">
-              <Label htmlFor="invoice-recipient2" className="text-muted-foreground text-xs">
+              <Label
+                htmlFor="invoice-recipient2"
+                className="text-muted-foreground text-xs"
+              >
                 수신참조
               </Label>
               <Input
@@ -379,7 +434,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
           )}
 
           <div className="space-y-1">
-            <Label htmlFor="invoice-vehicle-no" className="text-muted-foreground text-xs">
+            <Label
+              htmlFor="invoice-vehicle-no"
+              className="text-muted-foreground text-xs"
+            >
               차량번호
             </Label>
             <IconInput
@@ -395,7 +453,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="invoice-memo" className="text-muted-foreground text-xs">
+            <Label
+              htmlFor="invoice-memo"
+              className="text-muted-foreground text-xs"
+            >
               메모/비고 (선택)
             </Label>
             <Textarea
@@ -455,7 +516,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         rightAction={
           <div className="flex items-center gap-1">
             {mode === "edit" && (
-              <Button variant="ghost" size="icon-sm" onClick={handleReset} aria-label="초기화">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                onClick={handleReset}
+                aria-label="초기화"
+              >
                 <RotateCcwIcon className="size-4" />
               </Button>
             )}
@@ -485,7 +551,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               <h1 className="text-xl font-semibold">{formTitle}</h1>
               <div className="flex items-center gap-2">
                 {mode === "edit" && (
-                  <Button variant="outline" size="sm" onClick={handleReset}>초기화</Button>
+                  <Button variant="outline" size="sm" onClick={handleReset}>
+                    초기화
+                  </Button>
                 )}
                 <Button size="sm" onClick={handleSave} disabled={saving}>
                   <SaveIcon className="mr-1 size-4" aria-hidden="true" />

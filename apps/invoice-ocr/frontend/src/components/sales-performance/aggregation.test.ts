@@ -4,7 +4,13 @@ import type { MonthGridCell } from "@/utils/calendar";
 import type { Salesperson } from "@/types/salesperson";
 import type { SalesRecord } from "@/types/sales-record";
 
-function rec(id: number, spId: number, date: string, quantity: number, name: string): SalesRecord {
+function rec(
+  id: number,
+  spId: number,
+  date: string,
+  quantity: number,
+  name: string,
+): SalesRecord {
   return {
     id,
     salesperson_id: spId,
@@ -37,7 +43,13 @@ describe("sumPerSalesperson", () => {
   it("주차 셀의 영업사원별 합계 계산", () => {
     const records = new Map<string, Map<number, SalesRecord>>([
       ["2026-05-03", new Map([[1, rec(1, 1, "2026-05-03", 1000, "김")]])],
-      ["2026-05-05", new Map([[1, rec(2, 1, "2026-05-05", 2000, "김")], [2, rec(3, 2, "2026-05-05", 500, "이")]])],
+      [
+        "2026-05-05",
+        new Map([
+          [1, rec(2, 1, "2026-05-05", 2000, "김")],
+          [2, rec(3, 2, "2026-05-05", 500, "이")],
+        ]),
+      ],
     ]);
     const result = sumPerSalesperson(week, records, salespeople);
     expect(result.find((t) => t.id === 1)?.quantity).toBe(3000);

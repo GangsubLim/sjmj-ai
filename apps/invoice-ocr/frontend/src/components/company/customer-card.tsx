@@ -30,7 +30,10 @@ function CustomerCard({ company, onClick, className }: CustomerCardProps) {
           <h3 className="truncate pr-2 text-base leading-tight font-bold">
             {company.company_name}
           </h3>
-          <ChevronRightIcon className="text-muted-foreground mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <ChevronRightIcon
+            className="text-muted-foreground mt-0.5 size-4 shrink-0"
+            aria-hidden="true"
+          />
         </div>
         {company.business_number && (
           <p className="text-muted-foreground mt-1 mb-2 text-xs font-medium">
@@ -52,8 +55,8 @@ function CustomerCard({ company, onClick, className }: CustomerCardProps) {
             </span>
             <span className="text-foreground block truncate text-xs font-medium">
               {company.sms_number_type === "fax"
-                ? company.fax ?? "-"
-                : company.phone ?? "-"}
+                ? (company.fax ?? "-")
+                : (company.phone ?? "-")}
             </span>
           </div>
         </div>

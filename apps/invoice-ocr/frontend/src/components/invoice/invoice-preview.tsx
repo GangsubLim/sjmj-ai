@@ -261,7 +261,9 @@ function InvoicePreview({ invoice, issuer, onClose }: InvoicePreviewProps) {
       role="dialog"
       aria-modal="true"
       aria-labelledby="preview-title"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
       className="fixed inset-0 z-[1000] flex items-center justify-center bg-black/50 print:static print:bg-transparent"
     >
       <div className="bg-background flex h-[90vh] w-[90%] max-w-[1200px] flex-col rounded-lg shadow-xl max-md:h-dvh max-md:w-full max-md:rounded-none print:h-auto print:w-full print:shadow-none">
@@ -291,7 +293,10 @@ function InvoicePreview({ invoice, issuer, onClose }: InvoicePreviewProps) {
               disabled={isImageLoading}
             >
               {isImageLoading ? (
-                <LoaderIcon className="mr-1 size-4 animate-spin" aria-hidden="true" />
+                <LoaderIcon
+                  className="mr-1 size-4 animate-spin"
+                  aria-hidden="true"
+                />
               ) : (
                 <ImageIcon className="mr-1 size-4" aria-hidden="true" />
               )}
@@ -301,7 +306,12 @@ function InvoicePreview({ invoice, issuer, onClose }: InvoicePreviewProps) {
               <PrinterIcon className="mr-1 size-4" />
               인쇄
             </Button>
-            <Button variant="ghost" size="icon-sm" onClick={onClose} aria-label="닫기">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={onClose}
+              aria-label="닫기"
+            >
               <XIcon className="size-5" />
             </Button>
           </div>

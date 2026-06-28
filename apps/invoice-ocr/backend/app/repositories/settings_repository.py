@@ -2,6 +2,7 @@
 
 issuers(단일 발급자 upsert)와 app_settings(키-값 맵)를 다룬다.
 """
+
 from sqlalchemy import text
 
 from app.db import connection
@@ -38,7 +39,8 @@ class SettingsRepository:
         existing = self.find_issuer()
         with connection() as conn:
             if existing:
-                conn.execute(text("""
+                conn.execute(
+                    text("""
                     UPDATE issuers SET
                         company_name = :company_name,
                         representative = :representative,
@@ -52,9 +54,12 @@ class SettingsRepository:
                         bank_account = :bank_account,
                         show_sjdojang = :show_sjdojang
                     WHERE id = :id
-                """), {**params, "id": existing["id"]})
+                """),
+                    {**params, "id": existing["id"]},
+                )
                 return int(existing["id"])
-            result = conn.execute(text("""
+            result = conn.execute(
+                text("""
                 INSERT INTO issuers (
                     company_name, representative, business_number, address,
                     business_type, business_item, phone, fax, tel_fax,
@@ -64,7 +69,9 @@ class SettingsRepository:
                     :business_type, :business_item, :phone, :fax, :tel_fax,
                     :bank_account, :show_sjdojang
                 )
-            """), params)
+            """),
+                params,
+            )
             return int(result.lastrowid)
 
     def update_stamp_url(self, issuer_id: int, url: str) -> None:
@@ -76,14 +83,20 @@ class SettingsRepository:
 
     def find_all_settings(self) -> dict:
         with connection() as conn:
-            rows = conn.execute(
-                text("SELECT setting_key, setting_value FROM app_settings")
-            ).mappings().all()
+            rows = (
+                conn.execute(
+                    text("SELECT setting_key, setting_value FROM app_settings")
+                )
+                .mappings()
+                .all()
+            )
             return {r["setting_key"]: r["setting_value"] for r in rows}
 
     def update_setting(self, key: str, value: str) -> None:
         with connection() as conn:
             conn.execute(
-                text("UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"),
+                text(
+                    "UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"
+                ),
                 {"value": value, "key": key},
             )

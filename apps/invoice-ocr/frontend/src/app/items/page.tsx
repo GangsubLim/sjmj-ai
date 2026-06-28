@@ -41,11 +41,7 @@ export default function ItemManagePage() {
   const [search, setSearch] = React.useState("");
   const debouncedSearch = useDebounce(search, 300);
   const [category, setCategory] = React.useState("all");
-  const {
-    data: items,
-    loading,
-    refetch,
-  } = useItems();
+  const { data: items, loading, refetch } = useItems();
 
   const {
     editTarget,
@@ -80,7 +76,6 @@ export default function ItemManagePage() {
     });
   }, [items, category, debouncedSearch]);
 
-
   if (!isDesktop && (showForm || editTarget)) {
     return (
       <ItemTemplateForm
@@ -101,15 +96,31 @@ export default function ItemManagePage() {
         <div className="hidden lg:flex lg:items-center lg:justify-between lg:pb-4">
           <h1 className="text-xl font-semibold">품목 관리</h1>
         </div>
-        <div className="lg:grid lg:grid-cols-[2fr_3fr] lg:gap-6 lg:h-[calc(100dvh-var(--page-shell-offset))]">
+        <div className="lg:grid lg:h-[calc(100dvh-var(--page-shell-offset))] lg:grid-cols-[2fr_3fr] lg:gap-6">
           {/* 좌측: 리스트 */}
           <div className="flex flex-col space-y-4 lg:min-h-0">
             <div className="shrink-0 space-y-4">
-              <SearchInput value={search} onChange={setSearch} placeholder="품목명 검색" />
-              <Button className="w-full" onClick={() => { setShowForm(true); setEditTarget(null); setSelectedItem(null); }}>
-                <PlusIcon className="mr-1 size-4" aria-hidden="true" />새 품목 추가
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder="품목명 검색"
+              />
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setShowForm(true);
+                  setEditTarget(null);
+                  setSelectedItem(null);
+                }}
+              >
+                <PlusIcon className="mr-1 size-4" aria-hidden="true" />새 품목
+                추가
               </Button>
-              <FilterChips options={CATEGORY_FILTERS} value={category} onChange={setCategory} />
+              <FilterChips
+                options={CATEGORY_FILTERS}
+                value={category}
+                onChange={setCategory}
+              />
             </div>
 
             {loading ? (
@@ -123,7 +134,10 @@ export default function ItemManagePage() {
                 icon={PackageIcon}
                 title="품목이 없습니다"
                 description="새 품목 템플릿을 추가해보세요"
-                action={{ label: "품목 추가", onClick: () => setShowForm(true) }}
+                action={{
+                  label: "품목 추가",
+                  onClick: () => setShowForm(true),
+                }}
               />
             ) : (
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
@@ -142,7 +156,9 @@ export default function ItemManagePage() {
                     }}
                     onDelete={() => item.id != null && setDeleteTarget(item.id)}
                     className={cn(
-                      isDesktop && selectedItem?.id === item.id && "ring-primary ring-2 ring-offset-2",
+                      isDesktop &&
+                        selectedItem?.id === item.id &&
+                        "ring-primary ring-2 ring-offset-2",
                     )}
                   />
                 ))}
@@ -151,7 +167,7 @@ export default function ItemManagePage() {
           </div>
 
           {/* 우측: PC 전용 상세/편집 패널 */}
-          <div className="hidden lg:block lg:self-start lg:overflow-y-auto lg:max-h-full">
+          <div className="hidden lg:block lg:max-h-full lg:self-start lg:overflow-y-auto">
             {showForm || editTarget ? (
               <ItemTemplateForm
                 variant="panel"
@@ -168,27 +184,66 @@ export default function ItemManagePage() {
             ) : selectedItem ? (
               <div className="rounded-xl border p-4">
                 <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">{selectedItem.item_name}</h2>
+                  <h2 className="text-lg font-semibold">
+                    {selectedItem.item_name}
+                  </h2>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setEditTarget(selectedItem)}>편집</Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditTarget(selectedItem)}
+                    >
+                      편집
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
                       className="text-destructive hover:bg-destructive/10"
-                      onClick={() => selectedItem.id != null && setDeleteTarget(selectedItem.id)}
+                      onClick={() =>
+                        selectedItem.id != null &&
+                        setDeleteTarget(selectedItem.id)
+                      }
                     >
                       삭제
                     </Button>
                   </div>
                 </div>
                 <dl className="space-y-2 text-sm">
-                  {selectedItem.category && <div><dt className="text-muted-foreground text-xs">카테고리</dt><dd className="capitalize">{selectedItem.category}</dd></div>}
-                  {selectedItem.default_unit_price != null && <div><dt className="text-muted-foreground text-xs">기본 단가</dt><dd>{selectedItem.default_unit_price.toLocaleString("ko-KR")}원</dd></div>}
-                  {selectedItem.notes && <div><dt className="text-muted-foreground text-xs">메모</dt><dd>{selectedItem.notes}</dd></div>}
+                  {selectedItem.category && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">
+                        카테고리
+                      </dt>
+                      <dd className="capitalize">{selectedItem.category}</dd>
+                    </div>
+                  )}
+                  {selectedItem.default_unit_price != null && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">
+                        기본 단가
+                      </dt>
+                      <dd>
+                        {selectedItem.default_unit_price.toLocaleString(
+                          "ko-KR",
+                        )}
+                        원
+                      </dd>
+                    </div>
+                  )}
+                  {selectedItem.notes && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">메모</dt>
+                      <dd>{selectedItem.notes}</dd>
+                    </div>
+                  )}
                 </dl>
               </div>
             ) : (
-              <EmptyState icon={PackageIcon} title="품목을 선택하세요" description="좌측 목록에서 품목을 클릭하세요" />
+              <EmptyState
+                icon={PackageIcon}
+                title="품목을 선택하세요"
+                description="좌측 목록에서 품목을 클릭하세요"
+              />
             )}
           </div>
         </div>

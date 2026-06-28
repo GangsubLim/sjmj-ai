@@ -13,9 +13,7 @@ import InvoiceListPage from "@/app/list/page";
 const CompanyManagePage = lazy(() => import("@/app/companies/page"));
 const ItemManagePage = lazy(() => import("@/app/items/page"));
 const SettingsPage = lazy(() => import("@/app/settings/page"));
-const SalesPerformancePage = lazy(
-  () => import("@/app/sales-performance/page"),
-);
+const SalesPerformancePage = lazy(() => import("@/app/sales-performance/page"));
 
 const LazyFallback = (
   <div className="flex min-h-dvh items-center justify-center text-sm text-gray-400">

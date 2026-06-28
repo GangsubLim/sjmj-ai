@@ -4,6 +4,7 @@
 sync def라 threadpool에서 실행된다(전역 엔진 공유 + service.transaction()의 conn
 바인딩은 같은 콜스택이라 안전). export는 envelope 밖 Response(text/csv).
 """
+
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, Request
@@ -37,12 +38,11 @@ def _qint(request: Request, key: str, default: int) -> int:
 
 
 def _validate_invoice(data: dict) -> None:
-    Validator().required(data, ["issue_date", "recipient"]) \
-        .date_format(data, "issue_date") \
-        .max_length(data, "recipient", 100) \
-        .max_length(data, "vehicle_no", 255) \
-        .non_empty_array(data, "items") \
-        .validate_or_fail()
+    Validator().required(data, ["issue_date", "recipient"]).date_format(
+        data, "issue_date"
+    ).max_length(data, "recipient", 100).max_length(
+        data, "vehicle_no", 255
+    ).non_empty_array(data, "items").validate_or_fail()
 
 
 @router.get("/invoices/export")

@@ -1,4 +1,5 @@
 """sjmj-ai invoice-ocr 백엔드 — SP0 최소 셸(/health + 정적 dist 서빙)."""
+
 from fastapi import FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,7 +41,11 @@ def _mount_static(application: FastAPI) -> None:
     def spa_fallback(full_path: str) -> FileResponse:
         """API/정적 미매칭 GET → 실파일 우선, 없으면 SPA index.html."""
         candidate = (static_dir / full_path).resolve()
-        if full_path and candidate.is_relative_to(static_dir.resolve()) and candidate.is_file():
+        if (
+            full_path
+            and candidate.is_relative_to(static_dir.resolve())
+            and candidate.is_file()
+        ):
             return FileResponse(candidate)
         return FileResponse(index_file)
 

@@ -1,4 +1,5 @@
 """버전 단일 진실원 불변식 — 루트 VERSION == app.config.APP_VERSION."""
+
 from pathlib import Path
 
 from app.config import APP_VERSION

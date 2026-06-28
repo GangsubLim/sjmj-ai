@@ -26,7 +26,9 @@ describe("useCaptureShare", () => {
 
   it("기본 경로(preferShare 없음) → toBlob 후 download 트리거", async () => {
     mToBlob.mockResolvedValue(new Blob(["x"], { type: "image/png" }));
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
     const { result } = renderHook(() =>
       useCaptureShare({
         getNode: () => node,
@@ -44,7 +46,9 @@ describe("useCaptureShare", () => {
     mToBlob
       .mockRejectedValueOnce(new Error("boom"))
       .mockResolvedValueOnce(new Blob(["x"], { type: "image/png" }));
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
     const { result } = renderHook(() =>
       useCaptureShare({
         getNode: () => node,
@@ -59,11 +63,15 @@ describe("useCaptureShare", () => {
   });
 
   it("Blob > sizeCap → pixelRatio 1로 재시도", async () => {
-    const big = new Blob([new Uint8Array(9 * 1024 * 1024)], { type: "image/png" });
+    const big = new Blob([new Uint8Array(9 * 1024 * 1024)], {
+      type: "image/png",
+    });
     const small = new Blob([new Uint8Array(1024)], { type: "image/png" });
     mToBlob.mockResolvedValueOnce(big).mockResolvedValueOnce(small);
 
-    const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
     const { result } = renderHook(() =>
       useCaptureShare({
         getNode: () => node,

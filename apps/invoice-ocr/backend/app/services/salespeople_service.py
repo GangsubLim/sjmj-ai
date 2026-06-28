@@ -3,6 +3,7 @@
 이름 정규화(trim/제어문자/길이)와 활성 중복 검사(자기 id 제외)를 수행한다.
 검증 실패는 app.core.errors로 위임(400 VALIDATION_ERROR / 409 DUPLICATE_NAME).
 """
+
 import re
 
 from app import db
@@ -28,11 +29,15 @@ class SalespersonService:
         name = self._normalize_name(data.get("name") or "")
         self._assert_no_duplicate_active(name, None)
         with self._transaction():
-            new_id = self.repo.insert({
-                "name": name,
-                "sort_order": int(data["sort_order"]) if data.get("sort_order") is not None else 0,
-                "is_active": 1,
-            })
+            new_id = self.repo.insert(
+                {
+                    "name": name,
+                    "sort_order": int(data["sort_order"])
+                    if data.get("sort_order") is not None
+                    else 0,
+                    "is_active": 1,
+                }
+            )
         return self.repo.find_by_id(new_id)
 
     def update(self, id: int, data: dict) -> dict | None:
@@ -42,13 +47,18 @@ class SalespersonService:
         name = self._normalize_name(data.get("name") or "")
         self._assert_no_duplicate_active(name, id)
         with self._transaction():
-            self.repo.update(id, {
-                "name": name,
-                "sort_order": int(data["sort_order"]) if data.get("sort_order") is not None
-                else int(existing["sort_order"]),
-                "is_active": int(data["is_active"]) if data.get("is_active") is not None
-                else int(existing["is_active"]),
-            })
+            self.repo.update(
+                id,
+                {
+                    "name": name,
+                    "sort_order": int(data["sort_order"])
+                    if data.get("sort_order") is not None
+                    else int(existing["sort_order"]),
+                    "is_active": int(data["is_active"])
+                    if data.get("is_active") is not None
+                    else int(existing["is_active"]),
+                },
+            )
         return self.repo.find_by_id(id)
 
     def soft_delete(self, id: int) -> bool:
@@ -59,7 +69,9 @@ class SalespersonService:
         if trimmed == "":
             bad_request("이름은 필수입니다.", {"name": "이름은 필수입니다."})
         if _CONTROL_CHAR.search(trimmed):
-            bad_request("이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"})
+            bad_request(
+                "이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"}
+            )
         if len(trimmed) > _MAX_NAME_LENGTH:
             bad_request("이름은 100자 이하여야 합니다.", {"name": "100자 초과"})
         return trimmed

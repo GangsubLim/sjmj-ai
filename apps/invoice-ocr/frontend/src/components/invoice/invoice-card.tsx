@@ -1,6 +1,12 @@
 import * as React from "react";
 import { Link } from "react-router-dom";
-import { CopyIcon, FileTextIcon, MessageSquareIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import {
+  CopyIcon,
+  FileTextIcon,
+  MessageSquareIcon,
+  PencilIcon,
+  Trash2Icon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { Invoice } from "@/types/invoice";
@@ -97,7 +103,10 @@ function InvoiceCard({
             <div className="flex gap-1">
               <Link
                 to={`/edit/${invoice.id}`}
-                className={cn(buttonVariants({ variant: "ghost", size: "xs" }), "text-muted-foreground hover:text-primary")}
+                className={cn(
+                  buttonVariants({ variant: "ghost", size: "xs" }),
+                  "text-muted-foreground hover:text-primary",
+                )}
               >
                 <PencilIcon aria-hidden="true" />
                 수정

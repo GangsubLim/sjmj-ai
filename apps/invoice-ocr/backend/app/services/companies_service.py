@@ -4,6 +4,7 @@
 company 단건은 트랜잭션이 필요 없는 단일 statement지만, 슬라이스 패턴과의
 일관성을 위해 transaction seam은 주입 가능하게 둔다(미사용).
 """
+
 from app import db
 from app.repositories.companies_repository import CompanyRepository
 

@@ -20,7 +20,7 @@ def test_insert_and_find_by_id():
     assert row["id"] == new_id
     assert row["item_name"] == "엔진오일"
     assert row["default_unit"] == "EA"
-    assert row["default_unit_price"] == 30000   # INT → int
+    assert row["default_unit_price"] == 30000  # INT → int
     assert row["category"] == "오일"
     assert row["notes"] == "테스트 품목"
 
@@ -82,18 +82,23 @@ def test_find_all_sort_by_name_ascending():
 def test_sort_whitelist_rejects_injection():
     repo = ItemRepository()
     repo.insert(td.item())
-    rows = repo.find_all(_filters(sort_by="DROP TABLE"))   # → item_name 보정
+    rows = repo.find_all(_filters(sort_by="DROP TABLE"))  # → item_name 보정
     assert isinstance(rows, list) and len(rows) == 1
 
 
 def test_update_item():
     repo = ItemRepository()
     new_id = repo.insert(td.item({"item_name": "업데이트전품목"}))
-    ok = repo.update(new_id, td.item({
-        "item_name": "업데이트후품목",
-        "default_unit_price": 99000,
-        "category": "타이어",
-    }))
+    ok = repo.update(
+        new_id,
+        td.item(
+            {
+                "item_name": "업데이트후품목",
+                "default_unit_price": 99000,
+                "category": "타이어",
+            }
+        ),
+    )
     assert ok is True
     row = repo.find_by_id(new_id)
     assert row["item_name"] == "업데이트후품목"

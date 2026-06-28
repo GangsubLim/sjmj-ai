@@ -4,6 +4,7 @@
 sync def라 threadpool에서 실행된다. item_name UNIQUE 위반은 service에서 409
 DUPLICATE_NAME으로 graceful 처리된다.
 """
+
 from fastapi import APIRouter, Body, Request
 
 from app.core import envelope
@@ -21,9 +22,9 @@ def _service() -> ItemService:
 
 
 def _validate_item(data: dict) -> None:
-    Validator().required(data, ["item_name"]) \
-        .max_length(data, "item_name", 200) \
-        .validate_or_fail()
+    Validator().required(data, ["item_name"]).max_length(
+        data, "item_name", 200
+    ).validate_or_fail()
 
 
 @router.get("/items")

@@ -30,8 +30,12 @@ def test_upsert_issuer_inserts():
 
 def test_upsert_issuer_updates():
     repo = SettingsRepository()
-    repo.upsert_issuer(sd.issuer({"company_name": "초기회사명", "representative": "초기대표자"}))
-    repo.upsert_issuer(sd.issuer({"company_name": "변경된회사명", "representative": "변경된대표자"}))
+    repo.upsert_issuer(
+        sd.issuer({"company_name": "초기회사명", "representative": "초기대표자"})
+    )
+    repo.upsert_issuer(
+        sd.issuer({"company_name": "변경된회사명", "representative": "변경된대표자"})
+    )
     result = repo.find_issuer()
     assert result["company_name"] == "변경된회사명"
     assert result["representative"] == "변경된대표자"
@@ -87,14 +91,18 @@ def test_update_setting_does_not_affect_other_keys():
 def test_find_issuer_returns_latest():
     repo = SettingsRepository()
     with connection() as conn:
-        conn.execute(text("""
+        conn.execute(
+            text("""
             INSERT INTO issuers (company_name, representative, business_number, address)
             VALUES ('첫번째회사', '홍길동', '111-11-11111', '서울')
-        """))
-        conn.execute(text("""
+        """)
+        )
+        conn.execute(
+            text("""
             INSERT INTO issuers (company_name, representative, business_number, address)
             VALUES ('두번째회사', '이순신', '222-22-22222', '부산')
-        """))
+        """)
+        )
     result = repo.find_issuer()
     assert result["company_name"] == "두번째회사"
     assert result["representative"] == "이순신"

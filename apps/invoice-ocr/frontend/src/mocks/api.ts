@@ -390,7 +390,9 @@ export const mockSalesRecordAPI = {
           ? { ...r, quantity: input.quantity, snapshot_name: sp.name }
           : r,
       );
-      return { data: { ...existing, quantity: input.quantity, snapshot_name: sp.name } };
+      return {
+        data: { ...existing, quantity: input.quantity, snapshot_name: sp.name },
+      };
     }
     const record: SalesRecord = {
       id: nextSalesRecordId++,

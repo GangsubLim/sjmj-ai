@@ -46,7 +46,12 @@ export function PageHeader({
       <div className="mx-auto flex h-14 max-w-md items-center justify-between px-4 lg:max-w-5xl">
         <div className="flex items-center gap-2">
           {showBack && (
-            <Button variant="ghost" size="icon" onClick={handleBack} aria-label="뒤로 가기">
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={handleBack}
+              aria-label="뒤로 가기"
+            >
               <ArrowLeft className="size-5" aria-hidden="true" />
             </Button>
           )}

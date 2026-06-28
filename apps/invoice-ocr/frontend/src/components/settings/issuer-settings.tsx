@@ -32,7 +32,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
           />
 
           <div className="space-y-1">
-            <Label htmlFor="issuer-company-name" className="text-muted-foreground text-xs">상호</Label>
+            <Label
+              htmlFor="issuer-company-name"
+              className="text-muted-foreground text-xs"
+            >
+              상호
+            </Label>
             <Input
               id="issuer-company-name"
               name="issuer_company_name"
@@ -45,7 +50,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="issuer-representative" className="text-muted-foreground text-xs">대표자</Label>
+              <Label
+                htmlFor="issuer-representative"
+                className="text-muted-foreground text-xs"
+              >
+                대표자
+              </Label>
               <Input
                 id="issuer-representative"
                 name="issuer_representative"
@@ -56,7 +66,10 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="issuer-business-number" className="text-muted-foreground text-xs">
+              <Label
+                htmlFor="issuer-business-number"
+                className="text-muted-foreground text-xs"
+              >
                 사업자번호
               </Label>
               <Input
@@ -81,7 +94,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="issuer-address" className="text-muted-foreground text-xs">주소</Label>
+            <Label
+              htmlFor="issuer-address"
+              className="text-muted-foreground text-xs"
+            >
+              주소
+            </Label>
             <Textarea
               id="issuer-address"
               name="issuer_address"
@@ -101,7 +119,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
         <div className="mt-2 space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="issuer-business-type" className="text-muted-foreground text-xs">업태</Label>
+              <Label
+                htmlFor="issuer-business-type"
+                className="text-muted-foreground text-xs"
+              >
+                업태
+              </Label>
               <Input
                 id="issuer-business-type"
                 name="issuer_business_type"
@@ -112,7 +135,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="issuer-business-item" className="text-muted-foreground text-xs">종목</Label>
+              <Label
+                htmlFor="issuer-business-item"
+                className="text-muted-foreground text-xs"
+              >
+                종목
+              </Label>
               <Input
                 id="issuer-business-item"
                 name="issuer_business_item"
@@ -126,7 +154,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
 
           <div className="grid grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label htmlFor="issuer-phone" className="text-muted-foreground text-xs">전화</Label>
+              <Label
+                htmlFor="issuer-phone"
+                className="text-muted-foreground text-xs"
+              >
+                전화
+              </Label>
               <Input
                 id="issuer-phone"
                 name="issuer_phone"
@@ -140,7 +173,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="issuer-fax" className="text-muted-foreground text-xs">팩스</Label>
+              <Label
+                htmlFor="issuer-fax"
+                className="text-muted-foreground text-xs"
+              >
+                팩스
+              </Label>
               <Input
                 id="issuer-fax"
                 name="issuer_fax"
@@ -156,7 +194,12 @@ function IssuerSettings({ issuer, onChange }: IssuerSettingsProps) {
           </div>
 
           <div className="space-y-1">
-            <Label htmlFor="issuer-bank-account" className="text-muted-foreground text-xs">입금계좌</Label>
+            <Label
+              htmlFor="issuer-bank-account"
+              className="text-muted-foreground text-xs"
+            >
+              입금계좌
+            </Label>
             <Input
               id="issuer-bank-account"
               name="issuer_bank_account"

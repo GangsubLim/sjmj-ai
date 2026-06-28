@@ -5,6 +5,7 @@ PHP Database 싱글톤 동형. repository는 `with connection() as conn:`으로 
 내부 repo 호출이 같은 conn을 쓰게 한다. 테스트는 set_test_engine + _conn_var
 바인딩으로 단일 tx 격리(롤백)를 만든다.
 """
+
 from contextlib import contextmanager
 from contextvars import ContextVar
 

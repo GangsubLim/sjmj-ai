@@ -13,7 +13,9 @@ def _insert_salesperson(overrides: dict | None = None) -> int:
     sp = td.salesperson(overrides)
     with db.connection() as conn:
         result = conn.execute(
-            text("INSERT INTO salespeople (name, sort_order, is_active) VALUES (:name, :sort_order, :is_active)"),
+            text(
+                "INSERT INTO salespeople (name, sort_order, is_active) VALUES (:name, :sort_order, :is_active)"
+            ),
             sp,
         )
         return int(result.lastrowid)
@@ -90,12 +92,14 @@ def test_find_salesperson_none_when_missing():
 def test_find_salespeople_for_month_includes_active_and_record_holders():
     repo = SalesRecordRepository()
     _insert_salesperson({"name": "Active", "sort_order": 1, "is_active": 1})
-    inactive_id = _insert_salesperson({"name": "Inactive", "sort_order": 2, "is_active": 0})
+    inactive_id = _insert_salesperson(
+        {"name": "Inactive", "sort_order": 2, "is_active": 0}
+    )
     repo.upsert(inactive_id, "2026-05-10", 500, "Inactive")
 
     names = [s["name"] for s in repo.find_salespeople_for_month(2026, 5)]
-    assert "Active" in names      # is_active=1
-    assert "Inactive" in names    # 비활성이지만 해당월 실적 보유
+    assert "Active" in names  # is_active=1
+    assert "Inactive" in names  # 비활성이지만 해당월 실적 보유
 
 
 def test_find_salespeople_for_month_excludes_inactive_without_records():

@@ -7,6 +7,7 @@ env 자동 매핑: db_host→DB_HOST 등(대소문자 무시). 빈 비밀번호(
 
 `get_port`/`get_static_dir`은 SP0 셸의 기존 동작을 그대로 유지(os.environ 직접 read).
 """
+
 import os
 from functools import lru_cache
 from pathlib import Path
@@ -50,5 +51,7 @@ def get_static_dir() -> Path | None:
     SJMJ_STATIC_DIR 우선, 없으면 backend 옆 frontend/dist 추정.
     """
     raw = os.environ.get("SJMJ_STATIC_DIR")
-    candidate = Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    candidate = (
+        Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
+    )
     return candidate if candidate.is_dir() else None

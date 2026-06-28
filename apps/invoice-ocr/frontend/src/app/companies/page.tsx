@@ -79,7 +79,6 @@ export default function CompanyManagePage() {
     return list;
   }, [companies, filter, debouncedSearch]);
 
-
   if (!isDesktop && (showForm || editTarget)) {
     return (
       <CustomerForm
@@ -100,15 +99,31 @@ export default function CompanyManagePage() {
         <div className="hidden lg:flex lg:items-center lg:justify-between lg:pb-4">
           <h1 className="text-xl font-semibold">거래처 관리</h1>
         </div>
-        <div className="lg:grid lg:grid-cols-[2fr_3fr] lg:gap-6 lg:h-[calc(100dvh-var(--page-shell-offset))]">
+        <div className="lg:grid lg:h-[calc(100dvh-var(--page-shell-offset))] lg:grid-cols-[2fr_3fr] lg:gap-6">
           {/* 좌측: 리스트 (항상 표시) */}
           <div className="flex flex-col space-y-4 lg:min-h-0">
             <div className="shrink-0 space-y-4">
-              <SearchInput value={search} onChange={setSearch} placeholder="거래처명 검색" />
-              <Button className="w-full" onClick={() => { setShowForm(true); setEditTarget(null); setSelectedCompany(null); }}>
-                <PlusIcon className="mr-1 size-4" aria-hidden="true" />새 거래처 추가
+              <SearchInput
+                value={search}
+                onChange={setSearch}
+                placeholder="거래처명 검색"
+              />
+              <Button
+                className="w-full"
+                onClick={() => {
+                  setShowForm(true);
+                  setEditTarget(null);
+                  setSelectedCompany(null);
+                }}
+              >
+                <PlusIcon className="mr-1 size-4" aria-hidden="true" />새 거래처
+                추가
               </Button>
-              <FilterChips options={FILTER_OPTIONS} value={filter} onChange={setFilter} />
+              <FilterChips
+                options={FILTER_OPTIONS}
+                value={filter}
+                onChange={setFilter}
+              />
             </div>
 
             {loading ? (
@@ -122,7 +137,10 @@ export default function CompanyManagePage() {
                 icon={UsersIcon}
                 title="거래처가 없습니다"
                 description="새 거래처를 추가해보세요"
-                action={{ label: "거래처 추가", onClick: () => setShowForm(true) }}
+                action={{
+                  label: "거래처 추가",
+                  onClick: () => setShowForm(true),
+                }}
               />
             ) : (
               <div className="min-h-0 flex-1 space-y-2 overflow-y-auto">
@@ -140,7 +158,9 @@ export default function CompanyManagePage() {
                       }
                     }}
                     className={cn(
-                      isDesktop && selectedCompany?.id === company.id && "ring-primary ring-2 ring-offset-2",
+                      isDesktop &&
+                        selectedCompany?.id === company.id &&
+                        "ring-primary ring-2 ring-offset-2",
                     )}
                   />
                 ))}
@@ -149,7 +169,7 @@ export default function CompanyManagePage() {
           </div>
 
           {/* 우측: PC 전용 상세/편집 패널 */}
-          <div className="hidden lg:block lg:self-start lg:overflow-y-auto lg:max-h-full">
+          <div className="hidden lg:block lg:max-h-full lg:self-start lg:overflow-y-auto">
             {showForm || editTarget ? (
               <CustomerForm
                 variant="panel"
@@ -166,30 +186,82 @@ export default function CompanyManagePage() {
             ) : selectedCompany ? (
               <div className="rounded-xl border p-4">
                 <div className="mb-4 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold">{selectedCompany.company_name}</h2>
+                  <h2 className="text-lg font-semibold">
+                    {selectedCompany.company_name}
+                  </h2>
                   <div className="flex gap-2">
-                    <Button variant="outline" size="sm" onClick={() => setEditTarget(selectedCompany)}>편집</Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setEditTarget(selectedCompany)}
+                    >
+                      편집
+                    </Button>
                     <Button
                       variant="outline"
                       size="sm"
                       className="text-destructive hover:bg-destructive/10"
-                      onClick={() => selectedCompany.id && setDeleteTarget(selectedCompany.id)}
+                      onClick={() =>
+                        selectedCompany.id &&
+                        setDeleteTarget(selectedCompany.id)
+                      }
                     >
                       삭제
                     </Button>
                   </div>
                 </div>
                 <dl className="space-y-2 text-sm">
-                  {selectedCompany.recipient2 && <div><dt className="text-muted-foreground text-xs">수신참조</dt><dd>{selectedCompany.recipient2}</dd></div>}
-                  {selectedCompany.phone && <div><dt className="text-muted-foreground text-xs">연락처</dt><dd>{selectedCompany.phone}</dd></div>}
-                  {selectedCompany.fax && <div><dt className="text-muted-foreground text-xs">FAX</dt><dd>{selectedCompany.fax}</dd></div>}
-                  <div><dt className="text-muted-foreground text-xs">문자 선택</dt><dd>{getCompanySmsTargetLabel(selectedCompany, selectedCompany.sms_number_type)}</dd></div>
-                  {selectedCompany.business_number && <div><dt className="text-muted-foreground text-xs">사업자번호</dt><dd>{selectedCompany.business_number}</dd></div>}
-                  {selectedCompany.address && <div><dt className="text-muted-foreground text-xs">주소</dt><dd>{selectedCompany.address}</dd></div>}
+                  {selectedCompany.recipient2 && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">
+                        수신참조
+                      </dt>
+                      <dd>{selectedCompany.recipient2}</dd>
+                    </div>
+                  )}
+                  {selectedCompany.phone && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">연락처</dt>
+                      <dd>{selectedCompany.phone}</dd>
+                    </div>
+                  )}
+                  {selectedCompany.fax && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">FAX</dt>
+                      <dd>{selectedCompany.fax}</dd>
+                    </div>
+                  )}
+                  <div>
+                    <dt className="text-muted-foreground text-xs">문자 선택</dt>
+                    <dd>
+                      {getCompanySmsTargetLabel(
+                        selectedCompany,
+                        selectedCompany.sms_number_type,
+                      )}
+                    </dd>
+                  </div>
+                  {selectedCompany.business_number && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">
+                        사업자번호
+                      </dt>
+                      <dd>{selectedCompany.business_number}</dd>
+                    </div>
+                  )}
+                  {selectedCompany.address && (
+                    <div>
+                      <dt className="text-muted-foreground text-xs">주소</dt>
+                      <dd>{selectedCompany.address}</dd>
+                    </div>
+                  )}
                 </dl>
               </div>
             ) : (
-              <EmptyState icon={UsersIcon} title="거래처를 선택하세요" description="좌측 목록에서 거래처를 클릭하세요" />
+              <EmptyState
+                icon={UsersIcon}
+                title="거래처를 선택하세요"
+                description="좌측 목록에서 거래처를 클릭하세요"
+              />
             )}
           </div>
         </div>

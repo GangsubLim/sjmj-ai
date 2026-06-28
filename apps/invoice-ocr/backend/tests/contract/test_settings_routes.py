@@ -13,6 +13,7 @@ def _put_issuer(client, **ov):
 # getIssuer
 # ------------------------------------------------------------------ #
 
+
 def test_get_issuer_returns_404_when_empty(client):
     r = client.get("/api/settings/issuer")
     assert r.status_code == 404
@@ -32,6 +33,7 @@ def test_get_issuer_returns_data(client):
 # updateIssuer
 # ------------------------------------------------------------------ #
 
+
 def test_update_issuer_returns_data(client):
     r = _put_issuer(client)
     assert r.status_code == 200
@@ -46,7 +48,10 @@ def test_update_issuer_upsert_updates_existing(client):
     r = _put_issuer(client, company_name="변경된회사명")
     assert r.json()["data"]["company_name"] == "변경된회사명"
     # 단일 발급자만 존재해야 한다(upsert)
-    assert client.get("/api/settings/issuer").json()["data"]["company_name"] == "변경된회사명"
+    assert (
+        client.get("/api/settings/issuer").json()["data"]["company_name"]
+        == "변경된회사명"
+    )
 
 
 def test_update_issuer_fails_validation_missing_company_name(client):
@@ -69,6 +74,7 @@ def test_update_issuer_fails_invalid_business_number(client):
 # uploadStamp
 # ------------------------------------------------------------------ #
 
+
 def test_upload_stamp_returns_data(client):
     _put_issuer(client)
     r = client.post(
@@ -80,7 +86,10 @@ def test_upload_stamp_returns_data(client):
     assert b["success"] is True
     assert b["data"]["stamp_image_url"].startswith("/uploads/stamps/stamp_")
     # 부수효과: issuers.stamp_image_url 갱신
-    assert client.get("/api/settings/issuer").json()["data"]["stamp_image_url"] == b["data"]["stamp_image_url"]
+    assert (
+        client.get("/api/settings/issuer").json()["data"]["stamp_image_url"]
+        == b["data"]["stamp_image_url"]
+    )
 
 
 def test_upload_stamp_fails_no_file(client):
@@ -124,6 +133,7 @@ def test_upload_stamp_rejects_oversize(client):
 # getAppSettings / updateAppSettings
 # ------------------------------------------------------------------ #
 
+
 def test_get_app_settings_returns_map(client):
     r = client.get("/api/settings/app")
     assert r.status_code == 200
@@ -142,7 +152,9 @@ def test_update_app_settings_returns_data(client):
 
 
 def test_update_app_settings_ignores_unknown_keys(client):
-    r = client.put("/api/settings/app", json={"default_unit": "BOX", "evil_key": "hacked"})
+    r = client.put(
+        "/api/settings/app", json={"default_unit": "BOX", "evil_key": "hacked"}
+    )
     b = r.json()
     assert b["data"]["default_unit"] == "BOX"
     assert "evil_key" not in b["data"]

@@ -12,7 +12,13 @@ def test_get_monthly_assembles_salespeople_and_records():
         {"id": 1, "name": "홍길동", "sort_order": 0, "is_active": 1}
     ]
     repo.find_records_by_month.return_value = [
-        {"id": 10, "salesperson_id": 1, "work_date": "2026-05-15", "quantity": 1000, "snapshot_name": "홍길동"}
+        {
+            "id": 10,
+            "salesperson_id": 1,
+            "work_date": "2026-05-15",
+            "quantity": 1000,
+            "snapshot_name": "홍길동",
+        }
     ]
     result = SalesRecordService(repo).get_monthly(2026, 5)
     assert len(result["salespeople"]) == 1
@@ -25,7 +31,13 @@ def test_get_monthly_assembles_salespeople_and_records():
 def test_upsert_record_captures_snapshot_name_and_returns_row():
     repo = MagicMock()
     repo.find_salesperson.return_value = {"id": 1, "name": "홍길동"}
-    row = {"id": 42, "salesperson_id": 1, "work_date": "2026-05-15", "quantity": 1000000, "snapshot_name": "홍길동"}
+    row = {
+        "id": 42,
+        "salesperson_id": 1,
+        "work_date": "2026-05-15",
+        "quantity": 1000000,
+        "snapshot_name": "홍길동",
+    }
     repo.find_by_key.return_value = row
 
     result = SalesRecordService(repo).upsert_record(1, "2026-05-15", 1000000)

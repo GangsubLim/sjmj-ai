@@ -203,24 +203,31 @@ function MonthCalendar({
             value={String(year)}
             onValueChange={(v) => onMonthChange(Number(v), month)}
           >
-            <SelectTrigger aria-label="연도 선택" className="h-8 w-auto gap-1 border-none bg-transparent px-2 text-base font-semibold shadow-none">
+            <SelectTrigger
+              aria-label="연도 선택"
+              className="h-8 w-auto gap-1 border-none bg-transparent px-2 text-base font-semibold shadow-none"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {Array.from({ length: 10 }, (_, i) => new Date().getFullYear() - 5 + i).map(
-                (y) => (
-                  <SelectItem key={y} value={String(y)}>
-                    {y}년
-                  </SelectItem>
-                ),
-              )}
+              {Array.from(
+                { length: 10 },
+                (_, i) => new Date().getFullYear() - 5 + i,
+              ).map((y) => (
+                <SelectItem key={y} value={String(y)}>
+                  {y}년
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
           <Select
             value={String(month)}
             onValueChange={(v) => onMonthChange(year, Number(v))}
           >
-            <SelectTrigger aria-label="월 선택" className="h-8 w-auto gap-1 border-none bg-transparent px-2 text-base font-semibold shadow-none">
+            <SelectTrigger
+              aria-label="월 선택"
+              className="h-8 w-auto gap-1 border-none bg-transparent px-2 text-base font-semibold shadow-none"
+            >
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -268,7 +275,9 @@ function MonthCalendar({
 
       {/* 월 합계 */}
       <div className="border-border flex items-center justify-between rounded-lg border px-3 py-2">
-        <span className="text-muted-foreground text-sm">{month + 1}월 합계</span>
+        <span className="text-muted-foreground text-sm">
+          {month + 1}월 합계
+        </span>
         <span className="text-sm font-semibold">
           {monthTotal.count}건 · {formatPrice(monthTotal.amount)}원
         </span>

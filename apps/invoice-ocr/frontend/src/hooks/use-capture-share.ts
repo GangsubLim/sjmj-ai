@@ -27,11 +27,16 @@ const DEFAULT_TIMEOUT = 3000;
  * which is necessary for `await expect(act(...)).rejects.toThrow()` to work.
  */
 function waitForFontsOrNull(timeoutMs: number): Promise<void> | undefined {
-  if (!document.fonts || typeof (document.fonts as { check?: unknown }).check !== "function") {
+  if (
+    !document.fonts ||
+    typeof (document.fonts as { check?: unknown }).check !== "function"
+  ) {
     return undefined;
   }
   const ready = document.fonts.ready.then(() => undefined);
-  const timeout = new Promise<void>((resolve) => setTimeout(resolve, timeoutMs));
+  const timeout = new Promise<void>((resolve) =>
+    setTimeout(resolve, timeoutMs),
+  );
   return Promise.race([ready, timeout]);
 }
 
@@ -88,7 +93,9 @@ async function trySharing(blob: Blob, filename: string): Promise<boolean> {
   return false;
 }
 
-export function useCaptureShare(opts: CaptureShareOptions): UseCaptureShareReturn {
+export function useCaptureShare(
+  opts: CaptureShareOptions,
+): UseCaptureShareReturn {
   const [isCapturing, setIsCapturing] = useState(false);
 
   const capture = useCallback(async () => {
@@ -105,7 +112,9 @@ export function useCaptureShare(opts: CaptureShareOptions): UseCaptureShareRetur
       setIsCapturing(false);
     };
 
-    const fontsP = waitForFontsOrNull(opts.fontReadyTimeoutMs ?? DEFAULT_TIMEOUT);
+    const fontsP = waitForFontsOrNull(
+      opts.fontReadyTimeoutMs ?? DEFAULT_TIMEOUT,
+    );
     if (fontsP) await fontsP;
 
     const pr1 = opts.pixelRatio ?? 2;

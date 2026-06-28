@@ -50,10 +50,7 @@ export function AppShell() {
         본문으로 건너뛰기
       </a>
       {isDesktop && <TopNav />}
-      <main
-        id="main-content"
-        className={isDesktop ? "pt-14" : "pb-[72px]"}
-      >
+      <main id="main-content" className={isDesktop ? "pt-14" : "pb-[72px]"}>
         <ErrorBoundary>
           <Outlet />
         </ErrorBoundary>

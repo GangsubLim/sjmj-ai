@@ -1,10 +1,13 @@
 """구조화 에러 — PHP Response::error / HttpResponseException 동형."""
+
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 
 class AppError(Exception):
-    def __init__(self, status: int, code: str, message: str, details: dict | None = None):
+    def __init__(
+        self, status: int, code: str, message: str, details: dict | None = None
+    ):
         self.status = status
         self.code = code
         self.message = message
@@ -35,7 +38,9 @@ async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(status_code=500, content=_error_body("SERVER_ERROR", str(exc), None))
+    return JSONResponse(
+        status_code=500, content=_error_body("SERVER_ERROR", str(exc), None)
+    )
 
 
 def register_error_handlers(app) -> None:

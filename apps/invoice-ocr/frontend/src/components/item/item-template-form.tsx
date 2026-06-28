@@ -52,12 +52,19 @@ function ItemTemplateForm({
   const isInitialMount = React.useRef(true);
 
   React.useEffect(() => {
-    if (isInitialMount.current) { isInitialMount.current = false; return; }
+    if (isInitialMount.current) {
+      isInitialMount.current = false;
+      return;
+    }
     setIsDirty(true);
   }, [itemName, category, defaultPrice, notes]);
 
   React.useEffect(() => {
-    const handler = (e: BeforeUnloadEvent) => { if (isDirty) { e.preventDefault(); } };
+    const handler = (e: BeforeUnloadEvent) => {
+      if (isDirty) {
+        e.preventDefault();
+      }
+    };
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
@@ -101,7 +108,9 @@ function ItemTemplateForm({
   const formFields = (
     <div className="space-y-4">
       <div className="space-y-1">
-        <Label htmlFor="item-name" className="text-muted-foreground text-xs">품목명 *</Label>
+        <Label htmlFor="item-name" className="text-muted-foreground text-xs">
+          품목명 *
+        </Label>
         <Input
           id="item-name"
           name="item_name"
@@ -123,7 +132,7 @@ function ItemTemplateForm({
                 type="button"
                 onClick={() => setCategory(active ? undefined : cat.value)}
                 className={cn(
-                  "flex h-28 flex-col items-center justify-center gap-2 rounded-xl border-2 transition-colors focus-visible:ring-ring focus-visible:ring-2 focus-visible:outline-none",
+                  "focus-visible:ring-ring flex h-28 flex-col items-center justify-center gap-2 rounded-xl border-2 transition-colors focus-visible:ring-2 focus-visible:outline-none",
                   active
                     ? "border-primary bg-primary/5"
                     : "border-border hover:border-muted-foreground/40",
@@ -151,12 +160,25 @@ function ItemTemplateForm({
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="item-default-price" className="text-muted-foreground text-xs">기본 단가</Label>
-        <PriceInput id="item-default-price" name="default_unit_price" autoComplete="off" value={defaultPrice} onChange={setDefaultPrice} />
+        <Label
+          htmlFor="item-default-price"
+          className="text-muted-foreground text-xs"
+        >
+          기본 단가
+        </Label>
+        <PriceInput
+          id="item-default-price"
+          name="default_unit_price"
+          autoComplete="off"
+          value={defaultPrice}
+          onChange={setDefaultPrice}
+        />
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="item-notes" className="text-muted-foreground text-xs">메모</Label>
+        <Label htmlFor="item-notes" className="text-muted-foreground text-xs">
+          메모
+        </Label>
         <Textarea
           id="item-notes"
           name="notes"
@@ -176,7 +198,9 @@ function ItemTemplateForm({
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">{title}</h2>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" onClick={onCancel}>취소</Button>
+            <Button variant="outline" size="sm" onClick={onCancel}>
+              취소
+            </Button>
             <Button size="sm" onClick={handleSave} disabled={saving}>
               <SaveIcon className="mr-1 size-4" aria-hidden="true" />
               {saveLabel}

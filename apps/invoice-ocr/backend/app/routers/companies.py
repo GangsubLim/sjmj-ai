@@ -3,6 +3,7 @@
 검증은 Validator(골든 details 형태 보존), 응답은 구조화 envelope. 엔드포인트는
 sync def라 threadpool에서 실행된다. index/invoices는 가짜 pagination을 쓴다.
 """
+
 from fastapi import APIRouter, Body, Request
 
 from app.core import envelope
@@ -20,10 +21,9 @@ def _service() -> CompanyService:
 
 
 def _validate_company(data: dict) -> None:
-    Validator().required(data, ["company_name"]) \
-        .max_length(data, "company_name", 100) \
-        .business_number(data, "business_number") \
-        .validate_or_fail()
+    Validator().required(data, ["company_name"]).max_length(
+        data, "company_name", 100
+    ).business_number(data, "business_number").validate_or_fail()
 
 
 @router.get("/companies")

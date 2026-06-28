@@ -21,8 +21,20 @@ describe("useSalesRecords", () => {
       data: {
         salespeople: [{ id: 1, name: "A", sort_order: 0, is_active: 1 }],
         records: [
-          { id: 10, salesperson_id: 1, work_date: "2026-05-15", quantity: 1000, snapshot_name: "A" },
-          { id: 11, salesperson_id: 1, work_date: "2026-05-16", quantity: 2000, snapshot_name: "A" },
+          {
+            id: 10,
+            salesperson_id: 1,
+            work_date: "2026-05-15",
+            quantity: 1000,
+            snapshot_name: "A",
+          },
+          {
+            id: 11,
+            salesperson_id: 1,
+            work_date: "2026-05-16",
+            quantity: 2000,
+            snapshot_name: "A",
+          },
         ],
       },
     });
@@ -48,7 +60,13 @@ describe("useSalesRecords", () => {
   it("upsertRecord는 자동 refetch하지 않음, refetch 명시 호출 시 재조회", async () => {
     mGet.mockResolvedValue({ data: { salespeople: [], records: [] } });
     mUpsert.mockResolvedValue({
-      data: { id: 1, salesperson_id: 1, work_date: "2026-05-15", quantity: 100, snapshot_name: "A" },
+      data: {
+        id: 1,
+        salesperson_id: 1,
+        work_date: "2026-05-15",
+        quantity: 100,
+        snapshot_name: "A",
+      },
     });
 
     const { result } = renderHook(() => useSalesRecords(2026, 5));

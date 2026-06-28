@@ -40,7 +40,12 @@ interface CustomerFormProps {
   variant?: "page" | "panel";
 }
 
-function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: CustomerFormProps) {
+function CustomerForm({
+  initial,
+  onSaved,
+  onCancel,
+  variant = "page",
+}: CustomerFormProps) {
   const [companyName, setCompanyName] = React.useState(
     initial?.company_name ?? "",
   );
@@ -67,7 +72,16 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
       return;
     }
     setIsDirty(true);
-  }, [companyName, phone, fax, smsNumberType, businessNumber, address, recipient2, notes]);
+  }, [
+    companyName,
+    phone,
+    fax,
+    smsNumberType,
+    businessNumber,
+    address,
+    recipient2,
+    notes,
+  ]);
 
   React.useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
@@ -137,7 +151,12 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
   const formFields = (
     <div className="space-y-4">
       <div className="space-y-1">
-        <Label htmlFor="customer-company-name" className="text-muted-foreground text-xs">회사명 *</Label>
+        <Label
+          htmlFor="customer-company-name"
+          className="text-muted-foreground text-xs"
+        >
+          회사명 *
+        </Label>
         <IconInput
           id="customer-company-name"
           icon={BuildingIcon}
@@ -150,7 +169,10 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="customer-recipient2" className="text-muted-foreground text-xs">
+        <Label
+          htmlFor="customer-recipient2"
+          className="text-muted-foreground text-xs"
+        >
           대표자
         </Label>
         <IconInput
@@ -166,7 +188,12 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
 
       <div className="grid gap-4 md:grid-cols-2">
         <div className="space-y-1">
-          <Label htmlFor="customer-phone" className="text-muted-foreground text-xs">연락처</Label>
+          <Label
+            htmlFor="customer-phone"
+            className="text-muted-foreground text-xs"
+          >
+            연락처
+          </Label>
           <IconInput
             id="customer-phone"
             icon={PhoneIcon}
@@ -181,7 +208,12 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
         </div>
 
         <div className="space-y-1">
-          <Label htmlFor="customer-fax" className="text-muted-foreground text-xs">FAX</Label>
+          <Label
+            htmlFor="customer-fax"
+            className="text-muted-foreground text-xs"
+          >
+            FAX
+          </Label>
           <IconInput
             id="customer-fax"
             icon={PhoneIcon}
@@ -221,7 +253,12 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="customer-business-number" className="text-muted-foreground text-xs">사업자번호</Label>
+        <Label
+          htmlFor="customer-business-number"
+          className="text-muted-foreground text-xs"
+        >
+          사업자번호
+        </Label>
         <IconInput
           id="customer-business-number"
           icon={IdCardIcon}
@@ -231,21 +268,22 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
           inputMode="tel"
           value={formatBusinessNumber(businessNumber)}
           onChange={(e) =>
-            setBusinessNumber(
-              e.target.value.replace(/\D/g, "").slice(0, 10),
-            )
+            setBusinessNumber(e.target.value.replace(/\D/g, "").slice(0, 10))
           }
           placeholder="000-00-00000"
         />
         {!bnValidation.valid && (
-          <p className="mt-1 text-xs text-amber-500">
-            {bnValidation.message}
-          </p>
+          <p className="mt-1 text-xs text-amber-500">{bnValidation.message}</p>
         )}
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="customer-address" className="text-muted-foreground text-xs">주소</Label>
+        <Label
+          htmlFor="customer-address"
+          className="text-muted-foreground text-xs"
+        >
+          주소
+        </Label>
         <div className="relative">
           <MapPinIcon className="text-muted-foreground pointer-events-none absolute top-3 left-3 size-4" />
           <Textarea
@@ -262,7 +300,12 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
       </div>
 
       <div className="space-y-1">
-        <Label htmlFor="customer-notes" className="text-muted-foreground text-xs">메모</Label>
+        <Label
+          htmlFor="customer-notes"
+          className="text-muted-foreground text-xs"
+        >
+          메모
+        </Label>
         <div className="relative">
           <FileTextIcon className="text-muted-foreground pointer-events-none absolute top-3 left-3 size-4" />
           <Textarea
@@ -310,7 +353,9 @@ function CustomerForm({ initial, onSaved, onCancel, variant = "page" }: Customer
           <div className="mb-4 flex items-center justify-between">
             <h2 className="text-lg font-semibold">{title}</h2>
             <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={onCancel}>취소</Button>
+              <Button variant="outline" size="sm" onClick={onCancel}>
+                취소
+              </Button>
               {initial?.id && (
                 <Button
                   variant="outline"

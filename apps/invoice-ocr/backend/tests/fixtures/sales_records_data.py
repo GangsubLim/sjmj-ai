@@ -1,4 +1,5 @@
 """골든 입력 팩토리 — SJMJ-Web tests/Fixtures/TestData.php(salesperson/salesRecord) 포팅."""
+
 from __future__ import annotations
 
 
@@ -11,9 +12,12 @@ def salesperson(overrides: dict | None = None) -> dict:
 
 
 def sales_record(overrides: dict | None = None) -> dict:
-    return _merge({
-        "salesperson_id": 1,
-        "work_date": "2026-05-15",
-        "quantity": 1000000,
-        "snapshot_name": "영업사원1",
-    }, overrides)
+    return _merge(
+        {
+            "salesperson_id": 1,
+            "work_date": "2026-05-15",
+            "quantity": 1000000,
+            "snapshot_name": "영업사원1",
+        },
+        overrides,
+    )

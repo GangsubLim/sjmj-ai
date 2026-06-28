@@ -81,7 +81,12 @@ function InvoiceItemRow({
       <div className="space-y-3 px-3 py-3">
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
-            <Label htmlFor={`item-${index}-quantity`} className="text-muted-foreground text-xs">수량</Label>
+            <Label
+              htmlFor={`item-${index}-quantity`}
+              className="text-muted-foreground text-xs"
+            >
+              수량
+            </Label>
             <Input
               id={`item-${index}-quantity`}
               name={`item-${index}-quantity`}
@@ -100,7 +105,12 @@ function InvoiceItemRow({
             />
           </div>
           <div className="space-y-1">
-            <Label htmlFor={`item-${index}-unit-price`} className="text-muted-foreground text-xs">단가</Label>
+            <Label
+              htmlFor={`item-${index}-unit-price`}
+              className="text-muted-foreground text-xs"
+            >
+              단가
+            </Label>
             <PriceInput
               id={`item-${index}-unit-price`}
               name={`item-${index}-unit-price`}

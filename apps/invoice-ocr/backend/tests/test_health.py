@@ -1,4 +1,5 @@
 """/health 헬스체크 테스트."""
+
 from fastapi.testclient import TestClient
 
 from app.config import APP_VERSION

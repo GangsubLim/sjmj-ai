@@ -18,7 +18,10 @@ interface UseSalesRecordsReturn {
   removeRecord: (id: number) => Promise<void>;
 }
 
-export function useSalesRecords(year: number, month: number): UseSalesRecordsReturn {
+export function useSalesRecords(
+  year: number,
+  month: number,
+): UseSalesRecordsReturn {
   const [data, setData] = useState<MonthlySalesData>({
     salespeople: [],
     records: [],
@@ -52,12 +55,9 @@ export function useSalesRecords(year: number, month: number): UseSalesRecordsRet
     return m;
   }, [data.records]);
 
-  const upsertRecord = useCallback(
-    async (input: SalesRecordUpsertInput) => {
-      await salesRecordAPI.upsert(input);
-    },
-    [],
-  );
+  const upsertRecord = useCallback(async (input: SalesRecordUpsertInput) => {
+    await salesRecordAPI.upsert(input);
+  }, []);
 
   const removeRecord = useCallback(async (id: number) => {
     await salesRecordAPI.remove(id);

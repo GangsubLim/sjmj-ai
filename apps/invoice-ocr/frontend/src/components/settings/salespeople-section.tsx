@@ -28,7 +28,9 @@ export function SalespeopleSection() {
   const handleDelete = async (id: number) => {
     try {
       await softDelete(id);
-      toast.success("비활성화하면 신규 입력에서 숨겨지지만 기존 실적은 보존됩니다.");
+      toast.success(
+        "비활성화하면 신규 입력에서 숨겨지지만 기존 실적은 보존됩니다.",
+      );
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "삭제 실패");
     }
@@ -50,7 +52,10 @@ export function SalespeopleSection() {
 
       <ul className="divide-border divide-y rounded-md border">
         {data.map((sp, idx) => (
-          <li key={sp.id} className="flex items-center justify-between gap-2 p-3">
+          <li
+            key={sp.id}
+            className="flex items-center justify-between gap-2 p-3"
+          >
             <div className="flex items-center gap-2">
               <span className={sp.is_active ? "" : "text-muted-foreground"}>
                 {sp.name}
@@ -58,14 +63,29 @@ export function SalespeopleSection() {
               </span>
             </div>
             <div className="flex items-center gap-1">
-              <Button variant="ghost" size="icon" onClick={() => swapOrder(idx, -1)} aria-label="위로">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => swapOrder(idx, -1)}
+                aria-label="위로"
+              >
                 <ArrowUp className="size-4" />
               </Button>
-              <Button variant="ghost" size="icon" onClick={() => swapOrder(idx, 1)} aria-label="아래로">
+              <Button
+                variant="ghost"
+                size="icon"
+                onClick={() => swapOrder(idx, 1)}
+                aria-label="아래로"
+              >
                 <ArrowDown className="size-4" />
               </Button>
               {sp.is_active === 1 && (
-                <Button variant="ghost" size="icon" onClick={() => handleDelete(sp.id!)} aria-label="비활성화">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={() => handleDelete(sp.id!)}
+                  aria-label="비활성화"
+                >
                   <Trash2 className="size-4" />
                 </Button>
               )}

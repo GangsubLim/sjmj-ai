@@ -35,7 +35,13 @@ function StampUpload({ value, onChange, className }: StampUploadProps) {
     return (
       <div className={cn("space-y-2", className)}>
         <div className="border-primary/30 bg-primary/5 flex items-center justify-center rounded-lg border-2 border-dashed p-6">
-          <img src={value} alt="도장" className="max-h-24 object-contain" width={96} height={96} />
+          <img
+            src={value}
+            alt="도장"
+            className="max-h-24 object-contain"
+            width={96}
+            height={96}
+          />
         </div>
         <div className="flex gap-2">
           <Button

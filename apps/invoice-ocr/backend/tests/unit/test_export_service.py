@@ -22,18 +22,29 @@ def test_export_rejects_non_csv():
 
 
 def test_export_returns_filename_and_bom_csv():
-    repo = _StubRepo([{
-        "id": 1, "document_title": "거 래 명 세 서", "issue_date": "2026-05-15",
-        "recipient": "=evil", "recipient2": "", "vehicle_no": "12가3456",
-        "memo": None, "total_supply": 100000, "total_vat": 10000,
-        "grand_total": 110000, "created_at": "2026-05-15 10:00:00",
-    }])
+    repo = _StubRepo(
+        [
+            {
+                "id": 1,
+                "document_title": "거 래 명 세 서",
+                "issue_date": "2026-05-15",
+                "recipient": "=evil",
+                "recipient2": "",
+                "vehicle_no": "12가3456",
+                "memo": None,
+                "total_supply": 100000,
+                "total_vat": 10000,
+                "grand_total": 110000,
+                "created_at": "2026-05-15 10:00:00",
+            }
+        ]
+    )
     filename, body = ExportService(repo=repo).export_invoices("csv", {})
     assert filename.startswith("거래명세서_") and filename.endswith(".csv")
-    assert body.startswith(b"\xef\xbb\xbf")               # UTF-8 BOM
+    assert body.startswith(b"\xef\xbb\xbf")  # UTF-8 BOM
     text = body.decode("utf-8")
-    assert "ID,문서제목,발행일" in text                     # 헤더 행
-    assert "'=evil" in text                                # formula injection sanitize
+    assert "ID,문서제목,발행일" in text  # 헤더 행
+    assert "'=evil" in text  # formula injection sanitize
 
 
 class _StubRepo:

@@ -56,7 +56,7 @@ def test_index_fake_pagination_and_ordering(client):
     r = client.get("/api/salespeople")
     b = r.json()
     assert b["success"] is True
-    assert [s["name"] for s in b["data"]] == ["B", "A"]   # sort_order ASC
+    assert [s["name"] for s in b["data"]] == ["B", "A"]  # sort_order ASC
     assert b["pagination"] == {"page": 1, "limit": 2, "total": 2, "totalPages": 1}
 
 
@@ -65,7 +65,7 @@ def test_index_inactive_listed_last(client):
     sid = _create(client, name="비활성", sort_order=0).json()["data"]["id"]
     client.delete(f"/api/salespeople/{sid}")
     names = [s["name"] for s in client.get("/api/salespeople").json()["data"]]
-    assert names == ["활성", "비활성"]   # is_active DESC 우선
+    assert names == ["활성", "비활성"]  # is_active DESC 우선
 
 
 def test_update_replaces_and_returns(client):
@@ -105,7 +105,7 @@ def test_destroy_soft_delete_then_404(client):
     assert b["success"] is True
     assert b["data"] is None
     assert b["message"] == "비활성화되었습니다."
-    assert client.delete(f"/api/salespeople/{sid}").status_code == 404   # 이미 비활성
+    assert client.delete(f"/api/salespeople/{sid}").status_code == 404  # 이미 비활성
 
 
 def test_destroy_404_when_missing(client):

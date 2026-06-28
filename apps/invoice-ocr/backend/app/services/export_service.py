@@ -3,6 +3,7 @@
 설계 차이: PHP는 php://output 직접 출력. FastAPI는 (filename, csv_bytes)를 반환하고
 라우터가 envelope 밖 Response(text/csv)로 흘린다(테스트 가능·envelope 미오염).
 """
+
 import csv
 import io
 import re
@@ -11,8 +12,19 @@ from datetime import date
 from app.repositories.invoice_repository import InvoiceRepository
 
 _FORMULA = re.compile(r"^[=+\-@\t\r]")
-_HEADER = ["ID", "문서제목", "발행일", "거래처", "거래처2", "차량번호", "메모",
-           "공급가액", "부가세", "합계", "생성일"]
+_HEADER = [
+    "ID",
+    "문서제목",
+    "발행일",
+    "거래처",
+    "거래처2",
+    "차량번호",
+    "메모",
+    "공급가액",
+    "부가세",
+    "합계",
+    "생성일",
+]
 
 
 def sanitize_csv_field(value) -> str:
@@ -37,15 +49,22 @@ class ExportService:
         writer = csv.writer(buf)
         writer.writerow(_HEADER)
         for inv in invoices:
-            writer.writerow([
-                inv["id"],
-                sanitize_csv_field(inv["document_title"]),
-                inv["issue_date"],
-                sanitize_csv_field(inv["recipient"]),
-                sanitize_csv_field(inv["recipient2"]),
-                sanitize_csv_field(inv["vehicle_no"]),
-                sanitize_csv_field(inv.get("memo") or ""),
-                inv["total_supply"], inv["total_vat"], inv["grand_total"], inv["created_at"],
-            ])
-        body = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")  # UTF-8 BOM(Excel 한글 호환)
+            writer.writerow(
+                [
+                    inv["id"],
+                    sanitize_csv_field(inv["document_title"]),
+                    inv["issue_date"],
+                    sanitize_csv_field(inv["recipient"]),
+                    sanitize_csv_field(inv["recipient2"]),
+                    sanitize_csv_field(inv["vehicle_no"]),
+                    sanitize_csv_field(inv.get("memo") or ""),
+                    inv["total_supply"],
+                    inv["total_vat"],
+                    inv["grand_total"],
+                    inv["created_at"],
+                ]
+            )
+        body = b"\xef\xbb\xbf" + buf.getvalue().encode(
+            "utf-8"
+        )  # UTF-8 BOM(Excel 한글 호환)
         return filename, body

@@ -8,8 +8,7 @@ import type { SalesRecord } from "@/types/sales-record";
 import { sumPerSalesperson, sumTotal } from "./aggregation";
 
 /** 영업사원 열(7rem) + 간격(24px) + 7일(각 90px) + 간격(24px) + 주 합계 열(8rem) */
-export const GRID_TEMPLATE =
-  "grid-cols-[7rem_24px_repeat(7,90px)_24px_8rem]";
+export const GRID_TEMPLATE = "grid-cols-[7rem_24px_repeat(7,90px)_24px_8rem]";
 
 interface Props {
   weekIndex: number;
@@ -138,7 +137,8 @@ export function SalesPerformanceWeek({
           </div>
           <div aria-hidden="true" />
           {cells.map((cell) => {
-            if (!cell.inMonth) return <div key={cell.date} aria-hidden="true" />;
+            if (!cell.inMonth)
+              return <div key={cell.date} aria-hidden="true" />;
             const dt = dailyTotalOf(cell);
             return (
               <div

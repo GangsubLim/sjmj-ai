@@ -2,6 +2,7 @@
 
 DB 행의 date/datetime/Decimal 등을 jsonable_encoder로 직렬화(date→'YYYY-MM-DD').
 """
+
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse
 
@@ -9,16 +10,22 @@ from fastapi.responses import JSONResponse
 def list_response(data: list, pagination: dict) -> JSONResponse:
     return JSONResponse(
         status_code=200,
-        content=jsonable_encoder({"success": True, "data": data, "pagination": pagination}),
+        content=jsonable_encoder(
+            {"success": True, "data": data, "pagination": pagination}
+        ),
     )
 
 
 def single(data) -> JSONResponse:
-    return JSONResponse(status_code=200, content=jsonable_encoder({"success": True, "data": data}))
+    return JSONResponse(
+        status_code=200, content=jsonable_encoder({"success": True, "data": data})
+    )
 
 
 def created(data) -> JSONResponse:
-    return JSONResponse(status_code=201, content=jsonable_encoder({"success": True, "data": data}))
+    return JSONResponse(
+        status_code=201, content=jsonable_encoder({"success": True, "data": data})
+    )
 
 
 def deleted(message: str) -> JSONResponse:

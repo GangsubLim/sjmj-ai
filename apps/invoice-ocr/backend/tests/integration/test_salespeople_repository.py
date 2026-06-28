@@ -11,8 +11,8 @@ def test_insert_and_find_by_id():
     new_id = repo.insert(td.salesperson())
     row = repo.find_by_id(new_id)
     assert row["name"] == "영업사원1"
-    assert row["sort_order"] == 0        # INT → int
-    assert row["is_active"] == 1         # TINYINT → 1, not True
+    assert row["sort_order"] == 0  # INT → int
+    assert row["is_active"] == 1  # TINYINT → 1, not True
 
 
 def test_find_by_id_none_when_missing():
@@ -25,7 +25,7 @@ def test_find_all_orders_by_active_then_sort_then_id():
     repo.insert(td.salesperson({"name": "B", "sort_order": 0}))
     rows = repo.find_all()
     assert len(rows) == 2
-    assert rows[0]["name"] == "B"        # sort_order ASC
+    assert rows[0]["name"] == "B"  # sort_order ASC
 
 
 def test_find_all_inactive_sorted_last():
@@ -40,7 +40,10 @@ def test_find_all_inactive_sorted_last():
 def test_update_changes_fields():
     repo = SalespersonRepository()
     new_id = repo.insert(td.salesperson())
-    assert repo.update(new_id, {"name": "영업사원1수정", "sort_order": 5, "is_active": 1}) is True
+    assert (
+        repo.update(new_id, {"name": "영업사원1수정", "sort_order": 5, "is_active": 1})
+        is True
+    )
     row = repo.find_by_id(new_id)
     assert row["name"] == "영업사원1수정"
     assert row["sort_order"] == 5
@@ -51,7 +54,7 @@ def test_soft_delete_sets_inactive_not_removed():
     new_id = repo.insert(td.salesperson())
     assert repo.soft_delete(new_id) is True
     row = repo.find_by_id(new_id)
-    assert row is not None               # 행은 남는다(FK RESTRICT)
+    assert row is not None  # 행은 남는다(FK RESTRICT)
     assert row["is_active"] == 0
 
 
@@ -59,7 +62,7 @@ def test_soft_delete_already_inactive_returns_false():
     repo = SalespersonRepository()
     new_id = repo.insert(td.salesperson())
     repo.soft_delete(new_id)
-    assert repo.soft_delete(new_id) is False   # rowcount 0
+    assert repo.soft_delete(new_id) is False  # rowcount 0
 
 
 def test_find_active_by_name_matches_only_active():

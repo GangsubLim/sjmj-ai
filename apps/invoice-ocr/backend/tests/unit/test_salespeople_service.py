@@ -21,20 +21,30 @@ def test_create_trims_name():
     repo = MagicMock()
     repo.find_active_by_name.return_value = None
     repo.insert.return_value = 1
-    repo.find_by_id.return_value = {"id": 1, "name": "홍길동", "sort_order": 0, "is_active": 1}
+    repo.find_by_id.return_value = {
+        "id": 1,
+        "name": "홍길동",
+        "sort_order": 0,
+        "is_active": 1,
+    }
 
     result = _svc(repo).create({"name": "  홍길동  "})
 
     assert result["name"] == "홍길동"
-    assert repo.insert.call_args[0][0]["name"] == "홍길동"   # trim된 값으로 insert
-    assert repo.insert.call_args[0][0]["is_active"] == 1     # 항상 활성 고정
+    assert repo.insert.call_args[0][0]["name"] == "홍길동"  # trim된 값으로 insert
+    assert repo.insert.call_args[0][0]["is_active"] == 1  # 항상 활성 고정
 
 
 def test_create_defaults_sort_order_zero():
     repo = MagicMock()
     repo.find_active_by_name.return_value = None
     repo.insert.return_value = 1
-    repo.find_by_id.return_value = {"id": 1, "name": "x", "sort_order": 0, "is_active": 1}
+    repo.find_by_id.return_value = {
+        "id": 1,
+        "name": "x",
+        "sort_order": 0,
+        "is_active": 1,
+    }
 
     _svc(repo).create({"name": "x"})
     assert repo.insert.call_args[0][0]["sort_order"] == 0
@@ -76,7 +86,12 @@ def test_create_allows_emoji_and_korean():
     repo = MagicMock()
     repo.find_active_by_name.return_value = None
     repo.insert.return_value = 1
-    repo.find_by_id.return_value = {"id": 1, "name": "🌟홍길동", "sort_order": 0, "is_active": 1}
+    repo.find_by_id.return_value = {
+        "id": 1,
+        "name": "🌟홍길동",
+        "sort_order": 0,
+        "is_active": 1,
+    }
 
     result = _svc(repo).create({"name": "🌟홍길동"})
     assert result["name"] == "🌟홍길동"

@@ -1,4 +1,5 @@
 """Validator — PHP core/Validator.php 동형(fluent, 메시지 문자 동치)."""
+
 import re
 from datetime import datetime
 

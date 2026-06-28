@@ -3,6 +3,7 @@
 issuer 정보(단일)·도장 업로드(멀티파트)·앱 설정(키-값 맵)을 다룬다. 엔드포인트는
 sync def. 도장 업로드는 UploadFile(File(None))로 파일 부재(400)를 명시 처리한다.
 """
+
 from fastapi import APIRouter, Body, File, UploadFile
 
 from app.core import envelope
@@ -27,9 +28,9 @@ def get_issuer():
 
 @router.put("/settings/issuer")
 def update_issuer(data: dict = Body(...)):
-    Validator().required(data, ["company_name", "representative", "business_number", "address"]) \
-        .business_number(data, "business_number") \
-        .validate_or_fail()
+    Validator().required(
+        data, ["company_name", "representative", "business_number", "address"]
+    ).business_number(data, "business_number").validate_or_fail()
     issuer = _service().update_issuer(data)
     return envelope.single(issuer)
 

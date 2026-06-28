@@ -8,7 +8,9 @@ def _body(resp):
 
 
 def test_list_response_shape():
-    r = envelope.list_response([{"id": 1}], {"page": 1, "limit": 20, "total": 1, "totalPages": 1})
+    r = envelope.list_response(
+        [{"id": 1}], {"page": 1, "limit": 20, "total": 1, "totalPages": 1}
+    )
     assert r.status_code == 200
     b = _body(r)
     assert b["success"] is True
@@ -30,4 +32,8 @@ def test_created_is_201():
 
 def test_deleted_shape():
     r = envelope.deleted("거래명세서가 삭제되었습니다.")
-    assert _body(r) == {"success": True, "data": None, "message": "거래명세서가 삭제되었습니다."}
+    assert _body(r) == {
+        "success": True,
+        "data": None,
+        "message": "거래명세서가 삭제되었습니다.",
+    }

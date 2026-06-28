@@ -19,7 +19,10 @@ interface Props {
   salespeople: Salesperson[];
   recordsForDate: Map<number, SalesRecord> | undefined;
   onClose: () => void;
-  onSave: (upserts: { salesperson_id: number; quantity: number }[], deletes: number[]) => Promise<void>;
+  onSave: (
+    upserts: { salesperson_id: number; quantity: number }[],
+    deletes: number[],
+  ) => Promise<void>;
 }
 
 const formatComma = (raw: string): string => {
@@ -79,13 +82,13 @@ export function SalesRecordInputDialog({
                     pattern="[0-9]*"
                     placeholder="—"
                     onChange={(e) => input.setValue(sp.id!, e.target.value)}
-                    className="text-right pr-8"
+                    className="pr-8 text-right"
                   />
                   {raw !== "" && (
                     <button
                       type="button"
                       onClick={() => input.setValue(sp.id!, "")}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                      className="text-muted-foreground hover:text-foreground absolute top-1/2 right-2 -translate-y-1/2"
                       aria-label="비우기"
                     >
                       <X className="size-4" />
@@ -97,7 +100,9 @@ export function SalesRecordInputDialog({
           })}
         </div>
         <DialogFooter>
-          <Button variant="ghost" onClick={onClose}>취소</Button>
+          <Button variant="ghost" onClick={onClose}>
+            취소
+          </Button>
           <Button onClick={handleSave}>저장</Button>
         </DialogFooter>
       </DialogContent>

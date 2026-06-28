@@ -3,6 +3,7 @@
 정렬은 고정(is_active DESC, sort_order ASC, id ASC). 소프트삭제는 행 삭제가 아니라
 is_active=0 UPDATE(sales_records FK RESTRICT). 숫자 컬럼은 pymysql이 int로 반환.
 """
+
 from sqlalchemy import text
 
 from app.db import connection
@@ -26,13 +27,19 @@ class SalespersonRepository:
 
     def find_by_id(self, id: int) -> dict | None:
         with connection() as conn:
-            row = conn.execute(
-                text(f"SELECT {_COLUMNS} FROM salespeople WHERE id = :id"),
-                {"id": id},
-            ).mappings().first()
+            row = (
+                conn.execute(
+                    text(f"SELECT {_COLUMNS} FROM salespeople WHERE id = :id"),
+                    {"id": id},
+                )
+                .mappings()
+                .first()
+            )
             return dict(row) if row else None
 
-    def find_active_by_name(self, name: str, exclude_id: int | None = None) -> dict | None:
+    def find_active_by_name(
+        self, name: str, exclude_id: int | None = None
+    ) -> dict | None:
         sql = "SELECT id, name FROM salespeople WHERE name = :name AND is_active = 1"
         params: dict = {"name": name}
         if exclude_id is not None:
@@ -77,7 +84,9 @@ class SalespersonRepository:
     def soft_delete(self, id: int) -> bool:
         with connection() as conn:
             result = conn.execute(
-                text("UPDATE salespeople SET is_active = 0 WHERE id = :id AND is_active = 1"),
+                text(
+                    "UPDATE salespeople SET is_active = 0 WHERE id = :id AND is_active = 1"
+                ),
                 {"id": id},
             )
             return result.rowcount > 0

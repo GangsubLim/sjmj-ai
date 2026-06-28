@@ -6,6 +6,7 @@
 롤백 격리가 통하지 않을 수 있기 때문. 전역 엔진은 스레드 공유라 엔드포인트가
 같은 테스트 DB를 쓴다.)
 """
+
 import os
 from pathlib import Path
 
@@ -16,8 +17,14 @@ from sqlalchemy import create_engine, text
 from app import db as dbmod
 
 _ALL_TABLES = [
-    "invoice_items", "invoices", "company_suggestions", "item_suggestions",
-    "issuers", "app_settings", "sales_records", "salespeople",
+    "invoice_items",
+    "invoices",
+    "company_suggestions",
+    "item_suggestions",
+    "issuers",
+    "app_settings",
+    "sales_records",
+    "salespeople",
 ]
 _APP_SETTINGS_SEED = [
     ("default_vat_rate", "0.1"),
@@ -56,7 +63,9 @@ def _reset(engine) -> None:
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
         for k, v in _APP_SETTINGS_SEED:
             conn.execute(
-                text("INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"),
+                text(
+                    "INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"
+                ),
                 {"k": k, "v": v},
             )
 

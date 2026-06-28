@@ -36,7 +36,7 @@ def test_store_item_name_too_long(client):
 
 def test_store_duplicate_name_409(client):
     _create(client)
-    r = _create(client)   # 동일 item_name UNIQUE 위반
+    r = _create(client)  # 동일 item_name UNIQUE 위반
     assert r.status_code == 409
     b = r.json()
     assert b["success"] is False

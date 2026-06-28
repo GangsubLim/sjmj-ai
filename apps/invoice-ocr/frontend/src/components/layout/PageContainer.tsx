@@ -12,7 +12,13 @@ export function PageContainer({
   noPadding,
 }: PageContainerProps) {
   return (
-    <div className={cn("mx-auto max-w-md lg:max-w-5xl", !noPadding && "px-4", className)}>
+    <div
+      className={cn(
+        "mx-auto max-w-md lg:max-w-5xl",
+        !noPadding && "px-4",
+        className,
+      )}
+    >
       {children}
     </div>
   );

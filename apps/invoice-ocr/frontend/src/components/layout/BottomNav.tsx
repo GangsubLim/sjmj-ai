@@ -14,7 +14,10 @@ export function BottomNav() {
   const navigate = useNavigate();
 
   return (
-    <nav aria-label="하단 내비게이션" className="bg-background/95 border-border fixed right-0 bottom-0 left-0 z-40 border-t backdrop-blur-sm touch-manipulation">
+    <nav
+      aria-label="하단 내비게이션"
+      className="bg-background/95 border-border fixed right-0 bottom-0 left-0 z-40 touch-manipulation border-t backdrop-blur-sm"
+    >
       <div className="mx-auto flex h-[72px] max-w-md items-center justify-between px-6">
         {tabs.map((tab) => {
           if (tab.label === "fab") {

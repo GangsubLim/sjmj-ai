@@ -20,9 +20,7 @@ describe("useSalespeople", () => {
 
   it("초기 로드 시 목록 조회", async () => {
     mGetList.mockResolvedValue({
-      data: [
-        { id: 1, name: "A", sort_order: 0, is_active: 1 },
-      ],
+      data: [{ id: 1, name: "A", sort_order: 0, is_active: 1 }],
       total: 1,
       page: 1,
       limit: 1,
