@@ -1,6 +1,7 @@
 """/health 헬스체크 테스트."""
 from fastapi.testclient import TestClient
 
+from app.config import APP_VERSION
 from app.main import app
 
 client = TestClient(app)
@@ -12,7 +13,7 @@ def test_health_returns_ok() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["status"] == "ok"
-    assert body["version"] == "0.1.0"
+    assert body["version"] == APP_VERSION
 
 
 def test_api_health_returns_ok() -> None:
