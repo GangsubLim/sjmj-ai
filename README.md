@@ -2,16 +2,14 @@
 
 SJMJ 업무 AI 자동화 플랫폼. 첫 모듈은 수기 거래명세서 OCR 자동입력(`apps/invoice-ocr`).
 
-## 서브프로젝트 (빌드 순서)
+## 진행 단계
 
-- **SP0** 모노레포 스캐폴딩 + 최소 인프라 골격 ← 현재
-- SP1 OCR PoC (검출→인식→산술검산)
-- SP2 백엔드 Python 재작성 + DB 이전
-- SP3 프론트 이식 (SJMJ-Web frontend)
-- SP4 검수 UI + 데이터 축적 루프
-- SP5 운영 굳히기 (정식 배포 CI · MySQL 백업 · Tailscale)
+원본 SJMJ-Web(PHP+React)을 기능·UI 동등하게 Python(FastAPI)+React로 리팩토링해 macmini에 배포(Phase 1) → 검증된 ML PoC 연결(Phase 2) → 운영 굳히기(Phase 3).
 
-설계·근거 문서는 `docs/superpowers/specs/` 참고.
+- ✅ **토대** — SP0 인프라 셸 + SP1 OCR PoC (`apps/invoice-ocr/ml`)
+- ✅ **Phase 1** 운영 앱 리팩토링 & macmini 배포 — 1A DB 이전 → 1B 백엔드 API 포팅(계약 1:1) → 1C 프론트 이식 → 1D macmini 통합배포. tag→macmini CD 구축 완료
+- ⬜ **Phase 2** ML 연결 ← 다음 — PoC를 Phase 1이 남긴 이음새에 끼워 production 서비스 + 피드백 루프
+- ⬜ **Phase 3** 운영 굳히기 — 모니터링 · Tailscale 외부 노출
 
 ## 로컬 개발
 
