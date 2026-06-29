@@ -18,29 +18,37 @@ export function useOcrInfer() {
     setResult(null);
     setError(null);
     setJobId(null);
-    const { data } = await ocrAPI.createJob(file);
-    const jobId = data.job_id;
-    setJobId(jobId);
+    try {
+      const { data } = await ocrAPI.createJob(file);
+      const newJobId = data.job_id;
+      setJobId(newJobId);
 
-    for (let i = 0; i < MAX_POLLS; i++) {
-      const { data: job } = (await ocrAPI.getJob(jobId)) as {
-        data: OcrJobStatus;
-      };
-      if (job.status === "done") {
-        setResult(job.result ?? null);
-        setStatus("done");
-        return;
+      for (let i = 0; i < MAX_POLLS; i++) {
+        const { data: job } = (await ocrAPI.getJob(newJobId)) as {
+          data: OcrJobStatus;
+        };
+        if (job.status === "done") {
+          setResult(job.result ?? null);
+          setStatus("done");
+          return;
+        }
+        if (job.status === "failed") {
+          setError(job.error ?? "추론 실패");
+          setStatus("failed");
+          return;
+        }
+        setStatus(job.status === "running" ? "running" : "pending");
+        await new Promise((r) => setTimeout(r, POLL_MS));
       }
-      if (job.status === "failed") {
-        setError(job.error ?? "추론 실패");
-        setStatus("failed");
-        return;
-      }
-      setStatus(job.status === "running" ? "running" : "pending");
-      await new Promise((r) => setTimeout(r, POLL_MS));
+      setError("추론 시간이 초과되었습니다.");
+      setStatus("failed");
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "사진 업로드에 실패했습니다.";
+      setError(message);
+      setStatus("failed");
+      throw err;
     }
-    setError("추론 시간이 초과되었습니다.");
-    setStatus("failed");
   }, []);
 
   return { status, result, error, jobId, upload };

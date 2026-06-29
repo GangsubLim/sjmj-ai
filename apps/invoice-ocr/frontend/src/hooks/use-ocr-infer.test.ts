@@ -32,4 +32,19 @@ describe("useOcrInfer", () => {
     });
     expect(result.current.result?.warp_ok).toBe(true);
   });
+
+  it("sets status to failed and re-throws when createJob rejects", async () => {
+    (ocrAPI.createJob as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Network error"),
+    );
+
+    const { result } = renderHook(() => useOcrInfer());
+    await act(async () => {
+      await expect(
+        result.current.upload(new File([new Uint8Array([1])], "x.jpg")),
+      ).rejects.toThrow("Network error");
+    });
+    expect(result.current.status).toBe("failed");
+    expect(result.current.error).toBe("Network error");
+  });
 });
