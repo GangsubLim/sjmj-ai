@@ -32,6 +32,7 @@ def test_get_job_returns_done_with_result(client):
     r = client.get(f"/api/ocr/jobs/{job_id}")
     assert r.status_code == 200
     b = r.json()
+    assert b["success"] is True
     assert b["data"]["status"] == "done"
     assert b["data"]["result"]["warp_ok"] is True
 

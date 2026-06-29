@@ -85,7 +85,7 @@
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
-      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 맵 (PHP 골든 메시지 동치).",
+      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 맵 (PHP 골든 메시지 동치).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
       "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
@@ -238,15 +238,7 @@
         "requestBody": {
           "required": true,
           "content": {
-            "multipart/form-data": {
-              "schema": {
-                "type": "object",
-                "required": ["photo"],
-                "properties": {
-                  "photo": { "type": "string", "format": "binary", "description": "스캔 이미지 파일 (JPEG/PNG 등)" }
-                }
-              }
-            }
+            "multipart/form-data": { "schema": { "$ref": "#/components/schemas/OcrJobCreate" } }
           }
         },
         "responses": {
@@ -592,6 +584,12 @@
           "salespeople": { "type": "array", "items": { "$ref": "#/components/schemas/Salesperson" } },
           "records": { "type": "array", "items": { "$ref": "#/components/schemas/SalesRecord" } }
         }
+      },
+      "OcrJobCreate": {
+        "type": "object",
+        "description": "OCR 잡 생성 요청 — 수기 거래명세서 이미지 업로드 (multipart/form-data).",
+        "required": ["photo"],
+        "properties": { "photo": { "type": "string", "format": "binary" } }
       },
       "OcrJobAck": {
         "type": "object",
