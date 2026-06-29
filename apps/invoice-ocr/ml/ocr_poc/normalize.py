@@ -15,6 +15,8 @@ _THOUSAND_FIELDS = ("unit_price", "amount")
 
 @dataclass(frozen=True)
 class NormRow:
+    """정규화된 한 행(수량·단가·공급가 정수와 적용 규칙명들)."""
+
     quantity: int | None
     unit_price: int | None
     amount: int | None

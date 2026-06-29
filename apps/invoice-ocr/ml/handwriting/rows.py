@@ -57,7 +57,8 @@ def detect_grid_rows(warp, P, *, header_rows=HEADER_ROWS):
 
 
 def band_features(warp, bands):
-    """밴드별 (item_ink, amt_ink, 품목칸 행별 획 bool) — build_proposal 입력.
+    """밴드별 (item_ink, amt_ink, 품목칸 행별 획 bool)을 측정한다 — build_proposal 입력.
+
     국소대비 마스크에서 인쇄 가로선 제거 후 측정(손글씨만).
     """
     item_inks, amt_inks, stroke_rows = [], [], []
@@ -82,8 +83,9 @@ def stroke_profile_col(warp, x0, x1):
 
 
 def segment_rows(profile, P, y0, y1, on, min_gap):
-    """1D 프로파일 → 행 밴드[(a,b)]. 런 중심을 피치 P 폭 밴드로,
-    min_gap 이내 인접 런은 한 행으로 병합.
+    """1D 프로파일을 행 밴드[(a,b)]로 분할한다.
+
+    런 중심을 피치 P 폭 밴드로, min_gap 이내 인접 런은 한 행으로 병합.
     """
     mask = profile >= on
     mask[:y0] = False
@@ -111,5 +113,6 @@ def segment_rows(profile, P, y0, y1, on, min_gap):
 
 
 def detect_amount_rows(warp, P, *, on=0.20, min_gap=None):
+    """금액칸 1D 프로파일에서 행 밴드를 검출한다."""
     prof = stroke_profile_col(warp, AMOUNT_X[0], AMOUNT_X[1])
     return segment_rows(prof, P, Y0, Y1, on, min_gap or int(P * 0.6))

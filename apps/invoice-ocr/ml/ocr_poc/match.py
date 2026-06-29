@@ -22,6 +22,8 @@ _DATE_PATTERNS = [
 
 @dataclass(frozen=True)
 class ReviewRow:
+    """사람 검수용 한 행(추출 일자·공급가합·DB 매칭 수·상태)."""
+
     image_id: str
     extracted_date: str | None
     total_supply: int
@@ -31,6 +33,8 @@ class ReviewRow:
 
 @dataclass(frozen=True)
 class GroundTruth:
+    """이미지에 매칭된 정답지(invoice_id와 그 품목 행들)."""
+
     image_id: str
     invoice_id: int
     rows: tuple[dbmod.InvoiceItem, ...]
@@ -154,6 +158,7 @@ _CSV_FIELDS = ["image_id", "extracted_date", "total_supply", "db_match_count", "
 
 
 def write_review_csv(rows: list[ReviewRow], path: Path) -> None:
+    """검수행들을 CSV 파일로 쓴다."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
@@ -171,6 +176,7 @@ def write_review_csv(rows: list[ReviewRow], path: Path) -> None:
 
 
 def read_review_csv(path: Path) -> list[ReviewRow]:
+    """검수 CSV 파일을 읽어 ReviewRow 리스트로 만든다."""
     rows: list[ReviewRow] = []
     with path.open(newline="", encoding="utf-8") as f:
         for rec in csv.DictReader(f):

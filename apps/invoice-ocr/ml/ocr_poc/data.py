@@ -9,6 +9,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LabelRow:
+    """라벨 한 행(품목·수량·단가·금액 텍스트)."""
+
     row_id: int
     item: str
     quantity: str
@@ -18,12 +20,15 @@ class LabelRow:
 
 @dataclass(frozen=True)
 class Sample:
+    """이미지와 그 라벨 행들의 페어."""
+
     image_id: str
     image_path: Path
     label_rows: tuple[LabelRow, ...]
 
 
 def load_label(label_json: dict) -> tuple[LabelRow, ...]:
+    """라벨 JSON의 rows에서 LabelRow 튜플을 만든다."""
     rows: list[LabelRow] = []
     for r in label_json.get("rows", []):
         rows.append(

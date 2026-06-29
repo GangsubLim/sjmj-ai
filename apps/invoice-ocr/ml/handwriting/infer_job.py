@@ -13,6 +13,7 @@ THOUSAND_MULT = 1000
 
 
 def assemble_result_json(job_id: int, rows: list[dict], warp_ok: bool) -> dict:
+    """추론 행들을 천원곱 적용한 구조화 result_json으로 조립한다."""
     out_rows = []
     supply_sum = 0
     for r in rows:

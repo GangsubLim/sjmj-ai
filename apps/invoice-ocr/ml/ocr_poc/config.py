@@ -27,12 +27,15 @@ def db_backup_path() -> Path:
 
 
 def images_dir() -> Path:
+    """이미지 디렉터리 경로."""
     return data_dir() / "images"
 
 
 def labels_dir() -> Path:
+    """라벨 디렉터리 경로."""
     return data_dir() / "labels"
 
 
 def references_dir() -> Path:
+    """references(인쇄 정본) 디렉터리 경로."""
     return data_dir() / "references"

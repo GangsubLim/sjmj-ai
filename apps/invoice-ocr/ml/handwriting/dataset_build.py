@@ -48,19 +48,23 @@ DSV2 = ML / "report/dataset_v2"
 
 
 def faint_set():
-    """흐림 회수 대상 cname 집합 — review_flags.json 'faint'. 이 전표는 set-aside 하지 않고
-    grid_v4.faint_on 아래 대비향상 hline으로 처리(과노출 격자 복구). 비어 있으면 빈 집합.
+    """흐림 회수 대상 cname 집합을 반환한다 — review_flags.json 'faint'.
+
+    이 전표는 set-aside 하지 않고 grid_v4.FaintOn 아래 대비향상 hline으로 처리한다(과노출
+    격자 복구). 비어 있으면 빈 집합.
     """
     fp = HERE / "review_flags.json"
     return set(json.load(open(fp)).get("faint", [])) if fp.exists() else set()
 
 
 def load_bgr_path(path):
+    """경로의 이미지를 EXIF 정위치로 읽어 BGR ndarray로 반환한다."""
     img = ImageOps.exif_transpose(Image.open(path)).convert("RGB")
     return cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
 
 
 def rect_and_lines_path(path):
+    """경로의 전표를 정합·deskew한 뒤 DATA_Y 범위 행선 y들을 반환한다."""
     bgr = load_bgr_path(path)
     w = warp(bgr, form_quad_robust(bgr))
     w = rotate(w, deskew_angle(w))
@@ -73,10 +77,12 @@ def new_sources():
     from photomatch import IMGDIR  # noqa: E402  (지연 import — T9-A)
 
     if "--auto-only" in sys.argv:
-        dflt = json.load(open(HERE / "photo_match_default.json"))
+        with open(HERE / "photo_match_default.json") as f:
+            dflt = json.load(f)
         m = {fn: v["pick"] for fn, v in dflt.items() if v["auto"]}
     else:
-        m = json.load(open(HERE / "confirmed_matches.json"))
+        with open(HERE / "confirmed_matches.json") as f:
+            m = json.load(f)
     return [(IMGDIR / fn, int(i), "new") for fn, i in m.items()]
 
 
@@ -87,17 +93,19 @@ def old_sources(inv):
         idx.setdefault((v["date"], v["total_supply"]), []).append(v["id"])
     out = []
     csv_path = ML / "results/reviewed_dates.csv"
-    for r in csv.DictReader(open(csv_path)):
-        if r["status"] != "unique":
-            continue
-        c = idx.get((r["extracted_date"], int(r["total_supply"])), [])
-        src = SRC / f"{r['image_id']}.jpg"
-        if len(c) == 1 and src.exists():
-            out.append((src, c[0], "old"))
+    with open(csv_path) as f:
+        for r in csv.DictReader(f):
+            if r["status"] != "unique":
+                continue
+            c = idx.get((r["extracted_date"], int(r["total_supply"])), [])
+            src = SRC / f"{r['image_id']}.jpg"
+            if len(c) == 1 and src.exists():
+                out.append((src, c[0], "old"))
     return out
 
 
 def build_sources(inv):
+    """신규·기존 소스를 합치고 invoice_id 중복을 제거한 목록을 반환한다."""
     src = new_sources()
     if not ("--new-only" in sys.argv or "--auto-only" in sys.argv):
         src += old_sources(inv)
@@ -129,6 +137,7 @@ def stash_orphans():
 
 
 def main():
+    """통합 소스를 정리·라벨셋 빌드하고 검수 HTML을 생성한다."""
     from labelset import b64, safe, select_items  # noqa: E402  (지연 import — T9-A)
     from photomatch import db_invoices  # noqa: E402  (지연 import — T9-A)
 
@@ -177,7 +186,10 @@ def main():
     # 2장 동시촬영(연속 영수증)은 병합워프가 13품목을 오정렬 crop으로 흘려 뱅크를 오염시킨다
     # → 정상 경로에서 제외하고 twoup.py(수동 박스 분할 수확)로 별도 처리.
     twoup_path = HERE / "twoup_split.json"
-    TWOUP = set(json.load(open(twoup_path))) if twoup_path.exists() else set()
+    TWOUP = set()
+    if twoup_path.exists():
+        with open(twoup_path) as f:
+            TWOUP = set(json.load(f))
 
     cards = []
     trusted_n = labeled = 0
@@ -196,7 +208,7 @@ def main():
             skips.append((cname, len(names), len(chosen)))
         x1, x2 = ITEM_X
         thumbs = []
-        for k, (idx, a, b, fr) in enumerate(chosen):
+        for k, (_idx, a, b, fr) in enumerate(chosen):
             lbl = names[k] if k < len(names) else "(extra)"
             c = w[max(a - 4, 0) : b + 4, x1 - 4 : x2 + 4]
             if trusted and k < len(names):
@@ -237,10 +249,11 @@ def main():
 
 
 def build_labelset_grouped():
-    """교정 GT(grouping_corrections.json) → ok 전표의 new 박스를 DB명 폴더로 크롭.
+    """교정 GT(grouping_corrections.json) → ok 전표의 new 박스를 DB명 폴더로 크롭한다.
+
     그룹핑·합계·db_skip 반영, 워프불량/제외(review_flags.json) 배제. 별도 dataset_grouped/.
     """
-    from grid_v4 import faint_on
+    from grid_v4 import FaintOn
     from group import apply_corrections
     from grouping import (  # 지역 import(grouping→dataset_build 순환 회피)
         PAD,
@@ -252,9 +265,15 @@ def build_labelset_grouped():
 
     cnames, warps, manifest, P = all_warps_and_pitch()
     cpath = HERE / "grouping_corrections.json"
-    corr = json.load(open(cpath)) if cpath.exists() else {}
+    corr = {}
+    if cpath.exists():
+        with open(cpath) as f:
+            corr = json.load(f)
     fpath = HERE / "review_flags.json"
-    flags = json.load(open(fpath)) if fpath.exists() else {}
+    flags = {}
+    if fpath.exists():
+        with open(fpath) as f:
+            flags = json.load(f)
     setaside = set(flags.get("rewarp", [])) | set(flags.get("exclude", []))
     faint = faint_set()
 
@@ -274,7 +293,7 @@ def build_labelset_grouped():
             aside += 1
             continue
         names = manifest[cn]["items"]
-        with faint_on(cn in faint):
+        with FaintOn(cn in faint):
             auto = propose(warps[cn], names, P)
             if cn in corr and len(corr[cn].get("types", [])) == len(auto.rows):
                 bands = [r.band for r in auto.rows]

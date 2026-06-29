@@ -13,7 +13,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
 from canon import global_pitch  # noqa: E402
 from dataset_build import ORG, faint_set, load_bgr_path  # noqa: E402
-from grid_v4 import faint_on, warp  # noqa: E402
+from grid_v4 import FaintOn, warp  # noqa: E402
 from group import build_proposal  # noqa: E402
 from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 from rows import band_features, detect_grid_rows  # noqa: E402
@@ -26,12 +26,14 @@ PAD = 3
 
 
 def rectify_warp(cname):
+    """전표를 정합·워프한 뒤 deskew 회전까지 적용해 반환한다."""
     bgr = load_bgr_path(ORG / cname)
     w0 = warp(bgr, form_quad_robust(bgr))
     return rotate(w0, deskew_angle(w0))
 
 
 def propose(warp_img, db_names, P):
+    """워프 이미지에서 행밴드·ink 특징을 뽑아 결합 proposal을 만든다."""
     bands = detect_grid_rows(warp_img, P)
     item_inks, amt_inks, stroke_rows = band_features(warp_img, bands)
     return build_proposal(
@@ -47,14 +49,15 @@ def propose(warp_img, db_names, P):
 
 
 def all_warps_and_pitch():
-    """74장 워프 + 전역 피치. (cname -> warp, P, manifest)"""
+    """74장 워프 + 전역 피치를 계산한다(cname -> warp, P, manifest)."""
     from rows import stroke_profile_col  # noqa
 
-    manifest = json.load(open(ORG / "manifest.json"))
+    with open(ORG / "manifest.json") as f:
+        manifest = json.load(f)
     cnames = sorted(manifest)
     warps, ys_all = {}, {}
     for cn in cnames:
-        with faint_on(cn in FAINT):
+        with FaintOn(cn in FAINT):
             w = rectify_warp(cn)
             warps[cn] = w
             # 피치 추정용 금액칸 행선 근사(detect 전이라 임시로 hline 대신 amount run 사용 안 함)
@@ -68,13 +71,14 @@ def all_warps_and_pitch():
 
 
 def main():
+    """전체 전표에 그룹핑을 돌려 행수·블록수·상태를 출력한다."""
     cnames, warps, manifest, P = all_warps_and_pitch()
     ok = 0
     print(f"P={P:.1f} ITEM_MIN={ITEM_MIN} AMT_MIN={AMT_MIN}\n")
     print(f"{'cname':<26}{'rows':>5}{'blk':>5}{'DBn':>5}  status")
     for cn in cnames:
         names = manifest[cn]["items"]
-        with faint_on(cn in FAINT):
+        with FaintOn(cn in FAINT):
             p = propose(warps[cn], names, P)
         ok += p.status == "ok"
         ndata = sum(1 for r in p.rows if r.rtype != "empty")

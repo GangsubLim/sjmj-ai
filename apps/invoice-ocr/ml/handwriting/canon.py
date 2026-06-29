@@ -24,6 +24,7 @@ Y0, Y1 = DATA_Y
 
 
 def rect_and_lines(inv):
+    """전표를 정합·deskew한 뒤 DATA_Y 범위의 행선 y좌표를 반환한다."""
     w = warp(load_bgr(inv), form_quad_robust(load_bgr(inv)))
     w = rotate(w, deskew_angle(w))
     ys = [y for y in hline_ys(w) if Y0 - 40 <= y <= Y1 + 40]
@@ -58,15 +59,18 @@ def grid_rows(phi, P):
         if y >= Y0 - 5:
             ys.append(int(round(y)))
         k += 1
-    return [(a, b) for a, b in zip(ys, ys[1:])]
+    return [(a, b) for a, b in zip(ys, ys[1:], strict=False)]
 
 
 def ink_frac(cell):
+    """셀 영역의 잉크(어두운 픽셀) 비율을 반환한다."""
     return 0.0 if cell.size == 0 else float((cell.max(2) < 120).mean())
 
 
 def main():
-    gt = json.load(open(HERE / "item_gt.json"))
+    """전표별 고정 행그리드 정합 결과를 출력하고 몽타주를 저장한다."""
+    with open(HERE / "item_gt.json") as f:
+        gt = json.load(f)
     ids = sorted(gt)
     per = {}
     warps = {}
@@ -90,7 +94,7 @@ def main():
         near += abs(nf - dbn) <= 1
         print(f"{inv:<9}{phi:>6.0f}{len(rows):>5}{nf:>7}{dbn:>5}  {tag}")
         ov = w.copy()
-        for a, b in rows:
+        for a, _b in rows:
             cv2.line(ov, (ITEM_X[0], a), (ITEM_X[1], a), (255, 130, 0), 1)
         for a, b in item_rows:
             cv2.rectangle(ov, (ITEM_X[0], a), (ITEM_X[1], b), (0, 180, 0), 2)

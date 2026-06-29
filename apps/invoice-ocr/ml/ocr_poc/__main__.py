@@ -48,7 +48,9 @@ def _positional_column_map(cells) -> dict[str, int]:
         return {}
     left_to_right = sorted(by_col, key=lambda ci: median(by_col[ci]))
     mapping: dict[str, int] = {}
-    for field, ci in zip(("amount", "unit_price", "quantity"), reversed(left_to_right)):
+    for field, ci in zip(
+        ("amount", "unit_price", "quantity"), reversed(left_to_right), strict=False
+    ):
         mapping[field] = ci
     return mapping
 
@@ -60,6 +62,7 @@ def run_pipeline(
     recognizer: RecognizerAdapter,
     image_opener,
 ) -> tuple[list[score.InvoiceScore], report.ReportData]:
+    """샘플들에 검출→인식→정규화→채점 파이프라인을 돌려 점수와 리포트를 만든다."""
     invoice_scores: list[score.InvoiceScore] = []
     per_image: list[dict] = []
     failures: list[dict] = []
@@ -129,7 +132,7 @@ def run_pipeline(
                     detected_unit_price=d["unit_price"],
                     detected_amount=d["amount"],
                 )
-                for n, d in zip(norm, detected_flags)
+                for n, d in zip(norm, detected_flags, strict=False)
             ]
             s = score.score_invoice(preds, list(gt.rows))
             invoice_scores.append(s)
@@ -187,6 +190,7 @@ def _cmd_match_extract() -> None:
 
 
 def main(argv: list[str]) -> int:
+    """CLI 진입점 — match-extract/run 서브커맨드를 디스패치한다."""
     cmd = argv[1] if len(argv) > 1 else ""
     if cmd == "match-extract":
         _cmd_match_extract()

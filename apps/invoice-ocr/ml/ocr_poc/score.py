@@ -15,6 +15,8 @@ _FIELDS = ("quantity", "unit_price", "amount")
 
 @dataclass(frozen=True)
 class PredRow:
+    """예측 한 행(수량·단가·공급가 값과 필드별 검출 여부)."""
+
     quantity: int | None
     unit_price: int | None
     amount: int | None
@@ -25,6 +27,8 @@ class PredRow:
 
 @dataclass(frozen=True)
 class InvoiceScore:
+    """한 invoice의 3축 채점 집계 카운트."""
+
     detect_total: int
     detect_hit: int
     recog_total: int
@@ -68,6 +72,7 @@ def _truth_field(t: InvoiceItem, field: str) -> int:
 
 
 def score_invoice(preds: list[PredRow], truth: list[InvoiceItem]) -> InvoiceScore:
+    """예측행을 정답행에 정렬해 invoice 단위 3축 카운트를 집계한다."""
     aligned = align_rows(preds, truth)
     detect_total = detect_hit = 0
     recog_total = recog_correct = valgain_correct = 0
@@ -105,6 +110,7 @@ def _ratio(num: int, den: int) -> float:
 
 
 def aggregate(scores: list[InvoiceScore]) -> dict[str, float]:
+    """invoice별 점수를 합산해 전체 3축 비율 지표로 환산한다."""
     d_tot = sum(s.detect_total for s in scores)
     d_hit = sum(s.detect_hit for s in scores)
     r_tot = sum(s.recog_total for s in scores)

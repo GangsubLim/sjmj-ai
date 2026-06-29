@@ -1,6 +1,8 @@
-"""숫자 인식 어댑터. stock PaddleOCR(PP-OCRv5) 디코드 후 숫자 post-filter 로
-charset 을 사실상 제한(fine-tune 없이 데이터 0). 후속 SP 의 Qwen/TrOCR 는
-같은 RecognizerAdapter 인터페이스로 plug-in.
+"""숫자 인식 어댑터 — stock PaddleOCR 디코드 후 숫자 post-filter로 charset 제한.
+
+stock PaddleOCR(PP-OCRv5) 디코드 후 숫자 post-filter 로 charset 을 사실상
+제한한다(fine-tune 없이 데이터 0). 후속 SP 의 Qwen/TrOCR 는 같은
+RecognizerAdapter 인터페이스로 plug-in.
 """
 
 from __future__ import annotations
@@ -17,17 +19,23 @@ def numeric_postfilter(raw: str) -> str:
 
 
 class RecognizerAdapter(Protocol):
-    def recognize(self, crop) -> str: ...
+    """crop 이미지 → 인식 텍스트 어댑터 인터페이스."""
+
+    def recognize(self, crop) -> str:
+        """이미지 crop을 인식해 텍스트를 반환한다."""
+        ...
 
 
 class FakeRecognizer:
     """시드 텍스트를 순서대로 반환. 파이프라인 결정론화."""
 
     def __init__(self, texts: list[str]):
+        """반환할 시드 텍스트 리스트로 초기화한다."""
         self._texts = list(texts)
         self._i = 0
 
     def recognize(self, crop) -> str:
+        """다음 시드 텍스트를 반환한다. 소진되면 빈 문자열."""
         if self._i >= len(self._texts):
             return ""
         out = self._texts[self._i]
@@ -43,6 +51,7 @@ class PaddleOCRNumeric:
     """
 
     def __init__(self, lang: str = "korean"):
+        """언어 설정과 엔진 미로딩 상태로 초기화한다(지연 로딩)."""
         self._lang = lang
         self._engine = None
 
@@ -62,6 +71,7 @@ class PaddleOCRNumeric:
         return self._first_text(results)
 
     def recognize(self, crop) -> str:
+        """crop을 인식해 숫자만 남긴 텍스트를 반환한다."""
         return numeric_postfilter(self._raw_text(crop))
 
     @staticmethod
@@ -81,6 +91,7 @@ class PaddleOCRText(PaddleOCRNumeric):
     """post-filter 없이 raw 텍스트 반환(단일 crop 텍스트용)."""
 
     def recognize(self, crop) -> str:
+        """crop의 raw 텍스트를 그대로 반환한다."""
         return self._raw_text(crop)
 
 
@@ -93,6 +104,7 @@ class ReferenceOCR:
     """
 
     def __init__(self, lang: str = "korean"):
+        """언어 설정과 엔진 미로딩 상태로 초기화한다(지연 로딩)."""
         self._lang = lang
         self._engine = None
 
@@ -109,6 +121,7 @@ class ReferenceOCR:
         return self._engine
 
     def texts(self, image_path: str) -> list[str]:
+        """이미지를 OCR해 인식 텍스트 리스트를 반환한다."""
         engine = self._ensure_engine()
         results = list(engine.predict(str(image_path)))
         if not results:

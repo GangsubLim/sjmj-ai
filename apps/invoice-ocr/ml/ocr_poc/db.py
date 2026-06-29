@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Invoice:
+    """invoices 테이블 한 행."""
+
     id: int
     issue_date: str
     recipient: str
@@ -22,6 +24,8 @@ class Invoice:
 
 @dataclass(frozen=True)
 class InvoiceItem:
+    """invoice_items 테이블 한 행."""
+
     invoice_id: int
     item_order: int
     name: str
@@ -34,22 +38,29 @@ class InvoiceItem:
 
 @dataclass(frozen=True)
 class InvoiceDB:
+    """파싱된 invoices/invoice_items 컬렉션과 조회 헬퍼."""
+
     invoices: tuple[Invoice, ...]
     items_by_invoice: dict[int, tuple[InvoiceItem, ...]]
 
     def find_by_grand_total(self, grand_total: int) -> list[Invoice]:
+        """grand_total(VAT 포함)이 일치하는 invoice들."""
         return [i for i in self.invoices if i.grand_total == grand_total]
 
     def find_by_date_and_total(self, date: str, grand_total: int) -> list[Invoice]:
+        """발행일 + grand_total이 일치하는 invoice들."""
         return [i for i in self.invoices if i.issue_date == date and i.grand_total == grand_total]
 
     def find_by_total_supply(self, total_supply: int) -> list[Invoice]:
+        """total_supply(공급가합, VAT 제외)가 일치하는 invoice들."""
         return [i for i in self.invoices if i.total_supply == total_supply]
 
     def find_by_date_and_total_supply(self, date: str, total_supply: int) -> list[Invoice]:
+        """발행일 + total_supply가 일치하는 invoice들(GT 유일조회 키)."""
         return [i for i in self.invoices if i.issue_date == date and i.total_supply == total_supply]
 
     def items_for(self, invoice_id: int) -> tuple[InvoiceItem, ...]:
+        """해당 invoice의 품목 행들. 없으면 빈 튜플."""
         return self.items_by_invoice.get(invoice_id, ())
 
 
@@ -57,8 +68,10 @@ _INSERT_HEADER_RE = re.compile(r"INSERT INTO `(?P<table>\w+)` \((?P<cols>[^)]*)\
 
 
 def _read_statement_body(text: str, start: int) -> tuple[str, int]:
-    """start(=VALUES 직후)부터 따옴표/괄호를 인지하며 스캔해, 문자열 밖·괄호 depth 0
-    에서 처음 만나는 ';' 직전까지를 본문으로 반환. 값 내부의 ';'는 종결자로 보지 않는다.
+    """VALUES 직후부터 본문 끝(최상위 ';')까지를 반환한다.
+
+    start(=VALUES 직후)부터 따옴표/괄호를 인지하며 스캔해, 문자열 밖·괄호 depth 0
+    에서 처음 만나는 ';' 직전까지를 본문으로 반환한다. 값 내부의 ';'는 종결자로 보지 않는다.
     """
     in_str = False
     esc = False
@@ -156,7 +169,7 @@ _ESCAPES = {"n": "\n", "r": "\r", "t": "\t", "0": "\0", "\\": "\\", "'": "'", '"
 
 
 def _unquote(field: str) -> str | None:
-    """SQL 값 토큰 → 파이썬 값(str|None). 숫자는 호출부에서 int 변환.
+    r"""SQL 값 토큰 → 파이썬 값(str|None). 숫자는 호출부에서 int 변환.
 
     인용 문자열 내부를 좌→우 1패스로 스캔해 escape 시퀀스(\\\\, \\', \\n 등)와
     SQL 표준 더블('')을 atomic하게 소비한다. chained replace 는 \\\\n 류를
@@ -204,9 +217,10 @@ def _rows_for_table(sql_text: str, table: str) -> list[tuple[list[str], list[str
 
 
 def parse_backup(sql_text: str) -> InvoiceDB:
+    """백업 SQL 텍스트를 파싱해 InvoiceDB를 만든다."""
     invoices: list[Invoice] = []
     for cols, fields in _rows_for_table(sql_text, "invoices"):
-        rec = dict(zip(cols, fields))
+        rec = dict(zip(cols, fields, strict=False))
         invoices.append(
             Invoice(
                 id=_to_int(rec["id"]),
@@ -219,7 +233,7 @@ def parse_backup(sql_text: str) -> InvoiceDB:
 
     items: dict[int, list[InvoiceItem]] = {}
     for cols, fields in _rows_for_table(sql_text, "invoice_items"):
-        rec = dict(zip(cols, fields))
+        rec = dict(zip(cols, fields, strict=False))
         item = InvoiceItem(
             invoice_id=_to_int(rec["invoice_id"]),
             item_order=_to_int(rec["item_order"]),

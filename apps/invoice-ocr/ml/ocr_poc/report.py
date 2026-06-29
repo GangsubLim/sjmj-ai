@@ -16,6 +16,8 @@ _METRIC_LABELS = {
 
 @dataclass(frozen=True)
 class ReportData:
+    """리포트 입력 데이터(메트릭·명세서별·실패·규칙 카운트)."""
+
     metrics: dict[str, float]
     per_image: list[dict]
     failures: list[dict]
@@ -23,6 +25,7 @@ class ReportData:
 
 
 def render_markdown(data: ReportData) -> str:
+    """리포트 데이터를 마크다운 문자열로 렌더한다."""
     lines = ["# SP1 측정 리포트", "", "## 3축 메트릭", "", "| 지표 | 값 |", "| --- | --- |"]
     for key, label in _METRIC_LABELS.items():
         if key in data.metrics:
@@ -47,6 +50,7 @@ def render_markdown(data: ReportData) -> str:
 
 
 def render_json(data: ReportData) -> str:
+    """리포트 데이터를 JSON 문자열로 렌더한다."""
     return json.dumps(
         {
             "metrics": data.metrics,
@@ -60,6 +64,7 @@ def render_json(data: ReportData) -> str:
 
 
 def write_report(data: ReportData, out_dir: Path) -> None:
+    """리포트를 md+json 두 파일로 out_dir에 쓴다."""
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "sp1-report.md").write_text(render_markdown(data), encoding="utf-8")
     (out_dir / "sp1-report.json").write_text(render_json(data), encoding="utf-8")

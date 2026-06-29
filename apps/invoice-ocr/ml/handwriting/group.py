@@ -13,8 +13,9 @@ ROW_TOTAL = "total"  # 합계 금액 행 — 품목 아님(crop 제외), 블록 
 
 
 def classify_types(item_inks, amt_inks, item_min, amt_min):
+    """행별 ink로 empty/new/cont 타입을 분류한다(§3)."""
     types = []
-    for it, am in zip(item_inks, amt_inks):
+    for it, am in zip(item_inks, amt_inks, strict=False):
         if am < amt_min:
             types.append(ROW_EMPTY)
         elif it >= item_min:
@@ -25,9 +26,11 @@ def classify_types(item_inks, amt_inks, item_min, amt_min):
 
 
 def trim_to_data_block(types):
-    """상단 첫 데이터행부터 '연속 데이터 블록'만 남기고, 첫 빈행 이후(하단 노이즈:
-    합계·메모·전화번호)는 empty로 강제. 양식상 품목은 헤더 직후부터 연속으로 내려가고
-    약식분해 연속행도 금액칸이 차 있어(cont) 데이터 블록은 amt-present 연속 구간이다.
+    """상단 첫 데이터행부터 '연속 데이터 블록'만 남긴다.
+
+    첫 빈행 이후(하단 노이즈: 합계·메모·전화번호)는 empty로 강제. 양식상 품목은 헤더 직후부터
+    연속으로 내려가고 약식분해 연속행도 금액칸이 차 있어(cont) 데이터 블록은 amt-present 연속
+    구간이다.
     """
     out = list(types)
     start = next((i for i, t in enumerate(out) if t in (ROW_NEW, ROW_CONT)), None)
@@ -43,6 +46,7 @@ def trim_to_data_block(types):
 
 
 def form_blocks(types):
+    """타입 시퀀스를 new+뒤따르는 cont 단위의 블록 인덱스 리스트로 묶는다."""
     blocks, cur = [], None
     for i, t in enumerate(types):
         if t in (ROW_EMPTY, ROW_TOTAL):
@@ -62,6 +66,8 @@ def form_blocks(types):
 
 @dataclass(frozen=True)
 class Row:
+    """행 한 줄의 밴드·ink·타입·박스·블록·DB 매핑 정보."""
+
     band: tuple
     item_ink: float
     amt_ink: float
@@ -74,6 +80,8 @@ class Row:
 
 @dataclass(frozen=True)
 class Proposal:
+    """그룹핑 결과 — 행 목록·블록 수·DB 항목 수·상태."""
+
     rows: tuple
     n_blocks: int
     dbn: int
@@ -81,8 +89,9 @@ class Proposal:
 
 
 def snap_box_v(stroke_rows, y0, y1, pad):
-    """stroke_rows: 밴드 [y0,y1) 내 행별 획 유무(bool). 획 범위에 스냅+pad, 클립.
-    획 없으면 (y0,y1) 폴백.
+    """밴드 내 획 범위에 박스를 스냅(+pad, 클립)한다.
+
+    stroke_rows는 밴드 [y0,y1) 내 행별 획 유무(bool). 획이 없으면 (y0,y1) 폴백.
     """
     idx = [i for i, on in enumerate(stroke_rows) if on]
     if not idx:
@@ -126,6 +135,7 @@ def build_proposal(
     pad,
     db_skips=(),
 ):
+    """ink로 행을 분류·트림한 뒤 DB명에 블록을 매핑한 Proposal을 만든다."""
     types = trim_to_data_block(classify_types(item_inks, amt_inks, item_min, amt_min))
     return _assemble(
         bands, item_inks, amt_inks, types, stroke_rows_per_band, db_names, pad, db_skips
@@ -135,8 +145,10 @@ def build_proposal(
 def apply_corrections(
     proposal, corrected_types, db_names, stroke_rows_per_band, *, pad, db_skips=()
 ):
-    """사람이 교정한 타입(같은 밴드)으로 proposal 재조립. 박스는 타입에서 재스냅.
-    db_skips: 손글씨 행이 없는 DB 인덱스(합쳐쓴 항목 등) — 매핑에서 제외.
+    """사람이 교정한 타입(같은 밴드)으로 proposal을 재조립한다.
+
+    박스는 타입에서 재스냅한다. db_skips는 손글씨 행이 없는 DB 인덱스(합쳐쓴 항목 등)로 매핑에서
+    제외한다.
     """
     bands = [r.band for r in proposal.rows]
     item_inks = [r.item_ink for r in proposal.rows]
@@ -154,6 +166,7 @@ def apply_corrections(
 
 
 def proposal_to_dict(proposal):
+    """Proposal을 JSON 직렬화 가능한 dict로 변환한다."""
     return {
         "status": proposal.status,
         "n_blocks": proposal.n_blocks,

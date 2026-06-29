@@ -53,13 +53,14 @@ COLOR = {
 
 
 def b64(rgb_or_bgr, w=170, is_bgr=False):
+    """이미지를 너비 w로 리사이즈해 PNG base64 문자열로 인코딩한다."""
     img = rgb_or_bgr if is_bgr else cv2.cvtColor(rgb_or_bgr, cv2.COLOR_RGB2BGR)
     img = cv2.resize(img, (w, max(28, int(img.shape[0] * w / img.shape[1]))))
     return base64.b64encode(cv2.imencode(".png", img)[1]).decode()
 
 
 def load_model_from(path, device):
-    """품목 인코더 적재 — path 명시 버전. 데모는 load_model_from(PROD, device)로 호출."""
+    """품목 인코더를 path에서 적재한다 — 데모는 PROD 경로를 넘겨 호출."""
     model = build_model(device)
     ck = torch.load(path, map_location=device)
     model.load_state_dict(ck["model"])
@@ -76,7 +77,8 @@ AMT_PROMPT = (
 
 
 def load_ocr():
-    """Qwen3-VL-8B(MLX) — 손글씨 금액 인식기(findings 채택, 공급가 열 84.8%).
+    """Qwen3-VL-8B(MLX) 손글씨 금액 인식기를 적재한다(findings 채택, 공급가 열 84.8%).
+
     SP1 stock PP-OCRv5(~10%·인쇄체용)가 아니라 손글씨 벤치 우승 모델.
     """
     from mlx_vlm import load
@@ -86,9 +88,10 @@ def load_ocr():
 
 
 def read_amount(qwen, cell_bgr, tmp_dir, idx):
-    """금액칸 BGR → (정수|None, 원문). Qwen3-VL per-cell 전사(bench.py와 동일 호출).
-    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력 — 칸마다
-    '고유' 임시 PNG를 써야 한다(같은 경로 재사용 시 MLX-VLM이 degenerate 출력 '!!!').
+    """금액칸 BGR을 Qwen3-VL로 전사해 (정수|None, 원문)을 반환한다(bench.py와 동일 호출).
+
+    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력 — 칸마다 '고유' 임시
+    PNG를 써야 한다(같은 경로 재사용 시 MLX-VLM이 degenerate 출력 '!!!').
     """
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
@@ -117,6 +120,7 @@ def embed_crops(model, crops_bgr, device):
 
 
 def topk(sims, lab, k):
+    """유사도 내림차순에서 라벨 중복을 제거하고 상위 k개 (라벨, 점수)를 반환한다."""
     out, seen = [], set()
     for j in np.argsort(-sims):
         L = lab[j]
@@ -187,7 +191,7 @@ def process_one(src, model, E, lab, qwen, tmp_dir, counter, device):
             cv2.rectangle(ov, (x1 - 4, r.box[0]), (x2 + 4, r.box[1]), (0, 0, 255), 1)
 
     rows_html, preds_dump = [], []
-    for i, (r, c) in enumerate(zip(news, crops)):
+    for i, (r, c) in enumerate(zip(news, crops, strict=False)):
         preds = topk(E @ Q[i], lab, TOPK)
         preds_dump.append([p[0] for p in preds])
         amt, raw = amounts[i]
@@ -229,6 +233,7 @@ def process_one(src, model, E, lab, qwen, tmp_dir, counter, device):
 
 
 def main():
+    """CLI 인자로 받은 사진들을 추론해 데모 HTML 리포트를 생성한다."""
     srcs = sys.argv[1:]
     miss = [s for s in srcs if not Path(s).exists()]
     if not srcs or miss:

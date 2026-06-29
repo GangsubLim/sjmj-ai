@@ -147,18 +147,23 @@ def split_invoices(inv, labels, recurring, val_frac=0.25, rng=None):
 
 # ---------------- 모델 ----------------
 class ItemEncoder(nn.Module):
+    """ViT 백본 + projection head 품목 인코더."""
+
     def __init__(self, vit, proj_dim=128):
+        """ViT 백본에 projection head를 붙인다."""
         super().__init__()
         self.enc = vit
         self.head = nn.Sequential(nn.Linear(768, 256), nn.GELU(), nn.Linear(256, proj_dim))
 
     def forward(self, x):
+        """(projection, backbone) 정규화 임베딩 쌍을 반환한다."""
         h = self.enc(pixel_values=x).last_hidden_state.mean(1)  # [B,768] backbone
         z = self.head(h)
         return F.normalize(z, dim=1), F.normalize(h, dim=1)  # (projection, backbone)
 
 
 def build_model(device):
+    """ko-trocr ViT 인코더를 부분 동결해 ItemEncoder로 빌드한다."""
     from transformers import VisionEncoderDecoderModel
 
     # 기본 로드는 fp16 → fp32 head와 MPS matmul dtype 충돌. fp32로 통일(학습 안정성도 ↑).
@@ -179,10 +184,12 @@ class SupConLoss(nn.Module):
     """Supervised Contrastive — 같은 라벨(+같은 이미지의 2번째 증강뷰)을 positive로 당긴다."""
 
     def __init__(self, temp=0.07):
+        """temperature를 받아 손실을 초기화한다."""
         super().__init__()
         self.t = temp
 
     def forward(self, feats, labels):
+        """feats·labels로 supervised contrastive 손실을 계산한다."""
         n = feats.shape[0]
         sim = (feats @ feats.T) / self.t
         sim = sim - sim.max(1, keepdim=True).values.detach()
@@ -199,6 +206,7 @@ class SupConLoss(nn.Module):
 # ---------------- 평가 (val→train retrieval) ----------------
 @torch.no_grad()
 def embed(model, tensors, eval_tf, device, bs=64):
+    """텐서들을 배치로 인코딩해 (projection, backbone) 임베딩을 반환한다."""
     model.eval()
     Z, H = [], []
     for i in range(0, len(tensors), bs):
@@ -210,9 +218,11 @@ def embed(model, tensors, eval_tf, device, bs=64):
 
 
 def retrieval(emb_q, lab_q, inv_q, emb_b, lab_b, inv_b, recurring):
-    """query(val) → bank(train=작성자 과거 crop) 개방 retrieval = 운영 메트릭(추론 시 DB는 비어
-    있어 후보 narrowing 없음; 작성자 어휘 전체가 후보). 재현라벨·bank에 정답 존재 query만 채점.
-    반환 dict: t1/t3/t5/n 카운트 + pairs[(top1정답?, top1유사도)] (신뢰도 게이팅용).
+    """query(val) → bank(train) 개방 retrieval로 운영 메트릭을 계산한다.
+
+    추론 시 DB는 비어 있어 후보 narrowing 없음(작성자 어휘 전체가 후보). 재현라벨·bank에 정답
+    존재 query만 채점. 반환 dict: t1/t3/t5/n 카운트 + pairs[(top1정답?, top1유사도)]
+    (신뢰도 게이팅용).
     """
     t1 = t3 = t5 = n = 0
     pairs = []
@@ -240,8 +250,10 @@ def retrieval(emb_q, lab_q, inv_q, emb_b, lab_b, inv_b, recurring):
 
 
 def conf_gate(pairs, target_p):
-    """신뢰도 게이팅: top1 유사도 높은 순으로 자동채움, running precision ≥ target_p 인 최대 prefix.
-    반환 (coverage=자동채움 비율, precision, tau=임계유사도). 나머지(1-coverage)는 사용자 검수/드롭다운.
+    """신뢰도 게이팅: top1 유사도 순 자동채움, running precision ≥ target_p 인 최대 prefix.
+
+    반환 (coverage=자동채움 비율, precision, tau=임계유사도). 나머지(1-coverage)는 사용자
+    검수/드롭다운.
     """
     if not pairs:
         return 0.0, 0.0, 1.0
@@ -262,8 +274,10 @@ def conf_gate(pairs, target_p):
 def train_split(
     base, ids, lab_arr, inv_arr, recurring, tr, va, lab2id, args, device, ckpt=None, verbose=True
 ):
-    """한 split 학습 → 카운트 반환. base=동결 backbone 베이스라인, best=projection 기준 best epoch.
-    개방 retrieval top-1/3/5 + 신뢰도 게이팅용 pairs 수집(운영: 자동채움 + 사용자 검수 드롭다운).
+    """한 split을 학습해 카운트를 반환한다.
+
+    base=동결 backbone 베이스라인, best=projection 기준 best epoch. 개방 retrieval top-1/3/5 +
+    신뢰도 게이팅용 pairs 수집(운영: 자동채움 + 사용자 검수 드롭다운).
     """
     model = build_model(device)
     qa, ba = [base[i] for i in va], [base[i] for i in tr]
@@ -339,7 +353,8 @@ def train_split(
 
 
 def train_production(base, ids, lab_arr, inv_arr, keys, lab2id, args, device):
-    """전체 clean crop 학습(고정 epoch·no early-stop) → 배포 모델 + 뱅크 export.
+    """전체 clean crop 학습(고정 epoch·no early-stop)으로 배포 모델 + 뱅크를 export한다.
+
     뱅크 = 전체 crop의 projection 임베딩 + 라벨/전표/key. 추론은 신규 crop을 임베딩해 뱅크에서 retrieval.
     """
     model = build_model(device)
@@ -388,6 +403,7 @@ def train_production(base, ids, lab_arr, inv_arr, keys, lab2id, args, device):
 
 
 def main():
+    """CLI 인자를 파싱해 교차검증 또는 배포 학습을 실행한다."""
     ap = argparse.ArgumentParser()
     ap.add_argument("--epochs", type=int, default=60)
     ap.add_argument("--batch", type=int, default=24)
@@ -404,7 +420,10 @@ def main():
     torch.manual_seed(SEED)
     np.random.seed(SEED)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    corr = json.load(open(CORR)) if CORR.exists() else {}
+    corr = {}
+    if CORR.exists():
+        with open(CORR) as f:
+            corr = json.load(f)
     print(
         f"교정: drop {len(corr.get('drop', []))} · ditto {len(corr.get('ditto', []))} · "
         f"relabel {len(corr.get('relabel', {}))} · merge {len(corr.get('merge', {}))}"
@@ -412,7 +431,7 @@ def main():
 
     sq, lab, inv, keys = prepare(corr)
     lab_inv = {}
-    for L, iv in zip(lab, inv):
+    for L, iv in zip(lab, inv, strict=False):
         lab_inv.setdefault(L, set()).add(iv)
     recurring = {L for L, s in lab_inv.items() if len(s) >= 2}
     print(

@@ -46,6 +46,7 @@ def _cmask(bgr, brt, vt):
 
 def _quad_extreme(bgr):
     """축정렬 극점(min/max of x±y) 코너검출 — 폼이 프레임에 거의 정렬됐을 때 정밀.
+
     contour가 기대면적(>=25%)을 못 채우면 임계를 단계적으로 완화. 회전·원근이 크면
     극점이 변 위 엉뚱한 점을 집어 워프 후 사다리꼴 잔여가 남는다(→ 후보 중 하나로만 사용).
     """
@@ -75,8 +76,9 @@ def _quad_extreme(bgr):
 
 
 def _form_blob(bgr, dilate):
-    """파랑마스크 ladder에서 최대 면적 contour(폼 덩어리). dilate=False면 부풀림 없이
-    tight — 코너가 배경/인접지로 끌려가지 않아 회전 폼에서 approx/minrect가 정확해진다
+    """파랑마스크 ladder에서 최대 면적 contour(폼 덩어리)를 반환한다.
+
+    dilate=False면 부풀림 없이 tight — 코너가 배경/인접지로 끌려가지 않아 회전 폼에서 approx/minrect가 정확해진다
     (기존 dilate 9x9x2는 코너를 ~18px 바깥으로 밀어 오선택 유발).
     """
     A = bgr.shape[0] * bgr.shape[1]
@@ -97,8 +99,9 @@ def _form_blob(bgr, dilate):
 
 
 def _quad_approx(c):
-    """Convex hull → approxPolyDP로 epsilon 키우며 정확히 4꼭짓점 폴리곤. 축정렬 극점과
-    달리 실제 코너를 찾으므로 회전·원근 불변. 4-gon 근사 실패 시 None.
+    """Convex hull → approxPolyDP로 epsilon 키우며 정확히 4꼭짓점 폴리곤을 찾는다.
+
+    축정렬 극점과 달리 실제 코너를 찾으므로 회전·원근 불변. 4-gon 근사 실패 시 None.
     """
     if c is None:
         return None
@@ -112,8 +115,9 @@ def _quad_approx(c):
 
 
 def _quad_derot(c):
-    """MinAreaRect 각도로 contour를 de-rotate → 축정렬 프레임에서 극점법(min/max x±y)으로
-    코너 검출 → 역회전해 되돌린다. 극점법은 축정렬일 때만 유효하므로 회전 폼을 먼저 펴서
+    """MinAreaRect 각도로 contour를 de-rotate → 극점법으로 코너 검출 → 역회전해 되돌린다.
+
+    극점법(min/max x±y)은 축정렬일 때만 유효하므로 회전 폼을 먼저 펴서
     적용 — minrect와 달리 원근을 보존하고, 그냥 extreme과 달리 회전에 강건하다. 회전+원근
     동시 케이스(inv050: hstd 2.0→0.4)의 사다리꼴 코너를 정확히 잡는다.
     """
@@ -132,7 +136,9 @@ def _quad_derot(c):
 
 
 def _candidate_quads(bgr):
-    """코너검출 후보 셋. 어느 단일 방식도 보편적이지 않다(near-axis는 극점이, 회전 폼은
+    """코너검출 후보 셋을 만든다.
+
+    어느 단일 방식도 보편적이지 않다(near-axis는 극점이, 회전 폼은
     approx/minrect가 유리) → 여럿 만들어 결과로 고른다(form_quad_robust). extreme를 항상
     첫 후보로 둬 동점 시 구버전 동작을 보존(회귀 방지).
     """
@@ -156,8 +162,9 @@ def _candidate_quads(bgr):
 
 
 def _line_spread(warped):
-    """워프+deskew 후 근수평 파랑선 각도의 표준편차(도). 0=완벽 평행(직사각), 크면
-    사다리꼴 수렴(원근 잔여). 검출선 부족 시 6.0(불량 페널티).
+    """워프+deskew 후 근수평 파랑선 각도의 표준편차(도)를 반환한다.
+
+    0=완벽 평행(직사각), 크면 사다리꼴 수렴(원근 잔여). 검출선 부족 시 6.0(불량 페널티).
     """
     m = blue_mask(warped)
     lines = cv2.HoughLinesP(
@@ -171,8 +178,9 @@ def _line_spread(warped):
 
 
 def _rect_score(bgr, quad):
-    """직사각성 점수 = DATA_Y 범위 full-width 수평 격자선 수 − _RECT_W·각도분산. 선완성도
-    (다운스트림 global_pitch/fit_phase가 쓰는 신호)와 직진성을 동시에 최적화한다.
+    """직사각성 점수 = DATA_Y 범위 full-width 수평 격자선 수 − _RECT_W·각도분산.
+
+    선완성도(다운스트림 global_pitch/fit_phase가 쓰는 신호)와 직진성을 동시에 최적화한다.
     """
     w0 = warp(bgr, quad)
     w = rotate(w0, deskew_angle(w0))
@@ -181,7 +189,9 @@ def _rect_score(bgr, quad):
 
 
 def form_quad_robust(bgr):
-    """회전·원근 불변 best-of-candidates 코너검출. 여러 전략(극점·approxPolyDP·minAreaRect·
+    """회전·원근 불변 best-of-candidates 코너검출.
+
+    여러 전략(극점·approxPolyDP·minAreaRect·
     de-rotated 극점)으로 각각 워프해보고 결과가 가장 직사각인 quad를 채택한다. homography는
     직선을 보존하므로 코너만 맞으면 격자가 완벽한 직사각이 된다 — 핵심은 '올바른 코너'이고
     그것을 결과(직사각성)로 검증해 고른다. 잔여 미해결은 동종 파랑격자 종이더미 위에 겹친
@@ -210,6 +220,7 @@ def deskew_angle(warped):
 
 
 def rotate(img, ang):
+    """이미지를 중심 기준 ang도 회전한다(흰 배경 채움)."""
     h, w = img.shape[:2]
     M = cv2.getRotationMatrix2D((w / 2, h / 2), ang, 1.0)
     return cv2.warpAffine(
@@ -223,22 +234,25 @@ def rotate(img, ang):
 
 
 def rectified(inv):
+    """전표를 워프·deskew해 (워프, deskew결과, 각도)를 반환한다."""
     w = warp(load_bgr(inv), form_quad_robust(load_bgr(inv)))
     ang = deskew_angle(w)
     return w, rotate(w, ang), ang
 
 
 def hlines_in_data(img):
+    """DATA_Y 범위 안의 수평 격자선 y들을 반환한다."""
     return [y for y in hline_ys(img) if DATA_Y[0] - 40 <= y <= DATA_Y[1] + 40]
 
 
 def main(ids, gt):
+    """전표별 deskew 전후 행선 수를 측정하고 몽타주를 저장한다."""
     panels = []
     all_ys = []
     print(f"{'inv':<9}{'ang°':>7}{'before':>7}{'after':>7}{'DBn':>5}")
     for inv in ids:
         w0, w1, ang = rectified(inv)
-        b, a = len(hlines_in_data(w0)), hlines_in_data(w1)
+        _b, a = len(hlines_in_data(w0)), hlines_in_data(w1)
         all_ys.append(a)
         print(f"{inv:<9}{ang:>7.2f}{len(hlines_in_data(w0)):>7}{len(a):>7}{len(gt[inv]):>5}")
         ov = w1.copy()
@@ -280,6 +294,7 @@ def main(ids, gt):
 
 
 if __name__ == "__main__":
-    gt = json.load(open(HERE / "item_gt.json"))
+    with open(HERE / "item_gt.json") as f:
+        gt = json.load(f)
     ids = sys.argv[1:] or sorted(gt)
     main(ids, gt)

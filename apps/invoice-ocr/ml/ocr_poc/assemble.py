@@ -18,6 +18,8 @@ _HEADER_KEYWORDS = {
 
 @dataclass(frozen=True)
 class AssembledRow:
+    """열 매핑으로 묶인 행(수량·단가·공급가 셀 삼중쌍)."""
+
     row_index: int
     quantity: DetectedCell | None
     unit_price: DetectedCell | None

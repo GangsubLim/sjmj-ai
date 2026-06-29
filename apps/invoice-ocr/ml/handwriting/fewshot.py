@@ -41,6 +41,7 @@ def tight_crop(bgr, margin=8):
 
 
 def square(img, size=224):
+    """타이트 크롭 후 정사각 흰 패딩으로 size×size 이미지를 만든다."""
     img = tight_crop(img)
     h, w = img.shape[:2]
     s = max(h, w)
@@ -50,6 +51,7 @@ def square(img, size=224):
 
 
 def load_crops():
+    """데이터셋 폴더에서 (label, invoice, path) 크롭 목록을 모은다."""
     items = []  # (label, invoice, path)
     for d in sorted(DS.glob("*")):
         if not d.is_dir():
@@ -61,6 +63,7 @@ def load_crops():
 
 
 def embed(items, proc, model, device, is_trocr):
+    """각 크롭을 인코더로 임베딩해 L2 정규화한 벡터 배열을 반환한다."""
     embs = []
     for _, _, f in items:
         img = cv2.cvtColor(cv2.imread(str(f)), cv2.COLOR_BGR2RGB)
@@ -80,6 +83,7 @@ def embed(items, proc, model, device, is_trocr):
 
 
 def main():
+    """leave-one-invoice-out few-shot retrieval 정확도를 평가·출력한다."""
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     is_trocr = "trocr" in MODEL.lower()
     print(f"device={device}  loading {MODEL} ...", flush=True)
@@ -99,7 +103,7 @@ def main():
     lab_invs = defaultdict(set)
     for lab, inv, _ in items:
         lab_invs[lab].add(inv)
-    recurring = {l for l, s in lab_invs.items() if len(s) >= 2}
+    recurring = {lab for lab, s in lab_invs.items() if len(s) >= 2}
 
     top1 = top3 = evaln = 0
     miss_by_inv = defaultdict(int)
