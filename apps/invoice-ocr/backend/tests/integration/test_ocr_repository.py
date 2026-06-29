@@ -50,3 +50,20 @@ def test_insert_correction():
     inv_id = InvoiceRepository().insert(td.invoice())
     cid = repo.insert_correction(job_id, inv_id, {"lines": [], "rows_added": 0, "rows_dropped": 0})
     assert cid > 0
+
+
+def test_claim_job_returns_parsed_job():
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(job_id, "done", {"rows": [], "supply_sum": 0, "warp_ok": True})
+    job = repo.claim_job(job_id)
+    assert job is not None
+    assert job["id"] == job_id
+    assert job["status"] == "done"
+    assert job["result_json"] == {"rows": [], "supply_sum": 0, "warp_ok": True}
+    assert job["invoice_id"] is None
+
+
+def test_claim_job_not_found_returns_none():
+    repo = OcrRepository()
+    assert repo.claim_job(999999) is None
