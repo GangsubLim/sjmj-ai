@@ -65,8 +65,14 @@ class OcrRepository:
     def update_result(self, job_id: int, status: str, result_json: dict) -> None:
         with connection() as conn:
             conn.execute(
-                text("UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"),
-                {"s": status, "r": json.dumps(result_json, ensure_ascii=False), "id": job_id},
+                text(
+                    "UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"
+                ),
+                {
+                    "s": status,
+                    "r": json.dumps(result_json, ensure_ascii=False),
+                    "id": job_id,
+                },
             )
 
     def insert_correction(

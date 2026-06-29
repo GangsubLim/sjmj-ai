@@ -7,7 +7,13 @@ def _result(rows):
 
 def test_label_changed_and_supply_unchanged():
     result = _result(
-        [{"crop_ref": "job-42/row-0", "item_top5": [{"label": "삼겹살", "sim": 0.83}], "supply": 120000}]
+        [
+            {
+                "crop_ref": "job-42/row-0",
+                "item_top5": [{"label": "삼겹살", "sim": 0.83}],
+                "supply": 120000,
+            }
+        ]
     )
     final = [{"crop_ref": "job-42/row-0", "name": "목살", "supply": 120000}]
     out = build_correction(result, final)
@@ -37,7 +43,13 @@ def test_row_added_when_final_item_has_no_crop_ref():
 
 def test_row_dropped_when_draft_crop_unmatched():
     result = _result(
-        [{"crop_ref": "job-42/row-0", "item_top5": [{"label": "삼겹살", "sim": 0.8}], "supply": 120000}]
+        [
+            {
+                "crop_ref": "job-42/row-0",
+                "item_top5": [{"label": "삼겹살", "sim": 0.8}],
+                "supply": 120000,
+            }
+        ]
     )
     final = []
     out = build_correction(result, final)

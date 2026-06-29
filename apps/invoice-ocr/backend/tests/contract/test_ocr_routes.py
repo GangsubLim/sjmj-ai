@@ -67,7 +67,9 @@ def test_confirm_twice_returns_409(client):
     job_id = repo.insert_job("/x.jpg")
     repo.update_result(job_id, "done", {"rows": [], "supply_sum": 0, "warp_ok": True})
     payload = td.invoice_with_items()
-    assert client.post(f"/api/ocr/jobs/{job_id}/confirm", json=payload).status_code == 200
+    assert (
+        client.post(f"/api/ocr/jobs/{job_id}/confirm", json=payload).status_code == 200
+    )
     r2 = client.post(f"/api/ocr/jobs/{job_id}/confirm", json=payload)
     assert r2.status_code == 409
     assert r2.json()["error"]["code"] == "CONFLICT"
