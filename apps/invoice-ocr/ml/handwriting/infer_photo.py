@@ -52,9 +52,10 @@ def b64(rgb_or_bgr, w=170, is_bgr=False):
     return base64.b64encode(cv2.imencode(".png", img)[1]).decode()
 
 
-def load_model(device):
+def load_model_from(path, device):
+    """품목 인코더 적재 — path 명시 버전. 데모는 load_model_from(PROD, device)로 호출."""
     model = build_model(device)
-    ck = torch.load(PROD, map_location=device)
+    ck = torch.load(path, map_location=device)
     model.load_state_dict(ck["model"])
     model.eval()
     return model
@@ -218,7 +219,7 @@ def main():
     # transformers ViT를 MPS에 상주+forward한 뒤 mlx generate가 '!!!' degenerate로 깨진다(실측).
     # crop 소수라 CPU forward ~1.6s로 충분. 금액 OCR Qwen은 Metal 전용으로 둔다.
     device = "cpu"
-    model = load_model(device)
+    model = load_model_from(PROD, device)
     qwen = load_ocr()
     z = np.load(BANK, allow_pickle=True)
     E, lab = z["emb"], list(z["lab"])
