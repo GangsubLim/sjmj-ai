@@ -11,13 +11,16 @@ export function useOcrInfer() {
   const [status, setStatus] = React.useState<Status>("idle");
   const [result, setResult] = React.useState<OcrResult | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  const [jobId, setJobId] = React.useState<number | null>(null);
 
   const upload = React.useCallback(async (file: File) => {
     setStatus("pending");
     setResult(null);
     setError(null);
+    setJobId(null);
     const { data } = await ocrAPI.createJob(file);
     const jobId = data.job_id;
+    setJobId(jobId);
 
     for (let i = 0; i < MAX_POLLS; i++) {
       const { data: job } = (await ocrAPI.getJob(jobId)) as {
@@ -40,5 +43,5 @@ export function useOcrInfer() {
     setStatus("failed");
   }, []);
 
-  return { status, result, error, upload };
+  return { status, result, error, jobId, upload };
 }
