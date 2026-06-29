@@ -3,6 +3,8 @@
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS ocr_corrections;
+DROP TABLE IF EXISTS ocr_jobs;
 DROP TABLE IF EXISTS app_settings;
 DROP TABLE IF EXISTS invoice_items;
 DROP TABLE IF EXISTS invoices;
@@ -138,4 +140,31 @@ CREATE TABLE IF NOT EXISTS sales_records (
   INDEX idx_work_date (work_date),
   CONSTRAINT fk_sales_records_salesperson FOREIGN KEY (salesperson_id)
     REFERENCES salespeople(id) ON DELETE RESTRICT
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 추론 잡 테이블 (migration_007_ml_seam)
+CREATE TABLE ocr_jobs (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    image_path VARCHAR(512),
+    result_json JSON,
+    invoice_id INT,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_ocr_jobs_status (status),
+    CONSTRAINT fk_ocr_jobs_invoice FOREIGN KEY (invoice_id)
+        REFERENCES invoices(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 교정 피드백 테이블 (migration_007_ml_seam)
+CREATE TABLE ocr_corrections (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_id INT UNSIGNED,
+    invoice_id INT,
+    correction_json JSON,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT fk_ocr_corrections_job FOREIGN KEY (job_id)
+        REFERENCES ocr_jobs(id) ON DELETE SET NULL,
+    CONSTRAINT fk_ocr_corrections_invoice FOREIGN KEY (invoice_id)
+        REFERENCES invoices(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
