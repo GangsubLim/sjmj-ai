@@ -18,6 +18,8 @@ jobs:
       HEALTH_URL: http://127.0.0.1:8400/health
       BACKEND_DIR: apps/invoice-ocr/backend
       FRONTEND_DIR: apps/invoice-ocr/frontend
+      ML_WORKER_ENV_FILE: /Users/submini/.sjmj-ai/ml-worker.env
+      ML_WORKER_LABEL: ai.sjmj.ml-worker
 
     steps:
       - name: Record previous commit
@@ -72,6 +74,36 @@ jobs:
           done
           [[ "$ok" == "1" ]] || { echo "health check failed: $HEALTH_URL" >&2; exit 1; }
 
+      - name: Restart ml-worker
+        run: |
+          set -euo pipefail
+          # ml-worker는 장기 실행 프로세스(worker.main)라 시작 시 infer_job/모델을
+          # 1회 import해 메모리에 캐시한다. git checkout이 디스크 코드를 갱신해도
+          # 재시작 전까지 옛 코드를 계속 실행하므로 배포마다 재시작이 필수다.
+          # ml venv(.venv)는 package=false로 의존성을 수동 핀했으므로 uv sync 하지 않는다
+          # (소스는 cwd에서 import → 재시작이 새 코드를 로드). 의존성 변경은 별도 수동 절차.
+          chmod +x scripts/run-ml-worker.sh scripts/install-launchagent-ml-worker.sh
+          SJMJ_ENV_FILE="$ML_WORKER_ENV_FILE" scripts/install-launchagent-ml-worker.sh
+
+      - name: ml-worker liveness
+        run: |
+          set -euo pipefail
+          GUI="gui/$(id -u)/$ML_WORKER_LABEL"
+          status() { launchctl print "$GUI" 2>/dev/null; }
+          pid_of() { status | awk -F= '/[^a-z]pid =/{gsub(/ /,"",$2);print $2;exit}'; }
+          state_of() { status | awk -F'= ' '/[^a-z]state =/{print $2;exit}'; }
+          # 모델 재적재(수십초)가 끝나길 기다리지 않는다 — 즉시 크래시(KeepAlive 재기동 루프)만 잡는다.
+          sleep 3
+          pid1=$(pid_of); st1=$(state_of)
+          [[ "$st1" == "running" && -n "$pid1" ]] \
+            || { echo "ml-worker not running after start (state=$st1 pid=$pid1)" >&2; status | grep -E "state|pid|last exit" >&2 || true; exit 1; }
+          # 10초 뒤 같은 pid가 살아 있어야 한다(크래시 시 KeepAlive가 새 pid로 재기동).
+          sleep 10
+          pid2=$(pid_of); st2=$(state_of)
+          [[ "$st2" == "running" && "$pid2" == "$pid1" ]] \
+            || { echo "ml-worker unstable (pid $pid1 -> $pid2, state=$st2) — likely crash loop" >&2; status | grep -E "state|pid|last exit" >&2 || true; exit 1; }
+          echo "ml-worker healthy: pid $pid2 stable, state running"
+
       - name: Rollback on failure
         if: failure()
         run: |
@@ -90,3 +122,8 @@ jobs:
             sleep 2
           done
           [[ "$ok" == "1" ]] || { echo "rollback health check failed" >&2; exit 1; }
+          # backend와 버전 정합을 위해 ml-worker도 이전 SHA 코드로 재시작한다.
+          # 롤백의 핵심(backend health)은 위에서 끝났으므로 여기 실패가 롤백을 막지 않게 best-effort.
+          chmod +x scripts/run-ml-worker.sh scripts/install-launchagent-ml-worker.sh || true
+          SJMJ_ENV_FILE="$ML_WORKER_ENV_FILE" scripts/install-launchagent-ml-worker.sh \
+            || echo "warn: ml-worker rollback restart failed — restart manually on macmini" >&2
