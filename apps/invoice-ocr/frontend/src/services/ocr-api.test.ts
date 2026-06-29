@@ -19,6 +19,9 @@ describe("ocrAPI", () => {
         headers: { "Content-Type": "multipart/form-data" },
       }),
     );
+    const form = (api.post as ReturnType<typeof vi.spyOn>).mock
+      .calls[0][1] as FormData;
+    expect(form.get("photo")).toBe(file);
     expect(res.data.job_id).toBe(1);
   });
 
