@@ -16,7 +16,7 @@
 
 ```
 ocr_poc/        SP1 본 파이프라인 (git-tracked, 아래 "아키텍처" 참조)
-tests/          pytest. 14개 파일. ocr_poc/* 1:1 대응
+tests/          pytest. test_*.py 12개. ocr_poc/* 1:1 대응
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
