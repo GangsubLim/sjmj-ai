@@ -5,6 +5,14 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.2.1] — 2026-06-29
+
+OCR로 인식한 공급가액을 실제 원 단위 금액으로 바로잡는다 ([#6](https://github.com/GangsubLim/sjmj-ai/pull/6)).
+
+### Fixed
+
+- 수기 거래명세서가 천 단위를 생략해 적는 점을 반영해, 인식한 공급가액을 ×1000 보정한 실제 원 단위 금액으로 저장 — 인식에 실패한 행은 합산에서 제외
+
 ## [v0.2.0] — 2026-06-29
 
 수기 거래명세서 사진 한 장으로 작성 폼을 자동 채우는 OCR 자동입력 슬라이스를 추가한다 ([#4](https://github.com/GangsubLim/sjmj-ai/pull/4)).
