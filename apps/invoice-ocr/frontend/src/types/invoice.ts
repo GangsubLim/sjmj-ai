@@ -8,6 +8,7 @@ export interface InvoiceItem {
   total: number;
   item_order: number;
   deduction: boolean;
+  crop_ref?: string;
 }
 
 export interface Invoice {

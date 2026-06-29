@@ -1,0 +1,74 @@
+"""품목·금액 결합 그룹핑 오케스트레이터 — rectify→금액척추 행검출→이중신호 proposal.
+
+임계(ITEM_MIN/AMT_MIN/PAD/ON_THRESH)는 교정 GT(grouping_corrections.json)로 튜닝하는
+설정값이다. group.py는 임계 무지(인자로만 받음).
+"""
+import json
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).parent
+sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE))
+from grid_v4 import warp, faint_on  # noqa: E402
+from rectify import form_quad_robust, deskew_angle, rotate  # noqa: E402
+from canon import global_pitch  # noqa: E402
+from rows import detect_grid_rows, band_features  # noqa: E402
+from group import build_proposal  # noqa: E402
+from dataset_build import load_bgr_path, ORG, faint_set  # noqa: E402
+
+FAINT = faint_set()   # 흐림 회수 대상(review_flags 'faint') — 이 전표만 대비향상 hline
+
+ITEM_MIN = 0.04    # 품목칸 손글씨 ink 최소(채워진 셀=new ↔ 빈/연속 셀) — 74장 스윕 최적
+AMT_MIN = 0.045    # 금액칸 손글씨 ink 최소(데이터 행 ↔ 빈행, trim 절단 기준) — 74장 스윕 최적
+PAD = 3
+
+
+def rectify_warp(cname):
+    bgr = load_bgr_path(ORG / cname)
+    w0 = warp(bgr, form_quad_robust(bgr))
+    return rotate(w0, deskew_angle(w0))
+
+
+def propose(warp_img, db_names, P):
+    bands = detect_grid_rows(warp_img, P)
+    item_inks, amt_inks, stroke_rows = band_features(warp_img, bands)
+    return build_proposal(bands, item_inks, amt_inks, stroke_rows, db_names,
+                          item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD)
+
+
+def all_warps_and_pitch():
+    """74장 워프 + 전역 피치. (cname -> warp, P, manifest)"""
+    from rows import stroke_profile_col  # noqa
+    manifest = json.load(open(ORG / "manifest.json"))
+    cnames = sorted(manifest)
+    warps, ys_all = {}, {}
+    for cn in cnames:
+        with faint_on(cn in FAINT):
+            w = rectify_warp(cn)
+            warps[cn] = w
+            # 피치 추정용 금액칸 행선 근사(detect 전이라 임시로 hline 대신 amount run 사용 안 함)
+            from grid_v4 import hline_ys
+            from canon import Y0 as _Y0, Y1 as _Y1
+            ys_all[cn] = [y for y in hline_ys(w) if _Y0 - 40 <= y <= _Y1 + 40]
+    P = global_pitch(ys_all)
+    return cnames, warps, manifest, P
+
+
+def main():
+    cnames, warps, manifest, P = all_warps_and_pitch()
+    ok = 0
+    print(f"P={P:.1f} ITEM_MIN={ITEM_MIN} AMT_MIN={AMT_MIN}\n")
+    print(f"{'cname':<26}{'rows':>5}{'blk':>5}{'DBn':>5}  status")
+    for cn in cnames:
+        names = manifest[cn]["items"]
+        with faint_on(cn in FAINT):
+            p = propose(warps[cn], names, P)
+        ok += p.status == "ok"
+        ndata = sum(1 for r in p.rows if r.rtype != "empty")
+        print(f"{cn:<26}{ndata:>5}{p.n_blocks:>5}{len(names):>5}  {p.status}")
+    print(f"\nstatus==ok : {ok}/{len(cnames)}")
+
+
+if __name__ == "__main__":
+    main()

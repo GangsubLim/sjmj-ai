@@ -17,6 +17,8 @@ from sqlalchemy import create_engine, text
 from app import db as dbmod
 
 _ALL_TABLES = [
+    "ocr_corrections",
+    "ocr_jobs",
     "invoice_items",
     "invoices",
     "company_suggestions",

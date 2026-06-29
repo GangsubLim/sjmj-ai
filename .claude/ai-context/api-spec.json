@@ -49,7 +49,11 @@
 
       { "method": "GET", "path": "/api/sales-records", "summary": "Monthly sales aggregate — SINGLE object {salespeople,records}, NOT a list, no pagination; year/month required (400 if out of range)", "auth": "public", "req": null, "res": "SalesRecordMonthly", "router": "sales_records", "source": "app/routers/sales_records.py" },
       { "method": "POST", "path": "/api/sales-records", "summary": "Upsert sales record (201; UNIQUE(salesperson_id,work_date); snapshot_name SERVER-filled, client input ignored)", "auth": "public", "req": "SalesRecordRequest", "res": "SalesRecord", "router": "sales_records", "source": "app/routers/sales_records.py" },
-      { "method": "DELETE", "path": "/api/sales-records/{id}", "summary": "Delete sales record (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "sales_records", "source": "app/routers/sales_records.py" }
+      { "method": "DELETE", "path": "/api/sales-records/{id}", "summary": "Delete sales record (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "sales_records", "source": "app/routers/sales_records.py" },
+
+      { "method": "POST", "path": "/api/ocr/jobs", "summary": "Upload photo + enqueue OCR job (201; multipart photo field; saves to $SJMJ_DATA_DIR/ocr_uploads)", "auth": "public", "req": "OcrJobCreate", "res": "OcrJobAck", "router": "ocr", "source": "app/routers/ocr.py" },
+      { "method": "GET", "path": "/api/ocr/jobs/{id}", "summary": "Poll OCR job status (pending/running/done/failed; done→result, failed→error; 404 if missing)", "auth": "public", "req": null, "res": "OcrJobStatus", "router": "ocr", "source": "app/routers/ocr.py" },
+      { "method": "POST", "path": "/api/ocr/jobs/{id}/confirm", "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed)", "auth": "public", "req": "OcrConfirmRequest", "res": "OcrConfirmAck", "router": "ocr", "source": "app/routers/ocr.py" }
     ],
     "schema-usage": {
       "HealthResponse": ["GET /health", "GET /api/health"],
@@ -71,12 +75,17 @@
       "SalesRecordRequest": ["POST /api/sales-records"],
       "SalesRecordMonthly": ["GET /api/sales-records"],
       "DeletedEnvelope": ["DELETE /api/invoices/{id}", "DELETE /api/companies/{id}", "DELETE /api/items/{id}", "DELETE /api/salespeople/{id}", "DELETE /api/sales-records/{id}"],
+      "OcrJobCreate": ["POST /api/ocr/jobs"],
+      "OcrJobAck": ["POST /api/ocr/jobs"],
+      "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
+      "OcrConfirmRequest": ["POST /api/ocr/jobs/{id}/confirm"],
+      "OcrConfirmAck": ["POST /api/ocr/jobs/{id}/confirm"],
       "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"]
     },
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
-      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 맵 (PHP 골든 메시지 동치).",
+      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 맵 (PHP 골든 메시지 동치).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
       "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
@@ -221,6 +230,46 @@
     "/api/sales-records/{id}": {
       "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
       "delete": { "tags": ["sales_records"], "summary": "Delete sales record", "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+    },
+    "/api/ocr/jobs": {
+      "post": {
+        "tags": ["ocr"],
+        "summary": "Upload photo + enqueue OCR job",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": { "schema": { "$ref": "#/components/schemas/OcrJobCreate" } }
+          }
+        },
+        "responses": {
+          "201": { "description": "Job enqueued", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrJobAck" } } }] } } } }
+        }
+      }
+    },
+    "/api/ocr/jobs/{id}": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+      "get": {
+        "tags": ["ocr"],
+        "summary": "Poll OCR job status",
+        "responses": {
+          "200": { "description": "Job status", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrJobStatus" } } }] } } } },
+          "404": { "description": "Job not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
+    },
+    "/api/ocr/jobs/{id}/confirm": {
+      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+      "post": {
+        "tags": ["ocr"],
+        "summary": "Confirm OCR draft → create invoice",
+        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OcrConfirmRequest" } } } },
+        "responses": {
+          "200": { "description": "Invoice created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrConfirmAck" } } }] } } } },
+          "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "404": { "description": "Job not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
+          "409": { "description": "Already confirmed or job not done", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+        }
+      }
     }
   },
   "components": {
@@ -284,7 +333,7 @@
             "type": "object",
             "required": ["code", "message"],
             "properties": {
-              "code": { "type": "string", "enum": ["VALIDATION_ERROR", "NOT_FOUND", "DUPLICATE_NAME", "SERVER_ERROR"] },
+              "code": { "type": "string", "enum": ["VALIDATION_ERROR", "NOT_FOUND", "DUPLICATE_NAME", "CONFLICT", "SERVER_ERROR"] },
               "message": { "type": "string" },
               "details": { "type": "object", "description": "검증 실패 시 {필드: 메시지} 맵", "additionalProperties": { "type": "string" } }
             }
@@ -534,6 +583,76 @@
         "properties": {
           "salespeople": { "type": "array", "items": { "$ref": "#/components/schemas/Salesperson" } },
           "records": { "type": "array", "items": { "$ref": "#/components/schemas/SalesRecord" } }
+        }
+      },
+      "OcrJobCreate": {
+        "type": "object",
+        "description": "OCR 잡 생성 요청 — 수기 거래명세서 이미지 업로드 (multipart/form-data).",
+        "required": ["photo"],
+        "properties": { "photo": { "type": "string", "format": "binary" } }
+      },
+      "OcrJobAck": {
+        "type": "object",
+        "description": "OCR 잡 생성 응답 (POST /api/ocr/jobs 201). status 는 항상 'pending'.",
+        "required": ["job_id", "status"],
+        "properties": {
+          "job_id": { "type": "integer" },
+          "status": { "type": "string", "enum": ["pending"] }
+        }
+      },
+      "OcrJobStatus": {
+        "type": "object",
+        "description": "OCR 잡 상태 응답 (GET /api/ocr/jobs/{id}). done→result 포함, failed→error 포함.",
+        "required": ["id", "status"],
+        "properties": {
+          "id": { "type": "integer" },
+          "status": { "type": "string", "enum": ["pending", "running", "done", "failed"] },
+          "result": { "type": "object", "nullable": true, "description": "status=done 일 때 포함" },
+          "error": { "type": "string", "nullable": true, "description": "status=failed 일 때 포함" }
+        }
+      },
+      "OcrConfirmRequest": {
+        "type": "object",
+        "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref (서버가 제거 후 invoice 생성).",
+        "required": ["issue_date", "recipient", "items"],
+        "properties": {
+          "issue_date": { "type": "string", "format": "date", "description": "YYYY-MM-DD" },
+          "recipient": { "type": "string" },
+          "recipient2": { "type": "string", "nullable": true },
+          "vehicle_no": { "type": "string", "nullable": true },
+          "document_title": { "type": "string" },
+          "memo": { "type": "string", "nullable": true },
+          "show_stamp": { "type": "boolean" },
+          "total_supply": { "type": "integer" },
+          "total_vat": { "type": "integer" },
+          "grand_total": { "type": "integer" },
+          "items": {
+            "type": "array",
+            "minItems": 1,
+            "description": "non_empty_array 검증. crop_ref 는 서버가 제거 후 invoice_items 저장.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": { "type": "string" },
+                "quantity": { "type": "integer" },
+                "unit": { "type": "string" },
+                "unit_price": { "type": "integer" },
+                "supply": { "type": "integer" },
+                "vat": { "type": "integer" },
+                "total": { "type": "integer" },
+                "deduction": { "type": "boolean" },
+                "crop_ref": { "type": "string", "nullable": true, "description": "OCR 원본 영역 참조. 서버가 correction 저장 후 invoice_items에서 제거." }
+              }
+            }
+          }
+        }
+      },
+      "OcrConfirmAck": {
+        "type": "object",
+        "description": "OCR 확정 성공 응답 (POST /api/ocr/jobs/{id}/confirm).",
+        "required": ["invoice_id"],
+        "properties": {
+          "invoice_id": { "type": "integer" }
         }
       }
     }

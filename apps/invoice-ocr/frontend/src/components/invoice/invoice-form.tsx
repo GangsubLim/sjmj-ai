@@ -1,11 +1,13 @@
 import * as React from "react";
 import { useNavigate } from "react-router-dom";
+import axios from "axios";
 import {
   CarIcon,
   PlusIcon,
   FileTextIcon,
   SaveIcon,
   RotateCcwIcon,
+  CameraIcon,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -17,7 +19,9 @@ import { useItems } from "@/hooks/use-items";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useSettings } from "@/hooks/use-settings";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { invoiceAPI } from "@/services/api";
+import { useOcrInfer } from "@/hooks/use-ocr-infer";
+import { invoiceAPI, ocrAPI } from "@/services/api";
+import { rowsToItems } from "./ocr-prefill";
 
 import { PageHeader, PageContainer, SectionHeader } from "@/components/layout";
 import { Input } from "@/components/ui/input";
@@ -98,6 +102,20 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   const [isDirty, setIsDirty] = React.useState(false);
   const isInitialMount = React.useRef(true);
 
+  // OCR 사진 인식 (사진 업로드 → 추론 → 행 pre-fill)
+  const ocr = useOcrInfer();
+  const photoInputRef = React.useRef<HTMLInputElement>(null);
+  const isOcrBusy = ocr.status === "pending" || ocr.status === "running";
+
+  const handlePhotoSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ""; // 같은 파일 재선택 허용
+    if (!file) return;
+    ocr.upload(file).catch(() => {
+      toast.error("사진 인식에 실패했습니다");
+    });
+  };
+
   const itemsKey = JSON.stringify(
     items.map((i) => ({
       n: i.name,
@@ -153,6 +171,27 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     window.addEventListener("beforeunload", handler);
     return () => window.removeEventListener("beforeunload", handler);
   }, [isDirty]);
+
+  // OCR 추론 완료/실패 시 행 채우기 또는 안내
+  React.useEffect(() => {
+    if (ocr.status === "failed") {
+      toast.error(ocr.error ?? "사진 인식에 실패했습니다");
+      return;
+    }
+    if (ocr.status !== "done" || !ocr.result) return;
+    if (!ocr.result.warp_ok) {
+      toast.warning("문서 보정에 실패했습니다. 직접 입력해주세요");
+      return;
+    }
+    setItems(
+      rowsToItems(ocr.result).map((prefill, i) => ({
+        ...DEFAULT_ITEM,
+        ...prefill,
+        item_order: i,
+        _tempId: crypto.randomUUID(),
+      })),
+    );
+  }, [ocr.status, ocr.result, ocr.error]);
 
   // Autocomplete data
   const [companyQuery, setCompanyQuery] = React.useState("");
@@ -271,14 +310,21 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       if (mode === "edit" && initialData?.id) {
         await invoiceAPI.update(initialData.id, payload);
         toast.success("거래명세서가 수정되었습니다");
+      } else if (ocr.jobId != null) {
+        await ocrAPI.confirm(ocr.jobId, payload);
+        toast.success("거래명세서가 저장되었습니다");
       } else {
         await invoiceAPI.create(payload);
         toast.success("거래명세서가 저장되었습니다");
       }
       setIsDirty(false);
       navigate("/list");
-    } catch {
-      toast.error("저장에 실패했습니다");
+    } catch (err) {
+      if (axios.isAxiosError(err) && err.response?.status === 409) {
+        toast.error("이미 확정된 명세서입니다");
+      } else {
+        toast.error("저장에 실패했습니다");
+      }
     } finally {
       setSaving(false);
     }
@@ -354,6 +400,28 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       <section>
         <SectionHeader title="문서 정보" />
         <div className="mt-2 space-y-3">
+          {mode === "create" && (
+            <>
+              <button
+                type="button"
+                onClick={() => photoInputRef.current?.click()}
+                disabled={isOcrBusy}
+                className="border-primary/30 bg-primary/5 text-primary hover:bg-primary/10 focus-visible:ring-ring flex h-12 w-full items-center justify-center gap-2 rounded-xl border-2 border-dashed transition-colors focus-visible:ring-2 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                <CameraIcon className="size-4" aria-hidden="true" />
+                <span className="text-sm font-medium">
+                  {isOcrBusy ? "사진 인식 중…" : "사진으로 품목 채우기"}
+                </span>
+              </button>
+              <input
+                ref={photoInputRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={handlePhotoSelect}
+              />
+            </>
+          )}
           <div className="space-y-1">
             <Label
               htmlFor="invoice-document-title"

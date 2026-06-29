@@ -1,6 +1,13 @@
+# 모델·데이터 아티팩트는 코드가 아님 — 어디 있든 무시(안전망)
+*.pt
+*.npz
+
+# 운영/실험 데이터·산출물
+data/
 results/
-report/
 review/
-.env
+report/
 .venv/
+poc/
+.env
 __pycache__/

@@ -23,6 +23,10 @@ def not_found(message: str = "Resource not found") -> None:
     raise AppError(404, "NOT_FOUND", message)
 
 
+def conflict(message: str) -> None:
+    raise AppError(409, "CONFLICT", message)
+
+
 def _error_body(code: str, message: str, details: dict | None) -> dict:
     err: dict = {"code": code, "message": message}
     if details is not None:

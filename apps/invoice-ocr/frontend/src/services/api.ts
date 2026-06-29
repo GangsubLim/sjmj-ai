@@ -11,6 +11,7 @@ import type {
   MonthlySalesData,
   SalesRecordUpsertInput,
 } from "@/types/sales-record";
+import type { OcrJobStatus } from "@/types/ocr";
 
 // --- Mock mode flag ---
 
@@ -366,6 +367,34 @@ const _realSalesRecordAPI = {
     return response.data;
   },
 };
+
+// --- Real OCR API ---
+
+const _realOcrAPI = {
+  createJob: async (file: File) => {
+    const form = new FormData();
+    form.append("photo", file);
+    const response = await api.post("/ocr/jobs", form, {
+      headers: { "Content-Type": "multipart/form-data" },
+    });
+    return response.data as {
+      success: boolean;
+      data: { job_id: number; status: string };
+    };
+  },
+
+  getJob: async (id: number) => {
+    const response = await api.get(`/ocr/jobs/${id}`);
+    return response.data as { success: boolean; data: OcrJobStatus };
+  },
+
+  confirm: async (id: number, payload: unknown) => {
+    const response = await api.post(`/ocr/jobs/${id}/confirm`, payload);
+    return response.data as { success: boolean; data: { invoice_id: number } };
+  },
+};
+
+export const ocrAPI = _realOcrAPI;
 
 // --- Conditional exports: mock or real API ---
 
