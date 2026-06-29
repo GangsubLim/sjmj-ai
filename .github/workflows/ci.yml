@@ -26,6 +26,18 @@ jobs:
           version: 0.15.12
           args: format --check
           src: apps/invoice-ocr/backend
+      - name: Ruff lint (ml)
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: 0.15.12
+          args: check --output-format=github
+          src: apps/invoice-ocr/ml
+      - name: Ruff format check (ml)
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: 0.15.12
+          args: format --check
+          src: apps/invoice-ocr/ml
 
   frontend:
     name: frontend
@@ -85,3 +97,21 @@ jobs:
           DB_USER: root
           DB_PASS: ci_root_pw
         run: uv run pytest -q --cov=app --cov-report=term-missing --cov-fail-under=80
+
+  ml:
+    name: ml
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/invoice-ocr/ml
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        # worker extra(sqlalchemy/pymysql)는 test_worker_db가 import한다.
+        # ml extra(paddle)는 테스트가 지연 import라 불필요 → 가볍게 worker만.
+        run: uv sync --frozen --extra worker
+      - name: Pytest
+        run: uv run pytest -q
