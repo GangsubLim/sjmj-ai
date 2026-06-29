@@ -70,7 +70,7 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
     for i, _row in enumerate(news):
         cv2.imwrite(str(crop_out_dir / f"row-{i}.png"), crops[i])
         sims = E @ queries[i] if len(queries) else np.zeros(0)
-        top5 = [{"label": L, "sim": s} for L, s in ip.topk(sims, lab, 5)] if len(sims) else []
+        top5 = [{"label": L, "sim": s} for L, s in ip.topk(sims, lab, ip.TOPK)] if len(sims) else []
         amt, raw = amounts[i]
         rows.append({"row_index": i, "item_top5": top5, "supply": amt, "amount_raw": raw})
 
