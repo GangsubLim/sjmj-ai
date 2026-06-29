@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>폰트 Bold 테스트</title>
+    <style>
+        @font-face {
+            font-family: 'Batang';
+            src: url('./fonts/Batang.ttf') format('truetype');
+            font-weight: normal;
+            font-style: normal;
+            font-display: swap;
+        }
+        
+        .test-container {
+            font-family: 'Batang', serif;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        
+        .normal { font-weight: normal; }
+        .bold { font-weight: bold; }
+        .weight-700 { font-weight: 700; }
+        .weight-300 { font-weight: 300; }
+        .weight-400 { font-weight: 400; }
+        
+        .test-item {
+            margin: 10px 0;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+    <div class="test-container">
+        <h1>Batang 폰트 Bold 효과 테스트</h1>
+        
+        <div class="test-item normal">
+            일반 텍스트 (font-weight: normal) - 거래명세서 샘플
+        </div>
+        
+        <div class="test-item bold">
+            굵은 텍스트 (font-weight: bold) - 거래명세서 샘플
+        </div>
+        
+        <div class="test-item weight-300">
+            가는 텍스트 (font-weight: 300) - 거래명세서 샘플
+        </div>
+        
+        <div class="test-item weight-400">
+            보통 텍스트 (font-weight: 400) - 거래명세서 샘플
+        </div>
+        
+        <div class="test-item weight-700">
+            굵은 텍스트 (font-weight: 700) - 거래명세서 샘플
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <h2 class="bold">제목도 굵게 표시됩니다</h2>
+            <p>
+                <strong>strong 태그</strong>와 <b>b 태그</b>도 정상적으로 굵게 표시됩니다.
+                <br>
+                <span style="font-weight: 600;">font-weight: 600</span>도 적용됩니다.
+            </p>
+        </div>
+    </div>
+</body>
+</html>

@@ -1,0 +1,6 @@
+results/
+report/
+review/
+.env
+.venv/
+__pycache__/

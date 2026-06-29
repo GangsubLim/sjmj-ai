@@ -1,0 +1,92 @@
+name: Deploy sjmj-ai to Mac mini
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, macmini]
+    defaults:
+      run:
+        working-directory: /Users/submini/sjmj-ai
+
+    env:
+      SJMJ_ENV_FILE: /Users/submini/.sjmj-ai/backend.env
+      HEALTH_URL: http://127.0.0.1:8400/health
+      BACKEND_DIR: apps/invoice-ocr/backend
+      FRONTEND_DIR: apps/invoice-ocr/frontend
+
+    steps:
+      - name: Record previous commit
+        id: previous
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch target ref
+        run: git fetch --tags --force origin
+
+      - name: Checkout target
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            git checkout --force "${GITHUB_REF_NAME}"
+          else
+            git checkout --force "${GITHUB_SHA}"
+          fi
+
+      - name: Backup operational DB
+        run: |
+          set -euo pipefail
+          chmod +x scripts/backup-db.sh
+          SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/backup-db.sh
+
+      - name: Backend deps + import smoke
+        run: |
+          set -euo pipefail
+          cd "$BACKEND_DIR"
+          uv sync --frozen
+          uv run python -c "from app.main import app; assert app"
+
+      - name: Build frontend
+        run: |
+          set -euo pipefail
+          cd "$FRONTEND_DIR"
+          npm ci
+          npm run build
+
+      - name: Restart LaunchAgent
+        run: |
+          set -euo pipefail
+          chmod +x scripts/run-backend.sh scripts/install-launchagent.sh
+          SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/install-launchagent.sh
+
+      - name: Health check
+        run: |
+          set -euo pipefail
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS "$HEALTH_URL"; then echo "health ok"; ok=1; break; fi
+            sleep 2
+          done
+          [[ "$ok" == "1" ]] || { echo "health check failed: $HEALTH_URL" >&2; exit 1; }
+
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          PREV="${{ steps.previous.outputs.sha }}"
+          [[ -n "$PREV" ]] || { echo "missing previous sha; cannot rollback" >&2; exit 1; }
+          git checkout --force "$PREV"
+          cd "$BACKEND_DIR" && uv sync --frozen && uv run python -c "from app.main import app; assert app"
+          cd /Users/submini/sjmj-ai/"$FRONTEND_DIR"
+          npm ci && npm run build
+          cd /Users/submini/sjmj-ai
+          SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/install-launchagent.sh
+          ok=0
+          for _ in $(seq 1 30); do
+            if curl -fsS "$HEALTH_URL"; then echo "rollback health ok"; ok=1; break; fi
+            sleep 2
+          done
+          [[ "$ok" == "1" ]] || { echo "rollback health check failed" >&2; exit 1; }

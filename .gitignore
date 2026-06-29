@@ -5,6 +5,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 *.egg-info/
+.coverage
+
+# 백엔드 업로드 산출물(도장 이미지 등 — 런타임/테스트 생성)
+apps/invoice-ocr/backend/uploads/
 
 # Node
 node_modules/
@@ -19,3 +23,10 @@ dist/
 # OS / editor
 .DS_Store
 *.log
+
+apps/invoice-ocr/ml/data/
+
+# 운영 데이터 덤프(실고객 PII) — 레포에 커밋 금지. SJMJ_DB_BACKUP env 경로로 참조.
+db/*backup*.sql
+db/*-dump.sql
+.gstack/

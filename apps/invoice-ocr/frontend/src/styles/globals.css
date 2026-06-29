@@ -1,0 +1,169 @@
+@import "tailwindcss";
+@import "./invoice-document.css";
+
+@layer base {
+  :root {
+    color-scheme: light;
+    --background: 200 10% 97%;
+    --foreground: 207 30% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 207 30% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 207 30% 10%;
+    --primary: 207 43% 16%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 187 29% 44%;
+    --secondary-foreground: 0 0% 100%;
+    --muted: 190 12% 95%;
+    --muted-foreground: 207 15% 40%;
+    --accent: 187 18% 90%;
+    --accent-foreground: 207 35% 18%;
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 200 12% 86%;
+    --input: 200 8% 87%;
+    --ring: 207 43% 16%;
+    --radius: 0.5rem;
+    --topnav-height: 3.5rem;
+    --page-shell-offset: 7.5rem;
+    --sidebar-background: 0 0% 100%;
+    --sidebar-foreground: 207 30% 10%;
+    --sidebar-primary: 207 43% 16%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 190 12% 95%;
+    --sidebar-accent-foreground: 207 35% 18%;
+    --sidebar-border: 200 12% 86%;
+    --sidebar-ring: 207 43% 16%;
+  }
+
+  .dark {
+    color-scheme: dark;
+    --background: 207 30% 10%;
+    --foreground: 200 15% 93%;
+    --card: 207 25% 14%;
+    --card-foreground: 200 15% 93%;
+    --popover: 207 25% 14%;
+    --popover-foreground: 200 15% 93%;
+    --primary: 187 35% 48%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 207 25% 25%;
+    --secondary-foreground: 187 25% 80%;
+    --muted: 207 20% 19%;
+    --muted-foreground: 200 10% 58%;
+    --accent: 207 25% 25%;
+    --accent-foreground: 187 25% 80%;
+    --destructive: 0 63% 31%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 207 18% 23%;
+    --input: 207 18% 23%;
+    --ring: 187 35% 48%;
+    --sidebar-background: 207 25% 14%;
+    --sidebar-foreground: 200 15% 93%;
+    --sidebar-primary: 187 35% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 207 20% 19%;
+    --sidebar-accent-foreground: 200 15% 93%;
+    --sidebar-border: 207 18% 23%;
+    --sidebar-ring: 187 35% 48%;
+  }
+}
+
+:root {
+  --primary-dark: 207 50% 12%;
+  --surface-accent: 187 18% 90%;
+  --surface-light: 190 25% 97%;
+  --deduction-bg: 0 86% 97%;
+  --deduction-text: 0 72% 51%;
+  --pdf-canvas: 200 8% 94%;
+  --pdf-paper: 0 0% 100%;
+  --pdf-border: 210 13% 91%;
+  --pdf-divider: 210 13% 84%;
+}
+
+.dark {
+  --primary-dark: 207 40% 30%;
+  --surface-accent: 207 20% 19%;
+  --surface-light: 207 25% 16%;
+  --deduction-bg: 0 40% 15%;
+  --deduction-text: 0 72% 65%;
+  --pdf-canvas: 207 30% 10%;
+  --pdf-paper: 207 25% 14%;
+  --pdf-border: 207 18% 23%;
+  --pdf-divider: 207 18% 28%;
+}
+
+@theme {
+  --font-sans: "Inter", "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Noto Serif KR", ui-serif, Georgia, serif;
+  --font-mono: ui-monospace, SFMono-Regular, monospace;
+
+  --color-primary-dark: hsl(var(--primary-dark));
+  --color-surface-accent: hsl(var(--surface-accent));
+  --color-surface-light: hsl(var(--surface-light));
+  --color-deduction-bg: hsl(var(--deduction-bg));
+  --color-deduction-text: hsl(var(--deduction-text));
+  --color-pdf-canvas: hsl(var(--pdf-canvas));
+  --color-pdf-paper: hsl(var(--pdf-paper));
+  --color-pdf-border: hsl(var(--pdf-border));
+  --color-pdf-divider: hsl(var(--pdf-divider));
+
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+  --color-sidebar-background: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    overflow-y: scroll;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: "Inter", "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
+  }
+  /* Radix react-remove-scroll이 드롭다운 열 때 불필요한 padding-right 보정 방지 */
+  body[data-scroll-locked] {
+    padding-right: 0px !important;
+    margin-right: 0px !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
