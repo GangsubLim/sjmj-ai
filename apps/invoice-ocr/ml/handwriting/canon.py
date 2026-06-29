@@ -11,10 +11,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-SP2 = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml/report/sp2_spike")
-sys.path.insert(0, str(SP2))
-from grid_v4 import load_bgr, blue_mask, warp, WARP_W, DATA_Y, hline_ys  # noqa: E402
 sys.path.insert(0, str(Path(__file__).parent))
+from grid_v4 import load_bgr, blue_mask, warp, WARP_W, DATA_Y, hline_ys  # noqa: E402
 from rectify import deskew_angle, rotate, form_quad_robust  # noqa: E402
 
 HERE = Path(__file__).parent

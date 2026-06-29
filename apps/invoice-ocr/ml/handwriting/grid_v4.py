@@ -13,7 +13,7 @@ from PIL import Image, ImageOps
 
 SRC = Path("/Users/gangsub/Library/CloudStorage/OneDrive-개인/Documents/sjmj image/images")
 OUT = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml/report")
-CROPS = Path("/private/tmp/claude-501/-Users-gangsub-projects-sjmj-ai/253e73f7-f37d-4640-abcd-2782c26b1293/scratchpad/crops")
+CROPS = Path(__file__).parent / "crops"
 WARP_W, WARP_H = 900, 2100
 AMOUNT_X = (612, 896)     # 공급가 열 (템플릿)
 DATA_Y = (612, 1948)      # 데이터 행 범위 (공급내역 헤더 아래 ~ 합계 위)

@@ -38,8 +38,10 @@ sys.path.insert(0, str(HERE))
 from grid_v4 import warp, DATA_Y, hline_ys, SRC  # noqa: E402
 from rectify import deskew_angle, rotate, form_quad_robust  # noqa: E402
 from canon import global_pitch, fit_phase, grid_rows, ITEM_X, Y0, Y1  # noqa: E402
-from labelset import select_items, safe, b64  # noqa: E402
-from photomatch import db_invoices, IMGDIR  # noqa: E402
+
+# labelset(select_items/safe/b64)·photomatch(db_invoices/IMGDIR)는 DB+이미지디렉터리
+# 의존을 끌어오므로 모듈 레벨이 아닌 사용하는 함수 본문에서 지연 import한다
+# (load_bgr_path만 쓰는 임포터가 그 의존을 끌지 않도록 — T9-A 디커플).
 
 ORG = ML / "data/image_dataset"
 DSV2 = ML / "report/dataset_v2"
@@ -67,6 +69,7 @@ def rect_and_lines_path(path):
 
 def new_sources():
     """신규 data/image 확정분 → [(src_path, invoice_id, origin)]."""
+    from photomatch import IMGDIR  # noqa: E402  (지연 import — T9-A)
     if "--auto-only" in sys.argv:
         dflt = json.load(open(HERE / "photo_match_default.json"))
         m = {fn: v["pick"] for fn, v in dflt.items() if v["auto"]}
@@ -107,6 +110,7 @@ def build_sources(inv):
 
 def stash_orphans():
     """DB 커버리지 이전 고아 사진 → _unmatched/ 원본명 보관."""
+    from photomatch import db_invoices, IMGDIR  # noqa: E402  (지연 import — T9-A)
     inv_dates = {v["date"] for v in db_invoices().values()}
     dst = ORG / "_unmatched"
     dst.mkdir(parents=True, exist_ok=True)
@@ -122,6 +126,8 @@ def stash_orphans():
 
 
 def main():
+    from labelset import select_items, safe, b64  # noqa: E402  (지연 import — T9-A)
+    from photomatch import db_invoices  # noqa: E402  (지연 import — T9-A)
     inv = db_invoices()
     sources = build_sources(inv)
     n_new = sum(og == "new" for _, _, og in sources)
@@ -214,6 +220,7 @@ def build_labelset_grouped():
     from rows import band_features
     from group import apply_corrections
     from grid_v4 import faint_on
+    from labelset import safe, b64  # noqa: E402  (지연 import — T9-A)
 
     cnames, warps, manifest, P = all_warps_and_pitch()
     cpath = HERE / "grouping_corrections.json"

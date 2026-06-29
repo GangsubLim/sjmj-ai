@@ -15,8 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-SP2 = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml/report/sp2_spike")
-sys.path.insert(0, str(SP2))
+sys.path.insert(0, str(Path(__file__).parent))
 from grid_v4 import (load_bgr, blue_mask, form_quad, warp, WARP_W, WARP_H, DATA_Y,  # noqa: E402
                      hline_ys, _edge_balance, _order)
 

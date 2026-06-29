@@ -118,33 +118,51 @@ def topk(sims, lab, k):
     return out
 
 
-def process_one(src, model, E, lab, qwen, tmp_dir, counter, device):
-    """사진 1장 → section_html. 품목 retrieval + 금액칸 OCR. 운영 경로 그대로."""
-    # 1) 워프 + deskew
-    bgr = load_bgr_path(src)
-    q = form_quad_robust(bgr)
-    w = rotate(warp(bgr, q), deskew_angle(warp(bgr, q)))
+def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
+    """워프된 양식 w → 추론 산출. process_one(데모)과 infer_job(운영)이 공유하는 단일 경로.
+
+    행검출 → new 행 품목 crop → ft 임베딩(queries) → 같은 행 금액칸 Qwen3-VL 전사.
+    반환: (news, crops, queries, amounts, prop, ys, P, bands).
+      · 앞 4개(news/crops/queries/amounts) = infer_job result_json 입력
+      · 뒤 4개(prop/ys/P/bands) = process_one 데모 HTML 오버레이/요약 컨텍스트
+    HTML 조립은 process_one에만 남긴다(추론은 여기서 한 번만 한다 — DRY).
+    """
     ys = [y for y in hline_ys(w) if Y0 - 40 <= y <= Y1 + 40]
     P = global_pitch({"x": ys})
 
-    # 2) φ그리드 행 + 이중신호 분류 (DB 없음 → db_names=[])
+    # φ그리드 행 + 이중신호 분류 (DB 없음 → db_names=[])
     bands = detect_grid_rows(w, P)
     item_inks, amt_inks, stroke_rows = band_features(w, bands)
     prop = build_proposal(bands, item_inks, amt_inks, stroke_rows, [],
                           item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD)
     news = [r for r in prop.rows if r.rtype == "new" and r.box]
 
-    # 3) new 행 품목 crop → 임베딩 → 뱅크 retrieval
+    # new 행 품목 crop → 임베딩 → 뱅크 retrieval 쿼리
     x1, x2 = ITEM_X
     ax0, ax1 = AMOUNT_X
     crops = [w[r.box[0]:r.box[1], x1 - 4:x2 + 4] for r in news]
-    Q = embed_crops(model, crops, device) if crops else np.zeros((0, E.shape[1]))
+    queries = embed_crops(model, crops, device) if crops else np.zeros((0, 0))
 
-    # 3b) 같은 행 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리)
+    # 같은 행 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리)
     amounts = [read_amount(qwen, w[r.band[0]:r.band[1], ax0:ax1], tmp_dir, next(counter))
                for r in news]
+    return news, crops, queries, amounts, prop, ys, P, bands
 
-    # 4) 오버레이(행/타입 색칠) + 카드
+
+def process_one(src, model, E, lab, qwen, tmp_dir, counter, device):
+    """사진 1장 → section_html. 품목 retrieval + 금액칸 OCR. 운영 경로 그대로."""
+    # 1) 워프 + deskew
+    bgr = load_bgr_path(src)
+    q = form_quad_robust(bgr)
+    w = rotate(warp(bgr, q), deskew_angle(warp(bgr, q)))
+
+    # 2) 추론(행검출~crop~retrieval임베딩~금액 OCR) — infer_job와 공유하는 단일 경로
+    news, crops, Q, amounts, prop, ys, P, bands = extract_rows_for_job(
+        w, model, qwen, tmp_dir, counter, device)
+
+    # 3) 오버레이(행/타입 색칠) + 카드
+    x1, x2 = ITEM_X
+    ax0, ax1 = AMOUNT_X
     ov = w.copy()
     for r in prop.rows:
         a, b = r.band
