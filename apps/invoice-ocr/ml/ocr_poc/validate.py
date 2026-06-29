@@ -4,6 +4,7 @@
 supply 에 맞출 수 있는 유일 후보가 있을 때만 복원안을 제안한다. 검산
 결과는 신뢰도 게이트이지 정답 보증이 아니다(§4·§5).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass

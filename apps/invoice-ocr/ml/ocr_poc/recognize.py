@@ -2,6 +2,7 @@
 charset 을 사실상 제한(fine-tune 없이 데이터 0). 후속 SP 의 Qwen/TrOCR 는
 같은 RecognizerAdapter 인터페이스로 plug-in.
 """
+
 from __future__ import annotations
 
 import re
@@ -16,8 +17,7 @@ def numeric_postfilter(raw: str) -> str:
 
 
 class RecognizerAdapter(Protocol):
-    def recognize(self, crop) -> str:
-        ...
+    def recognize(self, crop) -> str: ...
 
 
 class FakeRecognizer:
@@ -50,6 +50,7 @@ class PaddleOCRNumeric:
         if self._engine is None:
             import numpy as np  # noqa: PLC0415
             from paddleocr import TextRecognition  # noqa: PLC0415
+
             self._np = np
             self._engine = TextRecognition()
         return self._engine
@@ -88,7 +89,8 @@ class ReferenceOCR:
 
     손글씨 원본과 달리 references 는 깨끗한 인쇄체라 PaddleOCR 3.x 파이프라인
     (det+rec)이 잘 읽는다. 결과 텍스트에서 match 가 발행일·금액후보를 뽑는다.
-    엔진 지연 로딩."""
+    엔진 지연 로딩.
+    """
 
     def __init__(self, lang: str = "korean"):
         self._lang = lang
@@ -97,6 +99,7 @@ class ReferenceOCR:
     def _ensure_engine(self):
         if self._engine is None:
             from paddleocr import PaddleOCR  # noqa: PLC0415
+
             self._engine = PaddleOCR(
                 lang=self._lang,
                 use_doc_orientation_classify=False,

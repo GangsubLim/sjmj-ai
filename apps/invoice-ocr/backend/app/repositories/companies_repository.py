@@ -41,9 +41,7 @@ class CompanyRepository:
             params["q1"] = f"%{filters['q']}%"
             params["q2"] = f"%{filters['q']}%"
 
-        column = _ALLOWED_SORT_COLUMNS.get(
-            filters.get("sort_by") or "company_name", "company_name"
-        )
+        column = _ALLOWED_SORT_COLUMNS.get(filters.get("sort_by") or "company_name", "company_name")
         order = "DESC" if column in _DESC_COLUMNS else "ASC"
         sql = f"""
             SELECT {_SELECT_COLUMNS}
@@ -58,9 +56,7 @@ class CompanyRepository:
         with connection() as conn:
             row = (
                 conn.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM company_suggestions WHERE id = :id"
-                    ),
+                    text(f"SELECT {_SELECT_COLUMNS} FROM company_suggestions WHERE id = :id"),
                     {"id": id},
                 )
                 .mappings()

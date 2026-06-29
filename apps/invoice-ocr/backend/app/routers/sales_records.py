@@ -72,9 +72,7 @@ def store(data: dict = Body(...)):
             {"quantity": "out of range"},
         )
 
-    row = _service().upsert_record(
-        int(data["salesperson_id"]), data["work_date"], quantity_int
-    )
+    row = _service().upsert_record(int(data["salesperson_id"]), data["work_date"], quantity_int)
     return envelope.created(row)
 
 

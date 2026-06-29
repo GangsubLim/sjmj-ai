@@ -20,9 +20,7 @@ class OcrRepository:
     def insert_job(self, image_path: str) -> int:
         with connection() as conn:
             result = conn.execute(
-                text(
-                    "INSERT INTO ocr_jobs (status, image_path) VALUES ('pending', :p)"
-                ),
+                text("INSERT INTO ocr_jobs (status, image_path) VALUES ('pending', :p)"),
                 {"p": image_path},
             )
             return int(result.lastrowid)
@@ -39,7 +37,7 @@ class OcrRepository:
         return _parse_job(row)
 
     def claim_job(self, job_id: int) -> dict | None:
-        """confirm 트랜잭션 내에서 행을 잠그고 읽는다(SELECT ... FOR UPDATE)."""
+        """Confirm 트랜잭션 내에서 행을 잠그고 읽는다(SELECT ... FOR UPDATE)."""
         with connection() as conn:
             row = conn.execute(
                 text(
@@ -55,8 +53,7 @@ class OcrRepository:
         with connection() as conn:
             result = conn.execute(
                 text(
-                    "UPDATE ocr_jobs SET invoice_id = :inv "
-                    "WHERE id = :job AND invoice_id IS NULL"
+                    "UPDATE ocr_jobs SET invoice_id = :inv WHERE id = :job AND invoice_id IS NULL"
                 ),
                 {"inv": invoice_id, "job": job_id},
             )
@@ -65,9 +62,7 @@ class OcrRepository:
     def update_result(self, job_id: int, status: str, result_json: dict) -> None:
         with connection() as conn:
             conn.execute(
-                text(
-                    "UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"
-                ),
+                text("UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"),
                 {
                     "s": status,
                     "r": json.dumps(result_json, ensure_ascii=False),
@@ -75,9 +70,7 @@ class OcrRepository:
                 },
             )
 
-    def insert_correction(
-        self, job_id: int, invoice_id: int, correction_json: dict
-    ) -> int:
+    def insert_correction(self, job_id: int, invoice_id: int, correction_json: dict) -> int:
         with connection() as conn:
             result = conn.execute(
                 text(

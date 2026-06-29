@@ -36,9 +36,7 @@ class ItemRepository:
         if filters.get("category"):
             where += " AND category = :category"
             params["category"] = filters["category"]
-        col = _ALLOWED_SORT_COLUMNS.get(
-            filters.get("sort_by"), _ALLOWED_SORT_COLUMNS["item_name"]
-        )
+        col = _ALLOWED_SORT_COLUMNS.get(filters.get("sort_by"), _ALLOWED_SORT_COLUMNS["item_name"])
         order = "DESC" if col in _DESC_COLUMNS else "ASC"
         sql = f"""
             SELECT {_SELECT_COLUMNS}
@@ -53,9 +51,7 @@ class ItemRepository:
         with connection() as conn:
             row = (
                 conn.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM item_suggestions WHERE id = :id"
-                    ),
+                    text(f"SELECT {_SELECT_COLUMNS} FROM item_suggestions WHERE id = :id"),
                     {"id": id},
                 )
                 .mappings()

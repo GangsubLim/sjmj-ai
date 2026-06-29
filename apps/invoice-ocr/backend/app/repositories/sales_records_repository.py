@@ -98,8 +98,6 @@ class SalesRecordRepository:
     def delete(self, id: int) -> bool:
         with connection() as conn:
             return (
-                conn.execute(
-                    text("DELETE FROM sales_records WHERE id = :id"), {"id": id}
-                ).rowcount
+                conn.execute(text("DELETE FROM sales_records WHERE id = :id"), {"id": id}).rowcount
                 > 0
             )

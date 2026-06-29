@@ -64,7 +64,5 @@ class ExportService:
                     inv["created_at"],
                 ]
             )
-        body = b"\xef\xbb\xbf" + buf.getvalue().encode(
-            "utf-8"
-        )  # UTF-8 BOM(Excel 한글 호환)
+        body = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")  # UTF-8 BOM(Excel 한글 호환)
         return filename, body

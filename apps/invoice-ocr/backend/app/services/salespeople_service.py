@@ -69,9 +69,7 @@ class SalespersonService:
         if trimmed == "":
             bad_request("이름은 필수입니다.", {"name": "이름은 필수입니다."})
         if _CONTROL_CHAR.search(trimmed):
-            bad_request(
-                "이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"}
-            )
+            bad_request("이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"})
         if len(trimmed) > _MAX_NAME_LENGTH:
             bad_request("이름은 100자 이하여야 합니다.", {"name": "100자 초과"})
         return trimmed

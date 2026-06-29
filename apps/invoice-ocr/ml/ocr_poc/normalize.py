@@ -1,6 +1,8 @@
 """약식 symbolic 정규화: 천원곱(단가/공급가)·빈칸=0·〃(ditto) 전파. 순수함수.
 
-적용 규칙명을 함께 반환해 리포트가 약식 적용률을 집계할 수 있게 한다(§6)."""
+적용 규칙명을 함께 반환해 리포트가 약식 적용률을 집계할 수 있게 한다(§6).
+"""
+
 from __future__ import annotations
 
 import re
@@ -47,6 +49,7 @@ def normalize_rows(raw_rows: list[dict[str, str]]) -> list[NormRow]:
                 prev[field] = val
             if rule is not None:
                 applied.append(rule)
-        out.append(NormRow(values["quantity"], values["unit_price"],
-                           values["amount"], tuple(applied)))
+        out.append(
+            NormRow(values["quantity"], values["unit_price"], values["amount"], tuple(applied))
+        )
     return out

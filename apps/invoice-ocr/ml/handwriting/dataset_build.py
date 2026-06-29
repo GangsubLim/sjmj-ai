@@ -18,7 +18,7 @@ usage:
   dataset_build.py --new-only            # 신규 확정분만
   dataset_build.py --auto-only           # 신규 단일후보 자동확정분만(파이프라인 검증)
 """
-import base64
+
 import csv
 import json
 import re
@@ -35,9 +35,9 @@ ML = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml")
 SP2 = ML / "report/sp2_spike"
 sys.path.insert(0, str(SP2))
 sys.path.insert(0, str(HERE))
-from grid_v4 import warp, DATA_Y, hline_ys, SRC  # noqa: E402
-from rectify import deskew_angle, rotate, form_quad_robust  # noqa: E402
-from canon import global_pitch, fit_phase, grid_rows, ITEM_X, Y0, Y1  # noqa: E402
+from canon import ITEM_X, Y0, Y1, fit_phase, global_pitch, grid_rows  # noqa: E402
+from grid_v4 import SRC, hline_ys, warp  # noqa: E402
+from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 
 # labelset(select_items/safe/b64)·photomatch(db_invoices/IMGDIR)는 DB+이미지디렉터리
 # 의존을 끌어오므로 모듈 레벨이 아닌 사용하는 함수 본문에서 지연 import한다
@@ -49,7 +49,8 @@ DSV2 = ML / "report/dataset_v2"
 
 def faint_set():
     """흐림 회수 대상 cname 집합 — review_flags.json 'faint'. 이 전표는 set-aside 하지 않고
-    grid_v4.faint_on 아래 대비향상 hline으로 처리(과노출 격자 복구). 비어 있으면 빈 집합."""
+    grid_v4.faint_on 아래 대비향상 hline으로 처리(과노출 격자 복구). 비어 있으면 빈 집합.
+    """
     fp = HERE / "review_flags.json"
     return set(json.load(open(fp)).get("faint", [])) if fp.exists() else set()
 
@@ -70,6 +71,7 @@ def rect_and_lines_path(path):
 def new_sources():
     """신규 data/image 확정분 → [(src_path, invoice_id, origin)]."""
     from photomatch import IMGDIR  # noqa: E402  (지연 import — T9-A)
+
     if "--auto-only" in sys.argv:
         dflt = json.load(open(HERE / "photo_match_default.json"))
         m = {fn: v["pick"] for fn, v in dflt.items() if v["auto"]}
@@ -110,7 +112,8 @@ def build_sources(inv):
 
 def stash_orphans():
     """DB 커버리지 이전 고아 사진 → _unmatched/ 원본명 보관."""
-    from photomatch import db_invoices, IMGDIR  # noqa: E402  (지연 import — T9-A)
+    from photomatch import IMGDIR, db_invoices  # noqa: E402  (지연 import — T9-A)
+
     inv_dates = {v["date"] for v in db_invoices().values()}
     dst = ORG / "_unmatched"
     dst.mkdir(parents=True, exist_ok=True)
@@ -126,8 +129,9 @@ def stash_orphans():
 
 
 def main():
-    from labelset import select_items, safe, b64  # noqa: E402  (지연 import — T9-A)
+    from labelset import b64, safe, select_items  # noqa: E402  (지연 import — T9-A)
     from photomatch import db_invoices  # noqa: E402  (지연 import — T9-A)
+
     inv = db_invoices()
     sources = build_sources(inv)
     n_new = sum(og == "new" for _, _, og in sources)
@@ -144,11 +148,18 @@ def main():
         cname = f"{v['date']}_inv{iid:03d}.jpg"
         shutil.copy2(src, ORG / cname)
         canon_path[cname] = ORG / cname
-        manifest[cname] = {"invoice_id": iid, "date": v["date"], "origin": og,
-                           "source": src.name, "recipient": v["recipient"],
-                           "items": [nm for _, nm, _ in v["items"]]}
+        manifest[cname] = {
+            "invoice_id": iid,
+            "date": v["date"],
+            "origin": og,
+            "source": src.name,
+            "recipient": v["recipient"],
+            "items": [nm for _, nm, _ in v["items"]],
+        }
     n_orphan = stash_orphans()
-    (ORG / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8")
+    (ORG / "manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
 
     # 2) 라벨셋 — rectify → 고정 그리드 → select_items
     warps, perlines = {}, {}
@@ -174,7 +185,7 @@ def main():
     print(f"P={P:.1f}")
     for cname in sorted(canon_path):
         if cname in TWOUP:
-            continue                   # 2장 케이스 → twoup.py 전담(병합워프 라벨노이즈 차단)
+            continue  # 2장 케이스 → twoup.py 전담(병합워프 라벨노이즈 차단)
         iid = manifest[cname]["invoice_id"]
         names = [nm for _, nm, _ in inv[iid]["items"]]
         w = warps[cname]
@@ -187,40 +198,57 @@ def main():
         thumbs = []
         for k, (idx, a, b, fr) in enumerate(chosen):
             lbl = names[k] if k < len(names) else "(extra)"
-            c = w[max(a - 4, 0):b + 4, x1 - 4:x2 + 4]
+            c = w[max(a - 4, 0) : b + 4, x1 - 4 : x2 + 4]
             if trusted and k < len(names):
                 dd = DSV2 / safe(lbl)
                 dd.mkdir(exist_ok=True)
                 cv2.imwrite(str(dd / f"{cname[:-4]}_{k}.png"), c)
                 labeled += 1
             t = cv2.resize(c, (150, max(40, int(c.shape[0] * 150 / c.shape[1]))))
-            thumbs.append(f'<div class=t><img src="data:image/png;base64,{b64(t)}"><div class=l>{lbl} <small>{fr*100:.0f}</small></div></div>')
-        cards.append(f'<div class=card><div class=hd>{cname} [{manifest[cname]["origin"]}] — {"✅trusted" if trusted else "◐skip"} DB{len(names)}'
-                     f'<br><small>{" · ".join(names)}</small></div><div class=row>{"".join(thumbs)}</div></div>')
+            thumbs.append(
+                f'<div class=t><img src="data:image/png;base64,{b64(t)}"><div class=l>{lbl} <small>{fr * 100:.0f}</small></div></div>'
+            )
+        cards.append(
+            f"<div class=card><div class=hd>{cname} [{manifest[cname]['origin']}] — {'✅trusted' if trusted else '◐skip'} DB{len(names)}"
+            f"<br><small>{' · '.join(names)}</small></div><div class=row>{''.join(thumbs)}</div></div>"
+        )
 
-    bylabel = {d.name: len(list(d.glob('*.png'))) for d in sorted(DSV2.glob('*')) if d.is_dir()}
+    bylabel = {d.name: len(list(d.glob("*.png"))) for d in sorted(DSV2.glob("*")) if d.is_dir()}
     multi = {k: v for k, v in bylabel.items() if v >= 2}
-    print(f"\ntrusted {trusted_n}/{len(sources)} · 라벨 crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)} · 고아 {n_orphan} 보관")
-    print(f"skip {len(skips)}장:", ", ".join(f"{c}(DB{d}/sel{s})" for c, d, s in skips[:12]) + (" ..." if len(skips) > 12 else ""))
+    print(
+        f"\ntrusted {trusted_n}/{len(sources)} · 라벨 crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)} · 고아 {n_orphan} 보관"
+    )
+    print(
+        f"skip {len(skips)}장:",
+        ", ".join(f"{c}(DB{d}/sel{s})" for c, d, s in skips[:12])
+        + (" ..." if len(skips) > 12 else ""),
+    )
     (ML / "report/dataset_v2_review.html").write_text(
-        '<!doctype html><meta charset=utf-8><style>'
-        'body{font:13px sans-serif;background:#eee;margin:0;padding:12px}'
-        '.card{background:#fff;border-radius:8px;margin-bottom:10px;padding:8px;box-shadow:0 1px 3px #0002}'
-        '.hd{font-weight:600;margin-bottom:6px}.row{display:flex;flex-wrap:wrap;gap:6px}'
-        '.t{border:1px solid #ccc}.t img{display:block}.l{font-size:11px;text-align:center;color:#06c;padding:2px}'
-        f'</style><h3>dataset_v2 — 통합 {len(sources)}장 · trusted {trusted_n} · crop {labeled} · 2+표본 {len(multi)}</h3>'
-        + "".join(cards), encoding="utf-8")
+        "<!doctype html><meta charset=utf-8><style>"
+        "body{font:13px sans-serif;background:#eee;margin:0;padding:12px}"
+        ".card{background:#fff;border-radius:8px;margin-bottom:10px;padding:8px;box-shadow:0 1px 3px #0002}"
+        ".hd{font-weight:600;margin-bottom:6px}.row{display:flex;flex-wrap:wrap;gap:6px}"
+        ".t{border:1px solid #ccc}.t img{display:block}.l{font-size:11px;text-align:center;color:#06c;padding:2px}"
+        f"</style><h3>dataset_v2 — 통합 {len(sources)}장 · trusted {trusted_n} · crop {labeled} · 2+표본 {len(multi)}</h3>"
+        + "".join(cards),
+        encoding="utf-8",
+    )
     print("정리 →", ORG, "\n라벨셋 →", DSV2, "\nreview →", ML / "report/dataset_v2_review.html")
 
 
 def build_labelset_grouped():
     """교정 GT(grouping_corrections.json) → ok 전표의 new 박스를 DB명 폴더로 크롭.
-    그룹핑·합계·db_skip 반영, 워프불량/제외(review_flags.json) 배제. 별도 dataset_grouped/."""
-    from grouping import all_warps_and_pitch, propose, PAD   # 지역 import(grouping→dataset_build 순환 회피)
-    from rows import band_features
-    from group import apply_corrections
+    그룹핑·합계·db_skip 반영, 워프불량/제외(review_flags.json) 배제. 별도 dataset_grouped/.
+    """
     from grid_v4 import faint_on
-    from labelset import safe, b64  # noqa: E402  (지연 import — T9-A)
+    from group import apply_corrections
+    from grouping import (  # 지역 import(grouping→dataset_build 순환 회피)
+        PAD,
+        all_warps_and_pitch,
+        propose,
+    )
+    from labelset import b64, safe  # noqa: E402  (지연 import — T9-A)
+    from rows import band_features
 
     cnames, warps, manifest, P = all_warps_and_pitch()
     cpath = HERE / "grouping_corrections.json"
@@ -251,8 +279,14 @@ def build_labelset_grouped():
             if cn in corr and len(corr[cn].get("types", [])) == len(auto.rows):
                 bands = [r.band for r in auto.rows]
                 _, _, stroke_rows = band_features(warps[cn], bands)
-                p = apply_corrections(auto, corr[cn]["types"], names, stroke_rows,
-                                      pad=PAD, db_skips=corr[cn].get("db_skips", []))
+                p = apply_corrections(
+                    auto,
+                    corr[cn]["types"],
+                    names,
+                    stroke_rows,
+                    pad=PAD,
+                    db_skips=corr[cn].get("db_skips", []),
+                )
             else:
                 p = auto
         if p.status != "ok":
@@ -263,31 +297,39 @@ def build_labelset_grouped():
         for r in p.rows:
             if r.rtype == "new" and r.box and r.db_name:
                 a, b = r.box
-                crop = warps[cn][a:b, x1 - 4:x2 + 4]
+                crop = warps[cn][a:b, x1 - 4 : x2 + 4]
                 dd = DSG / safe(r.db_name)
                 dd.mkdir(exist_ok=True)
                 cv2.imwrite(str(dd / f"{cn[:-4]}_{r.db_idx}.png"), crop)
                 labeled += 1
                 t = cv2.resize(crop, (150, max(40, int(crop.shape[0] * 150 / crop.shape[1]))))
-                thumbs.append(f'<div class=t><img src="data:image/png;base64,{b64(t)}">'
-                              f'<div class=l>{r.db_name}</div></div>')
-        cards.append(f'<div class=card><div class=hd>{cn} ✅ DB{p.dbn}'
-                     f'<br><small>{" · ".join(names)}</small></div>'
-                     f'<div class=row>{"".join(thumbs)}</div></div>')
+                thumbs.append(
+                    f'<div class=t><img src="data:image/png;base64,{b64(t)}">'
+                    f"<div class=l>{r.db_name}</div></div>"
+                )
+        cards.append(
+            f"<div class=card><div class=hd>{cn} ✅ DB{p.dbn}"
+            f"<br><small>{' · '.join(names)}</small></div>"
+            f"<div class=row>{''.join(thumbs)}</div></div>"
+        )
 
     bylabel = {d.name: len(list(d.glob("*.png"))) for d in sorted(DSG.glob("*")) if d.is_dir()}
     multi = {k: v for k, v in bylabel.items() if v >= 2}
-    print(f"[grouped] trusted {trusted} · needs_review {nr} · set-aside {aside} · "
-          f"crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)}")
+    print(
+        f"[grouped] trusted {trusted} · needs_review {nr} · set-aside {aside} · "
+        f"crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)}"
+    )
     rev = ML / "review/grouped_labelset_review.html"
     rev.write_text(
-        '<!doctype html><meta charset=utf-8><style>'
-        'body{font:13px sans-serif;background:#eee;margin:0;padding:12px}'
-        '.card{background:#fff;border-radius:8px;margin-bottom:10px;padding:8px;box-shadow:0 1px 3px #0002}'
-        '.hd{font-weight:600;margin-bottom:6px}.row{display:flex;flex-wrap:wrap;gap:6px}'
-        '.t{border:1px solid #ccc}.t img{display:block}.l{font-size:11px;text-align:center;color:#06c;padding:2px}'
-        f'</style><h3>그룹핑 라벨셋 — trusted {trusted} · crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)}</h3>'
-        + "".join(cards), encoding="utf-8")
+        "<!doctype html><meta charset=utf-8><style>"
+        "body{font:13px sans-serif;background:#eee;margin:0;padding:12px}"
+        ".card{background:#fff;border-radius:8px;margin-bottom:10px;padding:8px;box-shadow:0 1px 3px #0002}"
+        ".hd{font-weight:600;margin-bottom:6px}.row{display:flex;flex-wrap:wrap;gap:6px}"
+        ".t{border:1px solid #ccc}.t img{display:block}.l{font-size:11px;text-align:center;color:#06c;padding:2px}"
+        f"</style><h3>그룹핑 라벨셋 — trusted {trusted} · crop {labeled} · 고유라벨 {len(bylabel)} · 2+표본 {len(multi)}</h3>"
+        + "".join(cards),
+        encoding="utf-8",
+    )
     print("라벨셋 →", DSG, "\nreview →", rev)
 
 

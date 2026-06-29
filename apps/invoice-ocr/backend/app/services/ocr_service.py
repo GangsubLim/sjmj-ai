@@ -73,9 +73,7 @@ class OcrService:
             if self.repo.link_invoice(job_id, invoice_id) == 0:
                 conflict("이미 확정된 잡입니다.")
 
-            correction = build_correction(
-                job["result_json"] or {}, payload.get("items", [])
-            )
+            correction = build_correction(job["result_json"] or {}, payload.get("items", []))
             self.repo.insert_correction(job_id, invoice_id, correction)
 
         return {"invoice_id": invoice_id}

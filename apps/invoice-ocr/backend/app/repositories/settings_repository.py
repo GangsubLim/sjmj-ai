@@ -84,9 +84,7 @@ class SettingsRepository:
     def find_all_settings(self) -> dict:
         with connection() as conn:
             rows = (
-                conn.execute(
-                    text("SELECT setting_key, setting_value FROM app_settings")
-                )
+                conn.execute(text("SELECT setting_key, setting_value FROM app_settings"))
                 .mappings()
                 .all()
             )
@@ -95,8 +93,6 @@ class SettingsRepository:
     def update_setting(self, key: str, value: str) -> None:
         with connection() as conn:
             conn.execute(
-                text(
-                    "UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"
-                ),
+                text("UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"),
                 {"value": value, "key": key},
             )

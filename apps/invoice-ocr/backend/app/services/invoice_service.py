@@ -13,9 +13,7 @@ from app.repositories.invoice_repository import InvoiceRepository
 
 
 class InvoiceService:
-    def __init__(
-        self, repo=None, company_repo=None, item_repo=None, *, transaction=None
-    ):
+    def __init__(self, repo=None, company_repo=None, item_repo=None, *, transaction=None):
         self.repo = repo or InvoiceRepository()
         self.company_repo = company_repo
         self.item_repo = item_repo
@@ -30,9 +28,7 @@ class InvoiceService:
                 "page": filters["page"],
                 "limit": filters["limit"],
                 "total": total,
-                "totalPages": math.ceil(total / filters["limit"])
-                if filters["limit"]
-                else 0,
+                "totalPages": math.ceil(total / filters["limit"]) if filters["limit"] else 0,
             },
         }
 
@@ -47,9 +43,7 @@ class InvoiceService:
         with self._transaction():
             invoice_id = self.repo.insert(data)
             for index, item in enumerate(data.get("items") or []):
-                self.repo.insert_item(
-                    {**item, "item_order": index + 1, "invoice_id": invoice_id}
-                )
+                self.repo.insert_item({**item, "item_order": index + 1, "invoice_id": invoice_id})
             self._update_usage_count(data)
         return self.get_by_id(invoice_id)
 
@@ -60,9 +54,7 @@ class InvoiceService:
             self.repo.update(id, data)
             self.repo.delete_items(id)
             for index, item in enumerate(data.get("items") or []):
-                self.repo.insert_item(
-                    {**item, "item_order": index + 1, "invoice_id": id}
-                )
+                self.repo.insert_item({**item, "item_order": index + 1, "invoice_id": id})
         return self.get_by_id(id)
 
     def delete(self, id: int) -> bool:
@@ -73,14 +65,11 @@ class InvoiceService:
         if not original:
             return None
         new_data = {
-            k: v
-            for k, v in original.items()
-            if k not in ("id", "created_at", "updated_at")
+            k: v for k, v in original.items() if k not in ("id", "created_at", "updated_at")
         }
         new_data["issue_date"] = date.today().isoformat()
         new_data["items"] = [
-            {k: v for k, v in it.items() if k != "id"}
-            for it in original.get("items", [])
+            {k: v for k, v in it.items() if k != "id"} for it in original.get("items", [])
         ]
         return self.create(new_data)
 

@@ -51,7 +51,5 @@ def get_static_dir() -> Path | None:
     SJMJ_STATIC_DIR 우선, 없으면 backend 옆 frontend/dist 추정.
     """
     raw = os.environ.get("SJMJ_STATIC_DIR")
-    candidate = (
-        Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    )
+    candidate = Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
     return candidate if candidate.is_dir() else None

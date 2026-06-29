@@ -1,0 +1,99 @@
+# NXN 표준 pre-commit-framework 설정
+#
+# 사용 흐름:
+#   1) PC 1회: brew install pre-commit  (또는 `pip install pre-commit`)
+#   2) 레포에 이 파일 커밋
+#   3) 레포 진입 시 1회: pre-commit install
+#
+# 매칭 파일이 없는 hook은 자동으로 skip되므로,
+# 모든 언어 hook을 켜둬도 비용은 거의 없다 (해당 언어가 없으면 noop).
+# 안 쓰는 언어 섹션은 자유롭게 주석 처리하거나 삭제해도 무방.
+#
+# 도구 자체(prettier/ruff/...)는 hook이 격리 환경에 자동 fetch하므로
+# 레포에 도구를 설치할 필요가 없다 — 단, ESLint와 Spotless는 프로젝트 의존성/빌드를
+# 활용하기 위해 local hook으로 시스템 명령(npx eslint / ./gradlew)을 호출한다.
+
+repos:
+  # ============================ 공통 ============================
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-merge-conflict
+      - id: check-yaml
+      - id: check-json
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+
+  # ============================ Prettier (JS/TS/JSON/MD/YAML/HTML/CSS) ============================
+  - repo: https://github.com/rbubley/mirrors-prettier
+    rev: v3.8.3
+    hooks:
+      - id: prettier
+        # 모노레포: frontend는 prettier-plugin-tailwindcss를 요구하는데 mirror 격리
+        # 환경엔 그 플러그인이 없어 hook이 깨진다. frontend는 CI(npm run format:check)와
+        # 로컬 npm run format이 플러그인과 함께 이미 강제하므로 여기서는 제외한다.
+        exclude: ^apps/invoice-ocr/frontend/
+        types_or:
+          - javascript
+          - jsx
+          - ts
+          - tsx
+          - json
+          - markdown
+          - mdx
+          - yaml
+          - html
+          - css
+          - scss
+
+  # ============================ Python (Ruff format + lint) ============================
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.12
+    hooks:
+      - id: ruff-format
+      - id: ruff
+        args: ["--fix"]
+
+  # ============================ ESLint (local, 프로젝트 의존성 사용) ============================
+  # 활성화 조건: package.json + eslint.config.js(.mjs) 존재
+  # 주석 해제하여 사용:
+  # - repo: local
+  #   hooks:
+  #     - id: eslint
+  #       name: ESLint
+  #       entry: npx --no-install eslint --fix
+  #       language: system
+  #       types_or: [javascript, jsx, ts, tsx]
+  #       require_serial: true
+
+  # ============================ Spotless (Java, Gradle 또는 Maven) ============================
+  # Spotless는 mirror가 없어 프로젝트 빌드 도구를 직접 호출.
+  # Gradle:
+  # - repo: local
+  #   hooks:
+  #     - id: spotless
+  #       name: Spotless (Gradle)
+  #       entry: ./gradlew spotlessApply
+  #       language: system
+  #       files: \.java$
+  #       pass_filenames: false
+  # Maven:
+  # - repo: local
+  #   hooks:
+  #     - id: spotless
+  #       name: Spotless (Maven)
+  #       entry: mvn -q spotless:apply
+  #       language: system
+  #       files: \.java$
+  #       pass_filenames: false
+
+  # ============================ Go (gofmt + go vet) ============================
+  # - repo: https://github.com/dnephin/pre-commit-golang
+  #   rev: v0.5.1
+  #   hooks:
+  #     - id: go-fmt
+  #     - id: go-vet

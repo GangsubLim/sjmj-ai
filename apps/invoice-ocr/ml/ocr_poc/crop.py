@@ -1,4 +1,5 @@
 """셀 박스 → 원해상도 crop. degenerate/경계밖 박스는 None(스킵)."""
+
 from __future__ import annotations
 
 from PIL import Image

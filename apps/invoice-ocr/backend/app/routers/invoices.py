@@ -40,9 +40,9 @@ def _qint(request: Request, key: str, default: int) -> int:
 def _validate_invoice(data: dict) -> None:
     Validator().required(data, ["issue_date", "recipient"]).date_format(
         data, "issue_date"
-    ).max_length(data, "recipient", 100).max_length(
-        data, "vehicle_no", 255
-    ).non_empty_array(data, "items").validate_or_fail()
+    ).max_length(data, "recipient", 100).max_length(data, "vehicle_no", 255).non_empty_array(
+        data, "items"
+    ).validate_or_fail()
 
 
 @router.get("/invoices/export")

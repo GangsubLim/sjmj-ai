@@ -65,9 +65,7 @@ def _reset(engine) -> None:
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
         for k, v in _APP_SETTINGS_SEED:
             conn.execute(
-                text(
-                    "INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"
-                ),
+                text("INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"),
                 {"k": k, "v": v},
             )
 

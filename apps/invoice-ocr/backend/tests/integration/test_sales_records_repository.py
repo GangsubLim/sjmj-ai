@@ -92,9 +92,7 @@ def test_find_salesperson_none_when_missing():
 def test_find_salespeople_for_month_includes_active_and_record_holders():
     repo = SalesRecordRepository()
     _insert_salesperson({"name": "Active", "sort_order": 1, "is_active": 1})
-    inactive_id = _insert_salesperson(
-        {"name": "Inactive", "sort_order": 2, "is_active": 0}
-    )
+    inactive_id = _insert_salesperson({"name": "Inactive", "sort_order": 2, "is_active": 0})
     repo.upsert(inactive_id, "2026-05-10", 500, "Inactive")
 
     names = [s["name"] for s in repo.find_salespeople_for_month(2026, 5)]
@@ -126,6 +124,5 @@ def test_fk_restrict_prevents_parent_delete():
     repo.upsert(sp_id, "2026-05-15", 100, "영업사원1")
 
     # ON DELETE RESTRICT: 실적이 있는 영업사원의 부모 행 삭제는 거부된다
-    with pytest.raises(IntegrityError):
-        with db.connection() as conn:
-            conn.execute(text("DELETE FROM salespeople WHERE id = :id"), {"id": sp_id})
+    with pytest.raises(IntegrityError), db.connection() as conn:
+        conn.execute(text("DELETE FROM salespeople WHERE id = :id"), {"id": sp_id})

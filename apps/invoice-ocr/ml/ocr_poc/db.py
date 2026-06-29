@@ -4,6 +4,7 @@
 러프 정규식은 멀티행 VALUES·escaped quote·NULL 에서 행을 누락하므로,
 따옴표/괄호를 추적하는 문자 스캐너로 전 행을 보장한다.
 """
+
 from __future__ import annotations
 
 import re
@@ -40,15 +41,13 @@ class InvoiceDB:
         return [i for i in self.invoices if i.grand_total == grand_total]
 
     def find_by_date_and_total(self, date: str, grand_total: int) -> list[Invoice]:
-        return [i for i in self.invoices
-                if i.issue_date == date and i.grand_total == grand_total]
+        return [i for i in self.invoices if i.issue_date == date and i.grand_total == grand_total]
 
     def find_by_total_supply(self, total_supply: int) -> list[Invoice]:
         return [i for i in self.invoices if i.total_supply == total_supply]
 
     def find_by_date_and_total_supply(self, date: str, total_supply: int) -> list[Invoice]:
-        return [i for i in self.invoices
-                if i.issue_date == date and i.total_supply == total_supply]
+        return [i for i in self.invoices if i.issue_date == date and i.total_supply == total_supply]
 
     def items_for(self, invoice_id: int) -> tuple[InvoiceItem, ...]:
         return self.items_by_invoice.get(invoice_id, ())
@@ -59,7 +58,8 @@ _INSERT_HEADER_RE = re.compile(r"INSERT INTO `(?P<table>\w+)` \((?P<cols>[^)]*)\
 
 def _read_statement_body(text: str, start: int) -> tuple[str, int]:
     """start(=VALUES 직후)부터 따옴표/괄호를 인지하며 스캔해, 문자열 밖·괄호 depth 0
-    에서 처음 만나는 ';' 직전까지를 본문으로 반환. 값 내부의 ';'는 종결자로 보지 않는다."""
+    에서 처음 만나는 ';' 직전까지를 본문으로 반환. 값 내부의 ';'는 종결자로 보지 않는다.
+    """
     in_str = False
     esc = False
     depth = 0
@@ -207,13 +207,15 @@ def parse_backup(sql_text: str) -> InvoiceDB:
     invoices: list[Invoice] = []
     for cols, fields in _rows_for_table(sql_text, "invoices"):
         rec = dict(zip(cols, fields))
-        invoices.append(Invoice(
-            id=_to_int(rec["id"]),
-            issue_date=_unquote(rec["issue_date"]) or "",
-            recipient=_unquote(rec["recipient"]) or "",
-            total_supply=_to_int(rec["total_supply"]),
-            grand_total=_to_int(rec["grand_total"]),
-        ))
+        invoices.append(
+            Invoice(
+                id=_to_int(rec["id"]),
+                issue_date=_unquote(rec["issue_date"]) or "",
+                recipient=_unquote(rec["recipient"]) or "",
+                total_supply=_to_int(rec["total_supply"]),
+                grand_total=_to_int(rec["grand_total"]),
+            )
+        )
 
     items: dict[int, list[InvoiceItem]] = {}
     for cols, fields in _rows_for_table(sql_text, "invoice_items"):
@@ -231,7 +233,6 @@ def parse_backup(sql_text: str) -> InvoiceDB:
         items.setdefault(item.invoice_id, []).append(item)
 
     items_sorted = {
-        inv_id: tuple(sorted(rows, key=lambda r: r.item_order))
-        for inv_id, rows in items.items()
+        inv_id: tuple(sorted(rows, key=lambda r: r.item_order)) for inv_id, rows in items.items()
     }
     return InvoiceDB(invoices=tuple(invoices), items_by_invoice=items_sorted)

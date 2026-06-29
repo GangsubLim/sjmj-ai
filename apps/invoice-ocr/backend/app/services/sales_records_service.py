@@ -19,9 +19,7 @@ class SalesRecordService:
             "records": self.repo.find_records_by_month(year, month),
         }
 
-    def upsert_record(
-        self, salesperson_id: int, work_date: str, quantity: int
-    ) -> dict | None:
+    def upsert_record(self, salesperson_id: int, work_date: str, quantity: int) -> dict | None:
         sp = self.repo.find_salesperson(salesperson_id)
         if not sp:
             not_found("영업사원을 찾을 수 없습니다.")

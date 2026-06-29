@@ -3,6 +3,7 @@
 손라벨 행순서·geometry 를 쓰지 않는 정답지 매칭(§3). total_supply 는 라벨
 amount_text 합에서 독립 산출(인식 결과 미사용 → 순환참조 없음).
 """
+
 from __future__ import annotations
 
 import csv
@@ -25,7 +26,7 @@ class ReviewRow:
     extracted_date: str | None
     total_supply: int
     db_match_count: int
-    status: str   # unique | ambiguous | no_match
+    status: str  # unique | ambiguous | no_match
 
 
 @dataclass(frozen=True)
@@ -64,11 +65,12 @@ _AMOUNT_RE = re.compile(r"\d[\d,]{2,}")
 
 
 def candidate_amounts(texts: Iterable[str], minimum: int = 1000) -> list[int]:
-    """references OCR 텍스트에서 콤마 포함 정수 후보(>= minimum)를 오름차순으로.
+    """References OCR 텍스트에서 콤마 포함 정수 후보(>= minimum)를 오름차순으로.
 
     인쇄 거래명세서엔 라인아이템 금액·세액·합계 등 여러 숫자가 찍혀 있고,
     그중 어느 것이 공급가합(total_supply)인지는 텍스트만으론 모른다 →
-    resolve_reference 가 DB 조회로 가린다."""
+    resolve_reference 가 DB 조회로 가린다.
+    """
     out: set[int] = set()
     for t in texts:
         for m in _AMOUNT_RE.finditer(t):
@@ -79,17 +81,19 @@ def candidate_amounts(texts: Iterable[str], minimum: int = 1000) -> list[int]:
 
 
 def resolve_reference(texts: list[str], db: dbmod.InvoiceDB) -> tuple[str | None, int]:
-    """references 텍스트 → (발행일, total_supply). 라벨 미사용.
+    """References 텍스트 → (발행일, total_supply). 라벨 미사용.
 
     total_supply 는 (발행일+후보)로 DB 유일조회되는 후보 중 최댓값으로 정한다:
     공급가합은 라인아이템 합이라 개별 금액보다 크고, grand_total(VAT포함)은 DB
     total_supply 와 달라 조회 0건이 되므로, 최댓값-유일hit 가 공급가합을 가린다.
-    못 정하면 0."""
+    못 정하면 0.
+    """
     date = extract_date(texts)
     if date is None:
         return None, 0
-    uhits = [c for c in candidate_amounts(texts)
-             if len(db.find_by_date_and_total_supply(date, c)) == 1]
+    uhits = [
+        c for c in candidate_amounts(texts) if len(db.find_by_date_and_total_supply(date, c)) == 1
+    ]
     return date, (max(uhits) if uhits else 0)
 
 
@@ -102,13 +106,15 @@ def build_review_rows_from_references(
     for image_id, texts in per_image:
         date, ts = resolve_reference(texts, db)
         hits = db.find_by_date_and_total_supply(date, ts) if (date and ts) else []
-        rows.append(ReviewRow(
-            image_id=image_id,
-            extracted_date=date,
-            total_supply=ts,
-            db_match_count=len(hits),
-            status=_status_for(len(hits)),
-        ))
+        rows.append(
+            ReviewRow(
+                image_id=image_id,
+                extracted_date=date,
+                total_supply=ts,
+                db_match_count=len(hits),
+                status=_status_for(len(hits)),
+            )
+        )
     return rows
 
 
@@ -132,13 +138,15 @@ def build_review_rows(
             hits = db.find_by_date_and_total_supply(date, total_supply)
         else:
             hits = db.find_by_total_supply(total_supply)
-        rows.append(ReviewRow(
-            image_id=image_id,
-            extracted_date=date,
-            total_supply=total_supply,
-            db_match_count=len(hits),
-            status=_status_for(len(hits)),
-        ))
+        rows.append(
+            ReviewRow(
+                image_id=image_id,
+                extracted_date=date,
+                total_supply=total_supply,
+                db_match_count=len(hits),
+                status=_status_for(len(hits)),
+            )
+        )
     return rows
 
 
@@ -151,26 +159,30 @@ def write_review_csv(rows: list[ReviewRow], path: Path) -> None:
         w = csv.DictWriter(f, fieldnames=_CSV_FIELDS)
         w.writeheader()
         for r in rows:
-            w.writerow({
-                "image_id": r.image_id,
-                "extracted_date": r.extracted_date or "",
-                "total_supply": r.total_supply,
-                "db_match_count": r.db_match_count,
-                "status": r.status,
-            })
+            w.writerow(
+                {
+                    "image_id": r.image_id,
+                    "extracted_date": r.extracted_date or "",
+                    "total_supply": r.total_supply,
+                    "db_match_count": r.db_match_count,
+                    "status": r.status,
+                }
+            )
 
 
 def read_review_csv(path: Path) -> list[ReviewRow]:
     rows: list[ReviewRow] = []
     with path.open(newline="", encoding="utf-8") as f:
         for rec in csv.DictReader(f):
-            rows.append(ReviewRow(
-                image_id=rec["image_id"],
-                extracted_date=rec["extracted_date"] or None,
-                total_supply=int(rec["total_supply"]),
-                db_match_count=int(rec["db_match_count"]),
-                status=rec["status"],
-            ))
+            rows.append(
+                ReviewRow(
+                    image_id=rec["image_id"],
+                    extracted_date=rec["extracted_date"] or None,
+                    total_supply=int(rec["total_supply"]),
+                    db_match_count=int(rec["db_match_count"]),
+                    status=rec["status"],
+                )
+            )
     return rows
 
 

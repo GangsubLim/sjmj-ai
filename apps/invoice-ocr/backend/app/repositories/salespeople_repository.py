@@ -37,9 +37,7 @@ class SalespersonRepository:
             )
             return dict(row) if row else None
 
-    def find_active_by_name(
-        self, name: str, exclude_id: int | None = None
-    ) -> dict | None:
+    def find_active_by_name(self, name: str, exclude_id: int | None = None) -> dict | None:
         sql = "SELECT id, name FROM salespeople WHERE name = :name AND is_active = 1"
         params: dict = {"name": name}
         if exclude_id is not None:
@@ -84,9 +82,7 @@ class SalespersonRepository:
     def soft_delete(self, id: int) -> bool:
         with connection() as conn:
             result = conn.execute(
-                text(
-                    "UPDATE salespeople SET is_active = 0 WHERE id = :id AND is_active = 1"
-                ),
+                text("UPDATE salespeople SET is_active = 0 WHERE id = :id AND is_active = 1"),
                 {"id": id},
             )
             return result.rowcount > 0

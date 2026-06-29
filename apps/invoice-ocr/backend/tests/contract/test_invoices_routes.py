@@ -44,9 +44,7 @@ def test_index_structured_pagination(client):
 
 
 def test_index_limit_clamped(client):
-    r = client.get(
-        "/api/invoices", params={"page": 0, "limit": 0}
-    )  # page>=1, limit>=1 보정
+    r = client.get("/api/invoices", params={"page": 0, "limit": 0})  # page>=1, limit>=1 보정
     assert r.json()["pagination"]["page"] == 1
     assert r.json()["pagination"]["limit"] == 1
 
@@ -64,9 +62,7 @@ def test_show_404_structured(client):
 
 def test_update_replaces_and_returns(client):
     iid = _create(client).json()["data"]["id"]
-    r = client.put(
-        f"/api/invoices/{iid}", json=td.invoice_with_items({"recipient": "수정거래처"})
-    )
+    r = client.put(f"/api/invoices/{iid}", json=td.invoice_with_items({"recipient": "수정거래처"}))
     assert r.status_code == 200 and r.json()["data"]["recipient"] == "수정거래처"
 
 

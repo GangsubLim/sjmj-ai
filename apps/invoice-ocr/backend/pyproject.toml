@@ -22,3 +22,45 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+# Google pyguide 핵심 lint 룰 — 도구가 강제 가능한 부분만.
+# E/W: pycodestyle errors/warnings (PEP 8)
+# F:   pyflakes (사용 안 한 import, undefined name 등)
+# N:   pep8-naming (snake_case 함수/변수, PascalCase 클래스, UPPER_CASE 상수)
+# UP:  pyupgrade (오래된 문법 → 모던 문법)
+# B:   flake8-bugbear (흔한 버그 패턴)
+# SIM: flake8-simplify (단순화 가능한 코드)
+# I:   isort (import 정렬)
+# D:   pydocstyle (docstring) — google convention
+select = ["E", "W", "F", "N", "UP", "B", "SIM", "I", "D"]
+ignore = [
+  "D100", # 모듈 docstring 누락 — 너무 빡빡
+  "D104", # 패키지 docstring 누락
+  "E501", # 줄 길이 (포매터가 처리)
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["D"]
+"__init__.py" = ["F401"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI 관용구: 의존성 주입자(Depends/Body/File 등)를 인자 기본값에 두는 것은
+# 정상 패턴이다 → B008(function-call-in-default-argument) 면제.
+extend-immutable-calls = [
+  "fastapi.Depends",
+  "fastapi.Body",
+  "fastapi.File",
+  "fastapi.Form",
+  "fastapi.Query",
+  "fastapi.Header",
+  "fastapi.Cookie",
+  "fastapi.Path",
+  "fastapi.Security",
+]

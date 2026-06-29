@@ -75,9 +75,7 @@ def test_store_fails_with_invalid_business_number(client):
 
 def test_update_returns_company(client):
     cid = _create(client).json()["data"]["id"]
-    r = client.put(
-        f"/api/companies/{cid}", json=cd.company({"company_name": "수정거래처"})
-    )
+    r = client.put(f"/api/companies/{cid}", json=cd.company({"company_name": "수정거래처"}))
     assert r.status_code == 200
     assert r.json()["data"]["company_name"] == "수정거래처"
 
@@ -97,9 +95,7 @@ def test_destroy_then_404(client):
 
 def test_invoices_returns_list(client):
     cid = _create(client, company_name="인보이스연결거래처").json()["data"]["id"]
-    client.post(
-        "/api/invoices", json=td.invoice_with_items({"recipient": "인보이스연결거래처"})
-    )
+    client.post("/api/invoices", json=td.invoice_with_items({"recipient": "인보이스연결거래처"}))
     r = client.get(f"/api/companies/{cid}/invoices")
     assert r.status_code == 200
     b = r.json()

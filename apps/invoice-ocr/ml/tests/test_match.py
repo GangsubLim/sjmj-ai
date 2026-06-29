@@ -3,9 +3,16 @@ from pathlib import Path
 from ocr_poc.data import LabelRow
 from ocr_poc.db import parse_backup
 from ocr_poc.match import (
-    extract_date, total_supply_from_labels, build_review_rows,
-    write_review_csv, read_review_csv, resolve_ground_truth, ReviewRow,
-    candidate_amounts, resolve_reference, build_review_rows_from_references,
+    ReviewRow,
+    build_review_rows,
+    build_review_rows_from_references,
+    candidate_amounts,
+    extract_date,
+    read_review_csv,
+    resolve_ground_truth,
+    resolve_reference,
+    total_supply_from_labels,
+    write_review_csv,
 )
 
 
@@ -17,16 +24,15 @@ def test_extract_date_various_formats():
 
 
 def test_total_supply_from_labels_sums_amount():
-    rows = [LabelRow(1, "a", "4", "25000", "100000"),
-            LabelRow(2, "b", "1", "30000", "30000")]
+    rows = [LabelRow(1, "a", "4", "25000", "100000"), LabelRow(2, "b", "1", "30000", "30000")]
     assert total_supply_from_labels(rows) == 130000
 
 
 def test_build_review_rows_marks_status(tiny_invoices_sql):
     db = parse_backup(tiny_invoices_sql)
     per_image = [
-        ("inv_a", ["2026-05-12"], 300000),   # 일자+공급가합 → 유일(inv 11)
-        ("inv_b", ["2026-05-12"], 999999),   # 공급가합 불일치 → 0건
+        ("inv_a", ["2026-05-12"], 300000),  # 일자+공급가합 → 유일(inv 11)
+        ("inv_b", ["2026-05-12"], 999999),  # 공급가합 불일치 → 0건
     ]
     rows = build_review_rows(per_image, db)
     by_id = {r.image_id: r for r in rows}
@@ -59,7 +65,7 @@ def test_resolve_ground_truth_date_none_falls_back_to_total_supply(tiny_invoices
     # 날짜 추출 실패(None)면 total_supply 단독 유일조회로 폴백 — 유일할 때만 채택
     db = parse_backup(tiny_invoices_sql)
     reviewed = [
-        ReviewRow("inv_c", None, 120000, 1, "unique"),    # 공급가합 유일(inv 12) → 채택
+        ReviewRow("inv_c", None, 120000, 1, "unique"),  # 공급가합 유일(inv 12) → 채택
         ReviewRow("inv_d", None, 999999, 0, "no_match"),  # 공급가합 0건 → 미채택
     ]
     gt = resolve_ground_truth(reviewed, db)
@@ -97,8 +103,8 @@ def test_resolve_reference_no_date_returns_zero(tiny_invoices_sql):
 def test_build_review_rows_from_references_resolves(tiny_invoices_sql):
     db = parse_backup(tiny_invoices_sql)
     per_image = [
-        ("inv_a", ["2026-05-12", "300,000", "30,000"]),   # inv 11 유일
-        ("inv_z", ["2026-05-12", "111", "222"]),           # 후보 없음 → no_match
+        ("inv_a", ["2026-05-12", "300,000", "30,000"]),  # inv 11 유일
+        ("inv_z", ["2026-05-12", "111", "222"]),  # 후보 없음 → no_match
     ]
     rows = build_review_rows_from_references(per_image, db)
     by_id = {r.image_id: r for r in rows}
@@ -111,7 +117,7 @@ def test_build_review_rows_from_references_resolves(tiny_invoices_sql):
 
 def test_label_sum_resolves_ground_truth_against_db(tiny_invoices_sql):
     db = parse_backup(tiny_invoices_sql)
-    labels = [LabelRow(1, "단지", "1", "300000", "300000")]   # inv 11: 공급가 300000
+    labels = [LabelRow(1, "단지", "1", "300000", "300000")]  # inv 11: 공급가 300000
     ts = total_supply_from_labels(labels)
     assert ts == 300000
     per_image = [("inv_11", ["2026-05-12"], ts)]

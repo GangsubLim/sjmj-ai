@@ -38,14 +38,8 @@ class InvoiceRepository:
 
     def find_all(self, filters: dict) -> list[dict]:
         where, params = self._where(filters)
-        col = _ALLOWED_SORT_COLUMNS.get(
-            filters["sort_by"], _ALLOWED_SORT_COLUMNS["issue_date"]
-        )
-        order = (
-            filters["sort_order"]
-            if filters["sort_order"] in _ALLOWED_SORT_ORDERS
-            else "desc"
-        )
+        col = _ALLOWED_SORT_COLUMNS.get(filters["sort_by"], _ALLOWED_SORT_COLUMNS["issue_date"])
+        order = filters["sort_order"] if filters["sort_order"] in _ALLOWED_SORT_ORDERS else "desc"
         params["limit"] = filters["limit"]
         params["offset"] = (filters["page"] - 1) * filters["limit"]
         sql = f"""
@@ -81,9 +75,7 @@ class InvoiceRepository:
         with connection() as conn:
             return _rows(
                 conn.execute(
-                    text(
-                        "SELECT * FROM invoice_items WHERE invoice_id = :id ORDER BY item_order"
-                    ),
+                    text("SELECT * FROM invoice_items WHERE invoice_id = :id ORDER BY item_order"),
                     {"id": invoice_id},
                 )
             )
@@ -173,10 +165,7 @@ class InvoiceRepository:
     def delete(self, id: int) -> bool:
         with connection() as conn:
             return (
-                conn.execute(
-                    text("DELETE FROM invoices WHERE id = :id"), {"id": id}
-                ).rowcount
-                > 0
+                conn.execute(text("DELETE FROM invoices WHERE id = :id"), {"id": id}).rowcount > 0
             )
 
     def find_all_for_export(self, filters: dict) -> list[dict]:

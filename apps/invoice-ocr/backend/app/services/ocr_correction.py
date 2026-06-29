@@ -7,9 +7,7 @@ def build_correction(result_json: dict, final_items: list[dict]) -> dict:
     - crop_ref 없는 최종 item = 사람이 추가한 행(rows_added)
     - 최종 payload에서 매칭 안 된 초안 crop = 사람이 버린 행(rows_dropped)
     """
-    draft_by_ref = {
-        r["crop_ref"]: r for r in result_json.get("rows", []) if r.get("crop_ref")
-    }
+    draft_by_ref = {r["crop_ref"]: r for r in result_json.get("rows", []) if r.get("crop_ref")}
     lines: list[dict] = []
     matched: set[str] = set()
     rows_added = 0

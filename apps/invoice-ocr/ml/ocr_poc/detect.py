@@ -4,6 +4,7 @@
 DetectedCell.bbox 는 원본 이미지 좌표계의 (x1,y1,x2,y2).
 row_index/col_index 는 표 격자에서의 0-based 위치.
 """
+
 from __future__ import annotations
 
 import os
@@ -19,8 +20,7 @@ class DetectedCell:
 
 
 class DetectorAdapter(Protocol):
-    def detect(self, image_path: str) -> list[DetectedCell]:
-        ...
+    def detect(self, image_path: str) -> list[DetectedCell]: ...
 
 
 class FakeDetector:
@@ -52,6 +52,7 @@ class TextDetCellDetector:
 
             import numpy as np  # noqa: PLC0415
             from paddleocr import TextDetection  # noqa: PLC0415
+
             self._math = math
             self._np = np
             self._engine = TextDetection()
@@ -77,8 +78,10 @@ class TextDetCellDetector:
         med_h = heights[len(heights) // 2] if heights else 10.0
         row_idx = _cluster_index(rcy, gap=med_h * 0.6)
         col_idx = _cluster_index(rcx, gap=med_h * 0.9)
-        cells = [DetectedCell(row_index=ri, col_index=ci, bbox=rect)
-                 for rect, ri, ci in zip(rects, row_idx, col_idx)]
+        cells = [
+            DetectedCell(row_index=ri, col_index=ci, bbox=rect)
+            for rect, ri, ci in zip(rects, row_idx, col_idx)
+        ]
         return cells
 
 

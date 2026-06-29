@@ -1,4 +1,5 @@
 """이미지·라벨 페어 로딩. 라벨은 *_text 만 쓰고 geometry 는 무시한다(§2.2)."""
+
 from __future__ import annotations
 
 import json
@@ -25,13 +26,15 @@ class Sample:
 def load_label(label_json: dict) -> tuple[LabelRow, ...]:
     rows: list[LabelRow] = []
     for r in label_json.get("rows", []):
-        rows.append(LabelRow(
-            row_id=int(r.get("row_id", len(rows) + 1)),
-            item=str(r.get("item_class", "")),
-            quantity=str(r.get("quantity_text", "")),
-            unit_price=str(r.get("unit_price_text", "")),
-            amount=str(r.get("amount_text", "")),
-        ))
+        rows.append(
+            LabelRow(
+                row_id=int(r.get("row_id", len(rows) + 1)),
+                item=str(r.get("item_class", "")),
+                quantity=str(r.get("quantity_text", "")),
+                unit_price=str(r.get("unit_price_text", "")),
+                amount=str(r.get("amount_text", "")),
+            )
+        )
     return tuple(rows)
 
 
@@ -45,9 +48,11 @@ def load_samples(images_dir: Path, labels_dir: Path) -> list[Sample]:
             print(f"[data] 경고: 라벨 없음 {label_path} — 건너뜀")
             continue
         label_json = json.loads(label_path.read_text(encoding="utf-8"))
-        samples.append(Sample(
-            image_id=image_id,
-            image_path=img_path,
-            label_rows=load_label(label_json),
-        ))
+        samples.append(
+            Sample(
+                image_id=image_id,
+                image_path=img_path,
+                label_rows=load_label(label_json),
+            )
+        )
     return samples

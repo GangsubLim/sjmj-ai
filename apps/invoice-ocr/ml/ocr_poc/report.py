@@ -1,4 +1,5 @@
 """측정 리포트(md+json) 산출. 오답 갤러리/검출 시각화 저장은 별도 헬퍼."""
+
 from __future__ import annotations
 
 import json
@@ -26,7 +27,10 @@ def render_markdown(data: ReportData) -> str:
     for key, label in _METRIC_LABELS.items():
         if key in data.metrics:
             lines.append(f"| {label} | {data.metrics[key]:.2f} |")
-    lines += ["", "> 주: SP1 1차 리포트는 검산 미반영 — “검산 후 정확도(게인)”는 인식 정확도와 동일(검산 게인 통합은 후속 second-pass)."]
+    lines += [
+        "",
+        "> 주: SP1 1차 리포트는 검산 미반영 — “검산 후 정확도(게인)”는 인식 정확도와 동일(검산 게인 통합은 후속 second-pass).",
+    ]
     lines += ["", "## 약식 규칙 적용", "", "| 규칙 | 횟수 |", "| --- | --- |"]
     for rule, cnt in sorted(data.rule_counts.items()):
         lines.append(f"| {rule} | {cnt} |")
@@ -43,12 +47,16 @@ def render_markdown(data: ReportData) -> str:
 
 
 def render_json(data: ReportData) -> str:
-    return json.dumps({
-        "metrics": data.metrics,
-        "per_image": data.per_image,
-        "failures": data.failures,
-        "rule_counts": data.rule_counts,
-    }, ensure_ascii=False, indent=2)
+    return json.dumps(
+        {
+            "metrics": data.metrics,
+            "per_image": data.per_image,
+            "failures": data.failures,
+            "rule_counts": data.rule_counts,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
 
 
 def write_report(data: ReportData, out_dir: Path) -> None:
