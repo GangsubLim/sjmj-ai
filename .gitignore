@@ -29,3 +29,4 @@ apps/invoice-ocr/ml/data/
 # 운영 데이터 덤프(실고객 PII) — 레포에 커밋 금지. SJMJ_DB_BACKUP env 경로로 참조.
 db/*backup*.sql
 db/*-dump.sql
+.gstack/
