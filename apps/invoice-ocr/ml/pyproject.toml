@@ -14,6 +14,10 @@ ml = [
     "paddlex[ocr]>=3.4",
     "numpy>=1.26",
 ]
+worker = [
+    "sqlalchemy>=2.0",
+    "pymysql>=1.1",
+]
 
 [dependency-groups]
 dev = [
