@@ -69,6 +69,7 @@ def test_backup_fails_without_db_name(tmp_path: Path) -> None:
         "DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=\n"
     )  # DB_NAME 누락
     env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+    env.pop("DB_NAME", None)  # CI는 DB_NAME을 env로 주입 — 상속 시 검증 통과돼 오염되므로 제거
     result = subprocess.run(
         [
             "bash",
