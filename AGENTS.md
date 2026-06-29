@@ -14,7 +14,7 @@ This file provides guidance to AI Agents when working with code in this reposito
 apps/invoice-ocr/
   backend/    FastAPI + SQLAlchemy + MySQL (PHP 백엔드 포팅, SP2~)
   frontend/   React 19 + Vite + Tailwind v4 + shadcn (SJMJ-Web frontend 이식, SP3~)
-  ml/         수기 OCR 파이프라인 (SP1). 자체 CLAUDE.md 있음 — ML 작업 시 반드시 참조
+  ml/         수기 OCR 파이프라인 (SP1)
 db/           운영 MySQL 스키마 + migration_*.sql (Phase 1A 이전 + ML 이음새)
 deploy/       launchd plist 템플릿 + backend.env.example
 scripts/      release / sync-version / run-backend / backup-db / install-launchagent / db-verify
@@ -84,7 +84,7 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), 
 
 ## ML 파이프라인
 
-`apps/invoice-ocr/ml/`에 **자체 `CLAUDE.md`가 있다 — ML 작업 전 반드시 읽는다.** 핵심만: 코어는 paddle-free 경량(pillow만), ML 의존은 `[ml]` extra. 모든 DTO는 `@dataclass(frozen=True)`이고 normalize/validate/score/assemble은 순수함수다. 모델은 어댑터(Protocol) 뒤에 숨겨 지연 로딩하므로 테스트는 합성 데이터 + Fake 어댑터로 paddle 없이 돈다. 데이터·DB·산출물은 전부 gitignore이며 경로는 `.env`(`SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP`)로만 주입한다(하드코딩 금지).
+`apps/invoice-ocr/ml/`의 핵심: 코어는 paddle-free 경량(pillow만), ML 의존은 `[ml]` extra. 모든 DTO는 `@dataclass(frozen=True)`이고 normalize/validate/score/assemble은 순수함수다. 모델은 어댑터(Protocol) 뒤에 숨겨 지연 로딩하므로 테스트는 합성 데이터 + Fake 어댑터로 paddle 없이 돈다. 데이터·DB·산출물은 전부 gitignore이며 경로는 `.env`(`SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP`)로만 주입한다(하드코딩 금지). 상세 규약은 `ml/`의 자체 지침에 있으며 ml/ 작업 시 자동 주입된다.
 
 ## 버전·릴리스·배포
 
