@@ -14,7 +14,7 @@ from pathlib import Path
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-APP_VERSION = "0.1.1"
+APP_VERSION = "0.2.0"
 
 
 class Settings(BaseSettings):
