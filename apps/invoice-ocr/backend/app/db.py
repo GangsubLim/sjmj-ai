@@ -18,6 +18,7 @@ _conn_var: ContextVar = ContextVar("sjmj_conn", default=None)
 
 
 def get_engine() -> Engine:
+    """모듈 전역 SQLAlchemy Engine을 반환한다(없으면 설정으로 생성)."""
     global _engine
     if _engine is None:
         s = get_settings()
@@ -30,11 +31,13 @@ def get_engine() -> Engine:
 
 
 def set_test_engine(engine: Engine) -> None:
+    """전역 Engine을 테스트용 엔진으로 교체한다."""
     global _engine
     _engine = engine
 
 
 def reset_engine() -> None:
+    """전역 Engine을 초기화한다(다음 호출 시 재생성)."""
     global _engine
     _engine = None
 

@@ -49,6 +49,7 @@ def _is_int(value) -> bool:
 
 @router.get("/sales-records")
 def index(request: Request):
+    """지정한 연·월의 영업 실적 집계를 조회한다."""
     year = _qint(request, "year", 0)
     month = _qint(request, "month", 0)
     if year < 1900 or year > 2999 or month < 1 or month > 12:
@@ -58,6 +59,7 @@ def index(request: Request):
 
 @router.post("/sales-records")
 def store(data: dict = Body(...)):
+    """영업 실적 record를 UPSERT한다."""
     Validator().required(data, ["salesperson_id", "work_date", "quantity"]).date_format(
         data, "work_date"
     ).validate_or_fail()
@@ -78,6 +80,7 @@ def store(data: dict = Body(...)):
 
 @router.delete("/sales-records/{id}")
 def destroy(id: int):
+    """영업 실적 record를 삭제한다."""
     if not _service().delete_record(id):
         not_found("실적 record를 찾을 수 없습니다.")
     return envelope.deleted("삭제되었습니다.")

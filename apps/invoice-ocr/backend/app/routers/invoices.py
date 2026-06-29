@@ -47,6 +47,7 @@ def _validate_invoice(data: dict) -> None:
 
 @router.get("/invoices/export")
 def export(request: Request) -> Response:
+    """거래명세서를 CSV로 내보낸다(envelope 밖 raw text/csv)."""
     fmt = request.query_params.get("format", "csv")
     if fmt not in ("csv", "xlsx"):
         bad_request("format은 csv 또는 xlsx만 가능합니다.")
@@ -70,6 +71,7 @@ def export(request: Request) -> Response:
 
 @router.get("/invoices")
 def index(request: Request):
+    """거래명세서 목록을 페이지네이션·정렬·필터로 조회한다."""
     sort_by = request.query_params.get("sort_by", "issue_date")
     sort_order = request.query_params.get("sort_order", "desc")
     filters = {
@@ -87,6 +89,7 @@ def index(request: Request):
 
 @router.get("/invoices/{id}")
 def show(id: int):
+    """거래명세서를 ID로 단건 조회한다."""
     invoice = _service().get_by_id(id)
     if not invoice:
         not_found("거래명세서를 찾을 수 없습니다.")
@@ -95,12 +98,14 @@ def show(id: int):
 
 @router.post("/invoices")
 def store(data: dict = Body(...)):
+    """거래명세서를 생성한다."""
     _validate_invoice(data)
     return envelope.created(_service().create(data))
 
 
 @router.put("/invoices/{id}")
 def update(id: int, data: dict = Body(...)):
+    """거래명세서를 수정한다."""
     _validate_invoice(data)
     invoice = _service().update(id, data)
     if not invoice:
@@ -110,6 +115,7 @@ def update(id: int, data: dict = Body(...)):
 
 @router.delete("/invoices/{id}")
 def destroy(id: int):
+    """거래명세서를 삭제한다."""
     if not _service().delete(id):
         not_found("거래명세서를 찾을 수 없습니다.")
     return envelope.deleted("거래명세서가 삭제되었습니다.")
@@ -117,6 +123,7 @@ def destroy(id: int):
 
 @router.post("/invoices/{id}/duplicate")
 def duplicate(id: int):
+    """기존 거래명세서를 복제해 새 명세서를 만든다."""
     new_invoice = _service().duplicate(id)
     if not new_invoice:
         not_found("원본 거래명세서를 찾을 수 없습니다.")

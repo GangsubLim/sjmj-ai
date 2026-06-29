@@ -21,6 +21,8 @@ def _rows(result) -> list[dict]:
 
 
 class InvoiceRepository:
+    """거래명세서(invoices)와 항목(invoice_items) 테이블에 대한 raw SQL 데이터 접근 계층."""
+
     def _where(self, filters: dict) -> tuple[str, dict]:
         where = "1=1"
         params: dict = {}
@@ -37,6 +39,7 @@ class InvoiceRepository:
         return where, params
 
     def find_all(self, filters: dict) -> list[dict]:
+        """필터·정렬·페이지네이션을 적용해 거래명세서 목록을 조회한다."""
         where, params = self._where(filters)
         col = _ALLOWED_SORT_COLUMNS.get(filters["sort_by"], _ALLOWED_SORT_COLUMNS["issue_date"])
         order = filters["sort_order"] if filters["sort_order"] in _ALLOWED_SORT_ORDERS else "desc"
@@ -55,6 +58,7 @@ class InvoiceRepository:
             return _rows(conn.execute(text(sql), params))
 
     def count_all(self, filters: dict) -> int:
+        """필터에 맞는 거래명세서 총 개수를 반환한다."""
         where, params = self._where(filters)
         with connection() as conn:
             value = conn.execute(
@@ -63,6 +67,7 @@ class InvoiceRepository:
             return int(value or 0)
 
     def find_by_id(self, id: int) -> dict | None:
+        """거래명세서를 ID로 단건 조회한다."""
         with connection() as conn:
             row = (
                 conn.execute(text("SELECT * FROM invoices WHERE id = :id"), {"id": id})
@@ -72,6 +77,7 @@ class InvoiceRepository:
             return dict(row) if row else None
 
     def find_items(self, invoice_id: int) -> list[dict]:
+        """거래명세서의 항목 목록을 정렬 순서대로 조회한다."""
         with connection() as conn:
             return _rows(
                 conn.execute(
@@ -81,6 +87,7 @@ class InvoiceRepository:
             )
 
     def insert(self, data: dict) -> int:
+        """거래명세서를 삽입하고 생성된 id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -106,6 +113,7 @@ class InvoiceRepository:
             return int(result.lastrowid)
 
     def insert_item(self, item: dict) -> None:
+        """거래명세서 항목 한 건을 삽입한다."""
         with connection() as conn:
             conn.execute(
                 text("""
@@ -129,6 +137,7 @@ class InvoiceRepository:
             )
 
     def update(self, id: int, data: dict) -> bool:
+        """거래명세서를 수정하고 변경 여부를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -156,6 +165,7 @@ class InvoiceRepository:
             return result.rowcount > 0
 
     def delete_items(self, invoice_id: int) -> None:
+        """거래명세서의 모든 항목을 삭제한다."""
         with connection() as conn:
             conn.execute(
                 text("DELETE FROM invoice_items WHERE invoice_id = :id"),
@@ -163,12 +173,14 @@ class InvoiceRepository:
             )
 
     def delete(self, id: int) -> bool:
+        """거래명세서를 삭제하고 삭제 여부를 반환한다."""
         with connection() as conn:
             return (
                 conn.execute(text("DELETE FROM invoices WHERE id = :id"), {"id": id}).rowcount > 0
             )
 
     def find_all_for_export(self, filters: dict) -> list[dict]:
+        """엑셀 내보내기용으로 필터에 맞는 거래명세서 전체를 조회한다."""
         where = "1=1"
         params: dict = {}
         if filters.get("date_from"):

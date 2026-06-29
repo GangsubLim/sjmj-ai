@@ -36,10 +36,14 @@ def sanitize_csv_field(value) -> str:
 
 
 class ExportService:
+    """거래명세서를 CSV로 내보내는 서비스 — PHP ExportService 동형."""
+
     def __init__(self, repo: InvoiceRepository | None = None):
+        """InvoiceRepository를 주입받거나 기본 인스턴스를 생성한다."""
         self.repo = repo or InvoiceRepository()
 
     def export_invoices(self, format: str, filters: dict) -> tuple[str, bytes]:
+        """필터 조건의 거래명세서를 CSV로 직렬화해 (파일명, 바이트)로 반환한다."""
         if format != "csv":
             raise ValueError("현재 CSV 형식만 지원합니다.")
         invoices = self.repo.find_all_for_export(filters)

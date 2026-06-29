@@ -18,6 +18,8 @@ APP_VERSION = "0.2.1"
 
 
 class Settings(BaseSettings):
+    """환경변수에서 DB 연결 + ML 이음새 설정을 로드한다."""
+
     model_config = SettingsConfigDict(extra="ignore")
 
     # 런타임 MySQL 연결
@@ -34,6 +36,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """캐시된 Settings 싱글톤을 반환한다."""
     return Settings()
 
 

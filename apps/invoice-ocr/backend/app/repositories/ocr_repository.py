@@ -17,7 +17,10 @@ def _parse_job(row) -> dict | None:
 
 
 class OcrRepository:
+    """ocr_jobs와 ocr_corrections 테이블 데이터 접근 레포지토리."""
+
     def insert_job(self, image_path: str) -> int:
+        """이미지 경로로 대기 상태 OCR 작업을 생성하고 job id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("INSERT INTO ocr_jobs (status, image_path) VALUES ('pending', :p)"),
@@ -26,6 +29,7 @@ class OcrRepository:
             return int(result.lastrowid)
 
     def find_job(self, job_id: int) -> dict | None:
+        """OCR 작업을 ID로 단건 조회한다(result_json 파싱 포함)."""
         with connection() as conn:
             row = conn.execute(
                 text(
@@ -60,6 +64,7 @@ class OcrRepository:
             return result.rowcount
 
     def update_result(self, job_id: int, status: str, result_json: dict) -> None:
+        """OCR 작업의 상태와 결과 JSON을 갱신한다."""
         with connection() as conn:
             conn.execute(
                 text("UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"),
@@ -71,6 +76,7 @@ class OcrRepository:
             )
 
     def insert_correction(self, job_id: int, invoice_id: int, correction_json: dict) -> int:
+        """OCR 보정 내역을 삽입하고 생성된 id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text(

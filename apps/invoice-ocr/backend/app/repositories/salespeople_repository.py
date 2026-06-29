@@ -16,7 +16,10 @@ def _int_or(value, default: int) -> int:
 
 
 class SalespersonRepository:
+    """salespeople 테이블 데이터 접근(PHP SalespersonRepository 동형)."""
+
     def find_all(self) -> list[dict]:
+        """전체 영업사원을 고정 정렬로 조회한다."""
         sql = f"""
             SELECT {_COLUMNS}
             FROM salespeople
@@ -26,6 +29,7 @@ class SalespersonRepository:
             return [dict(m) for m in conn.execute(text(sql)).mappings().all()]
 
     def find_by_id(self, id: int) -> dict | None:
+        """영업사원을 ID로 단건 조회한다."""
         with connection() as conn:
             row = (
                 conn.execute(
@@ -38,6 +42,7 @@ class SalespersonRepository:
             return dict(row) if row else None
 
     def find_active_by_name(self, name: str, exclude_id: int | None = None) -> dict | None:
+        """이름으로 활성 영업사원을 조회한다(exclude_id 지정 시 해당 id 제외)."""
         sql = "SELECT id, name FROM salespeople WHERE name = :name AND is_active = 1"
         params: dict = {"name": name}
         if exclude_id is not None:
@@ -48,6 +53,7 @@ class SalespersonRepository:
             return dict(row) if row else None
 
     def insert(self, data: dict) -> int:
+        """영업사원을 삽입하고 생성된 id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -63,6 +69,7 @@ class SalespersonRepository:
             return int(result.lastrowid)
 
     def update(self, id: int, data: dict) -> bool:
+        """영업사원을 수정하고 변경 여부를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -80,6 +87,7 @@ class SalespersonRepository:
             return result.rowcount > 0
 
     def soft_delete(self, id: int) -> bool:
+        """영업사원을 is_active=0으로 소프트 삭제하고 변경 여부를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("UPDATE salespeople SET is_active = 0 WHERE id = :id AND is_active = 1"),

@@ -27,6 +27,7 @@ def _validate_item(data: dict) -> None:
 
 @router.get("/items")
 def index(request: Request):
+    """품목 목록을 검색·정렬 조건으로 조회한다."""
     sort_by = request.query_params.get("sort_by", "item_name")
     filters = {
         "q": request.query_params.get("q"),
@@ -39,6 +40,7 @@ def index(request: Request):
 
 @router.get("/items/{id}")
 def show(id: int):
+    """품목을 ID로 단건 조회한다."""
     item = _service().get_by_id(id)
     if not item:
         not_found("품목을 찾을 수 없습니다.")
@@ -47,12 +49,14 @@ def show(id: int):
 
 @router.post("/items")
 def store(data: dict = Body(...)):
+    """품목을 생성한다."""
     _validate_item(data)
     return envelope.created(_service().create(data))
 
 
 @router.put("/items/{id}")
 def update(id: int, data: dict = Body(...)):
+    """품목을 수정한다."""
     _validate_item(data)
     item = _service().update(id, data)
     if not item:
@@ -62,6 +66,7 @@ def update(id: int, data: dict = Body(...)):
 
 @router.delete("/items/{id}")
 def destroy(id: int):
+    """품목을 삭제한다."""
     if not _service().delete(id):
         not_found("품목을 찾을 수 없습니다.")
     return envelope.deleted("품목이 삭제되었습니다.")

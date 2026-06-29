@@ -28,6 +28,7 @@ def _validate_company(data: dict) -> None:
 
 @router.get("/companies")
 def index(request: Request):
+    """거래처 목록을 검색·정렬해 조회한다."""
     sort_by = request.query_params.get("sort_by", "company_name")
     filters = {
         "q": request.query_params.get("q"),
@@ -39,6 +40,7 @@ def index(request: Request):
 
 @router.get("/companies/{id}")
 def show(id: int):
+    """거래처를 ID로 단건 조회한다."""
     company = _service().get_by_id(id)
     if not company:
         not_found("거래처를 찾을 수 없습니다.")
@@ -47,12 +49,14 @@ def show(id: int):
 
 @router.post("/companies")
 def store(data: dict = Body(...)):
+    """거래처를 검증 후 생성한다."""
     _validate_company(data)
     return envelope.created(_service().create(data))
 
 
 @router.put("/companies/{id}")
 def update(id: int, data: dict = Body(...)):
+    """거래처를 검증 후 수정한다."""
     _validate_company(data)
     company = _service().update(id, data)
     if not company:
@@ -62,6 +66,7 @@ def update(id: int, data: dict = Body(...)):
 
 @router.delete("/companies/{id}")
 def destroy(id: int):
+    """거래처를 삭제한다."""
     if not _service().delete(id):
         not_found("거래처를 찾을 수 없습니다.")
     return envelope.deleted("거래처가 삭제되었습니다.")
@@ -69,6 +74,7 @@ def destroy(id: int):
 
 @router.get("/companies/{id}/invoices")
 def invoices(id: int):
+    """거래처별 거래명세서 목록을 전건 조회한다."""
     rows = _service().get_invoices(id)
     if rows is None:
         not_found("거래처를 찾을 수 없습니다.")

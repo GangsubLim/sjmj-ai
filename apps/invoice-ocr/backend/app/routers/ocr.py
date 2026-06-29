@@ -22,12 +22,14 @@ def _validate_confirm(data: dict) -> None:
 
 @router.post("/ocr/jobs")
 def create_job(photo: UploadFile = File(...)):
+    """업로드한 사진으로 OCR 잡을 생성한다."""
     content = photo.file.read()  # SpooledTemporaryFile 동기 읽기
     return envelope.created(_service().create_job(content, photo.filename or ""))
 
 
 @router.get("/ocr/jobs/{id}")
 def get_job(id: int):
+    """OCR 잡을 ID로 조회한다."""
     job = _service().get_job(id)
     if job is None:
         not_found("OCR 잡을 찾을 수 없습니다.")
@@ -36,5 +38,6 @@ def get_job(id: int):
 
 @router.post("/ocr/jobs/{id}/confirm")
 def confirm(id: int, data: dict = Body(...)):
+    """OCR 인식 결과를 확정해 거래명세서로 저장한다."""
     _validate_confirm(data)
     return envelope.single(_service().confirm(id, data))
