@@ -23,3 +23,20 @@ class CurationRepository:
             for pair in pairs:
                 conn.execute(_PAIR_INSERT, pair)
         return len(pairs)
+
+    def list_jobs(self, limit: int, offset: int) -> tuple[list[dict], int]:
+        """training_pairs 보유 잡을 검수상태·미처리수와 함께 페이지 조회한다."""
+        list_sql = text(
+            "SELECT j.id AS job_id, j.invoice_id, j.curation_reviewed, j.created_at, "
+            "COUNT(tp.id) AS pair_count, "
+            "SUM(CASE WHEN tp.reviewed_at IS NULL THEN 1 ELSE 0 END) AS unreviewed_count "
+            "FROM ocr_jobs j JOIN training_pairs tp ON tp.job_id = j.id "
+            "GROUP BY j.id, j.invoice_id, j.curation_reviewed, j.created_at "
+            "ORDER BY j.curation_reviewed ASC, j.created_at DESC, j.id DESC "
+            "LIMIT :limit OFFSET :offset"
+        )
+        count_sql = text("SELECT COUNT(DISTINCT job_id) FROM training_pairs")
+        with connection() as conn:
+            rows = conn.execute(list_sql, {"limit": limit, "offset": offset}).mappings().all()
+            total = conn.execute(count_sql).scalar() or 0
+        return [dict(r) for r in rows], int(total)
