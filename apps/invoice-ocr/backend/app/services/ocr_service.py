@@ -7,10 +7,11 @@ from pathlib import Path
 from app import db
 from app.core.errors import conflict, not_found
 from app.repositories.companies_repository import CompanyRepository
+from app.repositories.curation_repository import CurationRepository
 from app.repositories.items_repository import ItemRepository
 from app.repositories.ocr_repository import OcrRepository
 from app.services.invoice_service import InvoiceService
-from app.services.ocr_correction import build_correction
+from app.services.ocr_correction import build_correction, build_training_pairs
 
 
 def _upload_root() -> Path:
@@ -25,13 +26,14 @@ def _upload_root() -> Path:
 class OcrService:
     """OCR 잡 업로드·조회·확정을 담당하는 서비스."""
 
-    def __init__(self, repo=None, invoice_service=None, *, transaction=None):
-        """저장소·invoice_service·트랜잭션 seam을 주입받아 초기화한다."""
+    def __init__(self, repo=None, invoice_service=None, *, transaction=None, curation_repo=None):
+        """저장소·invoice_service·트랜잭션 seam·큐레이션 저장소를 주입받아 초기화한다."""
         self.repo = repo or OcrRepository()
         self.invoice_service = invoice_service or InvoiceService(
             company_repo=CompanyRepository(), item_repo=ItemRepository()
         )
         self._transaction = transaction or db.transaction
+        self.curation_repo = curation_repo or CurationRepository()
 
     def create_job(self, photo_bytes: bytes, filename: str) -> dict:
         """업로드 이미지를 저장하고 OCR 잡을 생성해 job_id와 상태를 반환한다."""
@@ -84,5 +86,7 @@ class OcrService:
 
             correction = build_correction(job["result_json"] or {}, payload.get("items", []))
             self.repo.insert_correction(job_id, invoice_id, correction)
+            pairs = build_training_pairs(job_id, invoice_id, correction)
+            self.curation_repo.insert_training_pairs(pairs)
 
         return {"invoice_id": invoice_id}
