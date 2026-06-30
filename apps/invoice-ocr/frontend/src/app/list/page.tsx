@@ -50,6 +50,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
+import { getVisiblePages } from "@/lib/pagination";
 import {
   InvoiceCard,
   InvoicePreview,
@@ -138,17 +139,6 @@ function sortInvoices(invoices: Invoice[], sortKey: string): Invoice[] {
     default:
       return sorted;
   }
-}
-
-function getVisiblePages(
-  current: number,
-  total: number,
-  maxVisible = 5,
-): number[] {
-  let start = Math.max(1, current - Math.floor(maxVisible / 2));
-  const end = Math.min(total, start + maxVisible - 1);
-  start = Math.max(1, end - maxVisible + 1);
-  return Array.from({ length: end - start + 1 }, (_, i) => start + i);
 }
 
 type SearchScope = "year" | "month" | "day";
