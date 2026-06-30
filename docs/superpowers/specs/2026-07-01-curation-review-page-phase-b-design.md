@@ -96,8 +96,10 @@ API 호출 단일 진입점 규약 준수.
 - `getJob(jobId)` → `SingleResponse<CurationJobDetail>`
 - `patchPair(id, patch)` → `SingleResponse<CurationPairPatchResult>` (top5 없음·job_id 포함)
 - `reviewJob(jobId)` → `SingleResponse<{ ... }>` (ack)
-- `imageUrl(jobId, kind)` / `cropUrl(jobId, row)` → **순수 URL 문자열 빌더**
-  (axios 호출 아님, `getApiBaseUrl()` 기반으로 경로 조립해 `<img src>`에 직결)
+- `curationImageUrl(jobId, kind)` / `curationCropUrl(jobId, row)`
+  → **순수 URL 문자열 빌더(standalone export, real-only)**. `curationAPI` 객체에 두지 않는다 —
+  `createMockProxy`가 객체 전체를 감싸 mock 모드에서 string이 아닌 async wrapper를 반환하기 때문.
+  `getApiBaseUrl()` 기반 경로 조립, `<img src>`에 직결.
 
 mock proxy: JSON 4종(`getJobs`/`getJob`/`patchPair`/`reviewJob`)만
 `createMockProxy`로 감싼다. URL 빌더는 real만 — mock 모드에선 실서버/placeholder
