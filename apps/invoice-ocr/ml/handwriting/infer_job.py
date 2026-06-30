@@ -62,6 +62,7 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
     if quad is None:
         return assemble_result_json(job_id, [], warp_ok=False)
     w = ip.rotate(warp(bgr, quad), ip.deskew_angle(warp(bgr, quad)))
+    cv2.imwrite(str(crop_out_dir / "warped.png"), w)  # 큐레이션 단계 시각화용 전표 1장
 
     # process_one과 동일한 행검출·crop·retrieval·금액 OCR(단일 경로).
     # extract_rows_for_job는 (news, crops, queries, amounts, prop, ys, P, bands)를 반환하며

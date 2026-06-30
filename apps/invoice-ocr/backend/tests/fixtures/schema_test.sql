@@ -3,6 +3,7 @@
 
 SET FOREIGN_KEY_CHECKS = 0;
 
+DROP TABLE IF EXISTS training_pairs;
 DROP TABLE IF EXISTS ocr_corrections;
 DROP TABLE IF EXISTS ocr_jobs;
 DROP TABLE IF EXISTS app_settings;
@@ -149,6 +150,7 @@ CREATE TABLE ocr_jobs (
     image_path VARCHAR(512),
     result_json JSON,
     invoice_id INT,
+    curation_reviewed BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_ocr_jobs_status (status),
@@ -166,5 +168,28 @@ CREATE TABLE ocr_corrections (
     CONSTRAINT fk_ocr_corrections_job FOREIGN KEY (job_id)
         REFERENCES ocr_jobs(id) ON DELETE SET NULL,
     CONSTRAINT fk_ocr_corrections_invoice FOREIGN KEY (invoice_id)
+        REFERENCES invoices(id) ON DELETE SET NULL
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 학습 read-model 테이블 (migration_008)
+CREATE TABLE training_pairs (
+    id INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    crop_ref VARCHAR(64) UNIQUE NOT NULL,
+    job_id INT UNSIGNED NOT NULL,
+    invoice_id INT,
+    row_index INT NOT NULL,
+    draft_label VARCHAR(200),
+    final_label VARCHAR(200),
+    canonical_label VARCHAR(200),
+    supply INT,
+    status VARCHAR(16) NOT NULL DEFAULT 'included',
+    reviewed_at TIMESTAMP NULL DEFAULT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    INDEX idx_training_pairs_job (job_id),
+    INDEX idx_training_pairs_canonical (canonical_label),
+    INDEX idx_training_pairs_status (status),
+    CONSTRAINT fk_training_pairs_job FOREIGN KEY (job_id)
+        REFERENCES ocr_jobs(id) ON DELETE CASCADE,
+    CONSTRAINT fk_training_pairs_invoice FOREIGN KEY (invoice_id)
         REFERENCES invoices(id) ON DELETE SET NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

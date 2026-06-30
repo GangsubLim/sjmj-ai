@@ -1,6 +1,7 @@
 """구조화 에러 응답."""
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -49,7 +50,23 @@ async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content=_error_body("SERVER_ERROR", str(exc), None))
 
 
+async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    details: dict = {}
+    for err in exc.errors():
+        loc = err.get("loc") or ("body",)
+        # 중첩/배열 body는 loc[-1]만 쓰면 서로 다른 필드(rows.0.label vs rows.1.label)가
+        # 같은 키로 충돌해 setdefault가 일부 에러를 삼킨다. "body"를 뺀 경로를 키로 보존한다.
+        parts = [str(p) for p in loc if p != "body"] or ["body"]
+        field = ".".join(parts)
+        details.setdefault(field, err.get("msg", "유효하지 않은 값입니다."))
+    return JSONResponse(
+        status_code=400,
+        content=_error_body("VALIDATION_ERROR", "검증에 실패했습니다.", details),
+    )
+
+
 def register_error_handlers(app) -> None:
-    """앱에 AppError·미처리 예외 핸들러를 등록한다."""
+    """앱에 AppError·검증 실패·미처리 예외 핸들러를 등록한다."""
     app.add_exception_handler(AppError, _app_error_handler)
+    app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(Exception, _unhandled_handler)

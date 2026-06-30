@@ -8,6 +8,7 @@ from app.config import APP_VERSION, get_static_dir
 from app.core.errors import register_error_handlers
 from app.routers import (
     companies,
+    curation,
     invoices,
     items,
     ocr,
@@ -56,6 +57,7 @@ def create_app() -> FastAPI:
     # API 라우터는 SPA catch-all(_mount_static)보다 먼저 등록되어야 우선 매칭된다.
     application.include_router(invoices.router, prefix="/api")
     application.include_router(ocr.router, prefix="/api")
+    application.include_router(curation.router, prefix="/api")
     application.include_router(companies.router, prefix="/api")
     application.include_router(items.router, prefix="/api")
     application.include_router(settings.router, prefix="/api")

@@ -38,7 +38,6 @@
         "router": "system",
         "source": "app/main.py"
       },
-
       {
         "method": "GET",
         "path": "/api/invoices/export",
@@ -109,7 +108,6 @@
         "router": "invoices",
         "source": "app/routers/invoices.py"
       },
-
       {
         "method": "GET",
         "path": "/api/companies",
@@ -170,7 +168,6 @@
         "router": "companies",
         "source": "app/routers/companies.py"
       },
-
       {
         "method": "GET",
         "path": "/api/items",
@@ -221,7 +218,6 @@
         "router": "items",
         "source": "app/routers/items.py"
       },
-
       {
         "method": "GET",
         "path": "/api/salespeople",
@@ -262,7 +258,6 @@
         "router": "salespeople",
         "source": "app/routers/salespeople.py"
       },
-
       {
         "method": "GET",
         "path": "/api/settings/issuer",
@@ -313,7 +308,6 @@
         "router": "settings",
         "source": "app/routers/settings.py"
       },
-
       {
         "method": "GET",
         "path": "/api/sales-records",
@@ -344,7 +338,6 @@
         "router": "sales_records",
         "source": "app/routers/sales_records.py"
       },
-
       {
         "method": "POST",
         "path": "/api/ocr/jobs",
@@ -374,6 +367,66 @@
         "res": "OcrConfirmAck",
         "router": "ocr",
         "source": "app/routers/ocr.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/curation/jobs",
+        "summary": "검수 큐 목록(페이지네이션)",
+        "auth": "public",
+        "req": null,
+        "res": "CurationJobSummary",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/curation/jobs/{job_id}",
+        "summary": "잡 상세(행별 top5)",
+        "auth": "public",
+        "req": null,
+        "res": "CurationJobDetail",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "PATCH",
+        "path": "/api/curation/pairs/{id}",
+        "summary": "쌍 큐레이션(status/canonical_label)",
+        "auth": "public",
+        "req": "CurationPairPatch",
+        "res": "CurationPair",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/curation/jobs/{job_id}/review",
+        "summary": "잡 검수 완료(멱등)",
+        "auth": "public",
+        "req": null,
+        "res": "{job_id, curation_reviewed}",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/curation/jobs/{job_id}/image/{kind}",
+        "summary": "원본/워프 전표 이미지",
+        "auth": "public",
+        "req": null,
+        "res": "binary image/png (raw FileResponse, envelope 예외)",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/curation/jobs/{job_id}/crop/{row}",
+        "summary": "행 crop 이미지",
+        "auth": "public",
+        "req": null,
+        "res": "binary image/png (raw FileResponse, envelope 예외)",
+        "router": "curation",
+        "source": "app/routers/curation.py"
       }
     ],
     "schema-usage": {
@@ -439,14 +492,21 @@
       "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
       "OcrConfirmRequest": ["POST /api/ocr/jobs/{id}/confirm"],
       "OcrConfirmAck": ["POST /api/ocr/jobs/{id}/confirm"],
-      "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"]
+      "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"],
+      "CurationJobSummary": ["GET /api/curation/jobs"],
+      "CurationJobDetail": ["GET /api/curation/jobs/{job_id}"],
+      "CurationPair": [
+        "GET /api/curation/jobs/{job_id}",
+        "PATCH /api/curation/pairs/{id}"
+      ],
+      "CurationPairPatch": ["PATCH /api/curation/pairs/{id}"]
     },
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
       "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 문자열 맵(contract 테스트로 고정).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
-      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음.",
+      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/curation/jobs/{job_id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
@@ -466,7 +526,9 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -483,7 +545,9 @@
             "description": "OK",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
               }
             }
           }
@@ -508,29 +572,45 @@
           {
             "name": "date_from",
             "in": "query",
-            "schema": { "type": "string", "format": "date" }
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
           },
           {
             "name": "date_to",
             "in": "query",
-            "schema": { "type": "string", "format": "date" }
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
           },
           {
             "name": "company_id",
             "in": "query",
-            "schema": { "type": "integer" }
+            "schema": {
+              "type": "integer"
+            }
           }
         ],
         "responses": {
           "200": {
             "description": "CSV file (Content-Disposition: attachment; filename*=UTF-8'')",
-            "content": { "text/csv": { "schema": { "type": "string" } } }
+            "content": {
+              "text/csv": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "400": {
             "description": "Invalid format",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -545,7 +625,11 @@
           {
             "name": "page",
             "in": "query",
-            "schema": { "type": "integer", "default": 1, "minimum": 1 }
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1
+            }
           },
           {
             "name": "limit",
@@ -557,16 +641,28 @@
               "maximum": 100
             }
           },
-          { "name": "search", "in": "query", "schema": { "type": "string" } },
+          {
+            "name": "search",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "date_from",
             "in": "query",
-            "schema": { "type": "string", "format": "date" }
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
           },
           {
             "name": "date_to",
             "in": "query",
-            "schema": { "type": "string", "format": "date" }
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
           },
           {
             "name": "sort_by",
@@ -594,12 +690,16 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
                     {
                       "properties": {
                         "data": {
                           "type": "array",
-                          "items": { "$ref": "#/components/schemas/Invoice" }
+                          "items": {
+                            "$ref": "#/components/schemas/Invoice"
+                          }
                         }
                       }
                     }
@@ -617,7 +717,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceWriteRequest"
+              }
             }
           }
         },
@@ -628,10 +730,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Invoice" }
+                        "data": {
+                          "$ref": "#/components/schemas/Invoice"
+                        }
                       }
                     }
                   ]
@@ -643,7 +749,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -656,7 +764,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "get": {
@@ -669,10 +779,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Invoice" }
+                        "data": {
+                          "$ref": "#/components/schemas/Invoice"
+                        }
                       }
                     }
                   ]
@@ -684,7 +798,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -697,7 +813,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/InvoiceWriteRequest"
+              }
             }
           }
         },
@@ -708,10 +826,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Invoice" }
+                        "data": {
+                          "$ref": "#/components/schemas/Invoice"
+                        }
                       }
                     }
                   ]
@@ -723,7 +845,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -731,7 +855,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -745,7 +871,9 @@
             "description": "Deleted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedEnvelope"
+                }
               }
             }
           },
@@ -753,7 +881,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -766,7 +896,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "post": {
@@ -779,10 +911,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Invoice" }
+                        "data": {
+                          "$ref": "#/components/schemas/Invoice"
+                        }
                       }
                     }
                   ]
@@ -794,7 +930,9 @@
             "description": "Original not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -809,7 +947,9 @@
           {
             "name": "q",
             "in": "query",
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "company_name substring search"
           },
           {
@@ -834,12 +974,16 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
                     {
                       "properties": {
                         "data": {
                           "type": "array",
-                          "items": { "$ref": "#/components/schemas/Company" }
+                          "items": {
+                            "$ref": "#/components/schemas/Company"
+                          }
                         }
                       }
                     }
@@ -857,7 +1001,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CompanyRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/CompanyRequest"
+              }
             }
           }
         },
@@ -868,10 +1014,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Company" }
+                        "data": {
+                          "$ref": "#/components/schemas/Company"
+                        }
                       }
                     }
                   ]
@@ -883,7 +1033,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -896,7 +1048,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "get": {
@@ -909,10 +1063,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Company" }
+                        "data": {
+                          "$ref": "#/components/schemas/Company"
+                        }
                       }
                     }
                   ]
@@ -924,7 +1082,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -937,7 +1097,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/CompanyRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/CompanyRequest"
+              }
             }
           }
         },
@@ -948,10 +1110,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Company" }
+                        "data": {
+                          "$ref": "#/components/schemas/Company"
+                        }
                       }
                     }
                   ]
@@ -963,7 +1129,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -971,7 +1139,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -985,7 +1155,9 @@
             "description": "Deleted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedEnvelope"
+                }
               }
             }
           },
@@ -993,7 +1165,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1006,7 +1180,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "get": {
@@ -1019,12 +1195,16 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
                     {
                       "properties": {
                         "data": {
                           "type": "array",
-                          "items": { "$ref": "#/components/schemas/Invoice" }
+                          "items": {
+                            "$ref": "#/components/schemas/Invoice"
+                          }
                         }
                       }
                     }
@@ -1037,7 +1217,9 @@
             "description": "Company not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1052,10 +1234,18 @@
           {
             "name": "q",
             "in": "query",
-            "schema": { "type": "string" },
+            "schema": {
+              "type": "string"
+            },
             "description": "item_name substring search"
           },
-          { "name": "category", "in": "query", "schema": { "type": "string" } },
+          {
+            "name": "category",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
           {
             "name": "sort_by",
             "in": "query",
@@ -1073,12 +1263,16 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
                     {
                       "properties": {
                         "data": {
                           "type": "array",
-                          "items": { "$ref": "#/components/schemas/Item" }
+                          "items": {
+                            "$ref": "#/components/schemas/Item"
+                          }
                         }
                       }
                     }
@@ -1096,7 +1290,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ItemRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ItemRequest"
+              }
             }
           }
         },
@@ -1107,10 +1303,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Item" }
+                        "data": {
+                          "$ref": "#/components/schemas/Item"
+                        }
                       }
                     }
                   ]
@@ -1122,7 +1322,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1130,7 +1332,9 @@
             "description": "DUPLICATE_NAME (item_name UNIQUE)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1143,7 +1347,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "get": {
@@ -1156,10 +1362,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Item" }
+                        "data": {
+                          "$ref": "#/components/schemas/Item"
+                        }
                       }
                     }
                   ]
@@ -1171,7 +1381,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1184,7 +1396,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/ItemRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/ItemRequest"
+              }
             }
           }
         },
@@ -1195,10 +1409,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Item" }
+                        "data": {
+                          "$ref": "#/components/schemas/Item"
+                        }
                       }
                     }
                   ]
@@ -1210,7 +1428,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1218,7 +1438,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1232,7 +1454,9 @@
             "description": "Deleted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedEnvelope"
+                }
               }
             }
           },
@@ -1240,7 +1464,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1258,7 +1484,9 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
                     {
                       "properties": {
                         "data": {
@@ -1283,7 +1511,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SalespersonRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SalespersonRequest"
+              }
             }
           }
         },
@@ -1294,10 +1524,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Salesperson" }
+                        "data": {
+                          "$ref": "#/components/schemas/Salesperson"
+                        }
                       }
                     }
                   ]
@@ -1309,7 +1543,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1317,7 +1553,9 @@
             "description": "DUPLICATE_NAME",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1330,7 +1568,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "put": {
@@ -1340,7 +1580,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SalespersonRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SalespersonRequest"
+              }
             }
           }
         },
@@ -1351,10 +1593,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Salesperson" }
+                        "data": {
+                          "$ref": "#/components/schemas/Salesperson"
+                        }
                       }
                     }
                   ]
@@ -1366,7 +1612,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1374,7 +1622,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1388,7 +1638,9 @@
             "description": "Deactivated",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedEnvelope"
+                }
               }
             }
           },
@@ -1396,7 +1648,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1414,10 +1668,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Issuer" }
+                        "data": {
+                          "$ref": "#/components/schemas/Issuer"
+                        }
                       }
                     }
                   ]
@@ -1429,7 +1687,9 @@
             "description": "Issuer unset",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1442,7 +1702,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/IssuerRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/IssuerRequest"
+              }
             }
           }
         },
@@ -1453,10 +1715,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/Issuer" }
+                        "data": {
+                          "$ref": "#/components/schemas/Issuer"
+                        }
                       }
                     }
                   ]
@@ -1468,7 +1734,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1483,7 +1751,9 @@
           "required": true,
           "content": {
             "multipart/form-data": {
-              "schema": { "$ref": "#/components/schemas/StampUpload" }
+              "schema": {
+                "$ref": "#/components/schemas/StampUpload"
+              }
             }
           }
         },
@@ -1494,10 +1764,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/StampResult" }
+                        "data": {
+                          "$ref": "#/components/schemas/StampResult"
+                        }
                       }
                     }
                   ]
@@ -1509,7 +1783,9 @@
             "description": "No file / oversize(>500KB) / unsupported type(PNG·JPG only)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1517,7 +1793,9 @@
             "description": "No issuer yet",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1535,10 +1813,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/AppSettings" }
+                        "data": {
+                          "$ref": "#/components/schemas/AppSettings"
+                        }
                       }
                     }
                   ]
@@ -1555,7 +1837,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/AppSettings" }
+              "schema": {
+                "$ref": "#/components/schemas/AppSettings"
+              }
             }
           }
         },
@@ -1566,10 +1850,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/AppSettings" }
+                        "data": {
+                          "$ref": "#/components/schemas/AppSettings"
+                        }
                       }
                     }
                   ]
@@ -1581,7 +1869,9 @@
             "description": "Empty body",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1597,13 +1887,21 @@
             "name": "year",
             "in": "query",
             "required": true,
-            "schema": { "type": "integer", "minimum": 1900, "maximum": 2999 }
+            "schema": {
+              "type": "integer",
+              "minimum": 1900,
+              "maximum": 2999
+            }
           },
           {
             "name": "month",
             "in": "query",
             "required": true,
-            "schema": { "type": "integer", "minimum": 1, "maximum": 12 }
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 12
+            }
           }
         ],
         "responses": {
@@ -1613,7 +1911,9 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
                         "data": {
@@ -1630,7 +1930,9 @@
             "description": "year/month out of range",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1643,7 +1945,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/SalesRecordRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/SalesRecordRequest"
+              }
             }
           }
         },
@@ -1654,10 +1958,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/SalesRecord" }
+                        "data": {
+                          "$ref": "#/components/schemas/SalesRecord"
+                        }
                       }
                     }
                   ]
@@ -1669,7 +1977,9 @@
             "description": "Validation failure (required / quantity integer / range)",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1682,7 +1992,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "delete": {
@@ -1693,7 +2005,9 @@
             "description": "Deleted",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/DeletedEnvelope"
+                }
               }
             }
           },
@@ -1701,7 +2015,9 @@
             "description": "Not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1716,7 +2032,9 @@
           "required": true,
           "content": {
             "multipart/form-data": {
-              "schema": { "$ref": "#/components/schemas/OcrJobCreate" }
+              "schema": {
+                "$ref": "#/components/schemas/OcrJobCreate"
+              }
             }
           }
         },
@@ -1727,10 +2045,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/OcrJobAck" }
+                        "data": {
+                          "$ref": "#/components/schemas/OcrJobAck"
+                        }
                       }
                     }
                   ]
@@ -1747,7 +2069,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "get": {
@@ -1760,10 +2084,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/OcrJobStatus" }
+                        "data": {
+                          "$ref": "#/components/schemas/OcrJobStatus"
+                        }
                       }
                     }
                   ]
@@ -1775,7 +2103,9 @@
             "description": "Job not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1788,7 +2118,9 @@
           "name": "id",
           "in": "path",
           "required": true,
-          "schema": { "type": "integer" }
+          "schema": {
+            "type": "integer"
+          }
         }
       ],
       "post": {
@@ -1798,7 +2130,9 @@
           "required": true,
           "content": {
             "application/json": {
-              "schema": { "$ref": "#/components/schemas/OcrConfirmRequest" }
+              "schema": {
+                "$ref": "#/components/schemas/OcrConfirmRequest"
+              }
             }
           }
         },
@@ -1809,10 +2143,14 @@
               "application/json": {
                 "schema": {
                   "allOf": [
-                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
                     {
                       "properties": {
-                        "data": { "$ref": "#/components/schemas/OcrConfirmAck" }
+                        "data": {
+                          "$ref": "#/components/schemas/OcrConfirmAck"
+                        }
                       }
                     }
                   ]
@@ -1824,7 +2162,9 @@
             "description": "Validation failure",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1832,7 +2172,9 @@
             "description": "Job not found",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           },
@@ -1840,7 +2182,336 @@
             "description": "Already confirmed or job not done",
             "content": {
               "application/json": {
-                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs": {
+      "get": {
+        "summary": "검수 큐 — confirmed 잡 목록(검수상태·미처리수, 페이지네이션)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 1
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "검수 큐 목록",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessList"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/CurationJobSummary"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}": {
+      "get": {
+        "summary": "잡 상세 — 단계 이미지 신호 + 행별 쌍(top5·draft/final/canonical·supply·status)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "잡 상세",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CurationJobDetail"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/pairs/{id}": {
+      "patch": {
+        "summary": "쌍 큐레이션 — status 또는 canonical_label 갱신(Pydantic 검증)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurationPairPatch"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "갱신된 쌍",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/CurationPair"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "검증 실패",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "쌍 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}/review": {
+      "post": {
+        "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 멱등)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "ack",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "job_id": {
+                              "type": "integer"
+                            },
+                            "curation_reviewed": {
+                              "type": "boolean"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}/image/{kind}": {
+      "get": {
+        "summary": "원본/워프 전표 이미지 (raw FileResponse, envelope 예외)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "kind",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": ["original", "warped"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "이미지 raw 바이트. warped=image/png 고정, original=업로드 포맷(image/jpeg 또는 image/png)",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary",
+                  "description": "kind=original 이고 업로드 파일이 JPEG인 경우"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "산출물 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}/crop/{row}": {
+      "get": {
+        "summary": "행 crop 이미지 (raw FileResponse, envelope 예외)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "row",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "crop raw 바이트",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "산출물 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
               }
             }
           }
@@ -1855,8 +2526,14 @@
         "description": "헬스체크 — envelope 미적용 raw 객체",
         "required": ["status", "version"],
         "properties": {
-          "status": { "type": "string", "example": "ok" },
-          "version": { "type": "string", "example": "0.1.0" }
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          }
         }
       },
       "Pagination": {
@@ -1864,10 +2541,18 @@
         "description": "offset 기반 pagination 메타",
         "required": ["page", "limit", "total", "totalPages"],
         "properties": {
-          "page": { "type": "integer" },
-          "limit": { "type": "integer" },
-          "total": { "type": "integer" },
-          "totalPages": { "type": "integer" }
+          "page": {
+            "type": "integer"
+          },
+          "limit": {
+            "type": "integer"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "totalPages": {
+            "type": "integer"
+          }
         }
       },
       "SuccessSingle": {
@@ -1875,7 +2560,10 @@
         "description": "단일 리소스 envelope. data 의 실제 타입은 엔드포인트별 allOf override.",
         "required": ["success", "data"],
         "properties": {
-          "success": { "type": "boolean", "enum": [true] },
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
           "data": {}
         }
       },
@@ -1884,9 +2572,17 @@
         "description": "컬렉션 envelope.",
         "required": ["success", "data", "pagination"],
         "properties": {
-          "success": { "type": "boolean", "enum": [true] },
-          "data": { "type": "array", "items": {} },
-          "pagination": { "$ref": "#/components/schemas/Pagination" }
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
+          "data": {
+            "type": "array",
+            "items": {}
+          },
+          "pagination": {
+            "$ref": "#/components/schemas/Pagination"
+          }
         }
       },
       "DeletedEnvelope": {
@@ -1894,7 +2590,10 @@
         "description": "삭제 성공 envelope (data:null + 한국어 message).",
         "required": ["success", "data", "message"],
         "properties": {
-          "success": { "type": "boolean", "enum": [true] },
+          "success": {
+            "type": "boolean",
+            "enum": [true]
+          },
           "data": {
             "type": "object",
             "nullable": true,
@@ -1912,7 +2611,10 @@
         "description": "표준 에러 응답.",
         "required": ["success", "error"],
         "properties": {
-          "success": { "type": "boolean", "enum": [false] },
+          "success": {
+            "type": "boolean",
+            "enum": [false]
+          },
           "error": {
             "type": "object",
             "required": ["code", "message"],
@@ -1927,11 +2629,15 @@
                   "SERVER_ERROR"
                 ]
               },
-              "message": { "type": "string" },
+              "message": {
+                "type": "string"
+              },
               "details": {
                 "type": "object",
                 "description": "검증 실패 시 {필드: 메시지} 맵",
-                "additionalProperties": { "type": "string" }
+                "additionalProperties": {
+                  "type": "string"
+                }
               }
             }
           }
@@ -1941,13 +2647,29 @@
         "type": "object",
         "description": "거래명세서 품목 행 (invoice_items). 응답은 DB 행 snake_case.",
         "properties": {
-          "id": { "type": "integer" },
-          "invoice_id": { "type": "integer" },
-          "item_order": { "type": "integer" },
-          "name": { "type": "string", "maxLength": 200 },
-          "quantity": { "type": "integer" },
-          "unit": { "type": "string", "nullable": true },
-          "unit_price": { "type": "integer" },
+          "id": {
+            "type": "integer"
+          },
+          "invoice_id": {
+            "type": "integer"
+          },
+          "item_order": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "quantity": {
+            "type": "integer"
+          },
+          "unit": {
+            "type": "string",
+            "nullable": true
+          },
+          "unit_price": {
+            "type": "integer"
+          },
           "supply": {
             "type": "integer",
             "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산."
@@ -1960,17 +2682,30 @@
             "type": "integer",
             "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산."
           },
-          "deduction": { "type": "boolean" }
+          "deduction": {
+            "type": "boolean"
+          }
         }
       },
       "Invoice": {
         "type": "object",
         "description": "거래명세서 (invoices 행 + items[]). 합계(total_supply/total_vat/grand_total)는 클라이언트가 계산해 전송한 값을 저장한 것(서버 미계산, 누락 시 0).",
         "properties": {
-          "id": { "type": "integer" },
-          "document_title": { "type": "string", "default": "거 래 명 세 서" },
-          "issue_date": { "type": "string", "format": "date" },
-          "recipient": { "type": "string", "maxLength": 100 },
+          "id": {
+            "type": "integer"
+          },
+          "document_title": {
+            "type": "string",
+            "default": "거 래 명 세 서"
+          },
+          "issue_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "recipient": {
+            "type": "string",
+            "maxLength": 100
+          },
           "recipient2": {
             "type": "string",
             "nullable": true,
@@ -1981,17 +2716,39 @@
             "nullable": true,
             "maxLength": 255
           },
-          "memo": { "type": "string", "nullable": true },
-          "show_stamp": { "type": "boolean" },
-          "issuer_id": { "type": "integer", "nullable": true },
-          "total_supply": { "type": "integer" },
-          "total_vat": { "type": "integer" },
-          "grand_total": { "type": "integer" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" },
+          "memo": {
+            "type": "string",
+            "nullable": true
+          },
+          "show_stamp": {
+            "type": "boolean"
+          },
+          "issuer_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "total_supply": {
+            "type": "integer"
+          },
+          "total_vat": {
+            "type": "integer"
+          },
+          "grand_total": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          },
           "items": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/InvoiceItem" },
+            "items": {
+              "$ref": "#/components/schemas/InvoiceItem"
+            },
             "description": "GET /{id} · 생성·수정 응답에 포함"
           }
         }
@@ -2006,16 +2763,29 @@
             "format": "date",
             "description": "YYYY-MM-DD (date_format 검증)"
           },
-          "recipient": { "type": "string", "maxLength": 100 },
-          "recipient2": { "type": "string", "nullable": true },
+          "recipient": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "recipient2": {
+            "type": "string",
+            "nullable": true
+          },
           "vehicle_no": {
             "type": "string",
             "maxLength": 255,
             "nullable": true
           },
-          "document_title": { "type": "string" },
-          "memo": { "type": "string", "nullable": true },
-          "show_stamp": { "type": "boolean" },
+          "document_title": {
+            "type": "string"
+          },
+          "memo": {
+            "type": "string",
+            "nullable": true
+          },
+          "show_stamp": {
+            "type": "boolean"
+          },
           "total_supply": {
             "type": "integer",
             "description": "클라이언트 계산값(누락 시 0 저장)"
@@ -2035,13 +2805,19 @@
             "items": {
               "type": "object",
               "properties": {
-                "name": { "type": "string" },
-                "quantity": { "type": "integer" },
+                "name": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
                 "unit": {
                   "type": "string",
                   "description": "누락 시 'EA' 저장"
                 },
-                "unit_price": { "type": "integer" },
+                "unit_price": {
+                  "type": "integer"
+                },
                 "supply": {
                   "type": "integer",
                   "description": "클라이언트 계산값(누락 시 0 저장)"
@@ -2054,7 +2830,9 @@
                   "type": "integer",
                   "description": "클라이언트 계산값(누락 시 0 저장)"
                 },
-                "deduction": { "type": "boolean" }
+                "deduction": {
+                  "type": "boolean"
+                }
               }
             }
           }
@@ -2064,22 +2842,53 @@
         "type": "object",
         "description": "거래처 자동완성 행 (company_suggestions).",
         "properties": {
-          "id": { "type": "integer" },
-          "company_name": { "type": "string", "maxLength": 100 },
-          "recipient2": { "type": "string", "nullable": true },
-          "phone": { "type": "string", "nullable": true },
-          "fax": { "type": "string", "nullable": true },
-          "sms_number_type": { "type": "string", "default": "phone" },
-          "address": { "type": "string", "nullable": true },
-          "business_number": { "type": "string", "nullable": true },
-          "notes": { "type": "string", "nullable": true },
-          "usage_count": { "type": "integer" },
+          "id": {
+            "type": "integer"
+          },
+          "company_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "recipient2": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "fax": {
+            "type": "string",
+            "nullable": true
+          },
+          "sms_number_type": {
+            "type": "string",
+            "default": "phone"
+          },
+          "address": {
+            "type": "string",
+            "nullable": true
+          },
+          "business_number": {
+            "type": "string",
+            "nullable": true
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true
+          },
+          "usage_count": {
+            "type": "integer"
+          },
           "last_used": {
             "type": "string",
             "format": "date-time",
             "nullable": true
           },
-          "created_at": { "type": "string", "format": "date-time" }
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "CompanyRequest": {
@@ -2087,36 +2896,72 @@
         "description": "거래처 생성/수정 입력.",
         "required": ["company_name"],
         "properties": {
-          "company_name": { "type": "string", "maxLength": 100 },
+          "company_name": {
+            "type": "string",
+            "maxLength": 100
+          },
           "business_number": {
             "type": "string",
             "description": "비면 검증 생략, 값 있으면 숫자 10자리(business_number 검증)"
           },
-          "recipient2": { "type": "string" },
-          "phone": { "type": "string" },
-          "fax": { "type": "string" },
-          "sms_number_type": { "type": "string" },
-          "address": { "type": "string" },
-          "notes": { "type": "string" }
+          "recipient2": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "fax": {
+            "type": "string"
+          },
+          "sms_number_type": {
+            "type": "string"
+          },
+          "address": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
         }
       },
       "Item": {
         "type": "object",
         "description": "품목 자동완성 행 (item_suggestions).",
         "properties": {
-          "id": { "type": "integer" },
-          "item_name": { "type": "string", "maxLength": 200 },
-          "default_unit": { "type": "string", "nullable": true },
-          "default_unit_price": { "type": "integer" },
-          "category": { "type": "string", "nullable": true },
-          "notes": { "type": "string", "nullable": true },
-          "usage_count": { "type": "integer" },
+          "id": {
+            "type": "integer"
+          },
+          "item_name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "default_unit": {
+            "type": "string",
+            "nullable": true
+          },
+          "default_unit_price": {
+            "type": "integer"
+          },
+          "category": {
+            "type": "string",
+            "nullable": true
+          },
+          "notes": {
+            "type": "string",
+            "nullable": true
+          },
+          "usage_count": {
+            "type": "integer"
+          },
           "last_used": {
             "type": "string",
             "format": "date-time",
             "nullable": true
           },
-          "created_at": { "type": "string", "format": "date-time" }
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "ItemRequest": {
@@ -2124,54 +2969,125 @@
         "description": "품목 생성/수정 입력.",
         "required": ["item_name"],
         "properties": {
-          "item_name": { "type": "string", "maxLength": 200 },
-          "default_unit": { "type": "string" },
-          "default_unit_price": { "type": "integer" },
-          "category": { "type": "string" },
-          "notes": { "type": "string" }
+          "item_name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "default_unit": {
+            "type": "string"
+          },
+          "default_unit_price": {
+            "type": "integer"
+          },
+          "category": {
+            "type": "string"
+          },
+          "notes": {
+            "type": "string"
+          }
         }
       },
       "Salesperson": {
         "type": "object",
         "description": "영업사원 행 (salespeople). is_active=0 은 비활성(soft-delete).",
         "properties": {
-          "id": { "type": "integer" },
-          "name": { "type": "string", "maxLength": 100 },
-          "sort_order": { "type": "integer" },
-          "is_active": { "type": "integer", "enum": [0, 1] },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "id": {
+            "type": "integer"
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "sort_order": {
+            "type": "integer"
+          },
+          "is_active": {
+            "type": "integer",
+            "enum": [0, 1]
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "SalespersonRequest": {
         "type": "object",
         "description": "영업사원 생성/수정 입력.",
         "required": ["name"],
-        "properties": { "name": { "type": "string" } }
+        "properties": {
+          "name": {
+            "type": "string"
+          }
+        }
       },
       "Issuer": {
         "type": "object",
         "description": "발급자 정보 행 (issuers, 단일).",
         "properties": {
-          "id": { "type": "integer" },
-          "company_name": { "type": "string", "maxLength": 100 },
-          "representative": { "type": "string", "nullable": true },
-          "business_number": { "type": "string", "nullable": true },
-          "address": { "type": "string", "nullable": true },
-          "business_type": { "type": "string", "nullable": true },
-          "business_item": { "type": "string", "nullable": true },
-          "phone": { "type": "string", "nullable": true },
-          "fax": { "type": "string", "nullable": true },
-          "bank_account": { "type": "string", "nullable": true },
+          "id": {
+            "type": "integer"
+          },
+          "company_name": {
+            "type": "string",
+            "maxLength": 100
+          },
+          "representative": {
+            "type": "string",
+            "nullable": true
+          },
+          "business_number": {
+            "type": "string",
+            "nullable": true
+          },
+          "address": {
+            "type": "string",
+            "nullable": true
+          },
+          "business_type": {
+            "type": "string",
+            "nullable": true
+          },
+          "business_item": {
+            "type": "string",
+            "nullable": true
+          },
+          "phone": {
+            "type": "string",
+            "nullable": true
+          },
+          "fax": {
+            "type": "string",
+            "nullable": true
+          },
+          "bank_account": {
+            "type": "string",
+            "nullable": true
+          },
           "stamp_image_url": {
             "type": "string",
             "nullable": true,
             "description": "/uploads/stamps/{filename}"
           },
-          "tel_fax": { "type": "string", "nullable": true },
-          "show_sjdojang": { "type": "boolean" },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "tel_fax": {
+            "type": "string",
+            "nullable": true
+          },
+          "show_sjdojang": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "IssuerRequest": {
@@ -2184,27 +3100,52 @@
           "address"
         ],
         "properties": {
-          "company_name": { "type": "string" },
-          "representative": { "type": "string" },
+          "company_name": {
+            "type": "string"
+          },
+          "representative": {
+            "type": "string"
+          },
           "business_number": {
             "type": "string",
             "description": "값 있으면 숫자 10자리(business_number 검증)"
           },
-          "address": { "type": "string" },
-          "business_type": { "type": "string" },
-          "business_item": { "type": "string" },
-          "phone": { "type": "string" },
-          "fax": { "type": "string" },
-          "bank_account": { "type": "string" },
-          "tel_fax": { "type": "string" },
-          "show_sjdojang": { "type": "boolean" }
+          "address": {
+            "type": "string"
+          },
+          "business_type": {
+            "type": "string"
+          },
+          "business_item": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "fax": {
+            "type": "string"
+          },
+          "bank_account": {
+            "type": "string"
+          },
+          "tel_fax": {
+            "type": "string"
+          },
+          "show_sjdojang": {
+            "type": "boolean"
+          }
         }
       },
       "StampUpload": {
         "type": "object",
         "description": "도장 이미지 업로드 (multipart/form-data).",
         "required": ["image"],
-        "properties": { "image": { "type": "string", "format": "binary" } }
+        "properties": {
+          "image": {
+            "type": "string",
+            "format": "binary"
+          }
+        }
       },
       "StampResult": {
         "type": "object",
@@ -2220,7 +3161,9 @@
       "AppSettings": {
         "type": "object",
         "description": "앱 설정 키-값 맵 (app_settings). seeded: default_vat_rate, default_document_title, default_unit, pdf_filename_pattern.",
-        "additionalProperties": { "type": "string" },
+        "additionalProperties": {
+          "type": "string"
+        },
         "example": {
           "default_vat_rate": "0.1",
           "default_document_title": "거 래 명 세 서",
@@ -2232,16 +3175,31 @@
         "type": "object",
         "description": "영업 실적 행 (sales_records). snapshot_name 은 서버가 salesperson.name 으로 채움.",
         "properties": {
-          "id": { "type": "integer" },
-          "salesperson_id": { "type": "integer" },
-          "work_date": { "type": "string", "format": "date" },
-          "quantity": { "type": "integer" },
+          "id": {
+            "type": "integer"
+          },
+          "salesperson_id": {
+            "type": "integer"
+          },
+          "work_date": {
+            "type": "string",
+            "format": "date"
+          },
+          "quantity": {
+            "type": "integer"
+          },
           "snapshot_name": {
             "type": "string",
             "description": "서버 주입(클라 입력 무시)"
           },
-          "created_at": { "type": "string", "format": "date-time" },
-          "updated_at": { "type": "string", "format": "date-time" }
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
         }
       },
       "SalesRecordRequest": {
@@ -2249,7 +3207,9 @@
         "description": "영업 실적 upsert 입력. snapshot_name 은 무시(서버 주입).",
         "required": ["salesperson_id", "work_date", "quantity"],
         "properties": {
-          "salesperson_id": { "type": "integer" },
+          "salesperson_id": {
+            "type": "integer"
+          },
           "work_date": {
             "type": "string",
             "format": "date",
@@ -2257,8 +3217,15 @@
           },
           "quantity": {
             "oneOf": [
-              { "type": "integer", "minimum": 0, "maximum": 999999999 },
-              { "type": "string", "pattern": "^[0-9]+$" }
+              {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 999999999
+              },
+              {
+                "type": "string",
+                "pattern": "^[0-9]+$"
+              }
             ],
             "description": "정수 또는 정수 문자열(\"100\") 허용 — 라우터 _is_int(정수 또는 정수 문자열만 허용, bool 제외). bool·소수·비정수 거부. 캐스팅 후 0~999,999,999 범위 검증."
           }
@@ -2271,11 +3238,15 @@
         "properties": {
           "salespeople": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/Salesperson" }
+            "items": {
+              "$ref": "#/components/schemas/Salesperson"
+            }
           },
           "records": {
             "type": "array",
-            "items": { "$ref": "#/components/schemas/SalesRecord" }
+            "items": {
+              "$ref": "#/components/schemas/SalesRecord"
+            }
           }
         }
       },
@@ -2283,15 +3254,25 @@
         "type": "object",
         "description": "OCR 잡 생성 요청 — 수기 거래명세서 이미지 업로드 (multipart/form-data).",
         "required": ["photo"],
-        "properties": { "photo": { "type": "string", "format": "binary" } }
+        "properties": {
+          "photo": {
+            "type": "string",
+            "format": "binary"
+          }
+        }
       },
       "OcrJobAck": {
         "type": "object",
         "description": "OCR 잡 생성 응답 (POST /api/ocr/jobs 201). status 는 항상 'pending'.",
         "required": ["job_id", "status"],
         "properties": {
-          "job_id": { "type": "integer" },
-          "status": { "type": "string", "enum": ["pending"] }
+          "job_id": {
+            "type": "integer"
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending"]
+          }
         }
       },
       "OcrJobStatus": {
@@ -2299,7 +3280,9 @@
         "description": "OCR 잡 상태 응답 (GET /api/ocr/jobs/{id}). done→result 포함, failed→error 포함.",
         "required": ["id", "status"],
         "properties": {
-          "id": { "type": "integer" },
+          "id": {
+            "type": "integer"
+          },
           "status": {
             "type": "string",
             "enum": ["pending", "running", "done", "failed"]
@@ -2326,15 +3309,36 @@
             "format": "date",
             "description": "YYYY-MM-DD"
           },
-          "recipient": { "type": "string" },
-          "recipient2": { "type": "string", "nullable": true },
-          "vehicle_no": { "type": "string", "nullable": true },
-          "document_title": { "type": "string" },
-          "memo": { "type": "string", "nullable": true },
-          "show_stamp": { "type": "boolean" },
-          "total_supply": { "type": "integer" },
-          "total_vat": { "type": "integer" },
-          "grand_total": { "type": "integer" },
+          "recipient": {
+            "type": "string"
+          },
+          "recipient2": {
+            "type": "string",
+            "nullable": true
+          },
+          "vehicle_no": {
+            "type": "string",
+            "nullable": true
+          },
+          "document_title": {
+            "type": "string"
+          },
+          "memo": {
+            "type": "string",
+            "nullable": true
+          },
+          "show_stamp": {
+            "type": "boolean"
+          },
+          "total_supply": {
+            "type": "integer"
+          },
+          "total_vat": {
+            "type": "integer"
+          },
+          "grand_total": {
+            "type": "integer"
+          },
           "items": {
             "type": "array",
             "minItems": 1,
@@ -2342,14 +3346,30 @@
             "items": {
               "type": "object",
               "properties": {
-                "name": { "type": "string" },
-                "quantity": { "type": "integer" },
-                "unit": { "type": "string" },
-                "unit_price": { "type": "integer" },
-                "supply": { "type": "integer" },
-                "vat": { "type": "integer" },
-                "total": { "type": "integer" },
-                "deduction": { "type": "boolean" },
+                "name": {
+                  "type": "string"
+                },
+                "quantity": {
+                  "type": "integer"
+                },
+                "unit": {
+                  "type": "string"
+                },
+                "unit_price": {
+                  "type": "integer"
+                },
+                "supply": {
+                  "type": "integer"
+                },
+                "vat": {
+                  "type": "integer"
+                },
+                "total": {
+                  "type": "integer"
+                },
+                "deduction": {
+                  "type": "boolean"
+                },
                 "crop_ref": {
                   "type": "string",
                   "nullable": true,
@@ -2365,7 +3385,135 @@
         "description": "OCR 확정 성공 응답 (POST /api/ocr/jobs/{id}/confirm).",
         "required": ["invoice_id"],
         "properties": {
-          "invoice_id": { "type": "integer" }
+          "invoice_id": {
+            "type": "integer"
+          }
+        }
+      },
+      "CurationJobSummary": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "integer"
+          },
+          "invoice_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "curation_reviewed": {
+            "type": "boolean"
+          },
+          "pair_count": {
+            "type": "integer"
+          },
+          "unreviewed_count": {
+            "type": "integer"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "CurationPair": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "crop_ref": {
+            "type": "string"
+          },
+          "job_id": {
+            "type": "integer",
+            "description": "PATCH /api/curation/pairs/{id} 응답에만 포함(잡 상세 pairs에는 없음)."
+          },
+          "row_index": {
+            "type": "integer"
+          },
+          "draft_label": {
+            "type": "string",
+            "nullable": true
+          },
+          "final_label": {
+            "type": "string",
+            "nullable": true
+          },
+          "canonical_label": {
+            "type": "string",
+            "nullable": true
+          },
+          "supply": {
+            "type": "integer",
+            "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": ["included", "excluded"]
+          },
+          "reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
+          "top5": {
+            "type": "array",
+            "description": "GET /api/curation/jobs/{job_id} 잡 상세 pairs에만 포함(PATCH 응답에는 없음).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "sim": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
+      },
+      "CurationJobDetail": {
+        "type": "object",
+        "properties": {
+          "job_id": {
+            "type": "integer"
+          },
+          "invoice_id": {
+            "type": "integer",
+            "nullable": true
+          },
+          "curation_reviewed": {
+            "type": "boolean"
+          },
+          "warp_ok": {
+            "type": "boolean"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "pairs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/CurationPair"
+            }
+          }
+        }
+      },
+      "CurationPairPatch": {
+        "type": "object",
+        "description": "status 또는 canonical_label 중 하나 이상 필수(model_validator). 검증 실패는 400 VALIDATION_ERROR.",
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": ["included", "excluded"]
+          },
+          "canonical_label": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          }
         }
       }
     }
