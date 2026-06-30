@@ -17,11 +17,11 @@ paths:
 
 ## API 명세 동기화 (필수)
 
-API 명세는 `.claude/ai-context/api-spec.json` (OpenAPI 3.0 기반)에서 관리한다. 32개 엔드포인트의 Single Source of Truth.
+API 명세는 `.claude/ai-context/api-spec.json` (OpenAPI 3.0 기반)에서 관리한다. 엔드포인트의 Single Source of Truth.
 
 **작업 전**: api-spec.json을 먼저 읽고 전체 표면을 파악한다.
 
-- `x-api-overview.endpoints`: 32개 엔드포인트 한 줄 스캔
+- `x-api-overview.endpoints`: 엔드포인트 한 줄 스캔
 - `x-api-overview.schema-usage`: 스키마 변경 시 영향 엔드포인트 역매핑
 - `x-api-overview.conventions`: 호출 규약 (auth/error-format/envelope/예외 등)
 - `paths` + `components.schemas`: 상세 정의
@@ -99,10 +99,11 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
 | VALIDATION_ERROR | 400    | `bad_request()` — 검증 실패, 잘못된 format/범위, 빈 body      |
 | NOT_FOUND        | 404    | `not_found()` — 리소스 없음                                   |
 | DUPLICATE_NAME   | 409    | items/salespeople 생성 시 UNIQUE 위반 graceful 처리(service)  |
+| CONFLICT         | 409    | `conflict()` — 상태 충돌(OCR 잡 확정 가능 상태 위반 등)       |
 | SERVER_ERROR     | 500    | 미처리 예외 전역 핸들러 (`str(exc)` 노출 — prod 운영 시 주의) |
 
 - `details` 는 있을 때만 포함된다(검증 실패 시 필드 맵, 또는 sales-records year/month 범위 오류).
-- 신규 도메인도 이 4 코드 체계를 따른다. 새 코드를 추가하면 `ErrorEnvelope.error.code` enum 도 갱신한다.
+- 신규 도메인도 이 코드 체계를 따른다. 새 코드를 추가하면 `ErrorEnvelope.error.code` enum 도 갱신한다.
 
 ## HTTP 상태 코드 규약 (현재 사용)
 
@@ -112,7 +113,7 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
 | 201  | POST 자원 생성(`created`), invoice duplicate, sales-records upsert   |
 | 400  | 검증 실패 / 잘못된 format·범위 / 빈 body                             |
 | 404  | 리소스 없음                                                          |
-| 409  | DUPLICATE_NAME (items/salespeople UNIQUE)                            |
+| 409  | DUPLICATE_NAME (items/salespeople UNIQUE), CONFLICT (상태 충돌)      |
 | 500  | 미처리 예외                                                          |
 
 - **DELETE 는 204 가 아니라 200 + `{success, data:null, message}`** 를 반환한다. 새 DELETE 도 이 형태를 따른다.

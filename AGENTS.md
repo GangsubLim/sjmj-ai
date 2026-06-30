@@ -60,7 +60,7 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vit
 
 ## 백엔드 아키텍처
 
-**API 표면 정본**: `.claude/ai-context/api-spec.json`(OpenAPI 3.0 + `x-api-overview` 한 줄 스캔, 35개 엔드포인트 SSoT)과 규약 `.claude/rules/api-conventions.md`. 라우터/엔드포인트를 만지기 전에 spec을 먼저 읽고, 변경 시 spec을 함께 갱신한다(드리프트 방지).
+**API 표면 정본**: `.claude/ai-context/api-spec.json`(OpenAPI 3.0 + `x-api-overview` 한 줄 스캔, 엔드포인트 SSoT)과 규약 `.claude/rules/api-conventions.md`. 라우터/엔드포인트를 만지기 전에 spec을 먼저 읽고, 변경 시 spec을 함께 갱신한다(드리프트 방지).
 
 요청 흐름은 **router → service → repository** 3계층이다.
 
