@@ -1,6 +1,7 @@
 """구조화 에러 응답."""
 
 from fastapi import Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 
@@ -49,7 +50,20 @@ async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
     return JSONResponse(status_code=500, content=_error_body("SERVER_ERROR", str(exc), None))
 
 
+async def _validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    details: dict = {}
+    for err in exc.errors():
+        loc = err.get("loc") or ("body",)
+        field = str(loc[-1])
+        details.setdefault(field, err.get("msg", "유효하지 않은 값입니다."))
+    return JSONResponse(
+        status_code=400,
+        content=_error_body("VALIDATION_ERROR", "검증에 실패했습니다.", details),
+    )
+
+
 def register_error_handlers(app) -> None:
-    """앱에 AppError·미처리 예외 핸들러를 등록한다."""
+    """앱에 AppError·검증 실패·미처리 예외 핸들러를 등록한다."""
     app.add_exception_handler(AppError, _app_error_handler)
+    app.add_exception_handler(RequestValidationError, _validation_error_handler)
     app.add_exception_handler(Exception, _unhandled_handler)
