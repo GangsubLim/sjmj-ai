@@ -1,4 +1,4 @@
-"""contract 골든 — TestClient + 실DB. PHP CompanyControllerTest 동치."""
+"""companies 라우터 contract 테스트 — TestClient + 실DB."""
 
 import pytest
 

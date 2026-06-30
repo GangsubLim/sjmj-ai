@@ -1,4 +1,4 @@
-"""실DB 골든 — PHP CompanyRepositoryTest 동치 이식."""
+"""CompanyRepository 통합 테스트 — 실DB."""
 
 import pytest
 
