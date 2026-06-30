@@ -84,3 +84,44 @@ def test_list_jobs_pagination_meta(client, db_conn):
     # limit 상한 클램프: 500 요청 → 응답 limit == 100
     clamped = client.get("/api/curation/jobs?limit=500")
     assert clamped.json()["pagination"]["limit"] == 100
+
+
+def test_job_detail_includes_pairs_with_top5(client, db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, result_json) "
+                "VALUES ('done', '/x.jpg', :rj)"
+            ),
+            {
+                "rj": (
+                    '{"rows": [{"row_index": 0, "crop_ref": "job-1/row-0", '
+                    '"item_top5": [{"label": "삼겹살", "sim": 0.8}], "supply": 100000}], '
+                    '"supply_sum": 100000, "warp_ok": true}'
+                )
+            },
+        )
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs "
+                "(crop_ref, job_id, row_index, draft_label, final_label, canonical_label, supply, status) "
+                "VALUES (:r, :j, 0, '삼겹살', '목살', '목살', 100000, 'included')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id},
+        )
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["job_id"] == job_id
+    assert data["warp_ok"] is True
+    pair = data["pairs"][0]
+    assert pair["canonical_label"] == "목살"
+    assert pair["draft_label"] == "삼겹살"
+    assert pair["top5"][0]["label"] == "삼겹살"
+
+
+def test_job_detail_404_when_missing(client, db_conn):
+    res = client.get("/api/curation/jobs/999999")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"

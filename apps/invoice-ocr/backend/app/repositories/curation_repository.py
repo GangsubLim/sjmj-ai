@@ -1,5 +1,7 @@
 """training_pairs / ocr_jobs(큐레이션 관점) 데이터 접근. text() raw SQL 직접 발행."""
 
+import json
+
 from sqlalchemy import text
 
 from app.db import connection
@@ -40,3 +42,37 @@ class CurationRepository:
             rows = conn.execute(list_sql, {"limit": limit, "offset": offset}).mappings().all()
             total = conn.execute(count_sql).scalar() or 0
         return [dict(r) for r in rows], int(total)
+
+    def find_job_detail(self, job_id: int) -> dict | None:
+        """잡 1건 + training_pairs(행순)를 함께 조회한다(result_json 파싱 포함)."""
+        with connection() as conn:
+            job_row = (
+                conn.execute(
+                    text(
+                        "SELECT id, invoice_id, curation_reviewed, result_json, created_at "
+                        "FROM ocr_jobs WHERE id = :id"
+                    ),
+                    {"id": job_id},
+                )
+                .mappings()
+                .first()
+            )
+            if job_row is None:
+                return None
+            pair_rows = (
+                conn.execute(
+                    text(
+                        "SELECT id, crop_ref, row_index, draft_label, final_label, canonical_label, "
+                        "supply, status, reviewed_at FROM training_pairs "
+                        "WHERE job_id = :id ORDER BY row_index ASC, id ASC"
+                    ),
+                    {"id": job_id},
+                )
+                .mappings()
+                .all()
+            )
+        # result_json 파싱은 ocr_repository._parse_job와 동일 관용구 — repo 격리상 의도적 중복(공유 추출 안 함).
+        job = dict(job_row)
+        raw = job.get("result_json")
+        job["result_json"] = json.loads(raw) if isinstance(raw, str) else raw
+        return {"job": job, "pairs": [dict(p) for p in pair_rows]}

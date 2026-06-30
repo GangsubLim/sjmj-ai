@@ -28,3 +28,9 @@ def list_jobs(page: int = 1, limit: int = 20):
     return envelope.list_response(
         jobs, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
     )
+
+
+@router.get("/curation/jobs/{job_id}")
+def job_detail(job_id: int):
+    """잡 상세(단계 이미지 신호 + 행별 쌍)를 조회한다."""
+    return envelope.single(_service().get_detail(job_id))

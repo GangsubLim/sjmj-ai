@@ -3,6 +3,7 @@
 라우터(HTTP)와 repository(SQL) 사이의 정규화·비즈니스 로직 계층.
 """
 
+from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
 
 
@@ -29,3 +30,37 @@ class CurationService:
             for r in rows
         ]
         return jobs, total
+
+    def get_detail(self, job_id: int) -> dict:
+        """잡 상세(행별 top5 조인 포함)를 조회한다. 없으면 404."""
+        detail = self.repo.find_job_detail(job_id)
+        if detail is None:
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        job = detail["job"]
+        result = job.get("result_json") or {}
+        top5_by_row = {
+            r.get("row_index"): (r.get("item_top5") or []) for r in result.get("rows", [])
+        }
+        pairs = [
+            {
+                "id": int(p["id"]),
+                "crop_ref": p["crop_ref"],
+                "row_index": int(p["row_index"]),
+                "draft_label": p["draft_label"],
+                "final_label": p["final_label"],
+                "canonical_label": p["canonical_label"],
+                "supply": p["supply"],
+                "status": p["status"],
+                "reviewed_at": p["reviewed_at"],
+                "top5": top5_by_row.get(int(p["row_index"]), []),
+            }
+            for p in detail["pairs"]
+        ]
+        return {
+            "job_id": int(job["id"]),
+            "invoice_id": job["invoice_id"],
+            "curation_reviewed": bool(job["curation_reviewed"]),
+            "warp_ok": bool(result.get("warp_ok", False)),
+            "created_at": job["created_at"],
+            "pairs": pairs,
+        }
