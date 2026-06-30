@@ -95,3 +95,17 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), 
 
 - DB 접속·백업 대상 DB명은 항상 env(`DB_*`)에서 읽는다 — 하드코딩 금지(런타임/백업 DB 발산 방지).
 - `docs/superpowers/specs/`가 설계 정본이다. 아키텍처 결정의 "왜"는 코드가 아니라 여기에 있다.
+
+## Agent skills
+
+### Issue tracker
+
+이슈는 GitHub Issues(`gh` CLI)에서 추적한다. 외부 PR은 triage 창구가 아니다(이슈만 큐에 들어옴). 자세한 내용은 `docs/agents/issue-tracker.md` 참조.
+
+### Triage labels
+
+표준 5종 라벨(`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`)을 기본값 그대로 사용한다. 자세한 내용은 `docs/agents/triage-labels.md` 참조.
+
+### Domain docs
+
+단일 컨텍스트 — 루트 `CONTEXT.md` + `docs/adr/`. 자세한 내용은 `docs/agents/domain.md` 참조.
