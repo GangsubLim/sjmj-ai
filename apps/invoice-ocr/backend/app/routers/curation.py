@@ -7,6 +7,7 @@
 from fastapi import APIRouter
 
 from app.core import envelope
+from app.schemas.curation import CurationPairPatch
 from app.services.curation_service import CurationService
 
 router = APIRouter()
@@ -34,3 +35,13 @@ def list_jobs(page: int = 1, limit: int = 20):
 def job_detail(job_id: int):
     """잡 상세(단계 이미지 신호 + 행별 쌍)를 조회한다."""
     return envelope.single(_service().get_detail(job_id))
+
+
+@router.patch("/curation/pairs/{id}")
+def patch_pair(id: int, patch: CurationPairPatch):
+    """학습쌍의 status 또는 canonical_label을 갱신한다."""
+    # exclude_none=True: status/canonical_label을 null로 명시 전송해도 SET NULL 쿼리가 발행되지 않도록 차단.
+    # status는 NOT NULL VARCHAR, canonical_label은 min_length=1 — null 덮어쓰기 의미 없음.
+    return envelope.single(
+        _service().patch_pair(id, patch.model_dump(exclude_unset=True, exclude_none=True))
+    )

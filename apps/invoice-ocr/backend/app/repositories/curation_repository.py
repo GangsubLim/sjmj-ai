@@ -76,3 +76,33 @@ class CurationRepository:
         raw = job.get("result_json")
         job["result_json"] = json.loads(raw) if isinstance(raw, str) else raw
         return {"job": job, "pairs": [dict(p) for p in pair_rows]}
+
+    def find_pair(self, pair_id: int) -> dict | None:
+        """학습쌍을 id로 단건 조회한다."""
+        with connection() as conn:
+            row = (
+                conn.execute(
+                    text(
+                        "SELECT id, crop_ref, job_id, invoice_id, row_index, draft_label, "
+                        "final_label, canonical_label, supply, status, reviewed_at, created_at "
+                        "FROM training_pairs WHERE id = :id"
+                    ),
+                    {"id": pair_id},
+                )
+                .mappings()
+                .first()
+            )
+            return dict(row) if row else None
+
+    def update_pair(self, pair_id: int, fields: dict) -> None:
+        """학습쌍의 status/canonical_label을 갱신한다(화이트리스트 컬럼만)."""
+        allowed = ("status", "canonical_label")
+        cols = [c for c in allowed if c in fields]
+        # 방어: 라우터는 model_validator로 검증된 비어있지 않은 fields만 전달(API 경로로는 도달 불가).
+        if not cols:
+            return
+        set_clause = ", ".join(f"{c} = :{c}" for c in cols)
+        params = {c: fields[c] for c in cols}
+        params["id"] = pair_id
+        with connection() as conn:
+            conn.execute(text(f"UPDATE training_pairs SET {set_clause} WHERE id = :id"), params)

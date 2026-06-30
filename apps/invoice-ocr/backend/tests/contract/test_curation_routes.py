@@ -125,3 +125,106 @@ def test_job_detail_404_when_missing(client, db_conn):
     res = client.get("/api/curation/jobs/999999")
     assert res.status_code == 404
     assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+# ── PATCH /api/curation/pairs/{id} ─────────────────────────────────────────
+
+
+def _first_pair_id(engine, job_id):
+    with engine.begin() as conn:
+        return conn.execute(
+            text("SELECT id FROM training_pairs WHERE job_id = :j ORDER BY id ASC LIMIT 1"),
+            {"j": job_id},
+        ).scalar()
+
+
+def test_patch_pair_updates_canonical_label(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명"})
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "정식명"
+
+
+def test_patch_pair_updates_status(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "excluded"
+
+
+def test_patch_pair_empty_body_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "body" in res.json()["error"]["details"]  # model_validator 실패는 "body" 키(계약 고정)
+
+
+def test_patch_pair_invalid_status_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "garbage"})
+    assert res.status_code == 400
+
+
+def test_patch_pair_404_when_missing(client, db_conn):
+    res = client.patch("/api/curation/pairs/999999", json={"status": "excluded"})
+    assert res.status_code == 404
+
+
+def test_patch_pair_null_field_does_not_overwrite_status(client, db_conn):
+    # Arrange — 시드 쌍의 status는 'included'
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # Act — status: null 명시, canonical_label만 실제 변경 값
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"status": None, "canonical_label": "정상"}
+    )
+    # Assert — 500 아닌 200, status는 'included' 보존
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["canonical_label"] == "정상"
+    assert data["status"] == "included"
+
+
+def test_patch_pair_canonical_label_empty_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": ""})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_pair_canonical_label_too_long_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "x" * 201})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_patch_pair_updates_canonical_label_preserves_status(client, db_conn):
+    # Arrange — 시드 쌍의 status='included', canonical_label='품목'
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # Act — canonical_label만 변경
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "갱신명"})
+    # Assert — status는 원래 값 보존(exclude_unset 핵심 동작)
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "갱신명"
+    assert res.json()["data"]["status"] == "included"
+
+
+def test_patch_pair_updates_status_preserves_canonical_label(client, db_conn):
+    # Arrange — 시드 쌍의 canonical_label='품목'
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # Act — status만 변경
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
+    # Assert — canonical_label은 '품목' 보존
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "excluded"
+    assert res.json()["data"]["canonical_label"] == "품목"

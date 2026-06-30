@@ -64,3 +64,22 @@ class CurationService:
             "created_at": job["created_at"],
             "pairs": pairs,
         }
+
+    def patch_pair(self, pair_id: int, fields: dict) -> dict:
+        """학습쌍을 부분 갱신하고 갱신된 쌍을 반환한다. 없으면 404."""
+        if self.repo.find_pair(pair_id) is None:
+            not_found("학습쌍을 찾을 수 없습니다.")
+        self.repo.update_pair(pair_id, fields)
+        updated = self.repo.find_pair(pair_id)
+        return {
+            "id": int(updated["id"]),
+            "crop_ref": updated["crop_ref"],
+            "job_id": int(updated["job_id"]),
+            "row_index": int(updated["row_index"]),
+            "draft_label": updated["draft_label"],
+            "final_label": updated["final_label"],
+            "canonical_label": updated["canonical_label"],
+            "supply": updated["supply"],
+            "status": updated["status"],
+            "reviewed_at": updated["reviewed_at"],
+        }
