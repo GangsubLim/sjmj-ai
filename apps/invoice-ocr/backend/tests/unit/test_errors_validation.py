@@ -64,3 +64,32 @@ def test_model_level_validation_keys_under_body():
     details = res.json()["error"]["details"]
     assert "body" in details  # whole-object 에러는 "body" 키로 고정
     assert details["body"]  # 비어있지 않은 메시지
+
+
+class _Item(BaseModel):
+    label: str
+
+
+class _ArrayBody(BaseModel):
+    rows: list[_Item]
+
+
+def _array_app() -> TestClient:
+    app = FastAPI()
+    register_error_handlers(app)
+
+    @app.post("/arr")
+    def arr(body: _ArrayBody):  # noqa: D103
+        return {"ok": True}
+
+    return TestClient(app)
+
+
+def test_array_validation_keys_preserve_index_path():
+    # 두 행이 같은 leaf(label)에서 실패 → loc[-1]만 쓰면 키 충돌로 한 건만 남는다.
+    res = _array_app().post("/arr", json={"rows": [{}, {}]})
+    assert res.status_code == 400
+    details = res.json()["error"]["details"]
+    # 경로를 보존하므로 두 행의 에러가 별도 키로 분리되어 둘 다 노출된다.
+    assert "rows.0.label" in details
+    assert "rows.1.label" in details

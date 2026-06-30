@@ -3425,7 +3425,8 @@
             "type": "string"
           },
           "job_id": {
-            "type": "integer"
+            "type": "integer",
+            "description": "PATCH /api/curation/pairs/{id} 응답에만 포함(잡 상세 pairs에는 없음)."
           },
           "row_index": {
             "type": "integer"
@@ -3457,6 +3458,7 @@
           },
           "top5": {
             "type": "array",
+            "description": "GET /api/curation/jobs/{job_id} 잡 상세 pairs에만 포함(PATCH 응답에는 없음).",
             "items": {
               "type": "object",
               "properties": {

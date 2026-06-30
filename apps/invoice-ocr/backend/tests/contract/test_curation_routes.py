@@ -198,6 +198,14 @@ def test_patch_pair_canonical_label_empty_is_400(client, db_conn):
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
+def test_patch_pair_canonical_label_whitespace_only_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "   "})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 def test_patch_pair_canonical_label_too_long_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
@@ -251,40 +259,44 @@ def test_review_marks_job_and_stamps_unreviewed_pairs(client, db_conn):
     assert unstamped == 0
 
 
+def _stamps(db_conn, job_id):
+    """job의 training_pairs reviewed_at을 id순으로 반환."""
+    with db_conn.begin() as conn:
+        return (
+            conn.execute(
+                text("SELECT reviewed_at FROM training_pairs WHERE job_id = :id ORDER BY id ASC"),
+                {"id": job_id},
+            )
+            .scalars()
+            .all()
+        )
+
+
 def test_review_is_idempotent(client, db_conn):
-    # 미검수 쌍이 있는 잡 시드 → 1차 검수 완료
+    # row 0을 과거 시각으로 이미 검수 처리 → 가드가 이 값을 덮지 않아야 함.
+    # (TIMESTAMP 1초 해상도 탓에 단순 "1차==2차" 비교는 가드가 없어도 통과하므로,
+    #  구별 가능한 sentinel을 심어 reviewed_at IS NULL 가드를 직접 입증한다.)
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=2, unreviewed=2)
-    res = client.post(f"/api/curation/jobs/{job_id}/review")
-    assert res.status_code == 200
-
-    # 1차 직후 reviewed_at 보관
+    sentinel = "2020-01-01 00:00:00"
     with db_conn.begin() as conn:
-        first_stamps = (
-            conn.execute(
-                text("SELECT reviewed_at FROM training_pairs WHERE job_id = :id ORDER BY id ASC"),
-                {"id": job_id},
-            )
-            .scalars()
-            .all()
+        conn.execute(
+            text(
+                "UPDATE training_pairs SET reviewed_at = :ts WHERE job_id = :id AND row_index = 0"
+            ),
+            {"ts": sentinel, "id": job_id},
         )
 
-    # 2차 호출 — reviewed_at IS NULL 가드로 덮어쓰기 방지
-    res = client.post(f"/api/curation/jobs/{job_id}/review")
-    assert res.status_code == 200
+    assert client.post(f"/api/curation/jobs/{job_id}/review").status_code == 200
+    after_first = _stamps(db_conn, job_id)
+    # 모든 쌍이 검수됨 + 이미 찍힌 row 0은 sentinel 그대로(덮어쓰기 방지 입증).
+    assert all(ts is not None for ts in after_first)
+    assert str(after_first[0]) == sentinel
 
-    # reviewed_at이 NULL이 아니고 1차와 동일 (덮어써지지 않음)
-    with db_conn.begin() as conn:
-        second_stamps = (
-            conn.execute(
-                text("SELECT reviewed_at FROM training_pairs WHERE job_id = :id ORDER BY id ASC"),
-                {"id": job_id},
-            )
-            .scalars()
-            .all()
-        )
-
-    assert all(ts is not None for ts in first_stamps)
-    assert first_stamps == second_stamps
+    # 2차 호출도 멱등 — 이미 찍힌 값은 불변.
+    assert client.post(f"/api/curation/jobs/{job_id}/review").status_code == 200
+    after_second = _stamps(db_conn, job_id)
+    assert str(after_second[0]) == sentinel
+    assert after_first == after_second
 
 
 def test_review_404_when_missing(client, db_conn):

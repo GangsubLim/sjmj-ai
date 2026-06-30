@@ -54,7 +54,10 @@ async def _validation_error_handler(request: Request, exc: RequestValidationErro
     details: dict = {}
     for err in exc.errors():
         loc = err.get("loc") or ("body",)
-        field = str(loc[-1])
+        # 중첩/배열 body는 loc[-1]만 쓰면 서로 다른 필드(rows.0.label vs rows.1.label)가
+        # 같은 키로 충돌해 setdefault가 일부 에러를 삼킨다. "body"를 뺀 경로를 키로 보존한다.
+        parts = [str(p) for p in loc if p != "body"] or ["body"]
+        field = ".".join(parts)
         details.setdefault(field, err.get("msg", "유효하지 않은 값입니다."))
     return JSONResponse(
         status_code=400,

@@ -45,6 +45,8 @@ DEALLOCATE PREPARE stmt;
 
 -- 3) 기존 ocr_corrections.correction_json.lines[] → training_pairs 1회 백필
 --    crop_ref UNIQUE + ON DUPLICATE KEY no-op 으로 재실행 멱등.
+--    요구사항: JSON_TABLE 은 MySQL 8.0.4+ 에서만 동작. 적용 전 운영 MySQL 버전을 확인할 것.
+--    (crop_ref 에 job_id 가 박혀 전역 유니크하고 confirm 은 1회뿐이라 중복 라인은 발생하지 않음 → dedup 불필요.)
 INSERT INTO training_pairs
     (crop_ref, job_id, invoice_id, row_index, draft_label, final_label, canonical_label, supply, status)
 SELECT
