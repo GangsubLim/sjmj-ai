@@ -56,7 +56,7 @@ npm run test           # vitest run (단위)
 npm run test:e2e       # playwright (라이브 백엔드 필요)
 ```
 
-API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), `VITE_USE_MOCK`. dev는 vite proxy, prod는 backend가 dist+/api를 동일출처로 서빙한다.
+API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vite proxy, prod는 backend가 dist+/api를 동일출처로 서빙한다.
 
 ## 백엔드 아키텍처
 
