@@ -45,3 +45,9 @@ def patch_pair(id: int, patch: CurationPairPatch):
     return envelope.single(
         _service().patch_pair(id, patch.model_dump(exclude_unset=True, exclude_none=True))
     )
+
+
+@router.post("/curation/jobs/{job_id}/review")
+def review(job_id: int):
+    """잡을 검수 완료로 표시한다(미처리 쌍 reviewed_at 스탬프)."""
+    return envelope.single(_service().mark_reviewed(job_id))

@@ -106,3 +106,25 @@ class CurationRepository:
         params["id"] = pair_id
         with connection() as conn:
             conn.execute(text(f"UPDATE training_pairs SET {set_clause} WHERE id = :id"), params)
+
+    def job_exists(self, job_id: int) -> bool:
+        """ocr_jobs에 해당 id가 존재하는지 여부."""
+        with connection() as conn:
+            return (
+                conn.execute(text("SELECT 1 FROM ocr_jobs WHERE id = :id"), {"id": job_id}).first()
+                is not None
+            )
+
+    def mark_reviewed(self, job_id: int) -> None:
+        """잡을 검수완료로 표시하고 미처리 쌍에 reviewed_at을 찍는다."""
+        with connection() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET curation_reviewed = 1 WHERE id = :id"), {"id": job_id}
+            )
+            conn.execute(
+                text(
+                    "UPDATE training_pairs SET reviewed_at = CURRENT_TIMESTAMP "
+                    "WHERE job_id = :id AND reviewed_at IS NULL"
+                ),
+                {"id": job_id},
+            )

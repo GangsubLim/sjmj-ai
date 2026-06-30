@@ -83,3 +83,10 @@ class CurationService:
             "status": updated["status"],
             "reviewed_at": updated["reviewed_at"],
         }
+
+    def mark_reviewed(self, job_id: int) -> dict:
+        """잡을 검수완료로 표시한다. 없으면 404. 멱등."""
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        self.repo.mark_reviewed(job_id)
+        return {"job_id": job_id, "curation_reviewed": True}

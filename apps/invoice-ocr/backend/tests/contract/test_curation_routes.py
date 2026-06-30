@@ -228,3 +228,65 @@ def test_patch_pair_updates_status_preserves_canonical_label(client, db_conn):
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "excluded"
     assert res.json()["data"]["canonical_label"] == "품목"
+
+
+# ── POST /api/curation/jobs/{job_id}/review ────────────────────────────────
+
+
+def test_review_marks_job_and_stamps_unreviewed_pairs(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=2, unreviewed=2)
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+    assert res.status_code == 200
+    assert res.json()["data"]["curation_reviewed"] is True
+
+    with db_conn.begin() as conn:
+        reviewed = conn.execute(
+            text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+        unstamped = conn.execute(
+            text("SELECT COUNT(*) FROM training_pairs WHERE job_id = :id AND reviewed_at IS NULL"),
+            {"id": job_id},
+        ).scalar()
+    assert reviewed == 1
+    assert unstamped == 0
+
+
+def test_review_is_idempotent(client, db_conn):
+    # 미검수 쌍이 있는 잡 시드 → 1차 검수 완료
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=2, unreviewed=2)
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+    assert res.status_code == 200
+
+    # 1차 직후 reviewed_at 보관
+    with db_conn.begin() as conn:
+        first_stamps = (
+            conn.execute(
+                text("SELECT reviewed_at FROM training_pairs WHERE job_id = :id ORDER BY id ASC"),
+                {"id": job_id},
+            )
+            .scalars()
+            .all()
+        )
+
+    # 2차 호출 — reviewed_at IS NULL 가드로 덮어쓰기 방지
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+    assert res.status_code == 200
+
+    # reviewed_at이 NULL이 아니고 1차와 동일 (덮어써지지 않음)
+    with db_conn.begin() as conn:
+        second_stamps = (
+            conn.execute(
+                text("SELECT reviewed_at FROM training_pairs WHERE job_id = :id ORDER BY id ASC"),
+                {"id": job_id},
+            )
+            .scalars()
+            .all()
+        )
+
+    assert all(ts is not None for ts in first_stamps)
+    assert first_stamps == second_stamps
+
+
+def test_review_404_when_missing(client, db_conn):
+    res = client.post("/api/curation/jobs/999999/review")
+    assert res.status_code == 404
