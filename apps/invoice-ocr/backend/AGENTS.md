@@ -53,14 +53,15 @@ uv run ruff check . && uv run ruff format --check .   # 린트/포맷 (CI 게이
 
 ### 슬라이스 전환 현황
 
-| slice         | 검증 방식 | 비고   |
-| ------------- | --------- | ------ |
-| invoices      | Validator | 미전환 |
-| companies     | Validator | 미전환 |
-| items         | Validator | 미전환 |
-| settings      | Validator | 미전환 |
-| salespeople   | Validator | 미전환 |
-| sales_records | Validator | 미전환 |
-| ocr           | Validator | 미전환 |
+| slice         | 검증 방식 | 비고      |
+| ------------- | --------- | --------- |
+| invoices      | Validator | 미전환    |
+| companies     | Validator | 미전환    |
+| items         | Validator | 미전환    |
+| settings      | Validator | 미전환    |
+| salespeople   | Validator | 미전환    |
+| sales_records | Validator | 미전환    |
+| ocr           | Validator | 미전환    |
+| curation      | Pydantic  | 최초 전환 |
 
 > 슬라이스를 Pydantic으로 전환하면 이 표의 "검증 방식"을 `Pydantic`으로 갱신한다.
