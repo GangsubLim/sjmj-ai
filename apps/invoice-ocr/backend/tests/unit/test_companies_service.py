@@ -1,4 +1,4 @@
-"""service 골든 — PHP CompanyServiceTest 동치(mock repo)."""
+"""CompanyService 계약 테스트(mock repo)."""
 
 from unittest.mock import MagicMock
 

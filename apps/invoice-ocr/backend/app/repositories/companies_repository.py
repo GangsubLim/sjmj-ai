@@ -1,4 +1,4 @@
-"""CompanyRepository — PHP repositories/CompanyRepository.php 동형(text() raw SQL).
+"""CompanyRepository — text() raw SQL 직접 발행.
 
 정렬 컬럼은 화이트리스트 매핑으로만 변환(문자열 보간 SQL injection 방어).
 company_name UNIQUE → insert는 ON DUPLICATE KEY UPDATE upsert.
@@ -33,7 +33,10 @@ def _sms_type(data: dict) -> str:
 
 
 class CompanyRepository:
+    """company_suggestions 테이블 raw SQL 접근 레포지토리."""
+
     def find_all(self, filters: dict) -> list[dict]:
+        """필터(검색어/정렬)에 맞는 거래처 목록을 조회한다."""
         where = "1=1"
         params: dict = {}
         if filters.get("q"):
@@ -41,9 +44,7 @@ class CompanyRepository:
             params["q1"] = f"%{filters['q']}%"
             params["q2"] = f"%{filters['q']}%"
 
-        column = _ALLOWED_SORT_COLUMNS.get(
-            filters.get("sort_by") or "company_name", "company_name"
-        )
+        column = _ALLOWED_SORT_COLUMNS.get(filters.get("sort_by") or "company_name", "company_name")
         order = "DESC" if column in _DESC_COLUMNS else "ASC"
         sql = f"""
             SELECT {_SELECT_COLUMNS}
@@ -55,12 +56,11 @@ class CompanyRepository:
             return _rows(conn.execute(text(sql), params))
 
     def find_by_id(self, id: int) -> dict | None:
+        """거래처를 ID로 단건 조회한다."""
         with connection() as conn:
             row = (
                 conn.execute(
-                    text(
-                        f"SELECT {_SELECT_COLUMNS} FROM company_suggestions WHERE id = :id"
-                    ),
+                    text(f"SELECT {_SELECT_COLUMNS} FROM company_suggestions WHERE id = :id"),
                     {"id": id},
                 )
                 .mappings()
@@ -69,6 +69,7 @@ class CompanyRepository:
             return dict(row) if row else None
 
     def insert(self, data: dict) -> int:
+        """거래처를 삽입하고 중복 시 업데이트한 뒤 id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -102,6 +103,7 @@ class CompanyRepository:
             return int(result.lastrowid)
 
     def update(self, id: int, data: dict) -> bool:
+        """거래처를 수정하고 변경 여부를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text("""
@@ -131,6 +133,7 @@ class CompanyRepository:
             return result.rowcount > 0
 
     def delete(self, id: int) -> bool:
+        """거래처를 삭제하고 삭제 여부를 반환한다."""
         with connection() as conn:
             return (
                 conn.execute(
@@ -140,6 +143,7 @@ class CompanyRepository:
             )
 
     def increment_usage_by_name(self, company_name: str) -> None:
+        """거래처명으로 사용 횟수를 1 증가시키고 마지막 사용 시각을 갱신한다."""
         with connection() as conn:
             conn.execute(
                 text("""
@@ -151,6 +155,7 @@ class CompanyRepository:
             )
 
     def find_invoices_by_company_id(self, company_id: int) -> list[dict]:
+        """거래처 ID에 매칭되는 거래명세서 목록을 발행일 내림차순으로 조회한다."""
         with connection() as conn:
             return _rows(
                 conn.execute(

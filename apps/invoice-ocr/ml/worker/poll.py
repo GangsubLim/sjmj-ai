@@ -4,6 +4,7 @@ from pathlib import Path
 
 
 def process_one_job(queue, infer_fn, crops_root) -> bool:
+    """대기 중인 잡 1건을 처리한다. 처리했으면 True, 큐가 비었으면 False."""
     job = queue.claim_next_pending()
     if job is None:
         return False

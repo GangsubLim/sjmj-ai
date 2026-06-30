@@ -3,78 +3,437 @@
   "info": {
     "title": "sjmj-ai invoice-ocr API",
     "version": "0.1.0",
-    "description": "SJMJ 거래명세서 OCR 자동입력 백엔드(FastAPI). PHP SJMJ-Web을 동형 포팅한 REST/JSON API. 에이전트 우선 인덱스 레이어는 x-api-overview. info.version은 루트 VERSION / backend app/config.py:APP_VERSION 과 동기되어야 한다."
+    "description": "SJMJ 거래명세서 OCR 자동입력 백엔드(FastAPI). REST/JSON API. 에이전트 우선 인덱스 레이어는 x-api-overview. info.version은 루트 VERSION / backend app/config.py:APP_VERSION 과 동기되어야 한다."
   },
   "servers": [
-    { "url": "http://127.0.0.1:8400", "description": "Local (make dev / launchd)" },
-    { "url": "/", "description": "Same-origin (prod: FastAPI가 frontend/dist + /api 동일출처 서빙)" }
+    {
+      "url": "http://127.0.0.1:8400",
+      "description": "Local (make dev / launchd)"
+    },
+    {
+      "url": "/",
+      "description": "Same-origin (prod: FastAPI가 frontend/dist + /api 동일출처 서빙)"
+    }
   ],
   "security": [],
   "x-api-overview": {
     "endpoints": [
-      { "method": "GET", "path": "/health", "summary": "Liveness check (public, no /api prefix)", "auth": "public", "req": null, "res": "HealthResponse", "router": "system", "source": "app/main.py" },
-      { "method": "GET", "path": "/api/health", "summary": "Liveness check alias (under /api)", "auth": "public", "req": null, "res": "HealthResponse", "router": "system", "source": "app/main.py" },
+      {
+        "method": "GET",
+        "path": "/health",
+        "summary": "Liveness check (public, no /api prefix)",
+        "auth": "public",
+        "req": null,
+        "res": "HealthResponse",
+        "router": "system",
+        "source": "app/main.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/health",
+        "summary": "Liveness check alias (under /api)",
+        "auth": "public",
+        "req": null,
+        "res": "HealthResponse",
+        "router": "system",
+        "source": "app/main.py"
+      },
 
-      { "method": "GET", "path": "/api/invoices/export", "summary": "Export invoices as raw CSV — OUTSIDE envelope, text/csv, RFC5987 filename; xlsx rejected 400", "auth": "public", "req": null, "res": "string", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "GET", "path": "/api/invoices", "summary": "List invoices (paginated; search/date_from/date_to filter; sort_by/sort_order whitelisted)", "auth": "public", "req": null, "res": "Invoice", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "GET", "path": "/api/invoices/{id}", "summary": "Get invoice with items[] (404 if missing)", "auth": "public", "req": null, "res": "Invoice", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "POST", "path": "/api/invoices", "summary": "Create invoice (201; side-effect: company/item usage_count++)", "auth": "public", "req": "InvoiceWriteRequest", "res": "Invoice", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "PUT", "path": "/api/invoices/{id}", "summary": "Update invoice (404 if missing; same validation as create)", "auth": "public", "req": "InvoiceWriteRequest", "res": "Invoice", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "DELETE", "path": "/api/invoices/{id}", "summary": "Delete invoice (cascade items; 404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "invoices", "source": "app/routers/invoices.py" },
-      { "method": "POST", "path": "/api/invoices/{id}/duplicate", "summary": "Duplicate invoice (201; RPC sub-action; 404 if original missing)", "auth": "public", "req": null, "res": "Invoice", "router": "invoices", "source": "app/routers/invoices.py" },
+      {
+        "method": "GET",
+        "path": "/api/invoices/export",
+        "summary": "Export invoices as raw CSV — OUTSIDE envelope, text/csv, RFC5987 filename; xlsx rejected 400",
+        "auth": "public",
+        "req": null,
+        "res": "string",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/invoices",
+        "summary": "List invoices (paginated; search/date_from/date_to filter; sort_by/sort_order whitelisted)",
+        "auth": "public",
+        "req": null,
+        "res": "Invoice",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/invoices/{id}",
+        "summary": "Get invoice with items[] (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "Invoice",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/invoices",
+        "summary": "Create invoice (201; side-effect: company/item usage_count++)",
+        "auth": "public",
+        "req": "InvoiceWriteRequest",
+        "res": "Invoice",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/invoices/{id}",
+        "summary": "Update invoice (404 if missing; same validation as create)",
+        "auth": "public",
+        "req": "InvoiceWriteRequest",
+        "res": "Invoice",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/invoices/{id}",
+        "summary": "Delete invoice (cascade items; 404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "DeletedEnvelope",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/invoices/{id}/duplicate",
+        "summary": "Duplicate invoice (201; RPC sub-action; 404 if original missing)",
+        "auth": "public",
+        "req": null,
+        "res": "Invoice",
+        "router": "invoices",
+        "source": "app/routers/invoices.py"
+      },
 
-      { "method": "GET", "path": "/api/companies", "summary": "List companies (q substring search; sort_by whitelisted)", "auth": "public", "req": null, "res": "Company", "router": "companies", "source": "app/routers/companies.py" },
-      { "method": "GET", "path": "/api/companies/{id}", "summary": "Get company (404 if missing)", "auth": "public", "req": null, "res": "Company", "router": "companies", "source": "app/routers/companies.py" },
-      { "method": "POST", "path": "/api/companies", "summary": "Create company (201)", "auth": "public", "req": "CompanyRequest", "res": "Company", "router": "companies", "source": "app/routers/companies.py" },
-      { "method": "PUT", "path": "/api/companies/{id}", "summary": "Update company (404 if missing)", "auth": "public", "req": "CompanyRequest", "res": "Company", "router": "companies", "source": "app/routers/companies.py" },
-      { "method": "DELETE", "path": "/api/companies/{id}", "summary": "Delete company (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "companies", "source": "app/routers/companies.py" },
-      { "method": "GET", "path": "/api/companies/{id}/invoices", "summary": "List a company's invoices (FAKE pagination: page1/limit9999/totalPages1; 404 if company missing)", "auth": "public", "req": null, "res": "Invoice", "router": "companies", "source": "app/routers/companies.py" },
+      {
+        "method": "GET",
+        "path": "/api/companies",
+        "summary": "List companies (q substring search; sort_by whitelisted)",
+        "auth": "public",
+        "req": null,
+        "res": "Company",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/companies/{id}",
+        "summary": "Get company (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "Company",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/companies",
+        "summary": "Create company (201)",
+        "auth": "public",
+        "req": "CompanyRequest",
+        "res": "Company",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/companies/{id}",
+        "summary": "Update company (404 if missing)",
+        "auth": "public",
+        "req": "CompanyRequest",
+        "res": "Company",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/companies/{id}",
+        "summary": "Delete company (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "DeletedEnvelope",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/companies/{id}/invoices",
+        "summary": "List a company's invoices (FAKE pagination: page1/limit9999/totalPages1; 404 if company missing)",
+        "auth": "public",
+        "req": null,
+        "res": "Invoice",
+        "router": "companies",
+        "source": "app/routers/companies.py"
+      },
 
-      { "method": "GET", "path": "/api/items", "summary": "List items (q substring + category filter; sort_by whitelisted)", "auth": "public", "req": null, "res": "Item", "router": "items", "source": "app/routers/items.py" },
-      { "method": "GET", "path": "/api/items/{id}", "summary": "Get item (404 if missing)", "auth": "public", "req": null, "res": "Item", "router": "items", "source": "app/routers/items.py" },
-      { "method": "POST", "path": "/api/items", "summary": "Create item (201; item_name UNIQUE violation → 409 DUPLICATE_NAME, graceful)", "auth": "public", "req": "ItemRequest", "res": "Item", "router": "items", "source": "app/routers/items.py" },
-      { "method": "PUT", "path": "/api/items/{id}", "summary": "Update item (404 if missing)", "auth": "public", "req": "ItemRequest", "res": "Item", "router": "items", "source": "app/routers/items.py" },
-      { "method": "DELETE", "path": "/api/items/{id}", "summary": "Delete item (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "items", "source": "app/routers/items.py" },
+      {
+        "method": "GET",
+        "path": "/api/items",
+        "summary": "List items (q substring + category filter; sort_by whitelisted)",
+        "auth": "public",
+        "req": null,
+        "res": "Item",
+        "router": "items",
+        "source": "app/routers/items.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/items/{id}",
+        "summary": "Get item (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "Item",
+        "router": "items",
+        "source": "app/routers/items.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/items",
+        "summary": "Create item (201; item_name UNIQUE violation → 409 DUPLICATE_NAME, graceful)",
+        "auth": "public",
+        "req": "ItemRequest",
+        "res": "Item",
+        "router": "items",
+        "source": "app/routers/items.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/items/{id}",
+        "summary": "Update item (404 if missing)",
+        "auth": "public",
+        "req": "ItemRequest",
+        "res": "Item",
+        "router": "items",
+        "source": "app/routers/items.py"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/items/{id}",
+        "summary": "Delete item (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "DeletedEnvelope",
+        "router": "items",
+        "source": "app/routers/items.py"
+      },
 
-      { "method": "GET", "path": "/api/salespeople", "summary": "List active salespeople (FAKE pagination: page1/limit=total/totalPages1)", "auth": "public", "req": null, "res": "Salesperson", "router": "salespeople", "source": "app/routers/salespeople.py" },
-      { "method": "POST", "path": "/api/salespeople", "summary": "Create salesperson (201; duplicate name → 409 DUPLICATE_NAME)", "auth": "public", "req": "SalespersonRequest", "res": "Salesperson", "router": "salespeople", "source": "app/routers/salespeople.py" },
-      { "method": "PUT", "path": "/api/salespeople/{id}", "summary": "Update salesperson (404 if missing)", "auth": "public", "req": "SalespersonRequest", "res": "Salesperson", "router": "salespeople", "source": "app/routers/salespeople.py" },
-      { "method": "DELETE", "path": "/api/salespeople/{id}", "summary": "Soft-delete (deactivate) salesperson; message '비활성화되었습니다.' (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "salespeople", "source": "app/routers/salespeople.py" },
+      {
+        "method": "GET",
+        "path": "/api/salespeople",
+        "summary": "List active salespeople (FAKE pagination: page1/limit=total/totalPages1)",
+        "auth": "public",
+        "req": null,
+        "res": "Salesperson",
+        "router": "salespeople",
+        "source": "app/routers/salespeople.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/salespeople",
+        "summary": "Create salesperson (201; duplicate name → 409 DUPLICATE_NAME)",
+        "auth": "public",
+        "req": "SalespersonRequest",
+        "res": "Salesperson",
+        "router": "salespeople",
+        "source": "app/routers/salespeople.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/salespeople/{id}",
+        "summary": "Update salesperson (404 if missing)",
+        "auth": "public",
+        "req": "SalespersonRequest",
+        "res": "Salesperson",
+        "router": "salespeople",
+        "source": "app/routers/salespeople.py"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/salespeople/{id}",
+        "summary": "Soft-delete (deactivate) salesperson; message '비활성화되었습니다.' (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "DeletedEnvelope",
+        "router": "salespeople",
+        "source": "app/routers/salespeople.py"
+      },
 
-      { "method": "GET", "path": "/api/settings/issuer", "summary": "Get issuer (발급자) info (404 if unset)", "auth": "public", "req": null, "res": "Issuer", "router": "settings", "source": "app/routers/settings.py" },
-      { "method": "PUT", "path": "/api/settings/issuer", "summary": "Upsert issuer info (required: company_name/representative/business_number/address)", "auth": "public", "req": "IssuerRequest", "res": "Issuer", "router": "settings", "source": "app/routers/settings.py" },
-      { "method": "POST", "path": "/api/settings/issuer/stamp", "summary": "Upload issuer stamp — multipart/form-data 'image' (400 no file/oversize/type; 404 no issuer)", "auth": "public", "req": "StampUpload", "res": "StampResult", "router": "settings", "source": "app/routers/settings.py" },
-      { "method": "GET", "path": "/api/settings/app", "summary": "Get app settings (key-value map)", "auth": "public", "req": null, "res": "AppSettings", "router": "settings", "source": "app/routers/settings.py" },
-      { "method": "PUT", "path": "/api/settings/app", "summary": "Update app settings (partial key-value; 400 if body empty)", "auth": "public", "req": "AppSettings", "res": "AppSettings", "router": "settings", "source": "app/routers/settings.py" },
+      {
+        "method": "GET",
+        "path": "/api/settings/issuer",
+        "summary": "Get issuer (발급자) info (404 if unset)",
+        "auth": "public",
+        "req": null,
+        "res": "Issuer",
+        "router": "settings",
+        "source": "app/routers/settings.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/settings/issuer",
+        "summary": "Upsert issuer info (required: company_name/representative/business_number/address)",
+        "auth": "public",
+        "req": "IssuerRequest",
+        "res": "Issuer",
+        "router": "settings",
+        "source": "app/routers/settings.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/settings/issuer/stamp",
+        "summary": "Upload issuer stamp — multipart/form-data 'image' (400 no file/oversize/type; 404 no issuer)",
+        "auth": "public",
+        "req": "StampUpload",
+        "res": "StampResult",
+        "router": "settings",
+        "source": "app/routers/settings.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/settings/app",
+        "summary": "Get app settings (key-value map)",
+        "auth": "public",
+        "req": null,
+        "res": "AppSettings",
+        "router": "settings",
+        "source": "app/routers/settings.py"
+      },
+      {
+        "method": "PUT",
+        "path": "/api/settings/app",
+        "summary": "Update app settings (partial key-value; 400 if body empty)",
+        "auth": "public",
+        "req": "AppSettings",
+        "res": "AppSettings",
+        "router": "settings",
+        "source": "app/routers/settings.py"
+      },
 
-      { "method": "GET", "path": "/api/sales-records", "summary": "Monthly sales aggregate — SINGLE object {salespeople,records}, NOT a list, no pagination; year/month required (400 if out of range)", "auth": "public", "req": null, "res": "SalesRecordMonthly", "router": "sales_records", "source": "app/routers/sales_records.py" },
-      { "method": "POST", "path": "/api/sales-records", "summary": "Upsert sales record (201; UNIQUE(salesperson_id,work_date); snapshot_name SERVER-filled, client input ignored)", "auth": "public", "req": "SalesRecordRequest", "res": "SalesRecord", "router": "sales_records", "source": "app/routers/sales_records.py" },
-      { "method": "DELETE", "path": "/api/sales-records/{id}", "summary": "Delete sales record (404 if missing)", "auth": "public", "req": null, "res": "DeletedEnvelope", "router": "sales_records", "source": "app/routers/sales_records.py" },
+      {
+        "method": "GET",
+        "path": "/api/sales-records",
+        "summary": "Monthly sales aggregate — SINGLE object {salespeople,records}, NOT a list, no pagination; year/month required (400 if out of range)",
+        "auth": "public",
+        "req": null,
+        "res": "SalesRecordMonthly",
+        "router": "sales_records",
+        "source": "app/routers/sales_records.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/sales-records",
+        "summary": "Upsert sales record (201; UNIQUE(salesperson_id,work_date); snapshot_name SERVER-filled, client input ignored)",
+        "auth": "public",
+        "req": "SalesRecordRequest",
+        "res": "SalesRecord",
+        "router": "sales_records",
+        "source": "app/routers/sales_records.py"
+      },
+      {
+        "method": "DELETE",
+        "path": "/api/sales-records/{id}",
+        "summary": "Delete sales record (404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "DeletedEnvelope",
+        "router": "sales_records",
+        "source": "app/routers/sales_records.py"
+      },
 
-      { "method": "POST", "path": "/api/ocr/jobs", "summary": "Upload photo + enqueue OCR job (201; multipart photo field; saves to $SJMJ_DATA_DIR/ocr_uploads)", "auth": "public", "req": "OcrJobCreate", "res": "OcrJobAck", "router": "ocr", "source": "app/routers/ocr.py" },
-      { "method": "GET", "path": "/api/ocr/jobs/{id}", "summary": "Poll OCR job status (pending/running/done/failed; done→result, failed→error; 404 if missing)", "auth": "public", "req": null, "res": "OcrJobStatus", "router": "ocr", "source": "app/routers/ocr.py" },
-      { "method": "POST", "path": "/api/ocr/jobs/{id}/confirm", "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed)", "auth": "public", "req": "OcrConfirmRequest", "res": "OcrConfirmAck", "router": "ocr", "source": "app/routers/ocr.py" }
+      {
+        "method": "POST",
+        "path": "/api/ocr/jobs",
+        "summary": "Upload photo + enqueue OCR job (201; multipart photo field; saves to $SJMJ_DATA_DIR/ocr_uploads)",
+        "auth": "public",
+        "req": "OcrJobCreate",
+        "res": "OcrJobAck",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/ocr/jobs/{id}",
+        "summary": "Poll OCR job status (pending/running/done/failed; done→result, failed→error; 404 if missing)",
+        "auth": "public",
+        "req": null,
+        "res": "OcrJobStatus",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/ocr/jobs/{id}/confirm",
+        "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed)",
+        "auth": "public",
+        "req": "OcrConfirmRequest",
+        "res": "OcrConfirmAck",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      }
     ],
     "schema-usage": {
       "HealthResponse": ["GET /health", "GET /api/health"],
-      "Invoice": ["GET /api/invoices", "GET /api/invoices/{id}", "POST /api/invoices", "PUT /api/invoices/{id}", "POST /api/invoices/{id}/duplicate", "GET /api/companies/{id}/invoices"],
-      "InvoiceItem": ["GET /api/invoices/{id}", "POST /api/invoices", "PUT /api/invoices/{id}"],
+      "Invoice": [
+        "GET /api/invoices",
+        "GET /api/invoices/{id}",
+        "POST /api/invoices",
+        "PUT /api/invoices/{id}",
+        "POST /api/invoices/{id}/duplicate",
+        "GET /api/companies/{id}/invoices"
+      ],
+      "InvoiceItem": [
+        "GET /api/invoices/{id}",
+        "POST /api/invoices",
+        "PUT /api/invoices/{id}"
+      ],
       "InvoiceWriteRequest": ["POST /api/invoices", "PUT /api/invoices/{id}"],
-      "Company": ["GET /api/companies", "GET /api/companies/{id}", "POST /api/companies", "PUT /api/companies/{id}"],
+      "Company": [
+        "GET /api/companies",
+        "GET /api/companies/{id}",
+        "POST /api/companies",
+        "PUT /api/companies/{id}"
+      ],
       "CompanyRequest": ["POST /api/companies", "PUT /api/companies/{id}"],
-      "Item": ["GET /api/items", "GET /api/items/{id}", "POST /api/items", "PUT /api/items/{id}"],
+      "Item": [
+        "GET /api/items",
+        "GET /api/items/{id}",
+        "POST /api/items",
+        "PUT /api/items/{id}"
+      ],
       "ItemRequest": ["POST /api/items", "PUT /api/items/{id}"],
-      "Salesperson": ["GET /api/salespeople", "POST /api/salespeople", "PUT /api/salespeople/{id}", "GET /api/sales-records (SalesRecordMonthly.salespeople)"],
-      "SalespersonRequest": ["POST /api/salespeople", "PUT /api/salespeople/{id}"],
+      "Salesperson": [
+        "GET /api/salespeople",
+        "POST /api/salespeople",
+        "PUT /api/salespeople/{id}",
+        "GET /api/sales-records (SalesRecordMonthly.salespeople)"
+      ],
+      "SalespersonRequest": [
+        "POST /api/salespeople",
+        "PUT /api/salespeople/{id}"
+      ],
       "Issuer": ["GET /api/settings/issuer", "PUT /api/settings/issuer"],
       "IssuerRequest": ["PUT /api/settings/issuer"],
       "StampUpload": ["POST /api/settings/issuer/stamp"],
       "StampResult": ["POST /api/settings/issuer/stamp"],
       "AppSettings": ["GET /api/settings/app", "PUT /api/settings/app"],
-      "SalesRecord": ["POST /api/sales-records", "GET /api/sales-records (SalesRecordMonthly.records)"],
+      "SalesRecord": [
+        "POST /api/sales-records",
+        "GET /api/sales-records (SalesRecordMonthly.records)"
+      ],
       "SalesRecordRequest": ["POST /api/sales-records"],
       "SalesRecordMonthly": ["GET /api/sales-records"],
-      "DeletedEnvelope": ["DELETE /api/invoices/{id}", "DELETE /api/companies/{id}", "DELETE /api/items/{id}", "DELETE /api/salespeople/{id}", "DELETE /api/sales-records/{id}"],
+      "DeletedEnvelope": [
+        "DELETE /api/invoices/{id}",
+        "DELETE /api/companies/{id}",
+        "DELETE /api/items/{id}",
+        "DELETE /api/salespeople/{id}",
+        "DELETE /api/sales-records/{id}"
+      ],
       "OcrJobCreate": ["POST /api/ocr/jobs"],
       "OcrJobAck": ["POST /api/ocr/jobs"],
       "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
@@ -85,37 +444,96 @@
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
-      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 맵 (PHP 골든 메시지 동치).",
+      "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 문자열 맵(contract 테스트로 고정).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
       "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
       "route-ordering": "API 라우터는 SPA catch-all(GET /{full_path}, app/main.py:_mount_static)보다 먼저 등록되어야 우선 매칭. invoices 내부에서도 /export 가 /{id} 보다 먼저 선언돼 충돌 회피.",
-      "validation": "core/validators.Validator (fluent). 라우터에서 검증 후 service 호출. body 는 dict=Body(...) free-form (Pydantic 모델 아님 — PHP 동형 골든 메시지 보존 목적).",
+      "validation": "core/validators.Validator (fluent). 라우터에서 검증 후 service 호출. body 는 dict=Body(...) free-form (Pydantic 모델 아님 — 검증 메시지·details 형태를 contract 테스트로 고정).",
       "version-sync": "info.version == 루트 VERSION == backend app/config.py:APP_VERSION (test_version_sync.py 검증)."
     }
   },
   "paths": {
     "/health": {
-      "get": { "tags": ["system"], "summary": "Liveness check (public)", "security": [], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } } } } }
+      "get": {
+        "tags": ["system"],
+        "summary": "Liveness check (public)",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/health": {
-      "get": { "tags": ["system"], "summary": "Liveness check alias", "security": [], "responses": { "200": { "description": "OK", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/HealthResponse" } } } } } }
+      "get": {
+        "tags": ["system"],
+        "summary": "Liveness check alias",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/HealthResponse" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/invoices/export": {
       "get": {
         "tags": ["invoices"],
         "summary": "Export invoices as raw CSV (outside envelope)",
         "parameters": [
-          { "name": "format", "in": "query", "schema": { "type": "string", "enum": ["csv", "xlsx"], "default": "csv" }, "description": "csv 만 실제 구현; xlsx 는 400 (ExportService ValueError)" },
-          { "name": "date_from", "in": "query", "schema": { "type": "string", "format": "date" } },
-          { "name": "date_to", "in": "query", "schema": { "type": "string", "format": "date" } },
-          { "name": "company_id", "in": "query", "schema": { "type": "integer" } }
+          {
+            "name": "format",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["csv", "xlsx"],
+              "default": "csv"
+            },
+            "description": "csv 만 실제 구현; xlsx 는 400 (ExportService ValueError)"
+          },
+          {
+            "name": "date_from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" }
+          },
+          {
+            "name": "company_id",
+            "in": "query",
+            "schema": { "type": "integer" }
+          }
         ],
         "responses": {
-          "200": { "description": "CSV file (Content-Disposition: attachment; filename*=UTF-8'')", "content": { "text/csv": { "schema": { "type": "string" } } } },
-          "400": { "description": "Invalid format", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+          "200": {
+            "description": "CSV file (Content-Disposition: attachment; filename*=UTF-8'')",
+            "content": { "text/csv": { "schema": { "type": "string" } } }
+          },
+          "400": {
+            "description": "Invalid format",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
         }
       }
     },
@@ -124,112 +542,1171 @@
         "tags": ["invoices"],
         "summary": "List invoices (paginated)",
         "parameters": [
-          { "name": "page", "in": "query", "schema": { "type": "integer", "default": 1, "minimum": 1 } },
-          { "name": "limit", "in": "query", "schema": { "type": "integer", "default": 20, "minimum": 1, "maximum": 100 } },
+          {
+            "name": "page",
+            "in": "query",
+            "schema": { "type": "integer", "default": 1, "minimum": 1 }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
           { "name": "search", "in": "query", "schema": { "type": "string" } },
-          { "name": "date_from", "in": "query", "schema": { "type": "string", "format": "date" } },
-          { "name": "date_to", "in": "query", "schema": { "type": "string", "format": "date" } },
-          { "name": "sort_by", "in": "query", "schema": { "type": "string", "enum": ["issue_date", "grand_total", "recipient", "created_at"], "default": "issue_date" } },
-          { "name": "sort_order", "in": "query", "schema": { "type": "string", "enum": ["asc", "desc"], "default": "desc" } }
+          {
+            "name": "date_from",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" }
+          },
+          {
+            "name": "date_to",
+            "in": "query",
+            "schema": { "type": "string", "format": "date" }
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["issue_date", "grand_total", "recipient", "created_at"],
+              "default": "issue_date"
+            }
+          },
+          {
+            "name": "sort_order",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["asc", "desc"],
+              "default": "desc"
+            }
+          }
         ],
-        "responses": { "200": { "description": "Paginated invoices", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessList" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Invoice" } } } }] } } } } }
+        "responses": {
+          "200": {
+            "description": "Paginated invoices",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Invoice" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       },
       "post": {
         "tags": ["invoices"],
         "summary": "Create invoice",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" }
+            }
+          }
+        },
         "responses": {
-          "201": { "description": "Created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Invoice" } } }] } } } },
-          "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Invoice" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
         }
       }
     },
     "/api/invoices/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "get": { "tags": ["invoices"], "summary": "Get invoice with items", "responses": { "200": { "description": "Invoice", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Invoice" } } }] } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "put": { "tags": ["invoices"], "summary": "Update invoice", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" } } } }, "responses": { "200": { "description": "Updated", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Invoice" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "delete": { "tags": ["invoices"], "summary": "Delete invoice", "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "get": {
+        "tags": ["invoices"],
+        "summary": "Get invoice with items",
+        "responses": {
+          "200": {
+            "description": "Invoice",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Invoice" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["invoices"],
+        "summary": "Update invoice",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/InvoiceWriteRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Invoice" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["invoices"],
+        "summary": "Delete invoice",
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/invoices/{id}/duplicate": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "post": { "tags": ["invoices"], "summary": "Duplicate invoice (RPC sub-action)", "responses": { "201": { "description": "Created copy", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Invoice" } } }] } } } }, "404": { "description": "Original not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "post": {
+        "tags": ["invoices"],
+        "summary": "Duplicate invoice (RPC sub-action)",
+        "responses": {
+          "201": {
+            "description": "Created copy",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Invoice" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Original not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/companies": {
       "get": {
         "tags": ["companies"],
         "summary": "List companies",
         "parameters": [
-          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "company_name substring search" },
-          { "name": "sort_by", "in": "query", "schema": { "type": "string", "enum": ["company_name", "usage_count", "last_used", "created_at"], "default": "company_name" } }
+          {
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "company_name substring search"
+          },
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "company_name",
+                "usage_count",
+                "last_used",
+                "created_at"
+              ],
+              "default": "company_name"
+            }
+          }
         ],
-        "responses": { "200": { "description": "Companies", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessList" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Company" } } } }] } } } } }
+        "responses": {
+          "200": {
+            "description": "Companies",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Company" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       },
-      "post": { "tags": ["companies"], "summary": "Create company", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CompanyRequest" } } } }, "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Company" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "post": {
+        "tags": ["companies"],
+        "summary": "Create company",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CompanyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Company" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/companies/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "get": { "tags": ["companies"], "summary": "Get company", "responses": { "200": { "description": "Company", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Company" } } }] } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "put": { "tags": ["companies"], "summary": "Update company", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/CompanyRequest" } } } }, "responses": { "200": { "description": "Updated", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Company" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "delete": { "tags": ["companies"], "summary": "Delete company", "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "get": {
+        "tags": ["companies"],
+        "summary": "Get company",
+        "responses": {
+          "200": {
+            "description": "Company",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Company" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["companies"],
+        "summary": "Update company",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/CompanyRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Company" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["companies"],
+        "summary": "Delete company",
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/companies/{id}/invoices": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "get": { "tags": ["companies"], "summary": "List a company's invoices (fake pagination)", "responses": { "200": { "description": "Invoices (all, fake pagination)", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessList" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Invoice" } } } }] } } } }, "404": { "description": "Company not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "get": {
+        "tags": ["companies"],
+        "summary": "List a company's invoices (fake pagination)",
+        "responses": {
+          "200": {
+            "description": "Invoices (all, fake pagination)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Invoice" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Company not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/items": {
       "get": {
         "tags": ["items"],
         "summary": "List items",
         "parameters": [
-          { "name": "q", "in": "query", "schema": { "type": "string" }, "description": "item_name substring search" },
+          {
+            "name": "q",
+            "in": "query",
+            "schema": { "type": "string" },
+            "description": "item_name substring search"
+          },
           { "name": "category", "in": "query", "schema": { "type": "string" } },
-          { "name": "sort_by", "in": "query", "schema": { "type": "string", "enum": ["item_name", "usage_count", "last_used", "category"], "default": "item_name" } }
+          {
+            "name": "sort_by",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["item_name", "usage_count", "last_used", "category"],
+              "default": "item_name"
+            }
+          }
         ],
-        "responses": { "200": { "description": "Items", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessList" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Item" } } } }] } } } } }
+        "responses": {
+          "200": {
+            "description": "Items",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": { "$ref": "#/components/schemas/Item" }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       },
-      "post": { "tags": ["items"], "summary": "Create item", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ItemRequest" } } } }, "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Item" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "409": { "description": "DUPLICATE_NAME (item_name UNIQUE)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "post": {
+        "tags": ["items"],
+        "summary": "Create item",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ItemRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Item" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "409": {
+            "description": "DUPLICATE_NAME (item_name UNIQUE)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/items/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "get": { "tags": ["items"], "summary": "Get item", "responses": { "200": { "description": "Item", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Item" } } }] } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "put": { "tags": ["items"], "summary": "Update item", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ItemRequest" } } } }, "responses": { "200": { "description": "Updated", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Item" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "delete": { "tags": ["items"], "summary": "Delete item", "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "get": {
+        "tags": ["items"],
+        "summary": "Get item",
+        "responses": {
+          "200": {
+            "description": "Item",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Item" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["items"],
+        "summary": "Update item",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/ItemRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Item" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["items"],
+        "summary": "Delete item",
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/salespeople": {
-      "get": { "tags": ["salespeople"], "summary": "List active salespeople (fake pagination)", "responses": { "200": { "description": "Salespeople", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessList" }, { "properties": { "data": { "type": "array", "items": { "$ref": "#/components/schemas/Salesperson" } } } }] } } } } } },
-      "post": { "tags": ["salespeople"], "summary": "Create salesperson", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SalespersonRequest" } } } }, "responses": { "201": { "description": "Created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Salesperson" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "409": { "description": "DUPLICATE_NAME", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "get": {
+        "tags": ["salespeople"],
+        "summary": "List active salespeople (fake pagination)",
+        "responses": {
+          "200": {
+            "description": "Salespeople",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/Salesperson"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": ["salespeople"],
+        "summary": "Create salesperson",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SalespersonRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Salesperson" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "409": {
+            "description": "DUPLICATE_NAME",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/salespeople/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "put": { "tags": ["salespeople"], "summary": "Update salesperson", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SalespersonRequest" } } } }, "responses": { "200": { "description": "Updated", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Salesperson" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "delete": { "tags": ["salespeople"], "summary": "Soft-delete (deactivate) salesperson", "responses": { "200": { "description": "Deactivated", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "put": {
+        "tags": ["salespeople"],
+        "summary": "Update salesperson",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SalespersonRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Salesperson" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": ["salespeople"],
+        "summary": "Soft-delete (deactivate) salesperson",
+        "responses": {
+          "200": {
+            "description": "Deactivated",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/settings/issuer": {
-      "get": { "tags": ["settings"], "summary": "Get issuer info", "responses": { "200": { "description": "Issuer", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Issuer" } } }] } } } }, "404": { "description": "Issuer unset", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } },
-      "put": { "tags": ["settings"], "summary": "Upsert issuer info", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/IssuerRequest" } } } }, "responses": { "200": { "description": "Saved", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/Issuer" } } }] } } } }, "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "get": {
+        "tags": ["settings"],
+        "summary": "Get issuer info",
+        "responses": {
+          "200": {
+            "description": "Issuer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Issuer" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Issuer unset",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["settings"],
+        "summary": "Upsert issuer info",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/IssuerRequest" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/Issuer" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/settings/issuer/stamp": {
-      "post": { "tags": ["settings"], "summary": "Upload issuer stamp (multipart)", "requestBody": { "required": true, "content": { "multipart/form-data": { "schema": { "$ref": "#/components/schemas/StampUpload" } } } }, "responses": { "200": { "description": "data is {stamp_image_url} only — NOT a full Issuer", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/StampResult" } } }] } } } }, "400": { "description": "No file / oversize(>500KB) / unsupported type(PNG·JPG only)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }, "404": { "description": "No issuer yet", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "post": {
+        "tags": ["settings"],
+        "summary": "Upload issuer stamp (multipart)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/StampUpload" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "data is {stamp_image_url} only — NOT a full Issuer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/StampResult" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No file / oversize(>500KB) / unsupported type(PNG·JPG only)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "No issuer yet",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/settings/app": {
-      "get": { "tags": ["settings"], "summary": "Get app settings", "responses": { "200": { "description": "App settings map", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/AppSettings" } } }] } } } } } },
-      "put": { "tags": ["settings"], "summary": "Update app settings", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/AppSettings" } } } }, "responses": { "200": { "description": "Updated map", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/AppSettings" } } }] } } } }, "400": { "description": "Empty body", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "get": {
+        "tags": ["settings"],
+        "summary": "Get app settings",
+        "responses": {
+          "200": {
+            "description": "App settings map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/AppSettings" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": ["settings"],
+        "summary": "Update app settings",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/AppSettings" }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated map",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/AppSettings" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty body",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/sales-records": {
       "get": {
         "tags": ["sales_records"],
         "summary": "Monthly sales aggregate (single, not list)",
         "parameters": [
-          { "name": "year", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1900, "maximum": 2999 } },
-          { "name": "month", "in": "query", "required": true, "schema": { "type": "integer", "minimum": 1, "maximum": 12 } }
+          {
+            "name": "year",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1900, "maximum": 2999 }
+          },
+          {
+            "name": "month",
+            "in": "query",
+            "required": true,
+            "schema": { "type": "integer", "minimum": 1, "maximum": 12 }
+          }
         ],
-        "responses": { "200": { "description": "Monthly aggregate", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/SalesRecordMonthly" } } }] } } } }, "400": { "description": "year/month out of range", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } }
+        "responses": {
+          "200": {
+            "description": "Monthly aggregate",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/SalesRecordMonthly"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "year/month out of range",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
       },
-      "post": { "tags": ["sales_records"], "summary": "Upsert sales record", "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/SalesRecordRequest" } } } }, "responses": { "201": { "description": "Upserted", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/SalesRecord" } } }] } } } }, "400": { "description": "Validation failure (required / quantity integer / range)", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "post": {
+        "tags": ["sales_records"],
+        "summary": "Upsert sales record",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/SalesRecordRequest" }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Upserted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/SalesRecord" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure (required / quantity integer / range)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/sales-records/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
-      "delete": { "tags": ["sales_records"], "summary": "Delete sales record", "responses": { "200": { "description": "Deleted", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/DeletedEnvelope" } } } }, "404": { "description": "Not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } } } }
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
+      "delete": {
+        "tags": ["sales_records"],
+        "summary": "Delete sales record",
+        "responses": {
+          "200": {
+            "description": "Deleted",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/DeletedEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     },
     "/api/ocr/jobs": {
       "post": {
@@ -238,36 +1715,135 @@
         "requestBody": {
           "required": true,
           "content": {
-            "multipart/form-data": { "schema": { "$ref": "#/components/schemas/OcrJobCreate" } }
+            "multipart/form-data": {
+              "schema": { "$ref": "#/components/schemas/OcrJobCreate" }
+            }
           }
         },
         "responses": {
-          "201": { "description": "Job enqueued", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrJobAck" } } }] } } } }
+          "201": {
+            "description": "Job enqueued",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/OcrJobAck" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
         }
       }
     },
     "/api/ocr/jobs/{id}": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
       "get": {
         "tags": ["ocr"],
         "summary": "Poll OCR job status",
         "responses": {
-          "200": { "description": "Job status", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrJobStatus" } } }] } } } },
-          "404": { "description": "Job not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+          "200": {
+            "description": "Job status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/OcrJobStatus" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
         }
       }
     },
     "/api/ocr/jobs/{id}/confirm": {
-      "parameters": [{ "name": "id", "in": "path", "required": true, "schema": { "type": "integer" } }],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema": { "type": "integer" }
+        }
+      ],
       "post": {
         "tags": ["ocr"],
         "summary": "Confirm OCR draft → create invoice",
-        "requestBody": { "required": true, "content": { "application/json": { "schema": { "$ref": "#/components/schemas/OcrConfirmRequest" } } } },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": { "$ref": "#/components/schemas/OcrConfirmRequest" }
+            }
+          }
+        },
         "responses": {
-          "200": { "description": "Invoice created", "content": { "application/json": { "schema": { "allOf": [{ "$ref": "#/components/schemas/SuccessSingle" }, { "properties": { "data": { "$ref": "#/components/schemas/OcrConfirmAck" } } }] } } } },
-          "400": { "description": "Validation failure", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "404": { "description": "Job not found", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } },
-          "409": { "description": "Already confirmed or job not done", "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } } }
+          "200": {
+            "description": "Invoice created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/OcrConfirmAck" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation failure",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "404": {
+            "description": "Job not found",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "409": {
+            "description": "Already confirmed or job not done",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
         }
       }
     }
@@ -319,13 +1895,21 @@
         "required": ["success", "data", "message"],
         "properties": {
           "success": { "type": "boolean", "enum": [true] },
-          "data": { "type": "object", "nullable": true, "enum": [null], "description": "항상 null (OpenAPI 3.0: type+nullable+enum[null])" },
-          "message": { "type": "string", "example": "거래명세서가 삭제되었습니다." }
+          "data": {
+            "type": "object",
+            "nullable": true,
+            "enum": [null],
+            "description": "항상 null (OpenAPI 3.0: type+nullable+enum[null])"
+          },
+          "message": {
+            "type": "string",
+            "example": "거래명세서가 삭제되었습니다."
+          }
         }
       },
       "ErrorEnvelope": {
         "type": "object",
-        "description": "표준 에러 응답. PHP Response::error 동형.",
+        "description": "표준 에러 응답.",
         "required": ["success", "error"],
         "properties": {
           "success": { "type": "boolean", "enum": [false] },
@@ -333,9 +1917,22 @@
             "type": "object",
             "required": ["code", "message"],
             "properties": {
-              "code": { "type": "string", "enum": ["VALIDATION_ERROR", "NOT_FOUND", "DUPLICATE_NAME", "CONFLICT", "SERVER_ERROR"] },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "VALIDATION_ERROR",
+                  "NOT_FOUND",
+                  "DUPLICATE_NAME",
+                  "CONFLICT",
+                  "SERVER_ERROR"
+                ]
+              },
               "message": { "type": "string" },
-              "details": { "type": "object", "description": "검증 실패 시 {필드: 메시지} 맵", "additionalProperties": { "type": "string" } }
+              "details": {
+                "type": "object",
+                "description": "검증 실패 시 {필드: 메시지} 맵",
+                "additionalProperties": { "type": "string" }
+              }
             }
           }
         }
@@ -351,9 +1948,18 @@
           "quantity": { "type": "integer" },
           "unit": { "type": "string", "nullable": true },
           "unit_price": { "type": "integer" },
-          "supply": { "type": "integer", "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산." },
-          "vat": { "type": "integer", "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산." },
-          "total": { "type": "integer", "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산." },
+          "supply": {
+            "type": "integer",
+            "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산."
+          },
+          "vat": {
+            "type": "integer",
+            "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산."
+          },
+          "total": {
+            "type": "integer",
+            "description": "클라이언트가 계산해 전송(누락 시 0). 서버 미계산."
+          },
           "deduction": { "type": "boolean" }
         }
       },
@@ -365,8 +1971,16 @@
           "document_title": { "type": "string", "default": "거 래 명 세 서" },
           "issue_date": { "type": "string", "format": "date" },
           "recipient": { "type": "string", "maxLength": 100 },
-          "recipient2": { "type": "string", "nullable": true, "maxLength": 100 },
-          "vehicle_no": { "type": "string", "nullable": true, "maxLength": 255 },
+          "recipient2": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 100
+          },
+          "vehicle_no": {
+            "type": "string",
+            "nullable": true,
+            "maxLength": 255
+          },
           "memo": { "type": "string", "nullable": true },
           "show_stamp": { "type": "boolean" },
           "issuer_id": { "type": "integer", "nullable": true },
@@ -375,24 +1989,45 @@
           "grand_total": { "type": "integer" },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" },
-          "items": { "type": "array", "items": { "$ref": "#/components/schemas/InvoiceItem" }, "description": "GET /{id} · 생성·수정 응답에 포함" }
+          "items": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/InvoiceItem" },
+            "description": "GET /{id} · 생성·수정 응답에 포함"
+          }
         }
       },
       "InvoiceWriteRequest": {
         "type": "object",
-        "description": "거래명세서 생성/수정 입력. body=dict(Body) free-form, Validator 검증. 합계(total_supply/total_vat/grand_total)와 품목 supply/vat/total 은 **클라이언트가 계산해 전송**한다(프론트 invoice-form). 서버는 미계산 — 전송한 값을 그대로 저장하고 누락 시 0으로 저장하므로, 생략하면 합계가 0이 된다(PHP 동형).",
+        "description": "거래명세서 생성/수정 입력. body=dict(Body) free-form, Validator 검증. 합계(total_supply/total_vat/grand_total)와 품목 supply/vat/total 은 **클라이언트가 계산해 전송**한다(프론트 invoice-form). 서버는 미계산 — 전송한 값을 그대로 저장하고 누락 시 0으로 저장하므로, 생략하면 합계가 0이 된다.",
         "required": ["issue_date", "recipient", "items"],
         "properties": {
-          "issue_date": { "type": "string", "format": "date", "description": "YYYY-MM-DD (date_format 검증)" },
+          "issue_date": {
+            "type": "string",
+            "format": "date",
+            "description": "YYYY-MM-DD (date_format 검증)"
+          },
           "recipient": { "type": "string", "maxLength": 100 },
           "recipient2": { "type": "string", "nullable": true },
-          "vehicle_no": { "type": "string", "maxLength": 255, "nullable": true },
+          "vehicle_no": {
+            "type": "string",
+            "maxLength": 255,
+            "nullable": true
+          },
           "document_title": { "type": "string" },
           "memo": { "type": "string", "nullable": true },
           "show_stamp": { "type": "boolean" },
-          "total_supply": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
-          "total_vat": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
-          "grand_total": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
+          "total_supply": {
+            "type": "integer",
+            "description": "클라이언트 계산값(누락 시 0 저장)"
+          },
+          "total_vat": {
+            "type": "integer",
+            "description": "클라이언트 계산값(누락 시 0 저장)"
+          },
+          "grand_total": {
+            "type": "integer",
+            "description": "클라이언트 계산값(누락 시 0 저장)"
+          },
           "items": {
             "type": "array",
             "minItems": 1,
@@ -402,11 +2037,23 @@
               "properties": {
                 "name": { "type": "string" },
                 "quantity": { "type": "integer" },
-                "unit": { "type": "string", "description": "누락 시 'EA' 저장" },
+                "unit": {
+                  "type": "string",
+                  "description": "누락 시 'EA' 저장"
+                },
                 "unit_price": { "type": "integer" },
-                "supply": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
-                "vat": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
-                "total": { "type": "integer", "description": "클라이언트 계산값(누락 시 0 저장)" },
+                "supply": {
+                  "type": "integer",
+                  "description": "클라이언트 계산값(누락 시 0 저장)"
+                },
+                "vat": {
+                  "type": "integer",
+                  "description": "클라이언트 계산값(누락 시 0 저장)"
+                },
+                "total": {
+                  "type": "integer",
+                  "description": "클라이언트 계산값(누락 시 0 저장)"
+                },
                 "deduction": { "type": "boolean" }
               }
             }
@@ -427,7 +2074,11 @@
           "business_number": { "type": "string", "nullable": true },
           "notes": { "type": "string", "nullable": true },
           "usage_count": { "type": "integer" },
-          "last_used": { "type": "string", "format": "date-time", "nullable": true },
+          "last_used": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -437,7 +2088,10 @@
         "required": ["company_name"],
         "properties": {
           "company_name": { "type": "string", "maxLength": 100 },
-          "business_number": { "type": "string", "description": "비면 검증 생략, 값 있으면 숫자 10자리(business_number 검증)" },
+          "business_number": {
+            "type": "string",
+            "description": "비면 검증 생략, 값 있으면 숫자 10자리(business_number 검증)"
+          },
           "recipient2": { "type": "string" },
           "phone": { "type": "string" },
           "fax": { "type": "string" },
@@ -457,7 +2111,11 @@
           "category": { "type": "string", "nullable": true },
           "notes": { "type": "string", "nullable": true },
           "usage_count": { "type": "integer" },
-          "last_used": { "type": "string", "format": "date-time", "nullable": true },
+          "last_used": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true
+          },
           "created_at": { "type": "string", "format": "date-time" }
         }
       },
@@ -505,7 +2163,11 @@
           "phone": { "type": "string", "nullable": true },
           "fax": { "type": "string", "nullable": true },
           "bank_account": { "type": "string", "nullable": true },
-          "stamp_image_url": { "type": "string", "nullable": true, "description": "/uploads/stamps/{filename}" },
+          "stamp_image_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "/uploads/stamps/{filename}"
+          },
           "tel_fax": { "type": "string", "nullable": true },
           "show_sjdojang": { "type": "boolean" },
           "created_at": { "type": "string", "format": "date-time" },
@@ -515,11 +2177,19 @@
       "IssuerRequest": {
         "type": "object",
         "description": "발급자 정보 upsert 입력.",
-        "required": ["company_name", "representative", "business_number", "address"],
+        "required": [
+          "company_name",
+          "representative",
+          "business_number",
+          "address"
+        ],
         "properties": {
           "company_name": { "type": "string" },
           "representative": { "type": "string" },
-          "business_number": { "type": "string", "description": "값 있으면 숫자 10자리(business_number 검증)" },
+          "business_number": {
+            "type": "string",
+            "description": "값 있으면 숫자 10자리(business_number 검증)"
+          },
           "address": { "type": "string" },
           "business_type": { "type": "string" },
           "business_item": { "type": "string" },
@@ -540,7 +2210,12 @@
         "type": "object",
         "description": "도장 업로드 성공 응답 — SettingsService.upload_stamp 은 전체 Issuer 가 아니라 {stamp_image_url} 만 반환한다.",
         "required": ["stamp_image_url"],
-        "properties": { "stamp_image_url": { "type": "string", "example": "/uploads/stamps/stamp_1.png" } }
+        "properties": {
+          "stamp_image_url": {
+            "type": "string",
+            "example": "/uploads/stamps/stamp_1.png"
+          }
+        }
       },
       "AppSettings": {
         "type": "object",
@@ -561,7 +2236,10 @@
           "salesperson_id": { "type": "integer" },
           "work_date": { "type": "string", "format": "date" },
           "quantity": { "type": "integer" },
-          "snapshot_name": { "type": "string", "description": "서버 주입(클라 입력 무시)" },
+          "snapshot_name": {
+            "type": "string",
+            "description": "서버 주입(클라 입력 무시)"
+          },
           "created_at": { "type": "string", "format": "date-time" },
           "updated_at": { "type": "string", "format": "date-time" }
         }
@@ -572,8 +2250,18 @@
         "required": ["salesperson_id", "work_date", "quantity"],
         "properties": {
           "salesperson_id": { "type": "integer" },
-          "work_date": { "type": "string", "format": "date", "description": "YYYY-MM-DD" },
-          "quantity": { "oneOf": [{ "type": "integer", "minimum": 0, "maximum": 999999999 }, { "type": "string", "pattern": "^[0-9]+$" }], "description": "정수 또는 정수 문자열(\"100\") 허용 — 라우터 _is_int(PHP is_int||is_numeric 동형). bool·소수·비정수 거부. 캐스팅 후 0~999,999,999 범위 검증." }
+          "work_date": {
+            "type": "string",
+            "format": "date",
+            "description": "YYYY-MM-DD"
+          },
+          "quantity": {
+            "oneOf": [
+              { "type": "integer", "minimum": 0, "maximum": 999999999 },
+              { "type": "string", "pattern": "^[0-9]+$" }
+            ],
+            "description": "정수 또는 정수 문자열(\"100\") 허용 — 라우터 _is_int(정수 또는 정수 문자열만 허용, bool 제외). bool·소수·비정수 거부. 캐스팅 후 0~999,999,999 범위 검증."
+          }
         }
       },
       "SalesRecordMonthly": {
@@ -581,8 +2269,14 @@
         "description": "월별 실적 집계 — GET /api/sales-records 응답 data. 목록이 아니라 단일 집계 객체.",
         "required": ["salespeople", "records"],
         "properties": {
-          "salespeople": { "type": "array", "items": { "$ref": "#/components/schemas/Salesperson" } },
-          "records": { "type": "array", "items": { "$ref": "#/components/schemas/SalesRecord" } }
+          "salespeople": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/Salesperson" }
+          },
+          "records": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/SalesRecord" }
+          }
         }
       },
       "OcrJobCreate": {
@@ -606,9 +2300,20 @@
         "required": ["id", "status"],
         "properties": {
           "id": { "type": "integer" },
-          "status": { "type": "string", "enum": ["pending", "running", "done", "failed"] },
-          "result": { "type": "object", "nullable": true, "description": "status=done 일 때 포함" },
-          "error": { "type": "string", "nullable": true, "description": "status=failed 일 때 포함" }
+          "status": {
+            "type": "string",
+            "enum": ["pending", "running", "done", "failed"]
+          },
+          "result": {
+            "type": "object",
+            "nullable": true,
+            "description": "status=done 일 때 포함"
+          },
+          "error": {
+            "type": "string",
+            "nullable": true,
+            "description": "status=failed 일 때 포함"
+          }
         }
       },
       "OcrConfirmRequest": {
@@ -616,7 +2321,11 @@
         "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref (서버가 제거 후 invoice 생성).",
         "required": ["issue_date", "recipient", "items"],
         "properties": {
-          "issue_date": { "type": "string", "format": "date", "description": "YYYY-MM-DD" },
+          "issue_date": {
+            "type": "string",
+            "format": "date",
+            "description": "YYYY-MM-DD"
+          },
           "recipient": { "type": "string" },
           "recipient2": { "type": "string", "nullable": true },
           "vehicle_no": { "type": "string", "nullable": true },
@@ -641,7 +2350,11 @@
                 "vat": { "type": "integer" },
                 "total": { "type": "integer" },
                 "deduction": { "type": "boolean" },
-                "crop_ref": { "type": "string", "nullable": true, "description": "OCR 원본 영역 참조. 서버가 correction 저장 후 invoice_items에서 제거." }
+                "crop_ref": {
+                  "type": "string",
+                  "nullable": true,
+                  "description": "OCR 원본 영역 참조. 서버가 correction 저장 후 invoice_items에서 제거."
+                }
               }
             }
           }

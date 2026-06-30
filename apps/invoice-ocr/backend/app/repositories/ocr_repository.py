@@ -17,17 +17,19 @@ def _parse_job(row) -> dict | None:
 
 
 class OcrRepository:
+    """ocr_jobs와 ocr_corrections 테이블 데이터 접근 레포지토리."""
+
     def insert_job(self, image_path: str) -> int:
+        """이미지 경로로 대기 상태 OCR 작업을 생성하고 job id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
-                text(
-                    "INSERT INTO ocr_jobs (status, image_path) VALUES ('pending', :p)"
-                ),
+                text("INSERT INTO ocr_jobs (status, image_path) VALUES ('pending', :p)"),
                 {"p": image_path},
             )
             return int(result.lastrowid)
 
     def find_job(self, job_id: int) -> dict | None:
+        """OCR 작업을 ID로 단건 조회한다(result_json 파싱 포함)."""
         with connection() as conn:
             row = conn.execute(
                 text(
@@ -39,7 +41,7 @@ class OcrRepository:
         return _parse_job(row)
 
     def claim_job(self, job_id: int) -> dict | None:
-        """confirm 트랜잭션 내에서 행을 잠그고 읽는다(SELECT ... FOR UPDATE)."""
+        """Confirm 트랜잭션 내에서 행을 잠그고 읽는다(SELECT ... FOR UPDATE)."""
         with connection() as conn:
             row = conn.execute(
                 text(
@@ -55,19 +57,17 @@ class OcrRepository:
         with connection() as conn:
             result = conn.execute(
                 text(
-                    "UPDATE ocr_jobs SET invoice_id = :inv "
-                    "WHERE id = :job AND invoice_id IS NULL"
+                    "UPDATE ocr_jobs SET invoice_id = :inv WHERE id = :job AND invoice_id IS NULL"
                 ),
                 {"inv": invoice_id, "job": job_id},
             )
             return result.rowcount
 
     def update_result(self, job_id: int, status: str, result_json: dict) -> None:
+        """OCR 작업의 상태와 결과 JSON을 갱신한다."""
         with connection() as conn:
             conn.execute(
-                text(
-                    "UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"
-                ),
+                text("UPDATE ocr_jobs SET status = :s, result_json = :r WHERE id = :id"),
                 {
                     "s": status,
                     "r": json.dumps(result_json, ensure_ascii=False),
@@ -75,9 +75,8 @@ class OcrRepository:
                 },
             )
 
-    def insert_correction(
-        self, job_id: int, invoice_id: int, correction_json: dict
-    ) -> int:
+    def insert_correction(self, job_id: int, invoice_id: int, correction_json: dict) -> int:
+        """OCR 보정 내역을 삽입하고 생성된 id를 반환한다."""
         with connection() as conn:
             result = conn.execute(
                 text(

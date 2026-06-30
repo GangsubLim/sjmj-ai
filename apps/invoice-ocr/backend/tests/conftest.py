@@ -1,4 +1,4 @@
-"""실DB 골든 하니스 — sjmj_test MySQL + truncate 격리 + TestClient.
+"""실DB 계약 하니스 — sjmj_test MySQL + truncate 격리 + TestClient.
 
 격리 방식: 모듈 전역 엔진(스레드 공유)을 테스트 엔진으로 교체하고, 테스트마다
 모든 테이블을 TRUNCATE + app_settings 재시드한다. (contextvar 롤백 대신 truncate를
@@ -65,9 +65,7 @@ def _reset(engine) -> None:
         conn.execute(text("SET FOREIGN_KEY_CHECKS=1"))
         for k, v in _APP_SETTINGS_SEED:
             conn.execute(
-                text(
-                    "INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"
-                ),
+                text("INSERT INTO app_settings (setting_key, setting_value) VALUES (:k, :v)"),
                 {"k": k, "v": v},
             )
 

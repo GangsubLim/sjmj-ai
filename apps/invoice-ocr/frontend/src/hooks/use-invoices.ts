@@ -31,11 +31,7 @@ export function useInvoices(filters?: InvoiceFilters): UseInvoicesReturn {
     try {
       const res: ListResponse<Invoice> = await invoiceAPI.getList(filters);
       setData(Array.isArray(res.data) ? res.data : []);
-      // modern 구조화는 total을 pagination에 중첩(1B B안). mock 평평 형태는 최상위 total.
-      setTotal(
-        res.pagination?.total ??
-          (typeof res.total === "number" ? res.total : 0),
-      );
+      setTotal(res.pagination?.total ?? 0);
     } catch (e) {
       setError(
         e instanceof Error ? e.message : "거래명세서 목록을 불러올 수 없습니다",

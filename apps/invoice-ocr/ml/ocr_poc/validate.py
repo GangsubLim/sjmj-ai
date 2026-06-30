@@ -4,6 +4,7 @@
 supply 에 맞출 수 있는 유일 후보가 있을 때만 복원안을 제안한다. 검산
 결과는 신뢰도 게이트이지 정답 보증이 아니다(§4·§5).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +12,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ValidationResult:
+    """검산 결과(일치 여부·종류·복원안·고친 필드)."""
+
     consistent: bool
     kind: str
     recovered: tuple[int, int, int] | None
@@ -18,6 +21,7 @@ class ValidationResult:
 
 
 def validate_row(qty: int | None, price: int | None, supply: int | None) -> ValidationResult:
+    """수량×단가=공급가 검산 후 단일 셀 역산 복원안을 제안한다."""
     if qty is None or price is None or supply is None:
         return ValidationResult(False, "incomplete", None, None)
 

@@ -8,6 +8,7 @@ raw 구조 덤프 + 시각화로 확인한다. 결과로 detect.py 의 DetectorA
 paddleocr 2.x 의 PPStructure 는 3.x 에서 제거됐다. 3.x 표인식은
 TableRecognitionPipelineV2(표 검출 → 셀 검출 → 구조인식)로 대체됐다.
 """
+
 import sys
 from pathlib import Path
 

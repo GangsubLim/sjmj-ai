@@ -13,16 +13,12 @@ _SCRIPT = _REPO_ROOT / "scripts" / "backup-db.sh"
 def _fake_mysqldump(bin_dir: Path) -> None:
     """stdout에 더미 SQL을 뱉는 가짜 mysqldump를 PATH 앞단에 설치."""
     fake = bin_dir / "mysqldump"
-    fake.write_text(
-        "#!/usr/bin/env bash\necho '-- dump'\necho 'CREATE TABLE t (id INT);'\n"
-    )
+    fake.write_text("#!/usr/bin/env bash\necho '-- dump'\necho 'CREATE TABLE t (id INT);'\n")
     fake.chmod(fake.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
 
 
 def _write_env(path: Path) -> None:
-    path.write_text(
-        "DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_NAME=sjmj\nDB_USER=root\nDB_PASS=\n"
-    )
+    path.write_text("DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_NAME=sjmj\nDB_USER=root\nDB_PASS=\n")
 
 
 def _clean_subprocess_env(bin_dir: Path) -> dict[str, str]:
@@ -78,9 +74,7 @@ def test_backup_fails_without_db_name(tmp_path: Path) -> None:
     bin_dir.mkdir()
     _fake_mysqldump(bin_dir)
     env_file = tmp_path / "backend.env"
-    env_file.write_text(
-        "DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=\n"
-    )  # DB_NAME 누락
+    env_file.write_text("DB_HOST=127.0.0.1\nDB_PORT=3306\nDB_USER=root\nDB_PASS=\n")  # DB_NAME 누락
     env = _clean_subprocess_env(bin_dir)
     result = subprocess.run(
         [

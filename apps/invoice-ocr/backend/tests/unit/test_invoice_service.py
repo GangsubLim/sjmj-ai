@@ -15,9 +15,7 @@ def test_get_list_pagination():
     repo = MagicMock()
     repo.find_all.return_value = [td.invoice(), td.invoice({"recipient": "대성물류"})]
     repo.count_all.return_value = 2
-    r = _svc(repo).get_list(
-        {"page": 1, "limit": 10, "sort_by": "issue_date", "sort_order": "desc"}
-    )
+    r = _svc(repo).get_list({"page": 1, "limit": 10, "sort_by": "issue_date", "sort_order": "desc"})
     assert len(r["data"]) == 2
     assert r["pagination"] == {"page": 1, "limit": 10, "total": 2, "totalPages": 1}
 
@@ -26,9 +24,7 @@ def test_get_list_total_pages_ceil():
     repo = MagicMock()
     repo.find_all.return_value = []
     repo.count_all.return_value = 25
-    r = _svc(repo).get_list(
-        {"page": 2, "limit": 10, "sort_by": "issue_date", "sort_order": "desc"}
-    )
+    r = _svc(repo).get_list({"page": 2, "limit": 10, "sort_by": "issue_date", "sort_order": "desc"})
     assert r["pagination"]["totalPages"] == 3  # ceil(25/10)
     assert r["pagination"]["page"] == 2
 
@@ -123,9 +119,7 @@ def test_duplicate_creates_from_original_with_today_and_stripped_ids():
     created = {**td.invoice(), "id": 2}
 
     repo = MagicMock()
-    repo.find_by_id.side_effect = lambda i: (
-        original if i == 1 else (created if i == 2 else None)
-    )
+    repo.find_by_id.side_effect = lambda i: original if i == 1 else (created if i == 2 else None)
     repo.find_items.return_value = original["items"]
     repo.insert.return_value = 2
 

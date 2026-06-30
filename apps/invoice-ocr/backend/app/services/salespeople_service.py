@@ -1,4 +1,4 @@
-"""SalespersonService — PHP services/SalespersonService.php 동형.
+"""SalespersonService.
 
 이름 정규화(trim/제어문자/길이)와 활성 중복 검사(자기 id 제외)를 수행한다.
 검증 실패는 app.core.errors로 위임(400 VALIDATION_ERROR / 409 DUPLICATE_NAME).
@@ -15,17 +15,23 @@ _MAX_NAME_LENGTH = 100
 
 
 class SalespersonService:
+    """영업사원 도메인 서비스 — 이름 정규화와 활성 중복 검사를 담당한다."""
+
     def __init__(self, repo=None, *, transaction=None):
+        """저장소와 트랜잭션 팩토리를 주입받아 초기화한다(미지정 시 기본 구현)."""
         self.repo = repo or SalespersonRepository()
         self._transaction = transaction or db.transaction
 
     def get_list(self) -> list[dict]:
+        """전체 영업사원 목록을 조회한다."""
         return self.repo.find_all()
 
     def get_by_id(self, id: int) -> dict | None:
+        """영업사원을 ID로 단건 조회한다."""
         return self.repo.find_by_id(id)
 
     def create(self, data: dict) -> dict | None:
+        """영업사원을 신규 생성하고 생성된 레코드를 반환한다."""
         name = self._normalize_name(data.get("name") or "")
         self._assert_no_duplicate_active(name, None)
         with self._transaction():
@@ -41,6 +47,7 @@ class SalespersonService:
         return self.repo.find_by_id(new_id)
 
     def update(self, id: int, data: dict) -> dict | None:
+        """영업사원을 수정하고 갱신된 레코드를 반환한다(없으면 None)."""
         existing = self.repo.find_by_id(id)
         if not existing:
             return None
@@ -62,6 +69,7 @@ class SalespersonService:
         return self.repo.find_by_id(id)
 
     def soft_delete(self, id: int) -> bool:
+        """영업사원을 비활성화(soft delete)한다."""
         return self.repo.soft_delete(id)
 
     def _normalize_name(self, raw: str) -> str:
@@ -69,9 +77,7 @@ class SalespersonService:
         if trimmed == "":
             bad_request("이름은 필수입니다.", {"name": "이름은 필수입니다."})
         if _CONTROL_CHAR.search(trimmed):
-            bad_request(
-                "이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"}
-            )
+            bad_request("이름에 제어문자가 포함될 수 없습니다.", {"name": "제어문자 거부"})
         if len(trimmed) > _MAX_NAME_LENGTH:
             bad_request("이름은 100자 이하여야 합니다.", {"name": "100자 초과"})
         return trimmed

@@ -176,9 +176,7 @@ def test_index_returns_single_aggregate_no_pagination(client):
 
 def test_index_salespeople_includes_active_and_record_holders(client):
     _insert_salesperson({"name": "Active", "sort_order": 1, "is_active": 1})
-    inactive_id = _insert_salesperson(
-        {"name": "Inactive", "sort_order": 2, "is_active": 0}
-    )
+    inactive_id = _insert_salesperson({"name": "Inactive", "sort_order": 2, "is_active": 0})
     client.post(
         "/api/sales-records",
         json={
@@ -200,9 +198,9 @@ def test_destroy_removes_then_404(client):
         "/api/sales-records",
         json={"salesperson_id": sp_id, "work_date": "2026-05-15", "quantity": 100},
     )
-    rec = client.get("/api/sales-records", params={"year": 2026, "month": 5}).json()[
-        "data"
-    ]["records"][0]
+    rec = client.get("/api/sales-records", params={"year": 2026, "month": 5}).json()["data"][
+        "records"
+    ][0]
 
     d = client.delete(f"/api/sales-records/{rec['id']}")
     assert d.status_code == 200

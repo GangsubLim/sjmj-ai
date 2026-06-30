@@ -1,13 +1,14 @@
-"""구조화 에러 — PHP Response::error / HttpResponseException 동형."""
+"""구조화 에러 응답."""
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
 
 class AppError(Exception):
-    def __init__(
-        self, status: int, code: str, message: str, details: dict | None = None
-    ):
+    """구조화 에러 응답으로 변환되는 애플리케이션 예외."""
+
+    def __init__(self, status: int, code: str, message: str, details: dict | None = None):
+        """HTTP 상태·에러 코드·메시지·세부정보를 담아 예외를 초기화한다."""
         self.status = status
         self.code = code
         self.message = message
@@ -16,14 +17,17 @@ class AppError(Exception):
 
 
 def bad_request(message: str, details: dict | None = None) -> None:
+    """400 검증 에러를 발생시킨다."""
     raise AppError(400, "VALIDATION_ERROR", message, details)
 
 
 def not_found(message: str = "Resource not found") -> None:
+    """404 리소스 없음 에러를 발생시킨다."""
     raise AppError(404, "NOT_FOUND", message)
 
 
 def conflict(message: str) -> None:
+    """409 충돌 에러를 발생시킨다."""
     raise AppError(409, "CONFLICT", message)
 
 
@@ -42,11 +46,10 @@ async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
 
 
 async def _unhandled_handler(request: Request, exc: Exception) -> JSONResponse:
-    return JSONResponse(
-        status_code=500, content=_error_body("SERVER_ERROR", str(exc), None)
-    )
+    return JSONResponse(status_code=500, content=_error_body("SERVER_ERROR", str(exc), None))
 
 
 def register_error_handlers(app) -> None:
+    """앱에 AppError·미처리 예외 핸들러를 등록한다."""
     app.add_exception_handler(AppError, _app_error_handler)
     app.add_exception_handler(Exception, _unhandled_handler)

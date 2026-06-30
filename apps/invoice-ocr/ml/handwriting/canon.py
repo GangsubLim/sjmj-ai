@@ -4,6 +4,7 @@
 φ(상단 offset)만 맞추면 행이 고정좌표로 떨어진다. 그 고정 행으로 품목칸 ink를
 세어 '품목-filled == DB 항목수' 일치율을 본다(기존 잉크밴드 4/36 대비).
 """
+
 import json
 import sys
 from pathlib import Path
@@ -12,8 +13,8 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
-from grid_v4 import load_bgr, blue_mask, warp, WARP_W, DATA_Y, hline_ys  # noqa: E402
-from rectify import deskew_angle, rotate, form_quad_robust  # noqa: E402
+from grid_v4 import DATA_Y, hline_ys, load_bgr, warp  # noqa: E402
+from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 
 HERE = Path(__file__).parent
 OUT = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml/report")
@@ -23,6 +24,7 @@ Y0, Y1 = DATA_Y
 
 
 def rect_and_lines(inv):
+    """전표를 정합·deskew한 뒤 DATA_Y 범위의 행선 y좌표를 반환한다."""
     w = warp(load_bgr(inv), form_quad_robust(load_bgr(inv)))
     w = rotate(w, deskew_angle(w))
     ys = [y for y in hline_ys(w) if Y0 - 40 <= y <= Y1 + 40]
@@ -35,7 +37,7 @@ def global_pitch(per):
     for ys in per.values():
         if len(ys) >= 14:
             g = np.diff(ys)
-            gaps += [x for x in g if 50 <= x <= 130]   # 합리적 행높이만
+            gaps += [x for x in g if 50 <= x <= 130]  # 합리적 행높이만
     return float(np.median(gaps)) if gaps else 83.0
 
 
@@ -57,15 +59,18 @@ def grid_rows(phi, P):
         if y >= Y0 - 5:
             ys.append(int(round(y)))
         k += 1
-    return [(a, b) for a, b in zip(ys, ys[1:])]
+    return [(a, b) for a, b in zip(ys, ys[1:], strict=False)]
 
 
 def ink_frac(cell):
+    """셀 영역의 잉크(어두운 픽셀) 비율을 반환한다."""
     return 0.0 if cell.size == 0 else float((cell.max(2) < 120).mean())
 
 
 def main():
-    gt = json.load(open(HERE / "item_gt.json"))
+    """전표별 고정 행그리드 정합 결과를 출력하고 몽타주를 저장한다."""
+    with open(HERE / "item_gt.json") as f:
+        gt = json.load(f)
     ids = sorted(gt)
     per = {}
     warps = {}
@@ -82,30 +87,47 @@ def main():
         w = warps[inv]
         phi = fit_phase(per[inv], P)
         rows = grid_rows(phi, P)
-        item_rows = [(a, b) for a, b in rows if ink_frac(w[a:b, ITEM_X[0]:ITEM_X[1]]) >= INK]
+        item_rows = [(a, b) for a, b in rows if ink_frac(w[a:b, ITEM_X[0] : ITEM_X[1]]) >= INK]
         nf, dbn = len(item_rows), len(gt[inv])
         tag = "OK" if nf == dbn else ("~" if abs(nf - dbn) <= 1 else "X")
         ok += nf == dbn
         near += abs(nf - dbn) <= 1
         print(f"{inv:<9}{phi:>6.0f}{len(rows):>5}{nf:>7}{dbn:>5}  {tag}")
         ov = w.copy()
-        for a, b in rows:
+        for a, _b in rows:
             cv2.line(ov, (ITEM_X[0], a), (ITEM_X[1], a), (255, 130, 0), 1)
         for a, b in item_rows:
             cv2.rectangle(ov, (ITEM_X[0], a), (ITEM_X[1], b), (0, 180, 0), 2)
-        cv2.putText(ov, f"{inv} {nf}/{dbn}{tag}", (8, 28), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                    (0, 0, 255) if tag == "X" else (0, 150, 0), 2)
+        cv2.putText(
+            ov,
+            f"{inv} {nf}/{dbn}{tag}",
+            (8, 28),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            (0, 0, 255) if tag == "X" else (0, 150, 0),
+            2,
+        )
         hh = int(ov.shape[0] * 240 / ov.shape[1])
         panels.append(cv2.resize(ov, (240, hh)))
     print(f"\n품목-filled == DBn : {ok}/{len(ids)}  (±1: {near}/{len(ids)})")
     h = max(p.shape[0] for p in panels)
-    rows = [panels[i:i + 9] for i in range(0, len(panels), 9)]
+    rows = [panels[i : i + 9] for i in range(0, len(panels), 9)]
     rimg = []
     for r in rows:
-        r = [cv2.copyMakeBorder(p, 0, h - p.shape[0], 0, 6, cv2.BORDER_CONSTANT, value=(255, 255, 255)) for p in r]
+        r = [
+            cv2.copyMakeBorder(
+                p, 0, h - p.shape[0], 0, 6, cv2.BORDER_CONSTANT, value=(255, 255, 255)
+            )
+            for p in r
+        ]
         rimg.append(np.hstack(r))
     wmax = max(x.shape[1] for x in rimg)
-    rimg = [cv2.copyMakeBorder(r, 0, 6, 0, wmax - r.shape[1], cv2.BORDER_CONSTANT, value=(255, 255, 255)) for r in rimg]
+    rimg = [
+        cv2.copyMakeBorder(
+            r, 0, 6, 0, wmax - r.shape[1], cv2.BORDER_CONSTANT, value=(255, 255, 255)
+        )
+        for r in rimg
+    ]
     cv2.imwrite(str(OUT / "canon_montage.png"), np.vstack(rimg))
     print("montage →", OUT / "canon_montage.png")
 

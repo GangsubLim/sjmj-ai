@@ -48,9 +48,7 @@ def test_insert_correction():
     from app.repositories.invoice_repository import InvoiceRepository
 
     inv_id = InvoiceRepository().insert(td.invoice())
-    cid = repo.insert_correction(
-        job_id, inv_id, {"lines": [], "rows_added": 0, "rows_dropped": 0}
-    )
+    cid = repo.insert_correction(job_id, inv_id, {"lines": [], "rows_added": 0, "rows_dropped": 0})
     assert cid > 0
 
 

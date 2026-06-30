@@ -1,4 +1,5 @@
 """이미지·라벨 페어 로딩. 라벨은 *_text 만 쓰고 geometry 는 무시한다(§2.2)."""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +9,8 @@ from pathlib import Path
 
 @dataclass(frozen=True)
 class LabelRow:
+    """라벨 한 행(품목·수량·단가·금액 텍스트)."""
+
     row_id: int
     item: str
     quantity: str
@@ -17,21 +20,26 @@ class LabelRow:
 
 @dataclass(frozen=True)
 class Sample:
+    """이미지와 그 라벨 행들의 페어."""
+
     image_id: str
     image_path: Path
     label_rows: tuple[LabelRow, ...]
 
 
 def load_label(label_json: dict) -> tuple[LabelRow, ...]:
+    """라벨 JSON의 rows에서 LabelRow 튜플을 만든다."""
     rows: list[LabelRow] = []
     for r in label_json.get("rows", []):
-        rows.append(LabelRow(
-            row_id=int(r.get("row_id", len(rows) + 1)),
-            item=str(r.get("item_class", "")),
-            quantity=str(r.get("quantity_text", "")),
-            unit_price=str(r.get("unit_price_text", "")),
-            amount=str(r.get("amount_text", "")),
-        ))
+        rows.append(
+            LabelRow(
+                row_id=int(r.get("row_id", len(rows) + 1)),
+                item=str(r.get("item_class", "")),
+                quantity=str(r.get("quantity_text", "")),
+                unit_price=str(r.get("unit_price_text", "")),
+                amount=str(r.get("amount_text", "")),
+            )
+        )
     return tuple(rows)
 
 
@@ -45,9 +53,11 @@ def load_samples(images_dir: Path, labels_dir: Path) -> list[Sample]:
             print(f"[data] 경고: 라벨 없음 {label_path} — 건너뜀")
             continue
         label_json = json.loads(label_path.read_text(encoding="utf-8"))
-        samples.append(Sample(
-            image_id=image_id,
-            image_path=img_path,
-            label_rows=load_label(label_json),
-        ))
+        samples.append(
+            Sample(
+                image_id=image_id,
+                image_path=img_path,
+                label_rows=load_label(label_json),
+            )
+        )
     return samples

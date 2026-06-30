@@ -64,9 +64,7 @@ def test_find_all_date_filter_and_sort_grand_total_asc():
     repo = InvoiceRepository()
     repo.insert(td.invoice({"issue_date": "2026-01-01", "grand_total": 300}))
     repo.insert(td.invoice({"issue_date": "2026-06-01", "grand_total": 100}))
-    rows = repo.find_all(
-        _filters(date_from="2026-05-01", sort_by="grand_total", sort_order="asc")
-    )
+    rows = repo.find_all(_filters(date_from="2026-05-01", sort_by="grand_total", sort_order="asc"))
     assert len(rows) == 1 and rows[0]["grand_total"] == 100
 
 
@@ -82,10 +80,7 @@ def test_sort_whitelist_rejects_injection():
 def test_update_changes_fields():
     repo = InvoiceRepository()
     iid = repo.insert(td.invoice())
-    assert (
-        repo.update(iid, td.invoice({"recipient": "수정거래처", "grand_total": 999}))
-        is True
-    )
+    assert repo.update(iid, td.invoice({"recipient": "수정거래처", "grand_total": 999})) is True
     row = repo.find_by_id(iid)
     assert row["recipient"] == "수정거래처" and row["grand_total"] == 999
 
@@ -94,7 +89,5 @@ def test_find_all_for_export_date_filter():
     repo = InvoiceRepository()
     repo.insert(td.invoice({"issue_date": "2026-01-01"}))
     repo.insert(td.invoice({"issue_date": "2026-06-01"}))
-    rows = repo.find_all_for_export(
-        {"date_from": "2026-05-01", "date_to": "", "company_id": None}
-    )
+    rows = repo.find_all_for_export({"date_from": "2026-05-01", "date_to": "", "company_id": None})
     assert len(rows) == 1 and rows[0]["issue_date"].isoformat() == "2026-06-01"

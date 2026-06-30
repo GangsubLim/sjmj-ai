@@ -1,9 +1,11 @@
-"""표 검출 어댑터. 실모델(PP-Structure)은 어댑터 뒤에 숨겨 파이프라인을
-검출기 교체에 무관하게 만든다(후속 SP의 YOLO 등 plug-in).
+"""표 검출 어댑터 — 실모델을 어댑터 뒤에 숨겨 검출기 교체에 무관하게 만든다.
 
+실모델(PP-Structure)은 어댑터 뒤에 숨겨 파이프라인을 검출기 교체에 무관하게
+만든다(후속 SP의 YOLO 등 plug-in).
 DetectedCell.bbox 는 원본 이미지 좌표계의 (x1,y1,x2,y2).
 row_index/col_index 는 표 격자에서의 0-based 위치.
 """
+
 from __future__ import annotations
 
 import os
@@ -13,13 +15,18 @@ from typing import Protocol
 
 @dataclass(frozen=True)
 class DetectedCell:
+    """검출된 셀 — 격자 위치와 원좌표 bbox."""
+
     row_index: int
     col_index: int
     bbox: tuple[float, float, float, float]
 
 
 class DetectorAdapter(Protocol):
+    """이미지 경로 → 검출 셀 리스트 어댑터 인터페이스."""
+
     def detect(self, image_path: str) -> list[DetectedCell]:
+        """이미지에서 셀을 검출한다."""
         ...
 
 
@@ -27,9 +34,11 @@ class FakeDetector:
     """이미지 파일명 → 고정 셀 리스트. 단위/스모크 테스트 결정론화."""
 
     def __init__(self, by_basename: dict[str, list[DetectedCell]]):
+        """파일명별 고정 셀 매핑으로 초기화한다."""
         self._by_basename = by_basename
 
     def detect(self, image_path: str) -> list[DetectedCell]:
+        """파일명에 매핑된 고정 셀 리스트를 반환한다."""
         return list(self._by_basename.get(os.path.basename(image_path), []))
 
 
@@ -44,6 +53,7 @@ class TextDetCellDetector:
     """
 
     def __init__(self):
+        """엔진 미로딩 상태로 초기화한다(지연 로딩)."""
         self._engine = None
 
     def _ensure_engine(self):
@@ -52,12 +62,14 @@ class TextDetCellDetector:
 
             import numpy as np  # noqa: PLC0415
             from paddleocr import TextDetection  # noqa: PLC0415
+
             self._math = math
             self._np = np
             self._engine = TextDetection()
         return self._engine
 
     def detect(self, image_path: str) -> list[DetectedCell]:
+        """텍스트 검출 박스를 행/열로 비닝해 셀 리스트를 만든다."""
         engine = self._ensure_engine()
         results = list(engine.predict(image_path))
         polys = _result_polys(results)
@@ -77,8 +89,10 @@ class TextDetCellDetector:
         med_h = heights[len(heights) // 2] if heights else 10.0
         row_idx = _cluster_index(rcy, gap=med_h * 0.6)
         col_idx = _cluster_index(rcx, gap=med_h * 0.9)
-        cells = [DetectedCell(row_index=ri, col_index=ci, bbox=rect)
-                 for rect, ri, ci in zip(rects, row_idx, col_idx)]
+        cells = [
+            DetectedCell(row_index=ri, col_index=ci, bbox=rect)
+            for rect, ri, ci in zip(rects, row_idx, col_idx, strict=False)
+        ]
         return cells
 
 

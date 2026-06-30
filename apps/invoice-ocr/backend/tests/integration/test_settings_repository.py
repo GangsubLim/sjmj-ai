@@ -30,9 +30,7 @@ def test_upsert_issuer_inserts():
 
 def test_upsert_issuer_updates():
     repo = SettingsRepository()
-    repo.upsert_issuer(
-        sd.issuer({"company_name": "초기회사명", "representative": "초기대표자"})
-    )
+    repo.upsert_issuer(sd.issuer({"company_name": "초기회사명", "representative": "초기대표자"}))
     repo.upsert_issuer(
         sd.issuer({"company_name": "변경된회사명", "representative": "변경된대표자"})
     )

@@ -48,10 +48,7 @@ def test_update_issuer_upsert_updates_existing(client):
     r = _put_issuer(client, company_name="변경된회사명")
     assert r.json()["data"]["company_name"] == "변경된회사명"
     # 단일 발급자만 존재해야 한다(upsert)
-    assert (
-        client.get("/api/settings/issuer").json()["data"]["company_name"]
-        == "변경된회사명"
-    )
+    assert client.get("/api/settings/issuer").json()["data"]["company_name"] == "변경된회사명"
 
 
 def test_update_issuer_fails_validation_missing_company_name(client):
@@ -152,9 +149,7 @@ def test_update_app_settings_returns_data(client):
 
 
 def test_update_app_settings_ignores_unknown_keys(client):
-    r = client.put(
-        "/api/settings/app", json={"default_unit": "BOX", "evil_key": "hacked"}
-    )
+    r = client.put("/api/settings/app", json={"default_unit": "BOX", "evil_key": "hacked"})
     b = r.json()
     assert b["data"]["default_unit"] == "BOX"
     assert "evil_key" not in b["data"]

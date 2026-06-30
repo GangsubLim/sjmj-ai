@@ -63,11 +63,7 @@ def test_spa_fallback_path_traversal_blocked(monkeypatch, tmp_path: Path) -> Non
     # %2e%2e는 Starlette가 '..'으로 디코딩해서 full_path에 전달한다
     # → static_dir / '../secret.txt' == tmp_path/secret.txt (static_dir 외부)
     resp = client.get("/%2e%2e/secret.txt")
-    assert resp.status_code == 200, (
-        f"Expected 200 (index fallback), got {resp.status_code}"
-    )
+    assert resp.status_code == 200, f"Expected 200 (index fallback), got {resp.status_code}"
     # secret.txt 내용이 아닌 index.html 내용이 반환돼야 한다
-    assert secret_content not in resp.text, (
-        "Path traversal guard FAILED: secret file was served"
-    )
+    assert secret_content not in resp.text, "Path traversal guard FAILED: secret file was served"
     assert "sjmj-ai" in resp.text, "Expected index.html fallback content"

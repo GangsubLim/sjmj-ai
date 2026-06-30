@@ -16,7 +16,10 @@ function createItem(overrides: Partial<Item> = {}): Item {
 }
 
 function createItemListResponse(data: Item[]) {
-  return { data, total: data.length, page: 1, limit: 20 };
+  return {
+    data,
+    pagination: { total: data.length, page: 1, limit: 20, totalPages: 1 },
+  };
 }
 
 describe("useItems", () => {

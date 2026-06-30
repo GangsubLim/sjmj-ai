@@ -1,13 +1,17 @@
 import json
 from pathlib import Path
 
-from ocr_poc.report import ReportData, render_markdown, render_json, write_report
+from ocr_poc.report import ReportData, render_json, render_markdown, write_report
 
 
 def _data():
     return ReportData(
-        metrics={"detection_recall": 0.83, "recognition_accuracy": 0.8,
-                 "validation_gain_accuracy": 0.9, "row_exact_rate": 0.5},
+        metrics={
+            "detection_recall": 0.83,
+            "recognition_accuracy": 0.8,
+            "validation_gain_accuracy": 0.9,
+            "row_exact_rate": 0.5,
+        },
         per_image=[{"image_id": "inv_003", "rows": 10, "rows_exact": 6}],
         failures=[{"image_id": "inv_015", "reason": "no_match"}],
         rule_counts={"thousand_mult": 12, "blank_zero": 3, "ditto": 1},
@@ -19,9 +23,9 @@ def test_render_markdown_has_three_axis_and_failures():
     assert "검출 리콜" in md and "0.83" in md
     assert "인식 정확도" in md
     assert "검산" in md
-    assert "inv_015" in md          # 실패목록 노출
-    assert "thousand_mult" in md    # 약식 적용률
-    assert "검산 미반영" in md       # 검산게인 inert 주석
+    assert "inv_015" in md  # 실패목록 노출
+    assert "thousand_mult" in md  # 약식 적용률
+    assert "검산 미반영" in md  # 검산게인 inert 주석
 
 
 def test_render_json_roundtrips():

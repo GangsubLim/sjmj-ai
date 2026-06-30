@@ -1,4 +1,4 @@
-from ocr_poc.normalize import normalize_value, normalize_rows, NormRow
+from ocr_poc.normalize import NormRow, normalize_rows, normalize_value
 
 
 def test_quantity_is_literal_no_thousand_mult():
@@ -30,5 +30,5 @@ def test_normalize_rows_propagates_ditto_down_column():
     ]
     rows = normalize_rows(raw_rows)
     assert rows[0] == NormRow(4, 25000, 100000, ("thousand_mult", "thousand_mult"))
-    assert rows[1].unit_price == 25000   # 윗행 단가 전파
+    assert rows[1].unit_price == 25000  # 윗행 단가 전파
     assert "ditto" in rows[1].applied

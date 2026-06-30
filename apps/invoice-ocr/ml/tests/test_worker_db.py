@@ -1,13 +1,13 @@
 """WorkerQueue 단위 테스트 — MagicMock engine, 라이브 MySQL 불필요."""
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 from worker.db import WorkerQueue
-
 
 # ---------------------------------------------------------------------------
 # mark_done
 # ---------------------------------------------------------------------------
+
 
 def test_mark_done_serializes_json():
     """mark_done은 result_json을 JSON 직렬화해 :r 에 바인딩한다.
@@ -37,6 +37,7 @@ def test_mark_done_serializes_json():
 # mark_failed
 # ---------------------------------------------------------------------------
 
+
 def test_mark_failed_serializes_json():
     """mark_failed는 error_json을 JSON 직렬화해 :r 에 바인딩한다.
     SQL에 status='failed' 리터럴, :s 바인딩 없음.
@@ -59,6 +60,7 @@ def test_mark_failed_serializes_json():
 # ---------------------------------------------------------------------------
 # claim_next_pending — row 존재
 # ---------------------------------------------------------------------------
+
 
 def test_claim_next_pending_transitions_and_returns():
     """pending 행이 있으면 SELECT(FOR UPDATE) → UPDATE(running) 순서로 2회 execute,
@@ -103,6 +105,7 @@ def test_claim_next_pending_transitions_and_returns():
 # ---------------------------------------------------------------------------
 # claim_next_pending — 행 없음
 # ---------------------------------------------------------------------------
+
 
 def test_claim_next_pending_returns_none_when_empty():
     """pending 행이 없으면 None 반환, UPDATE를 실행하지 않는다."""

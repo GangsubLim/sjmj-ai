@@ -1,4 +1,4 @@
-from ocr_poc.data import load_label, LabelRow
+from ocr_poc.data import LabelRow, load_label
 
 
 def test_load_label_uses_text_only_ignores_geometry():
@@ -7,11 +7,21 @@ def test_load_label_uses_text_only_ignores_geometry():
         "doc_bbox": [1, 2, 3, 4],
         "doc_corners": [[0, 0]],
         "rows": [
-            {"row_id": 1, "item_class": "부동액", "quantity_text": "4",
-             "unit_price_text": "25000", "amount_text": "100000",
-             "quantity_bbox": [9, 9, 9, 9]},   # geometry 는 무시되어야 함
-            {"row_id": 2, "item_class": "엔진오일", "quantity_text": "1",
-             "unit_price_text": "365000", "amount_text": "365000"},
+            {
+                "row_id": 1,
+                "item_class": "부동액",
+                "quantity_text": "4",
+                "unit_price_text": "25000",
+                "amount_text": "100000",
+                "quantity_bbox": [9, 9, 9, 9],
+            },  # geometry 는 무시되어야 함
+            {
+                "row_id": 2,
+                "item_class": "엔진오일",
+                "quantity_text": "1",
+                "unit_price_text": "365000",
+                "amount_text": "365000",
+            },
         ],
     }
     rows = load_label(raw)

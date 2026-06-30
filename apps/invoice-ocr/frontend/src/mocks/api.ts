@@ -84,7 +84,10 @@ export const mockInvoiceAPI = {
     const start = (page - 1) * limit;
     const paged = list.slice(start, start + limit);
 
-    return { data: paged, total, page, limit };
+    return {
+      data: paged,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   },
 
   getById: async (id: number): Promise<SingleResponse<Invoice>> => {
@@ -163,7 +166,15 @@ export const mockCompanySuggestionsAPI = {
       list = list.filter((c) => c.company_name.toLowerCase().includes(q));
     }
     list.sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0));
-    return { data: list, total: list.length, page: 1, limit: list.length };
+    return {
+      data: list,
+      pagination: {
+        page: 1,
+        limit: list.length,
+        total: list.length,
+        totalPages: 1,
+      },
+    };
   },
 
   add: async (
@@ -225,7 +236,15 @@ export const mockItemSuggestionsAPI = {
       list = list.filter((i) => i.category === category);
     }
     list.sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0));
-    return { data: list, total: list.length, page: 1, limit: list.length };
+    return {
+      data: list,
+      pagination: {
+        page: 1,
+        limit: list.length,
+        total: list.length,
+        totalPages: 1,
+      },
+    };
   },
 
   add: async (
@@ -301,14 +320,18 @@ export const mockSettingsAPI = {
 export const mockSalespersonAPI = {
   getList: async () => {
     await delay();
+    const sortedSalespeople = [...salespeople].sort((a, b) => {
+      if (a.is_active !== b.is_active) return b.is_active - a.is_active;
+      return a.sort_order - b.sort_order;
+    });
     return {
-      data: [...salespeople].sort((a, b) => {
-        if (a.is_active !== b.is_active) return b.is_active - a.is_active;
-        return a.sort_order - b.sort_order;
-      }),
-      total: salespeople.length,
-      page: 1,
-      limit: salespeople.length,
+      data: sortedSalespeople,
+      pagination: {
+        page: 1,
+        limit: sortedSalespeople.length,
+        total: sortedSalespeople.length,
+        totalPages: 1,
+      },
     };
   },
 

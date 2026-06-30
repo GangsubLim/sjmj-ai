@@ -1,4 +1,4 @@
-"""SettingsRepository — PHP repositories/SettingsRepository.php 동형(text() raw SQL).
+"""SettingsRepository — text() raw SQL 직접 발행.
 
 issuers(단일 발급자 upsert)와 app_settings(키-값 맵)를 다룬다.
 """
@@ -16,13 +16,17 @@ _ISSUER_COLUMNS = """
 
 
 class SettingsRepository:
+    """issuers와 app_settings 테이블 접근을 담당하는 repository."""
+
     def find_issuer(self) -> dict | None:
+        """단일 발급자(issuer)를 최신 id 기준 단건 조회한다."""
         sql = f"SELECT {_ISSUER_COLUMNS} FROM issuers ORDER BY id DESC LIMIT 1"
         with connection() as conn:
             row = conn.execute(text(sql)).mappings().first()
             return dict(row) if row else None
 
     def upsert_issuer(self, data: dict) -> int:
+        """발급자 정보를 갱신하거나 신규 삽입하고 issuer id를 반환한다."""
         params = {
             "company_name": data["company_name"],
             "representative": data["representative"],
@@ -75,6 +79,7 @@ class SettingsRepository:
             return int(result.lastrowid)
 
     def update_stamp_url(self, issuer_id: int, url: str) -> None:
+        """발급자의 도장 이미지 URL을 갱신한다."""
         with connection() as conn:
             conn.execute(
                 text("UPDATE issuers SET stamp_image_url = :url WHERE id = :id"),
@@ -82,21 +87,19 @@ class SettingsRepository:
             )
 
     def find_all_settings(self) -> dict:
+        """app_settings 전체를 키-값 맵으로 조회한다."""
         with connection() as conn:
             rows = (
-                conn.execute(
-                    text("SELECT setting_key, setting_value FROM app_settings")
-                )
+                conn.execute(text("SELECT setting_key, setting_value FROM app_settings"))
                 .mappings()
                 .all()
             )
             return {r["setting_key"]: r["setting_value"] for r in rows}
 
     def update_setting(self, key: str, value: str) -> None:
+        """app_settings의 단일 키 값을 갱신한다."""
         with connection() as conn:
             conn.execute(
-                text(
-                    "UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"
-                ),
+                text("UPDATE app_settings SET setting_value = :value WHERE setting_key = :key"),
                 {"value": value, "key": key},
             )

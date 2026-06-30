@@ -4,20 +4,18 @@ This file provides guidance to AI Agents when working with code in this reposito
 
 ## 개요
 
-`sjmj-ai`는 SJMJ 업무 AI 자동화 플랫폼 모노레포다. 현재 유일한 모듈은 수기 거래명세서 OCR 자동입력(`apps/invoice-ocr`). 빌드 순서는 SP0(스캐폴딩)→SP1(OCR PoC)→SP2(백엔드 Python 재작성)→SP3(프론트 이식)→SP4(검수 UI)→SP5(운영 굳히기)이며, 설계·근거 정본은 `docs/superpowers/specs/`에 있다.
-
-핵심 맥락: 백엔드와 프론트엔드는 기존 PHP 프로젝트(SJMJ-Web)를 **동형 포팅**한 것이다. 코드 주석의 "PHP ... 동형"은 원본과의 동치 계약을 뜻한다 — 검증 메시지 문자열, 응답 포맷, 부수효과(usage_count 증가 등)까지 골든 테스트로 보존된다. 동작을 바꿀 때는 이 동치 계약을 깨는지 먼저 확인한다.
+`sjmj-ai`는 SJMJ 업무 AI 자동화 플랫폼 모노레포다. 현재 유일한 모듈은 수기 거래명세서 OCR 자동입력(`apps/invoice-ocr`). 빌드 순서는 SP0(스캐폴딩)→SP1(OCR PoC)→SP2(백엔드)→SP3(프론트엔드)→SP4(검수 UI)→SP5(운영 굳히기)이며, 설계·근거 정본은 `docs/superpowers/specs/`에 있다.
 
 ## 디렉터리 지도
 
 ```
 apps/invoice-ocr/
-  backend/    FastAPI + SQLAlchemy + MySQL (PHP 백엔드 포팅, SP2~)
-  frontend/   React 19 + Vite + Tailwind v4 + shadcn (SJMJ-Web frontend 이식, SP3~)
-  ml/         수기 OCR 파이프라인 (SP1). 자체 CLAUDE.md 있음 — ML 작업 시 반드시 참조
+  backend/    FastAPI + SQLAlchemy + MySQL (SP2~)
+  frontend/   React 19 + Vite + Tailwind v4 + shadcn (SP3~)
+  ml/         수기 OCR 파이프라인 (SP1)
 db/           운영 MySQL 스키마 + migration_*.sql (Phase 1A 이전 + ML 이음새)
 deploy/       launchd plist 템플릿 + backend.env.example
-scripts/      release / sync-version / run-backend / backup-db / install-launchagent / db-verify
+scripts/      release / sync-version / run-backend / backup-db / install-launchagent(-ml-worker) / run-ml-worker / db-verify
 docs/superpowers/  specs(설계 정본) · plans · runbooks · research
 .github/workflows/  ci.yml(PR 게이트) · deploy.yml(태그→macmini 배포)
 VERSION       버전 진실원(single source of truth)
@@ -58,19 +56,19 @@ npm run test           # vitest run (단위)
 npm run test:e2e       # playwright (라이브 백엔드 필요)
 ```
 
-API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), `VITE_USE_MOCK`. dev는 vite proxy, prod는 backend가 dist+/api를 동일출처로 서빙한다.
+API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vite proxy, prod는 backend가 dist+/api를 동일출처로 서빙한다.
 
 ## 백엔드 아키텍처
 
-**API 표면 정본**: `.claude/ai-context/api-spec.json`(OpenAPI 3.0 + `x-api-overview` 한 줄 스캔, 32개 엔드포인트 SSoT)과 규약 `.claude/rules/api-conventions.md`. 라우터/엔드포인트를 만지기 전에 spec을 먼저 읽고, 변경 시 spec을 함께 갱신한다(드리프트 방지).
+**API 표면 정본**: `.claude/ai-context/api-spec.json`(OpenAPI 3.0 + `x-api-overview` 한 줄 스캔, 엔드포인트 SSoT)과 규약 `.claude/rules/api-conventions.md`. 라우터/엔드포인트를 만지기 전에 spec을 먼저 읽고, 변경 시 spec을 함께 갱신한다(드리프트 방지).
 
-요청 흐름은 **router → service → repository** 3계층이다. PHP의 Controller/Service/Repository 동형.
+요청 흐름은 **router → service → repository** 3계층이다.
 
-- **router** (`app/routers/`): 엔드포인트는 `sync def`(threadpool 실행). 입력 검증은 `core/validators.Validator`(fluent, 골든 메시지 보존), 응답은 `core/envelope`로 래핑. API 라우터는 SPA catch-all(`main._mount_static`)보다 **먼저** 등록돼야 우선 매칭된다.
+- **router** (`app/routers/`): 엔드포인트는 `sync def`(threadpool 실행). 입력 검증은 `core/validators.Validator`(fluent), 응답은 `core/envelope`로 래핑. API 라우터는 SPA catch-all(`main._mount_static`)보다 **먼저** 등록돼야 우선 매칭된다.
 - **service** (`app/services/`): 비즈니스 로직 + 트랜잭션 경계. `with db.transaction():`으로 tx를 열면 내부 repo 호출이 같은 conn을 공유한다. 의존 repo는 생성자 주입(테스트 mock).
 - **repository** (`app/repositories/`): `with db.connection():`으로 현재 바인딩된 conn 재사용, 없으면 엔진에서 새 tx.
 
-**DB 연결 모델** (`app/db.py`): 모듈 전역 `Engine` + `ContextVar`로 conn 바인딩. `transaction()`이 conn을 바인딩하면 그 안의 `connection()` 호출은 모두 같은 단일 tx에 합류한다(PHP PDO/Database 싱글톤 동형). 바인딩이 없는 standalone repo 호출은 `engine.begin()`으로 감싸 블록 종료 시 커밋된다(SQLAlchemy 2.0 Connection은 기본 비-autocommit이므로). 테스트는 `set_test_engine`/`reset_engine`으로 엔진을 교체한다.
+**DB 연결 모델** (`app/db.py`): 모듈 전역 `Engine` + `ContextVar`로 conn 바인딩. `transaction()`이 conn을 바인딩하면 그 안의 `connection()` 호출은 모두 같은 단일 tx에 합류한다. 바인딩이 없는 standalone repo 호출은 `engine.begin()`으로 감싸 블록 종료 시 커밋된다(SQLAlchemy 2.0 Connection은 기본 비-autocommit이므로). 테스트는 `set_test_engine`/`reset_engine`으로 엔진을 교체한다.
 
 **응답 계약** (`app/core/`):
 
@@ -80,11 +78,15 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), 
 
 `app/config.py`의 `Settings`(pydantic-settings)는 환경변수 경계 검증. 빈 비밀번호(`""`)도 유효값으로 존중. `APP_VERSION` 상수는 루트 `VERSION`과 동기되어야 한다(아래 릴리스 참조, `test_version_sync.py`가 검증).
 
-신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
+신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records/ocr — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
+
+**목표 컨벤션(점진 전환 중).** 슬라이스를 신규 추가·수정할 때 그 범위를 실용적 FastAPI 관용구로 끌어올린다(빅뱅 아님). 유지: `sync def`+threadpool·SQLAlchemy Core raw `text()`·응답 envelope shape. 전환: free-form `dict = Body(...)` → Pydantic request 모델, fluent `Validator` → Pydantic 검증, 검증 메시지 문자열 자유화. **외부 계약 불변식**(아래)을 지키는 한 내부 구현은 자유다. 근거·전환 절차는 `docs/superpowers/specs/2026-06-30-fastapi-convention-modernization-design.md`.
+
+**외부 계약 불변식(절대 보존):** 성공 envelope `{success, data, pagination?}` · 에러 envelope `{success, error: {code, message, details?}}` · 에러 코드 체계(`VALIDATION_ERROR`/`NOT_FOUND`/`DUPLICATE_NAME`/`CONFLICT`/`SERVER_ERROR`) · 검증 실패 HTTP status **400** · `details` 형태 `{필드: 메시지}` 문자열 맵. Pydantic 전환 슬라이스는 `RequestValidationError` 핸들러로 422를 이 400 envelope로 변환해야 한다(첫 Pydantic 슬라이스가 선결로 도입).
 
 ## ML 파이프라인
 
-`apps/invoice-ocr/ml/`에 **자체 `CLAUDE.md`가 있다 — ML 작업 전 반드시 읽는다.** 핵심만: 코어는 paddle-free 경량(pillow만), ML 의존은 `[ml]` extra. 모든 DTO는 `@dataclass(frozen=True)`이고 normalize/validate/score/assemble은 순수함수다. 모델은 어댑터(Protocol) 뒤에 숨겨 지연 로딩하므로 테스트는 합성 데이터 + Fake 어댑터로 paddle 없이 돈다. 데이터·DB·산출물은 전부 gitignore이며 경로는 `.env`(`SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP`)로만 주입한다(하드코딩 금지).
+`apps/invoice-ocr/ml/`의 핵심: 코어는 paddle-free 경량(pillow만), ML 의존은 `[ml]` extra. 모든 DTO는 `@dataclass(frozen=True)`이고 normalize/validate/score/assemble은 순수함수다. 모델은 어댑터(Protocol) 뒤에 숨겨 지연 로딩하므로 테스트는 합성 데이터 + Fake 어댑터로 paddle 없이 돈다. 데이터·DB·산출물은 전부 gitignore이며 경로는 `.env`(`SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP`)로만 주입한다(하드코딩 금지). 상세 규약은 `ml/`의 자체 지침에 있으며 ml/ 작업 시 자동 주입된다.
 
 ## 버전·릴리스·배포
 
@@ -95,6 +97,19 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), 
 
 ## 작업 시 주의
 
-- PHP 동형 코드는 동치 계약(메시지 문자열·응답 포맷·부수효과)을 골든 테스트로 보존한다. 변경 전 해당 계약을 깨는지 확인한다.
 - DB 접속·백업 대상 DB명은 항상 env(`DB_*`)에서 읽는다 — 하드코딩 금지(런타임/백업 DB 발산 방지).
 - `docs/superpowers/specs/`가 설계 정본이다. 아키텍처 결정의 "왜"는 코드가 아니라 여기에 있다.
+
+## Agent skills
+
+### Issue tracker
+
+이슈는 GitHub Issues(`gh` CLI)에서 추적한다. 외부 PR은 triage 창구가 아니다(이슈만 큐에 들어옴). 자세한 내용은 `docs/agents/issue-tracker.md` 참조.
+
+### Triage labels
+
+표준 5종 라벨(`needs-triage` / `needs-info` / `ready-for-agent` / `ready-for-human` / `wontfix`)을 기본값 그대로 사용한다. 자세한 내용은 `docs/agents/triage-labels.md` 참조.
+
+### Domain docs
+
+단일 컨텍스트 — 루트 `CONTEXT.md` + `docs/adr/`. 자세한 내용은 `docs/agents/domain.md` 참조.
