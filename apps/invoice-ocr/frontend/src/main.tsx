@@ -14,6 +14,8 @@ const CompanyManagePage = lazy(() => import("@/app/companies/page"));
 const ItemManagePage = lazy(() => import("@/app/items/page"));
 const SettingsPage = lazy(() => import("@/app/settings/page"));
 const SalesPerformancePage = lazy(() => import("@/app/sales-performance/page"));
+const CurationQueuePage = lazy(() => import("@/app/curation/page"));
+const CurationJobPage = lazy(() => import("@/app/curation/[jobId]/page"));
 
 const LazyFallback = (
   <div className="flex min-h-dvh items-center justify-center text-sm text-gray-400">
@@ -58,6 +60,22 @@ const router = createBrowserRouter([
         element: (
           <Suspense fallback={LazyFallback}>
             <SalesPerformancePage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "/curation",
+        element: (
+          <Suspense fallback={LazyFallback}>
+            <CurationQueuePage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "/curation/:jobId",
+        element: (
+          <Suspense fallback={LazyFallback}>
+            <CurationJobPage />
           </Suspense>
         ),
       },
