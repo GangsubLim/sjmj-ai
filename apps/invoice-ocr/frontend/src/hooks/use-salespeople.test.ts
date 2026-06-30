@@ -29,7 +29,10 @@ describe("useSalespeople", () => {
   });
 
   it("create 후 refetch", async () => {
-    mGetList.mockResolvedValue({ data: [], pagination: { total: 0, page: 1, limit: 0, totalPages: 0 } });
+    mGetList.mockResolvedValue({
+      data: [],
+      pagination: { total: 0, page: 1, limit: 0, totalPages: 0 },
+    });
     mCreate.mockResolvedValue({
       data: { id: 2, name: "B", sort_order: 0, is_active: 1 },
     });
@@ -45,7 +48,10 @@ describe("useSalespeople", () => {
   });
 
   it("softDelete 후 refetch", async () => {
-    mGetList.mockResolvedValue({ data: [], pagination: { total: 0, page: 1, limit: 0, totalPages: 0 } });
+    mGetList.mockResolvedValue({
+      data: [],
+      pagination: { total: 0, page: 1, limit: 0, totalPages: 0 },
+    });
     mRemove.mockResolvedValue({ data: null });
 
     const { result } = renderHook(() => useSalespeople());
