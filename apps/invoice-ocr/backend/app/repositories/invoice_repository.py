@@ -1,4 +1,4 @@
-"""InvoiceRepository — PHP repositories/InvoiceRepository.php 동형(text() raw SQL).
+"""InvoiceRepository — text() raw SQL 직접 발행.
 
 정렬 컬럼은 화이트리스트 매핑으로만 변환(문자열 보간 SQL injection 방어).
 """

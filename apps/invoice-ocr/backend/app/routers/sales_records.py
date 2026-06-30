@@ -1,8 +1,8 @@
-"""sales_records 라우터 — PHP controllers/SalesRecordController.php 동형.
+"""sales_records 라우터.
 
 index는 월별 단일 집계({salespeople, records})를 single()로 반환(목록 아님, pagination 없음).
 store는 UPSERT(201) — snapshot_name은 서버가 salesperson.name으로 채운다(클라 입력 무시).
-검증은 Validator(골든 details·메시지 보존), 에러는 bad_request/not_found.
+검증은 Validator(details·메시지 contract 고정), 에러는 bad_request/not_found.
 """
 
 from fastapi import APIRouter, Body, Request
@@ -30,7 +30,7 @@ def _qint(request: Request, key: str, default: int) -> int:
 
 
 def _is_int(value) -> bool:
-    """PHP is_int || (is_numeric && (string)(int)x === (string)x) 동형.
+    """정수 또는 정수 문자열만 허용한다.
 
     bool은 정수로 보지 않는다(파이썬 isinstance(True, int)는 True이므로 명시 제외).
     정수 문자열("100")은 허용, 소수/비정수("100.5", "abc")는 거부.

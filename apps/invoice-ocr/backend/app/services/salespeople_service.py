@@ -1,4 +1,4 @@
-"""SalespersonService — PHP services/SalespersonService.php 동형.
+"""SalespersonService.
 
 이름 정규화(trim/제어문자/길이)와 활성 중복 검사(자기 id 제외)를 수행한다.
 검증 실패는 app.core.errors로 위임(400 VALIDATION_ERROR / 409 DUPLICATE_NAME).

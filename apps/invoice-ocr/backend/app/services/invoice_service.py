@@ -1,8 +1,7 @@
-"""InvoiceService — PHP services/InvoiceService.php 동형.
+"""InvoiceService.
 
-슬라이스 단계에서 company_repo/item_repo는 mock으로만 주입(골든 InvoiceServiceTest
-동치). 실제 Company/Item 리포는 팬아웃에서 구현하며 increment_usage_by_name 규약만
-약속한다.
+company_repo/item_repo는 생성자 주입(테스트 mock). 실제 구현은 increment_usage_by_name
+규약을 충족해야 한다.
 """
 
 import math

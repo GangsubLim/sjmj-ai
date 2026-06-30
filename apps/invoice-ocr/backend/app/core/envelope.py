@@ -1,4 +1,4 @@
-"""구조화 성공 응답 — PHP Response:: 동형.
+"""구조화 성공 응답.
 
 DB 행의 date/datetime/Decimal 등을 jsonable_encoder로 직렬화(date→'YYYY-MM-DD').
 """

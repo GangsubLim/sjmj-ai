@@ -1,6 +1,6 @@
-"""invoices 라우터 — PHP controllers/InvoiceController.php 동형.
+"""invoices 라우터.
 
-검증은 Validator(골든 details 형태 보존), 응답은 구조화 envelope. 엔드포인트는
+검증은 Validator(details 형태 contract 고정), 응답은 구조화 envelope. 엔드포인트는
 sync def라 threadpool에서 실행된다(전역 엔진 공유 + service.transaction()의 conn
 바인딩은 같은 콜스택이라 안전). export는 envelope 밖 Response(text/csv).
 """
@@ -25,7 +25,7 @@ _SORT_ORDER = ("asc", "desc")
 
 
 def _service() -> InvoiceService:
-    # create/update 시 거래처·품목 usage_count 증가(PHP modern 부수효과 동치)
+    # create/update 시 거래처·품목 usage_count 증가(부수효과 — contract 고정)
     return InvoiceService(company_repo=CompanyRepository(), item_repo=ItemRepository())
 
 

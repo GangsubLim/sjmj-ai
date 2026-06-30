@@ -1,4 +1,4 @@
-"""SalesRecordRepository — PHP repositories/SalesRecordRepository.php 동형(text() raw SQL).
+"""SalesRecordRepository — text() raw SQL 직접 발행.
 
 salesperson 조회(find_salesperson)는 snapshot_name 채움/존재 검증용으로 자기완결적으로
 salespeople 테이블을 직접 읽는다(salespeople 리소스 파일을 import하지 않음 →

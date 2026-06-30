@@ -1,4 +1,4 @@
-"""구조화 에러 — PHP Response::error / HttpResponseException 동형."""
+"""구조화 에러 응답."""
 
 from fastapi import Request
 from fastapi.responses import JSONResponse

@@ -1,6 +1,6 @@
-"""items 라우터 — PHP controllers/ItemController.php 동형.
+"""items 라우터.
 
-검증은 Validator(골든 details 형태 보존), 응답은 구조화 envelope. 엔드포인트는
+검증은 Validator(details 형태 contract 고정), 응답은 구조화 envelope. 엔드포인트는
 sync def라 threadpool에서 실행된다. item_name UNIQUE 위반은 service에서 409
 DUPLICATE_NAME으로 graceful 처리된다.
 """

@@ -1,4 +1,4 @@
-"""SettingsRepository — PHP repositories/SettingsRepository.php 동형(text() raw SQL).
+"""SettingsRepository — text() raw SQL 직접 발행.
 
 issuers(단일 발급자 upsert)와 app_settings(키-값 맵)를 다룬다.
 """

@@ -1,7 +1,7 @@
-"""ItemRepository — PHP repositories/ItemRepository.php 동형(text() raw SQL).
+"""ItemRepository — text() raw SQL 직접 발행.
 
 정렬 컬럼은 화이트리스트 매핑으로만 변환(문자열 보간 SQL injection 방어).
-usage_count·last_used는 기본 DESC, 그 외는 ASC(PHP 동치).
+usage_count·last_used는 기본 DESC, 그 외는 ASC.
 """
 
 from sqlalchemy import text

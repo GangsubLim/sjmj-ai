@@ -1,4 +1,4 @@
-"""SalespersonRepository — PHP repositories/SalespersonRepository.php 동형(text() raw SQL).
+"""SalespersonRepository — text() raw SQL 직접 발행.
 
 정렬은 고정(is_active DESC, sort_order ASC, id ASC). 소프트삭제는 행 삭제가 아니라
 is_active=0 UPDATE(sales_records FK RESTRICT). 숫자 컬럼은 pymysql이 int로 반환.
@@ -16,7 +16,7 @@ def _int_or(value, default: int) -> int:
 
 
 class SalespersonRepository:
-    """salespeople 테이블 데이터 접근(PHP SalespersonRepository 동형)."""
+    """salespeople 테이블 데이터 접근."""
 
     def find_all(self) -> list[dict]:
         """전체 영업사원을 고정 정렬로 조회한다."""

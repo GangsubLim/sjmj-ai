@@ -1,4 +1,4 @@
-"""ItemService — PHP services/ItemService.php 동형.
+"""ItemService.
 
 가짜 pagination(page=1, limit=9999, totalPages=1)으로 전체 목록을 반환한다.
 POST는 modern 순수 INSERT 201이지만 item_name UNIQUE 위반은 graceful 409로
@@ -13,7 +13,7 @@ from app.repositories.items_repository import ItemRepository
 
 
 class ItemService:
-    """품목 도메인 비즈니스 로직 — PHP ItemService.php 동형."""
+    """품목 도메인 비즈니스 로직."""
 
     def __init__(self, repo=None, *, transaction=None):
         """리포지토리와 트랜잭션 경계를 주입받아 초기화한다."""

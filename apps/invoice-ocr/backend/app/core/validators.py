@@ -1,4 +1,4 @@
-"""Validator — PHP core/Validator.php 동형(fluent, 메시지 문자 동치)."""
+"""Validator — fluent 입력 검증기."""
 
 import re
 from datetime import datetime
@@ -7,7 +7,7 @@ from .errors import bad_request
 
 
 class Validator:
-    """입력값을 fluent 체인으로 검증하는 검증기(PHP core/Validator.php 동형)."""
+    """입력값을 fluent 체인으로 검증하는 검증기."""
 
     def __init__(self) -> None:
         """빈 에러 맵으로 검증기를 초기화한다."""

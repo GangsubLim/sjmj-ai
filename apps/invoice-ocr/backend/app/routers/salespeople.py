@@ -1,6 +1,6 @@
-"""salespeople 라우터 — PHP controllers/SalespersonController.php 동형.
+"""salespeople 라우터.
 
-index는 PHP 컨트롤러처럼 가짜 pagination(page=1, limit=total=count, totalPages=1)을
+index는 가짜 pagination(page=1, limit=total=count, totalPages=1)을
 컨트롤러 레벨에서 구성한다. 검증은 Validator(required name), 응답은 구조화 envelope.
 """
 

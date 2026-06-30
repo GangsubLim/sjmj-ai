@@ -1,6 +1,6 @@
-"""companies 라우터 — PHP controllers/CompanyController.php 동형.
+"""companies 라우터.
 
-검증은 Validator(골든 details 형태 보존), 응답은 구조화 envelope. 엔드포인트는
+검증은 Validator(details 형태 contract 고정), 응답은 구조화 envelope. 엔드포인트는
 sync def라 threadpool에서 실행된다. index/invoices는 가짜 pagination을 쓴다.
 """
 

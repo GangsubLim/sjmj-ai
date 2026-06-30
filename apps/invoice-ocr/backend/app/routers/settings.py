@@ -1,4 +1,4 @@
-"""settings 라우터 — PHP controllers/SettingsController.php 동형.
+"""settings 라우터.
 
 issuer 정보(단일)·도장 업로드(멀티파트)·앱 설정(키-값 맵)을 다룬다. 엔드포인트는
 sync def. 도장 업로드는 UploadFile(File(None))로 파일 부재(400)를 명시 처리한다.

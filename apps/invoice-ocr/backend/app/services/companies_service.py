@@ -1,4 +1,4 @@
-"""CompanyService — PHP services/CompanyService.php 동형.
+"""CompanyService.
 
 가짜 pagination(page=1, limit=9999, total=count, totalPages=1)을 그대로 유지한다.
 company 단건은 트랜잭션이 필요 없는 단일 statement지만, 슬라이스 패턴과의
@@ -12,7 +12,7 @@ _FAKE_LIMIT = 9999
 
 
 class CompanyService:
-    """거래처 비즈니스 로직 — PHP CompanyService 동형."""
+    """거래처 비즈니스 로직."""
 
     def __init__(self, repo=None, *, transaction=None):
         """repo와 transaction seam을 주입받아 초기화한다(미지정 시 기본값)."""

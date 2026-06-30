@@ -1,4 +1,4 @@
-"""SalesRecordService — PHP services/SalesRecordService.php 동형.
+"""SalesRecordService.
 
 salesperson 조회는 repo.find_salesperson로 자기완결(별도 SalespersonRepository import 없음
 → app.main import 안전). 존재하지 않는 영업사원이면 404. snapshot_name은 클라 입력을
