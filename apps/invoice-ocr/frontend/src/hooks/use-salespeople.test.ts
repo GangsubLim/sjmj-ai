@@ -21,9 +21,7 @@ describe("useSalespeople", () => {
   it("초기 로드 시 목록 조회", async () => {
     mGetList.mockResolvedValue({
       data: [{ id: 1, name: "A", sort_order: 0, is_active: 1 }],
-      total: 1,
-      page: 1,
-      limit: 1,
+      pagination: { total: 1, page: 1, limit: 1, totalPages: 1 },
     });
     const { result } = renderHook(() => useSalespeople());
     await waitFor(() => expect(result.current.loading).toBe(false));
@@ -31,7 +29,7 @@ describe("useSalespeople", () => {
   });
 
   it("create 후 refetch", async () => {
-    mGetList.mockResolvedValue({ data: [], total: 0, page: 1, limit: 0 });
+    mGetList.mockResolvedValue({ data: [], pagination: { total: 0, page: 1, limit: 0, totalPages: 0 } });
     mCreate.mockResolvedValue({
       data: { id: 2, name: "B", sort_order: 0, is_active: 1 },
     });
@@ -47,7 +45,7 @@ describe("useSalespeople", () => {
   });
 
   it("softDelete 후 refetch", async () => {
-    mGetList.mockResolvedValue({ data: [], total: 0, page: 1, limit: 0 });
+    mGetList.mockResolvedValue({ data: [], pagination: { total: 0, page: 1, limit: 0, totalPages: 0 } });
     mRemove.mockResolvedValue({ data: null });
 
     const { result } = renderHook(() => useSalespeople());

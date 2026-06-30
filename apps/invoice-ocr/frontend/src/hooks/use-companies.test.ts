@@ -16,7 +16,10 @@ function createCompany(overrides: Partial<Company> = {}): Company {
 }
 
 function createCompanyListResponse(data: Company[]) {
-  return { data, total: data.length, page: 1, limit: 20 };
+  return {
+    data,
+    pagination: { total: data.length, page: 1, limit: 20, totalPages: 1 },
+  };
 }
 
 describe("useCompanies", () => {
