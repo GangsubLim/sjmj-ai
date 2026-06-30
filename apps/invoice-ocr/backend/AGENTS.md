@@ -47,3 +47,20 @@ uv run ruff check . && uv run ruff format --check .   # 린트/포맷 (CI 게이
 - **`APP_VERSION`은 루트 `VERSION`과 동기**돼야 한다(`test_version_sync.py`가 검증). `scripts/sync-version.sh`가 둘을 함께 갱신.
 - **신규 slice 추가 시** invoices/companies/items/settings/salespeople/sales_records/ocr의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 구조를 그대로 따른다. spec(`api-spec.json`)을 함께 갱신(드리프트 방지).
 - **ruff: google docstring(D) + FastAPI `Depends`/`Body`/`File`/`Form` B008 면제.** `tests/**`는 D 면제, `__init__.py`는 F401 면제(pyproject 참조).
+
+- **점진 현대화 트리거.** 슬라이스에 신규 기능·수정이 들어오면 그 슬라이스의 router+service+repository+tests를 목표 컨벤션(루트 `AGENTS.md` 참조)으로 함께 끌어올린다. 손대지 않는 슬라이스는 그대로 둔다. 응답 envelope shape가 불변이라 프론트 동시 수정은 대개 불필요.
+- **Pydantic 전환 선결 인프라.** 첫 Pydantic 슬라이스는 `app/core/errors.py`에 `RequestValidationError` 핸들러를 추가해 Pydantic 검증 실패(기본 422)를 400 `{success, error:{code:"VALIDATION_ERROR", message, details:{필드:메시지}}}`로 변환하고, 그 동작을 고정하는 contract 테스트를 함께 둔다. 이후 슬라이스는 이 핸들러를 공유한다.
+
+### 슬라이스 전환 현황
+
+| slice         | 검증 방식 | 비고   |
+| ------------- | --------- | ------ |
+| invoices      | Validator | 미전환 |
+| companies     | Validator | 미전환 |
+| items         | Validator | 미전환 |
+| settings      | Validator | 미전환 |
+| salespeople   | Validator | 미전환 |
+| sales_records | Validator | 미전환 |
+| ocr           | Validator | 미전환 |
+
+> 슬라이스를 Pydantic으로 전환하면 이 표의 "검증 방식"을 `Pydantic`으로 갱신한다.

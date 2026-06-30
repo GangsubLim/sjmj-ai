@@ -74,6 +74,7 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
 ## 스키마 검증 (라우터 특화)
 
 - 요청 body 는 `dict = Body(...)` **free-form** 으로 받고 `core/validators.Validator` (fluent)로 검증한다. **Pydantic 모델을 쓰지 않는 것은 의도된 선택** — 에러 메시지·`details` 형태를 문자 단위로 고정해 contract 테스트로 보호하기 위함이다.
+- **점진 전환 중.** 위 free-form + Validator는 현재(미전환) 슬라이스의 방식이다. 슬라이스를 신규/수정할 때 Pydantic request 모델 + `field_validator`/`model_validator`로 전환하되, **검증 실패는 여전히 400 `VALIDATION_ERROR` + `{필드: 메시지}` details로 응답**해야 한다(`RequestValidationError` 핸들러가 422→400 변환). envelope shape·에러 코드·400 status·details 형태는 외부 계약 불변식이다.
 - 검증 실패 → `bad_request(message, details)` → 400 `VALIDATION_ERROR`. `details` 는 `{필드: 메시지}` 맵.
 - 검증 헬퍼: `required` / `max_length` / `date_format`(YYYY-MM-DD) / `business_number`(숫자 10자리) / `numeric` / `non_empty_array`.
 - 검증 함수(`_validate_*`)는 라우터 파일 상단에 모아 create/update 가 공유한다.

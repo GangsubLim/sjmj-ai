@@ -80,6 +80,10 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_API_MODE`(`modern`), 
 
 신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records/ocr — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
 
+**목표 컨벤션(점진 전환 중).** 슬라이스를 신규 추가·수정할 때 그 범위를 실용적 FastAPI 관용구로 끌어올린다(빅뱅 아님). 유지: `sync def`+threadpool·SQLAlchemy Core raw `text()`·응답 envelope shape. 전환: free-form `dict = Body(...)` → Pydantic request 모델, fluent `Validator` → Pydantic 검증, 검증 메시지 문자열 자유화. **외부 계약 불변식**(아래)을 지키는 한 내부 구현은 자유다. 근거·전환 절차는 `docs/superpowers/specs/2026-06-30-fastapi-convention-modernization-design.md`.
+
+**외부 계약 불변식(절대 보존):** 성공 envelope `{success, data, pagination?}` · 에러 envelope `{success, error: {code, message, details?}}` · 에러 코드 체계(`VALIDATION_ERROR`/`NOT_FOUND`/`DUPLICATE_NAME`/`CONFLICT`/`SERVER_ERROR`) · 검증 실패 HTTP status **400** · `details` 형태 `{필드: 메시지}` 문자열 맵. Pydantic 전환 슬라이스는 `RequestValidationError` 핸들러로 422를 이 400 envelope로 변환해야 한다(첫 Pydantic 슬라이스가 선결로 도입).
+
 ## ML 파이프라인
 
 `apps/invoice-ocr/ml/`의 핵심: 코어는 paddle-free 경량(pillow만), ML 의존은 `[ml]` extra. 모든 DTO는 `@dataclass(frozen=True)`이고 normalize/validate/score/assemble은 순수함수다. 모델은 어댑터(Protocol) 뒤에 숨겨 지연 로딩하므로 테스트는 합성 데이터 + Fake 어댑터로 paddle 없이 돈다. 데이터·DB·산출물은 전부 gitignore이며 경로는 `.env`(`SJMJ_DATA_DIR`/`SJMJ_DB_BACKUP`)로만 주입한다(하드코딩 금지). 상세 규약은 `ml/`의 자체 지침에 있으며 ml/ 작업 시 자동 주입된다.
