@@ -4,13 +4,24 @@
 명시적 예외(api-conventions.md 참조). 그 외는 표준 envelope.
 """
 
+from enum import StrEnum
+
 from fastapi import APIRouter
+from fastapi.responses import FileResponse
 
 from app.core import envelope
 from app.schemas.curation import CurationPairPatch
 from app.services.curation_service import CurationService
 
 router = APIRouter()
+
+
+class ImageKind(StrEnum):
+    """원본/워프 전표 이미지 종류."""
+
+    original = "original"
+    warped = "warped"
+
 
 _LIMIT_MAX = 100
 
@@ -51,3 +62,18 @@ def patch_pair(id: int, patch: CurationPairPatch):
 def review(job_id: int):
     """잡을 검수 완료로 표시한다(미처리 쌍 reviewed_at 스탬프)."""
     return envelope.single(_service().mark_reviewed(job_id))
+
+
+@router.get("/curation/jobs/{job_id}/image/{kind}")
+def image(job_id: int, kind: ImageKind):
+    """원본/워프 전표 이미지를 raw 바이트로 반환한다(envelope 예외)."""
+    svc = _service()
+    if kind is ImageKind.original:
+        return FileResponse(svc.original_image(job_id))
+    return FileResponse(svc.warped_image(job_id), media_type="image/png")
+
+
+@router.get("/curation/jobs/{job_id}/crop/{row}")
+def crop(job_id: int, row: int):
+    """행 crop 이미지를 raw 바이트로 반환한다(envelope 예외)."""
+    return FileResponse(_service().crop_image(job_id, row), media_type="image/png")

@@ -115,6 +115,13 @@ class CurationRepository:
                 is not None
             )
 
+    def get_image_path(self, job_id: int) -> str | None:
+        """잡의 원본 업로드 이미지 경로를 반환한다."""
+        with connection() as conn:
+            return conn.execute(
+                text("SELECT image_path FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            ).scalar()
+
     def mark_reviewed(self, job_id: int) -> None:
         """잡을 검수완료로 표시하고 미처리 쌍에 reviewed_at을 찍는다."""
         with connection() as conn:

@@ -3,6 +3,9 @@
 라우터(HTTP)와 repository(SQL) 사이의 정규화·비즈니스 로직 계층.
 """
 
+import os
+from pathlib import Path
+
 from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
 
@@ -90,3 +93,37 @@ class CurationService:
             not_found("OCR 잡을 찾을 수 없습니다.")
         self.repo.mark_reviewed(job_id)
         return {"job_id": job_id, "curation_reviewed": True}
+
+    def _data_dir(self) -> Path:
+        raw = os.environ.get("SJMJ_DATA_DIR")
+        if not raw:
+            # 오설정 가드: SJMJ_DATA_DIR 누락 시 명확 실패(운영 전용 — 테스트는 항상 설정).
+            raise RuntimeError("SJMJ_DATA_DIR 미설정 — 이미지 경로 조립 불가")
+        return Path(raw)
+
+    def original_image(self, job_id: int) -> str:
+        """원본 업로드 이미지 절대경로를 반환한다. 없으면 404."""
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        path = self.repo.get_image_path(job_id)
+        if not path or not Path(path).is_file():
+            not_found("원본 이미지가 없습니다.")
+        return path
+
+    def warped_image(self, job_id: int) -> str:
+        """워프된 전표 이미지 절대경로를 반환한다. 없으면 404."""
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        path = self._data_dir() / "ocr_crops" / f"job-{job_id}" / "warped.png"
+        if not path.is_file():
+            not_found("워프 이미지가 없습니다.")
+        return str(path)
+
+    def crop_image(self, job_id: int, row: int) -> str:
+        """행 crop 이미지 절대경로를 반환한다. 없으면 404."""
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        path = self._data_dir() / "ocr_crops" / f"job-{job_id}" / f"row-{row}.png"
+        if not path.is_file():
+            not_found("crop 이미지가 없습니다.")
+        return str(path)
