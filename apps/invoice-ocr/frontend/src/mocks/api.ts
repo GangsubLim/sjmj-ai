@@ -508,6 +508,9 @@ export const mockCurationAPI = {
 
   reviewJob: async (jobId: number) => {
     await delay();
+    if (!curationJobs.some((j) => j.job_id === jobId)) {
+      throw new Error("잡을 찾을 수 없습니다");
+    }
     curationJobs = curationJobs.map((job) =>
       job.job_id === jobId
         ? {

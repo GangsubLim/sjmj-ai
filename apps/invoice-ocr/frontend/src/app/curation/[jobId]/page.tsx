@@ -77,9 +77,7 @@ export default function CurationJobPage() {
                 src={curationImageUrl(job.job_id, "warped")}
                 alt="워프 전표"
                 className="w-full rounded border"
-                onError={(e) => {
-                  e.currentTarget.src = PLACEHOLDER;
-                }}
+                onError={handleImageError}
               />
             ) : (
               <div className="bg-muted text-muted-foreground flex h-32 items-center justify-center rounded border text-sm">

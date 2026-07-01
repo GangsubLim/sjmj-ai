@@ -102,7 +102,7 @@ export default function CurationQueuePage() {
         </table>
       )}
 
-      {totalPages > 1 && (
+      {!loading && !error && totalPages > 1 && (
         <Pagination className="mt-4">
           <PaginationContent>
             <PaginationItem>
