@@ -12,6 +12,13 @@ import type {
   SalesRecordUpsertInput,
 } from "@/types/sales-record";
 import type { OcrJobStatus } from "@/types/ocr";
+import type {
+  CurationJobSummary,
+  CurationJobDetail,
+  CurationPairPatch,
+  CurationPairPatchResult,
+  CurationImageKind,
+} from "@/types/curation";
 
 // --- Mock mode flag ---
 
@@ -306,6 +313,52 @@ const _realOcrAPI = {
 
 export const ocrAPI = _realOcrAPI;
 
+// --- Real Curation API (검수 큐레이션) ---
+
+const _realCurationAPI = {
+  getJobs: async (params?: {
+    page?: number;
+    limit?: number;
+  }): Promise<ListResponse<CurationJobSummary>> => {
+    const response = await api.get("/curation/jobs", {
+      params: { page: params?.page ?? 1, limit: params?.limit ?? 20 },
+    });
+    return response.data;
+  },
+
+  getJob: async (jobId: number): Promise<SingleResponse<CurationJobDetail>> => {
+    const response = await api.get(`/curation/jobs/${jobId}`);
+    return response.data;
+  },
+
+  patchPair: async (
+    id: number,
+    patch: CurationPairPatch,
+  ): Promise<SingleResponse<CurationPairPatchResult>> => {
+    const response = await api.patch(`/curation/pairs/${id}`, patch);
+    return response.data;
+  },
+
+  reviewJob: async (
+    jobId: number,
+  ): Promise<
+    SingleResponse<{ job_id: number; curation_reviewed: boolean }>
+  > => {
+    const response = await api.post(`/curation/jobs/${jobId}/review`);
+    return response.data;
+  },
+};
+
+// 이미지 URL 빌더 — axios 호출 아님, real-only(mock 부적합한 raw FileResponse).
+// <img src>에 직결한다. getApiBaseUrl() 기반으로 경로만 조립.
+export const curationImageUrl = (
+  jobId: number,
+  kind: CurationImageKind,
+): string => `${getApiBaseUrl()}/curation/jobs/${jobId}/image/${kind}`;
+
+export const curationCropUrl = (jobId: number, row: number): string =>
+  `${getApiBaseUrl()}/curation/jobs/${jobId}/crop/${row}`;
+
 // --- Conditional exports: mock or real API ---
 
 async function loadMockAPIs() {
@@ -370,6 +423,11 @@ export const salesRecordAPI = createMockProxy(
   _realSalesRecordAPI,
   async () =>
     (await getMock()).mockSalesRecordAPI as typeof _realSalesRecordAPI,
+);
+
+export const curationAPI = createMockProxy(
+  _realCurationAPI,
+  async () => (await getMock()).mockCurationAPI as typeof _realCurationAPI,
 );
 
 export default api;

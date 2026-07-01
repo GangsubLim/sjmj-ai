@@ -13,12 +13,19 @@ import type {
   MonthlySalesData,
   SalesRecordUpsertInput,
 } from "@/types/sales-record";
+import type {
+  CurationJobSummary,
+  CurationJobDetail,
+  CurationPairPatch,
+  CurationPairPatchResult,
+} from "@/types/curation";
 import { mockInvoices } from "./invoices";
 import { mockCompanies } from "./companies";
 import { mockItems } from "./items";
 import { mockIssuer, mockAppSettings } from "./settings";
 import { mockSalespeople } from "./salespeople";
 import { mockSalesRecords } from "./sales-records";
+import { mockCurationJobDetails } from "./curation";
 
 // --- In-memory stores (deep clone to avoid mutation of originals) ---
 let invoices: Invoice[] = JSON.parse(JSON.stringify(mockInvoices));
@@ -432,5 +439,90 @@ export const mockSalesRecordAPI = {
     await delay();
     salesRecords = salesRecords.filter((r) => r.id !== id);
     return { data: null };
+  },
+};
+
+// --- Curation API (검수 큐레이션) ---
+
+let curationJobs: CurationJobDetail[] = JSON.parse(
+  JSON.stringify(mockCurationJobDetails),
+);
+
+const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
+  job_id: job.job_id,
+  invoice_id: job.invoice_id,
+  curation_reviewed: job.curation_reviewed,
+  pair_count: job.pairs.length,
+  unreviewed_count: job.pairs.filter((p) => p.reviewed_at === null).length,
+  created_at: job.created_at,
+});
+
+export const mockCurationAPI = {
+  getJobs: async (params?: { page?: number; limit?: number }) => {
+    await delay();
+    // 서버 정렬 갈음: 미검수(false) 우선, 그다음 최신 생성순.
+    const sorted = [...curationJobs].sort((a, b) => {
+      if (a.curation_reviewed !== b.curation_reviewed) {
+        return a.curation_reviewed ? 1 : -1;
+      }
+      return b.created_at.localeCompare(a.created_at);
+    });
+    const page = params?.page ?? 1;
+    const limit = params?.limit ?? 20;
+    const total = sorted.length;
+    const start = (page - 1) * limit;
+    return {
+      data: sorted.slice(start, start + limit).map(toSummary),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  },
+
+  getJob: async (jobId: number) => {
+    await delay();
+    const found = curationJobs.find((j) => j.job_id === jobId);
+    if (!found) throw new Error("잡을 찾을 수 없습니다");
+    return { data: JSON.parse(JSON.stringify(found)) as CurationJobDetail };
+  },
+
+  patchPair: async (id: number, patch: CurationPairPatch) => {
+    await delay();
+    let result: CurationPairPatchResult | null = null;
+    curationJobs = curationJobs.map((job) => ({
+      ...job,
+      pairs: job.pairs.map((p) => {
+        if (p.id !== id) return p;
+        const updated = {
+          ...p,
+          ...patch,
+          reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+        };
+        // PATCH 응답 형태: job_id 포함, top5 제외(계약 비대칭).
+        const { top5: _top5, ...base } = updated;
+        result = { ...base, job_id: job.job_id };
+        return updated;
+      }),
+    }));
+    if (!result) throw new Error("쌍을 찾을 수 없습니다");
+    return { data: result as CurationPairPatchResult };
+  },
+
+  reviewJob: async (jobId: number) => {
+    await delay();
+    if (!curationJobs.some((j) => j.job_id === jobId)) {
+      throw new Error("잡을 찾을 수 없습니다");
+    }
+    curationJobs = curationJobs.map((job) =>
+      job.job_id === jobId
+        ? {
+            ...job,
+            curation_reviewed: true,
+            pairs: job.pairs.map((p) => ({
+              ...p,
+              reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+            })),
+          }
+        : job,
+    );
+    return { data: { job_id: jobId, curation_reviewed: true } };
   },
 };

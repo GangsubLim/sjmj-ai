@@ -24,6 +24,7 @@ interface AutocompleteSuggestion {
 function Autocomplete({
   value,
   onChange,
+  onCommit,
   suggestions,
   onAddNew,
   placeholder = "검색…",
@@ -34,6 +35,7 @@ function Autocomplete({
 }: {
   value: string;
   onChange: (value: string, suggestion?: AutocompleteSuggestion) => void;
+  onCommit?: (value: string) => void;
   suggestions: AutocompleteSuggestion[];
   onAddNew?: (value: string) => void;
   placeholder?: string;
@@ -44,6 +46,9 @@ function Autocomplete({
 }) {
   const [open, setOpen] = React.useState(false);
   const [inputValue, setInputValue] = React.useState(value);
+  // 팝오버 항목 선택 중 발생하는 blur가 stale 입력값을 commit하지 않도록 막는 가드.
+  // 이벤트 순서 mousedown(항목)→blur(input)→click(onSelect)에서 mousedown이 먼저 플래그를 세운다.
+  const selectingRef = React.useRef(false);
 
   React.useEffect(() => {
     setInputValue(value);
@@ -68,6 +73,13 @@ function Autocomplete({
               if (!open) setOpen(true);
             }}
             onFocus={() => setOpen(true)}
+            onBlur={() => {
+              if (selectingRef.current) {
+                selectingRef.current = false;
+                return;
+              }
+              onCommit?.(inputValue);
+            }}
             placeholder={placeholder}
             aria-label={ariaLabel ?? (id ? undefined : placeholder)}
           />
@@ -87,10 +99,14 @@ function Autocomplete({
               {filtered.map((s) => (
                 <CommandItem
                   key={s.value}
+                  onMouseDown={() => {
+                    selectingRef.current = true;
+                  }}
                   onSelect={() => {
                     onChange(s.label, s);
                     setInputValue(s.label);
                     setOpen(false);
+                    onCommit?.(s.label);
                   }}
                 >
                   <span className="flex-1">{s.label}</span>
