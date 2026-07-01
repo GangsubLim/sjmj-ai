@@ -67,22 +67,26 @@ export default function CurationQueuePage() {
             </tr>
           </thead>
           <tbody>
+            {/* 행 전체는 마우스 편의용 onClick, 키보드·SR 진입점은 셀 내부 네이티브 button(테이블 행/셀 시맨틱 보존) */}
             {data.map((job) => (
               <tr
                 key={job.job_id}
-                role="link"
-                aria-label={`잡 #${job.job_id} 상세`}
-                tabIndex={0}
-                className="hover:bg-muted/50 focus-visible:ring-ring cursor-pointer border-b focus-visible:ring-2 focus-visible:outline-none"
+                className="hover:bg-muted/50 cursor-pointer border-b"
                 onClick={() => goToJob(job.job_id)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    goToJob(job.job_id);
-                  }
-                }}
               >
-                <td className="py-2 font-medium">#{job.job_id}</td>
+                <td className="py-2 font-medium">
+                  <button
+                    type="button"
+                    aria-label={`잡 #${job.job_id} 상세`}
+                    className="focus-visible:ring-ring rounded font-medium hover:underline focus-visible:ring-2 focus-visible:outline-none"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      goToJob(job.job_id);
+                    }}
+                  >
+                    #{job.job_id}
+                  </button>
+                </td>
                 <td>
                   {job.invoice_id != null ? `inv·${job.invoice_id}` : "—"}
                 </td>

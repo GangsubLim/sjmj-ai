@@ -89,7 +89,7 @@ describe("CurationQueuePage", () => {
         },
       ],
     });
-    return screen.getByRole("link", { name: /#128/ });
+    return screen.getByRole("button", { name: "잡 #128 상세" });
   }
 
   it("행 클릭 시 상세로 네비게이트한다", () => {
@@ -98,9 +98,11 @@ describe("CurationQueuePage", () => {
     expect(mockNavigate).toHaveBeenCalledWith("/curation/128");
   });
 
-  it("행에서 Enter 키로 상세로 네비게이트한다", () => {
-    const row = setupSingleJob();
-    fireEvent.keyDown(row, { key: "Enter" });
-    expect(mockNavigate).toHaveBeenCalledWith("/curation/128");
+  it("각 잡 행을 시맨틱 row로 노출하고 접근성 버튼을 제공한다", () => {
+    setupSingleJob();
+    expect(screen.getByRole("row", { name: /128/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "잡 #128 상세" }),
+    ).toBeInTheDocument();
   });
 });

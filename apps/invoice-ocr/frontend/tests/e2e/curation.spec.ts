@@ -34,9 +34,12 @@ test("큐 → 드릴다운(라벨/제외) → 검수완료 → 큐에서 검수�
   await expect(page).toHaveURL(/\/curation$/);
 
   // 잡 #128이 이제 검수됨으로 내려간다.
-  // 행은 a11y상 role="link"(잡 #128 상세)로 노출된다(CurationQueuePage 구현).
+  // 행은 시맨틱 table row로 노출되고, 첫 셀의 접근성 버튼("잡 #128 상세")이 키보드·SR 진입점.
   await expect(
-    page.getByRole("link", { name: "잡 #128 상세" }).getByText("✓ 검수됨"),
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { name: "잡 #128 상세" }) })
+      .getByText("✓ 검수됨"),
   ).toBeVisible();
 });
 
