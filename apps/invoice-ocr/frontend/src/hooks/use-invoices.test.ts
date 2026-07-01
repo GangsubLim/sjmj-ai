@@ -33,7 +33,15 @@ function createListResponse(
   data: Invoice[],
   total?: number,
 ): ListResponse<Invoice> {
-  return { data, total: total ?? data.length, page: 1, limit: 20 };
+  return {
+    data,
+    pagination: {
+      page: 1,
+      limit: 20,
+      total: total ?? data.length,
+      totalPages: 1,
+    },
+  };
 }
 
 function createSingleResponse(

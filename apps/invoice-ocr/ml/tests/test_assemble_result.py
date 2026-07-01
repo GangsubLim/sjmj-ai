@@ -3,7 +3,12 @@ from handwriting.infer_job import assemble_result_json
 
 def test_assembles_crop_ref_and_supply_sum():
     rows = [
-        {"row_index": 0, "item_top5": [{"label": "삼겹살", "sim": 0.83}], "supply": 120, "amount_raw": "120"},
+        {
+            "row_index": 0,
+            "item_top5": [{"label": "삼겹살", "sim": 0.83}],
+            "supply": 120,
+            "amount_raw": "120",
+        },
         {"row_index": 1, "item_top5": [], "supply": None, "amount_raw": "—"},
     ]
     out = assemble_result_json(42, rows, True)

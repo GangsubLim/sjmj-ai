@@ -2,7 +2,7 @@
 
 `Settings`(pydantic-settings)는 신규 DB 연결 + ML 이음새 env를 담는다.
 env 자동 매핑: db_host→DB_HOST 등(대소문자 무시). 빈 비밀번호('')도 유효한 값으로
-존중(PHP config/app.php DB_* 동치). ML 이음새(SJMJ_DATA_DIR·SJMJ_DB_BACKUP)는
+존중한다. ML 이음새(SJMJ_DATA_DIR·SJMJ_DB_BACKUP)는
 자리만 두고 Phase 2가 소비.
 
 `get_port`/`get_static_dir`은 SP0 셸의 기존 동작을 그대로 유지(os.environ 직접 read).
@@ -18,6 +18,8 @@ APP_VERSION = "0.2.1"
 
 
 class Settings(BaseSettings):
+    """환경변수에서 DB 연결 + ML 이음새 설정을 로드한다."""
+
     model_config = SettingsConfigDict(extra="ignore")
 
     # 런타임 MySQL 연결
@@ -34,6 +36,7 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
+    """캐시된 Settings 싱글톤을 반환한다."""
     return Settings()
 
 
@@ -51,7 +54,5 @@ def get_static_dir() -> Path | None:
     SJMJ_STATIC_DIR 우선, 없으면 backend 옆 frontend/dist 추정.
     """
     raw = os.environ.get("SJMJ_STATIC_DIR")
-    candidate = (
-        Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
-    )
+    candidate = Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
     return candidate if candidate.is_dir() else None

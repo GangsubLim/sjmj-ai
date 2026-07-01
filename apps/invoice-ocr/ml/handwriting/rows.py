@@ -10,6 +10,7 @@ ink는 국소대비 마스크에서 '전폭 인쇄 가로선'을 형태학적으
 stroke_profile_col/segment_rows/detect_amount_rows: 금액칸 1D 프로파일 유틸(순수
 segment_rows는 TDD). Path B 주경로에선 쓰지 않으나 §6 금액행 정렬 보조용으로 보존.
 """
+
 import sys
 from pathlib import Path
 
@@ -19,12 +20,12 @@ import numpy as np
 SP2 = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SP2))
 sys.path.insert(0, str(Path(__file__).parent))
-from grid_v4 import AMOUNT_X, DATA_Y, hline_ys  # noqa: E402
 from canon import fit_phase, grid_rows  # noqa: E402
+from grid_v4 import AMOUNT_X, DATA_Y, hline_ys  # noqa: E402
 
 ITEM_X = (100, 392)
 Y0, Y1 = DATA_Y
-HEADER_ROWS = 3       # 헤더(품목/규격/수량/단가/공급가 인쇄 타이틀) 행 skip — labelset 검증값
+HEADER_ROWS = 3  # 헤더(품목/규격/수량/단가/공급가 인쇄 타이틀) 행 skip — labelset 검증값
 ROW_STROKE_ON = 0.02  # 셀 내 한 행이 '획 있음'으로 칠 국소대비 coverage 최소(snap_box_v용)
 
 
@@ -56,8 +57,10 @@ def detect_grid_rows(warp, P, *, header_rows=HEADER_ROWS):
 
 
 def band_features(warp, bands):
-    """밴드별 (item_ink, amt_ink, 품목칸 행별 획 bool) — build_proposal 입력.
-    국소대비 마스크에서 인쇄 가로선 제거 후 측정(손글씨만)."""
+    """밴드별 (item_ink, amt_ink, 품목칸 행별 획 bool)을 측정한다 — build_proposal 입력.
+
+    국소대비 마스크에서 인쇄 가로선 제거 후 측정(손글씨만).
+    """
     item_inks, amt_inks, stroke_rows = [], [], []
     ix0, ix1 = ITEM_X
     ax0, ax1 = AMOUNT_X
@@ -80,8 +83,10 @@ def stroke_profile_col(warp, x0, x1):
 
 
 def segment_rows(profile, P, y0, y1, on, min_gap):
-    """1D 프로파일 → 행 밴드[(a,b)]. 런 중심을 피치 P 폭 밴드로,
-    min_gap 이내 인접 런은 한 행으로 병합."""
+    """1D 프로파일을 행 밴드[(a,b)]로 분할한다.
+
+    런 중심을 피치 P 폭 밴드로, min_gap 이내 인접 런은 한 행으로 병합.
+    """
     mask = profile >= on
     mask[:y0] = False
     mask[y1:] = False
@@ -108,5 +113,6 @@ def segment_rows(profile, P, y0, y1, on, min_gap):
 
 
 def detect_amount_rows(warp, P, *, on=0.20, min_gap=None):
+    """금액칸 1D 프로파일에서 행 밴드를 검출한다."""
     prof = stroke_profile_col(warp, AMOUNT_X[0], AMOUNT_X[1])
     return segment_rows(prof, P, Y0, Y1, on, min_gap or int(P * 0.6))

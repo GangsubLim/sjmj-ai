@@ -77,6 +77,55 @@ def test_confirm_creates_invoice_links_job_and_logs_correction():
     assert correction_count == 1
 
 
+def test_confirm_materializes_training_pairs():
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(
+        job_id,
+        "done",
+        {
+            "rows": [
+                {
+                    "crop_ref": f"job-{job_id}/row-0",
+                    "item_top5": [{"label": "삼겹살", "sim": 0.8}],
+                    "supply": 100000,
+                }
+            ],
+            "supply_sum": 100000,
+            "warp_ok": True,
+        },
+    )
+    payload = td.invoice_with_items()
+    payload["items"][0]["crop_ref"] = f"job-{job_id}/row-0"
+    payload["items"][0]["name"] = "목살"
+    payload["items"][0]["supply"] = 100000
+
+    out = OcrService().confirm(job_id, payload)
+
+    from sqlalchemy import text
+
+    from app.db import connection
+
+    with connection() as conn:
+        row = (
+            conn.execute(
+                text(
+                    "SELECT crop_ref, draft_label, final_label, canonical_label, supply, status, invoice_id "
+                    "FROM training_pairs WHERE job_id = :j"
+                ),
+                {"j": job_id},
+            )
+            .mappings()
+            .first()
+        )
+    assert row["crop_ref"] == f"job-{job_id}/row-0"
+    assert row["draft_label"] == "삼겹살"
+    assert row["final_label"] == "목살"
+    assert row["canonical_label"] == "목살"
+    assert row["status"] == "included"
+    assert row["invoice_id"] == out["invoice_id"]
+
+
 def test_confirm_twice_raises_conflict():
     from app.core.errors import AppError
 

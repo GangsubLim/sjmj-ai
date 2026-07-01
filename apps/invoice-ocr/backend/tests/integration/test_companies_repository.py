@@ -1,4 +1,4 @@
-"""실DB 골든 — PHP CompanyRepositoryTest 동치 이식."""
+"""CompanyRepository 통합 테스트 — 실DB."""
 
 import pytest
 
@@ -79,16 +79,8 @@ def test_find_all_with_search():
 
 def test_find_all_search_by_business_number():
     repo = CompanyRepository()
-    repo.insert(
-        cd.company(
-            {"company_name": "사업자번호검색A", "business_number": "111-22-33333"}
-        )
-    )
-    repo.insert(
-        cd.company(
-            {"company_name": "사업자번호검색B", "business_number": "444-55-66666"}
-        )
-    )
+    repo.insert(cd.company({"company_name": "사업자번호검색A", "business_number": "111-22-33333"}))
+    repo.insert(cd.company({"company_name": "사업자번호검색B", "business_number": "444-55-66666"}))
 
     results = repo.find_all(_filters(q="111-22"))
     assert len(results) == 1
@@ -179,12 +171,8 @@ def test_find_invoices_by_company_id():
 
     company_id = company_repo.insert(cd.company({"company_name": "인보이스연결거래처"}))
 
-    invoice_repo.insert(
-        td.invoice({"recipient": "인보이스연결거래처", "issue_date": "2025-01-10"})
-    )
-    invoice_repo.insert(
-        td.invoice({"recipient": "인보이스연결거래처", "issue_date": "2025-02-20"})
-    )
+    invoice_repo.insert(td.invoice({"recipient": "인보이스연결거래처", "issue_date": "2025-01-10"}))
+    invoice_repo.insert(td.invoice({"recipient": "인보이스연결거래처", "issue_date": "2025-02-20"}))
     invoice_repo.insert(td.invoice({"recipient": "다른거래처"}))
 
     invoices = company_repo.find_invoices_by_company_id(company_id)

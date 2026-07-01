@@ -1,6 +1,8 @@
 """검출 셀을 표 열(수량/단가/공급가)에 매핑해 행별 삼중쌍으로 묶는다.
 
-손라벨을 안 쓰므로 열 식별은 헤더 텍스트 키워드(+ 위치)로 한다. 순수함수."""
+손라벨을 안 쓰므로 열 식별은 헤더 텍스트 키워드(+ 위치)로 한다. 순수함수.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -16,6 +18,8 @@ _HEADER_KEYWORDS = {
 
 @dataclass(frozen=True)
 class AssembledRow:
+    """열 매핑으로 묶인 행(수량·단가·공급가 셀 삼중쌍)."""
+
     row_index: int
     quantity: DetectedCell | None
     unit_price: DetectedCell | None
@@ -26,7 +30,8 @@ def infer_column_map(header_texts: dict[int, str]) -> dict[str, int]:
     """헤더 텍스트(열 인덱스→문자열) → {field: col_index}. 못 찾은 field 는 제외.
 
     일반 키워드("금액")가 특정 열("부가세금액")에 먼저 걸리지 않도록, field 당
-    더 구체적인 키워드를 먼저 시도하고, 이미 점유된 열은 다른 field 가 다시 잡지 않는다."""
+    더 구체적인 키워드를 먼저 시도하고, 이미 점유된 열은 다른 field 가 다시 잡지 않는다.
+    """
     norm = {ci: t.replace(" ", "") for ci, t in header_texts.items()}
     out: dict[str, int] = {}
     claimed: set[int] = set()
@@ -63,10 +68,12 @@ def assemble_rows(
     rows: list[AssembledRow] = []
     for ri in sorted(by_row):
         slot = by_row[ri]
-        rows.append(AssembledRow(
-            row_index=ri,
-            quantity=slot.get("quantity"),
-            unit_price=slot.get("unit_price"),
-            amount=slot.get("amount"),
-        ))
+        rows.append(
+            AssembledRow(
+                row_index=ri,
+                quantity=slot.get("quantity"),
+                unit_price=slot.get("unit_price"),
+                amount=slot.get("amount"),
+            )
+        )
     return rows

@@ -3,6 +3,7 @@
 행정렬은 손라벨 순서를 신뢰하지 않고 amount(=supply) 값으로 매칭한다(§5).
 모두 순수함수.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -14,6 +15,8 @@ _FIELDS = ("quantity", "unit_price", "amount")
 
 @dataclass(frozen=True)
 class PredRow:
+    """예측 한 행(수량·단가·공급가 값과 필드별 검출 여부)."""
+
     quantity: int | None
     unit_price: int | None
     amount: int | None
@@ -24,6 +27,8 @@ class PredRow:
 
 @dataclass(frozen=True)
 class InvoiceScore:
+    """한 invoice의 3축 채점 집계 카운트."""
+
     detect_total: int
     detect_hit: int
     recog_total: int
@@ -61,11 +66,13 @@ def _pred_detected(p: PredRow, field: str) -> bool:
 
 
 def _truth_field(t: InvoiceItem, field: str) -> int:
-    return t.quantity if field == "quantity" else (
-        t.unit_price if field == "unit_price" else t.supply)
+    return (
+        t.quantity if field == "quantity" else (t.unit_price if field == "unit_price" else t.supply)
+    )
 
 
 def score_invoice(preds: list[PredRow], truth: list[InvoiceItem]) -> InvoiceScore:
+    """예측행을 정답행에 정렬해 invoice 단위 3축 카운트를 집계한다."""
     aligned = align_rows(preds, truth)
     detect_total = detect_hit = 0
     recog_total = recog_correct = valgain_correct = 0
@@ -88,10 +95,13 @@ def score_invoice(preds: list[PredRow], truth: list[InvoiceItem]) -> InvoiceScor
                 row_correct = False
         rows_exact += int(row_correct)
     return InvoiceScore(
-        detect_total=detect_total, detect_hit=detect_hit,
-        recog_total=recog_total, recog_correct=recog_correct,
+        detect_total=detect_total,
+        detect_hit=detect_hit,
+        recog_total=recog_total,
+        recog_correct=recog_correct,
         valgain_correct=valgain_correct,
-        rows_exact=rows_exact, rows_total=len(truth),
+        rows_exact=rows_exact,
+        rows_total=len(truth),
     )
 
 
@@ -100,6 +110,7 @@ def _ratio(num: int, den: int) -> float:
 
 
 def aggregate(scores: list[InvoiceScore]) -> dict[str, float]:
+    """invoice별 점수를 합산해 전체 3축 비율 지표로 환산한다."""
     d_tot = sum(s.detect_total for s in scores)
     d_hit = sum(s.detect_hit for s in scores)
     r_tot = sum(s.recog_total for s in scores)

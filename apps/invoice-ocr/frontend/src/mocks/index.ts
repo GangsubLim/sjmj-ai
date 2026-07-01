@@ -4,3 +4,4 @@ export { mockInvoices } from "./invoices";
 export { mockIssuer, mockAppSettings } from "./settings";
 export { mockSalespeople } from "./salespeople";
 export { mockSalesRecords } from "./sales-records";
+export { mockCurationJobDetails } from "./curation";

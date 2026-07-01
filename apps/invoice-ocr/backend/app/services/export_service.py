@@ -1,7 +1,6 @@
-"""ExportService — PHP services/ExportService.php 동형(CSV + formula injection 방지).
+"""ExportService — CSV 내보내기 + formula injection 방지.
 
-설계 차이: PHP는 php://output 직접 출력. FastAPI는 (filename, csv_bytes)를 반환하고
-라우터가 envelope 밖 Response(text/csv)로 흘린다(테스트 가능·envelope 미오염).
+이 서비스는 (filename, csv_bytes) 튜플을 반환한다(스트리밍은 라우터 책임).
 """
 
 import csv
@@ -36,10 +35,14 @@ def sanitize_csv_field(value) -> str:
 
 
 class ExportService:
+    """거래명세서를 CSV로 내보내는 서비스."""
+
     def __init__(self, repo: InvoiceRepository | None = None):
+        """InvoiceRepository를 주입받거나 기본 인스턴스를 생성한다."""
         self.repo = repo or InvoiceRepository()
 
     def export_invoices(self, format: str, filters: dict) -> tuple[str, bytes]:
+        """필터 조건의 거래명세서를 CSV로 직렬화해 (파일명, 바이트)로 반환한다."""
         if format != "csv":
             raise ValueError("현재 CSV 형식만 지원합니다.")
         invoices = self.repo.find_all_for_export(filters)
@@ -64,7 +67,5 @@ class ExportService:
                     inv["created_at"],
                 ]
             )
-        body = b"\xef\xbb\xbf" + buf.getvalue().encode(
-            "utf-8"
-        )  # UTF-8 BOM(Excel 한글 호환)
+        body = b"\xef\xbb\xbf" + buf.getvalue().encode("utf-8")  # UTF-8 BOM(Excel 한글 호환)
         return filename, body

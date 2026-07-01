@@ -1,4 +1,4 @@
-"""settings 라우터 — PHP controllers/SettingsController.php 동형.
+"""settings 라우터.
 
 issuer 정보(단일)·도장 업로드(멀티파트)·앱 설정(키-값 맵)을 다룬다. 엔드포인트는
 sync def. 도장 업로드는 UploadFile(File(None))로 파일 부재(400)를 명시 처리한다.
@@ -20,6 +20,7 @@ def _service() -> SettingsService:
 
 @router.get("/settings/issuer")
 def get_issuer():
+    """발급자 정보를 조회한다."""
     issuer = _service().get_issuer()
     if not issuer:
         not_found("발급자 정보가 없습니다.")
@@ -28,6 +29,7 @@ def get_issuer():
 
 @router.put("/settings/issuer")
 def update_issuer(data: dict = Body(...)):
+    """발급자 정보를 수정한다."""
     Validator().required(
         data, ["company_name", "representative", "business_number", "address"]
     ).business_number(data, "business_number").validate_or_fail()
@@ -37,6 +39,7 @@ def update_issuer(data: dict = Body(...)):
 
 @router.post("/settings/issuer/stamp")
 def upload_stamp(image: UploadFile | None = File(None)):
+    """발급자 도장 이미지를 업로드한다."""
     if image is None:
         bad_request("이미지 파일이 필요합니다.")
     content = image.file.read()
@@ -48,11 +51,13 @@ def upload_stamp(image: UploadFile | None = File(None)):
 
 @router.get("/settings/app")
 def get_app_settings():
+    """앱 설정값을 조회한다."""
     return envelope.single(_service().get_app_settings())
 
 
 @router.put("/settings/app")
 def update_app_settings(data: dict = Body(...)):
+    """앱 설정값을 수정한다."""
     if not data:
         bad_request("수정할 설정값이 필요합니다.")
     return envelope.single(_service().update_app_settings(data))

@@ -1,4 +1,4 @@
-"""골든 입력 팩토리 — SJMJ-Web tests/Fixtures/TestData.php(salesperson/salesRecord) 포팅."""
+"""sales_records 테스트 입력 팩토리."""
 
 from __future__ import annotations
 

@@ -1,4 +1,5 @@
 """env 기반 경로 해석 — 시스템 경계 입력 검증."""
+
 import os
 from pathlib import Path
 
@@ -26,12 +27,15 @@ def db_backup_path() -> Path:
 
 
 def images_dir() -> Path:
+    """이미지 디렉터리 경로."""
     return data_dir() / "images"
 
 
 def labels_dir() -> Path:
+    """라벨 디렉터리 경로."""
     return data_dir() / "labels"
 
 
 def references_dir() -> Path:
+    """references(인쇄 정본) 디렉터리 경로."""
     return data_dir() / "references"

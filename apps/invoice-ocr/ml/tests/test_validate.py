@@ -1,4 +1,4 @@
-from ocr_poc.validate import validate_row, ValidationResult
+from ocr_poc.validate import ValidationResult, validate_row
 
 
 def test_consistent_row():

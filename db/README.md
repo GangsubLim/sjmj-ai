@@ -17,6 +17,7 @@ migration_006_sales_performance.sql
 migration_add_deduction.sql
 migration_add_recipient2.sql
 migration_007_ml_seam.sql      ← Phase 1A 신규(ML 이음새: total_supply 인덱스 + ocr_jobs·ocr_corrections)
+migration_008_curation_training_pairs.sql  ← 큐레이션 게이트(ocr_jobs.curation_reviewed) + training_pairs 학습 read-model; 백필 SQL은 JSON_TABLE(MySQL 8.0.4+ 필요)
 ```
 
 ## 일회성 데이터 마이그레이션 (빌드 순서 아님)

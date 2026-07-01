@@ -13,12 +13,19 @@ import type {
   MonthlySalesData,
   SalesRecordUpsertInput,
 } from "@/types/sales-record";
+import type {
+  CurationJobSummary,
+  CurationJobDetail,
+  CurationPairPatch,
+  CurationPairPatchResult,
+} from "@/types/curation";
 import { mockInvoices } from "./invoices";
 import { mockCompanies } from "./companies";
 import { mockItems } from "./items";
 import { mockIssuer, mockAppSettings } from "./settings";
 import { mockSalespeople } from "./salespeople";
 import { mockSalesRecords } from "./sales-records";
+import { mockCurationJobDetails } from "./curation";
 
 // --- In-memory stores (deep clone to avoid mutation of originals) ---
 let invoices: Invoice[] = JSON.parse(JSON.stringify(mockInvoices));
@@ -84,7 +91,10 @@ export const mockInvoiceAPI = {
     const start = (page - 1) * limit;
     const paged = list.slice(start, start + limit);
 
-    return { data: paged, total, page, limit };
+    return {
+      data: paged,
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
   },
 
   getById: async (id: number): Promise<SingleResponse<Invoice>> => {
@@ -163,7 +173,15 @@ export const mockCompanySuggestionsAPI = {
       list = list.filter((c) => c.company_name.toLowerCase().includes(q));
     }
     list.sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0));
-    return { data: list, total: list.length, page: 1, limit: list.length };
+    return {
+      data: list,
+      pagination: {
+        page: 1,
+        limit: list.length,
+        total: list.length,
+        totalPages: 1,
+      },
+    };
   },
 
   add: async (
@@ -225,7 +243,15 @@ export const mockItemSuggestionsAPI = {
       list = list.filter((i) => i.category === category);
     }
     list.sort((a, b) => (b.usage_count ?? 0) - (a.usage_count ?? 0));
-    return { data: list, total: list.length, page: 1, limit: list.length };
+    return {
+      data: list,
+      pagination: {
+        page: 1,
+        limit: list.length,
+        total: list.length,
+        totalPages: 1,
+      },
+    };
   },
 
   add: async (
@@ -301,14 +327,18 @@ export const mockSettingsAPI = {
 export const mockSalespersonAPI = {
   getList: async () => {
     await delay();
+    const sortedSalespeople = [...salespeople].sort((a, b) => {
+      if (a.is_active !== b.is_active) return b.is_active - a.is_active;
+      return a.sort_order - b.sort_order;
+    });
     return {
-      data: [...salespeople].sort((a, b) => {
-        if (a.is_active !== b.is_active) return b.is_active - a.is_active;
-        return a.sort_order - b.sort_order;
-      }),
-      total: salespeople.length,
-      page: 1,
-      limit: salespeople.length,
+      data: sortedSalespeople,
+      pagination: {
+        page: 1,
+        limit: sortedSalespeople.length,
+        total: sortedSalespeople.length,
+        totalPages: 1,
+      },
     };
   },
 
@@ -409,5 +439,90 @@ export const mockSalesRecordAPI = {
     await delay();
     salesRecords = salesRecords.filter((r) => r.id !== id);
     return { data: null };
+  },
+};
+
+// --- Curation API (검수 큐레이션) ---
+
+let curationJobs: CurationJobDetail[] = JSON.parse(
+  JSON.stringify(mockCurationJobDetails),
+);
+
+const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
+  job_id: job.job_id,
+  invoice_id: job.invoice_id,
+  curation_reviewed: job.curation_reviewed,
+  pair_count: job.pairs.length,
+  unreviewed_count: job.pairs.filter((p) => p.reviewed_at === null).length,
+  created_at: job.created_at,
+});
+
+export const mockCurationAPI = {
+  getJobs: async (params?: { page?: number; limit?: number }) => {
+    await delay();
+    // 서버 정렬 갈음: 미검수(false) 우선, 그다음 최신 생성순.
+    const sorted = [...curationJobs].sort((a, b) => {
+      if (a.curation_reviewed !== b.curation_reviewed) {
+        return a.curation_reviewed ? 1 : -1;
+      }
+      return b.created_at.localeCompare(a.created_at);
+    });
+    const page = params?.page ?? 1;
+    const limit = params?.limit ?? 20;
+    const total = sorted.length;
+    const start = (page - 1) * limit;
+    return {
+      data: sorted.slice(start, start + limit).map(toSummary),
+      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    };
+  },
+
+  getJob: async (jobId: number) => {
+    await delay();
+    const found = curationJobs.find((j) => j.job_id === jobId);
+    if (!found) throw new Error("잡을 찾을 수 없습니다");
+    return { data: JSON.parse(JSON.stringify(found)) as CurationJobDetail };
+  },
+
+  patchPair: async (id: number, patch: CurationPairPatch) => {
+    await delay();
+    let result: CurationPairPatchResult | null = null;
+    curationJobs = curationJobs.map((job) => ({
+      ...job,
+      pairs: job.pairs.map((p) => {
+        if (p.id !== id) return p;
+        const updated = {
+          ...p,
+          ...patch,
+          reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+        };
+        // PATCH 응답 형태: job_id 포함, top5 제외(계약 비대칭).
+        const { top5: _top5, ...base } = updated;
+        result = { ...base, job_id: job.job_id };
+        return updated;
+      }),
+    }));
+    if (!result) throw new Error("쌍을 찾을 수 없습니다");
+    return { data: result as CurationPairPatchResult };
+  },
+
+  reviewJob: async (jobId: number) => {
+    await delay();
+    if (!curationJobs.some((j) => j.job_id === jobId)) {
+      throw new Error("잡을 찾을 수 없습니다");
+    }
+    curationJobs = curationJobs.map((job) =>
+      job.job_id === jobId
+        ? {
+            ...job,
+            curation_reviewed: true,
+            pairs: job.pairs.map((p) => ({
+              ...p,
+              reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+            })),
+          }
+        : job,
+    );
+    return { data: { job_id: jobId, curation_reviewed: true } };
   },
 };

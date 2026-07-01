@@ -40,10 +40,7 @@ def test_find_all_inactive_sorted_last():
 def test_update_changes_fields():
     repo = SalespersonRepository()
     new_id = repo.insert(td.salesperson())
-    assert (
-        repo.update(new_id, {"name": "영업사원1수정", "sort_order": 5, "is_active": 1})
-        is True
-    )
+    assert repo.update(new_id, {"name": "영업사원1수정", "sort_order": 5, "is_active": 1}) is True
     row = repo.find_by_id(new_id)
     assert row["name"] == "영업사원1수정"
     assert row["sort_order"] == 5

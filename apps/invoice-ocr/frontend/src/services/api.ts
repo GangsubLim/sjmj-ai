@@ -12,16 +12,19 @@ import type {
   SalesRecordUpsertInput,
 } from "@/types/sales-record";
 import type { OcrJobStatus } from "@/types/ocr";
+import type {
+  CurationJobSummary,
+  CurationJobDetail,
+  CurationPairPatch,
+  CurationPairPatchResult,
+  CurationImageKind,
+} from "@/types/curation";
 
 // --- Mock mode flag ---
 
 const USE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
 // --- Environment & endpoint helpers ---
-
-const API_MODE = (import.meta.env.VITE_API_MODE ?? "legacy") as
-  | "legacy"
-  | "modern";
 
 const getApiBaseUrl = (): string => {
   if (import.meta.env.VITE_API_URL) {
@@ -32,10 +35,6 @@ const getApiBaseUrl = (): string => {
   }
   return "http://localhost:8000/api";
 };
-
-/** Returns endpoint path based on API_MODE */
-const ep = (resource: string): string =>
-  API_MODE === "legacy" ? `/${resource}.php` : `/${resource}`;
 
 // 프론트 정렬 키 → FastAPI 정렬 화이트리스트(invoice_repository._ALLOWED_SORT_COLUMNS) 매핑.
 const INVOICE_SORT_BY_MAP: Record<string, string> = {
@@ -53,7 +52,7 @@ const api = axios.create({
 
 const _realInvoiceAPI = {
   getList: async (filters?: InvoiceFilters): Promise<ListResponse<Invoice>> => {
-    const response = await api.get(ep("invoices"), {
+    const response = await api.get("/invoices", {
       params: {
         page: filters?.page ?? 1,
         limit: filters?.limit ?? 20,
@@ -70,14 +69,14 @@ const _realInvoiceAPI = {
   },
 
   getById: async (id: number): Promise<SingleResponse<Invoice>> => {
-    const response = await api.get(`${ep("invoices")}/${id}`);
+    const response = await api.get(`/invoices/${id}`);
     return response.data;
   },
 
   create: async (
     invoice: Omit<Invoice, "id" | "created_at" | "updated_at">,
   ): Promise<SingleResponse<Invoice>> => {
-    const response = await api.post(ep("invoices"), invoice);
+    const response = await api.post("/invoices", invoice);
     return response.data;
   },
 
@@ -85,38 +84,25 @@ const _realInvoiceAPI = {
     id: number,
     invoice: Partial<Invoice>,
   ): Promise<SingleResponse<Invoice>> => {
-    const response = await api.put(`${ep("invoices")}/${id}`, invoice);
+    const response = await api.put(`/invoices/${id}`, invoice);
     return response.data;
   },
 
   delete: async (id: number): Promise<SingleResponse<null>> => {
-    const response = await api.delete(`${ep("invoices")}/${id}`);
+    const response = await api.delete(`/invoices/${id}`);
     return response.data;
   },
 
   duplicate: async (id: number): Promise<SingleResponse<Invoice>> => {
-    if (API_MODE === "modern") {
-      const response = await api.post(`${ep("invoices")}/${id}/duplicate`);
-      return response.data;
-    }
-    // legacy fallback: fetch original, strip id, create new
-    const original = await _realInvoiceAPI.getById(id);
-    const {
-      id: _id,
-      created_at: _ca,
-      updated_at: _ua,
-      ...rest
-    } = original.data;
-    return _realInvoiceAPI.create(rest);
+    const response = await api.post(`/invoices/${id}/duplicate`);
+    return response.data;
   },
 
   export: async (
     format: "csv" | "xlsx",
     filters?: InvoiceFilters,
   ): Promise<Blob> => {
-    if (API_MODE !== "modern")
-      throw new Error("Export는 modern API 모드에서만 사용 가능합니다");
-    const response = await api.get(`${ep("invoices")}/export`, {
+    const response = await api.get(`/invoices/export`, {
       params: { format, ...filters },
       responseType: "blob",
     });
@@ -128,7 +114,7 @@ const _realInvoiceAPI = {
 
 const _realCompanySuggestionsAPI = {
   getList: async (query?: string): Promise<ListResponse<Company>> => {
-    const response = await api.get(ep("companies"), {
+    const response = await api.get("/companies", {
       params: { q: query },
     });
     return response.data;
@@ -140,7 +126,7 @@ const _realCompanySuggestionsAPI = {
       "id" | "usage_count" | "last_used" | "created_at" | "updated_at"
     >,
   ): Promise<SingleResponse<Company>> => {
-    const response = await api.post(ep("companies"), company);
+    const response = await api.post("/companies", company);
     return response.data;
   },
 
@@ -148,33 +134,12 @@ const _realCompanySuggestionsAPI = {
     id: number,
     company: Partial<Company>,
   ): Promise<SingleResponse<Company>> => {
-    if (API_MODE === "modern") {
-      const response = await api.put(`${ep("companies")}/${id}`, company);
-      return response.data;
-    }
-    // legacy fallback: delete + create (원자적 보장 불가; 실패 시 경고)
-    const {
-      id: _id,
-      usage_count: _uc,
-      last_used: _lu,
-      created_at: _ca,
-      updated_at: _ua,
-      ...rest
-    } = company as Company;
-    await _realCompanySuggestionsAPI.delete(id);
-    try {
-      return await _realCompanySuggestionsAPI.add(rest);
-    } catch (err) {
-      console.warn(
-        "[Legacy API] 거래처 업데이트 실패: delete 후 create 오류. 데이터가 손실되었을 수 있습니다.",
-        err,
-      );
-      throw new Error("거래처 업데이트에 실패했습니다. 다시 시도해주세요.");
-    }
+    const response = await api.put(`/companies/${id}`, company);
+    return response.data;
   },
 
   delete: async (id: number): Promise<SingleResponse<null>> => {
-    const response = await api.delete(`${ep("companies")}/${id}`);
+    const response = await api.delete(`/companies/${id}`);
     return response.data;
   },
 };
@@ -186,7 +151,7 @@ const _realItemSuggestionsAPI = {
     query?: string,
     category?: string,
   ): Promise<ListResponse<Item>> => {
-    const response = await api.get(ep("items"), {
+    const response = await api.get("/items", {
       params: { q: query, category },
     });
     return response.data;
@@ -198,7 +163,7 @@ const _realItemSuggestionsAPI = {
       "id" | "usage_count" | "last_used" | "created_at" | "updated_at"
     >,
   ): Promise<SingleResponse<Item>> => {
-    const response = await api.post(ep("items"), item);
+    const response = await api.post("/items", item);
     return response.data;
   },
 
@@ -206,110 +171,62 @@ const _realItemSuggestionsAPI = {
     id: number,
     item: Partial<Item>,
   ): Promise<SingleResponse<Item>> => {
-    if (API_MODE === "modern") {
-      const response = await api.put(`${ep("items")}/${id}`, item);
-      return response.data;
-    }
-    // legacy fallback: delete + create (원자적 보장 불가; 실패 시 경고)
-    const {
-      id: _id,
-      usage_count: _uc,
-      last_used: _lu,
-      created_at: _ca,
-      updated_at: _ua,
-      ...rest
-    } = item as Item;
-    await _realItemSuggestionsAPI.delete(id);
-    try {
-      return await _realItemSuggestionsAPI.add(rest);
-    } catch (err) {
-      console.warn(
-        "[Legacy API] 품목 업데이트 실패: delete 후 create 오류. 데이터가 손실되었을 수 있습니다.",
-        err,
-      );
-      throw new Error("품목 업데이트에 실패했습니다. 다시 시도해주세요.");
-    }
+    const response = await api.put(`/items/${id}`, item);
+    return response.data;
   },
 
   delete: async (id: number): Promise<SingleResponse<null>> => {
-    const response = await api.delete(`${ep("items")}/${id}`);
+    const response = await api.delete(`/items/${id}`);
     return response.data;
   },
 };
 
 // --- Real Settings API ---
 
-const APP_SETTINGS_KEY = "sjmj_app_settings";
-
 const _realSettingsAPI = {
   getIssuer: async (): Promise<SingleResponse<Issuer>> => {
-    const endpoint =
-      API_MODE === "modern" ? `${ep("settings")}/issuer` : ep("settings");
-    const response = await api.get(endpoint);
+    const response = await api.get(`/settings/issuer`);
     return response.data;
   },
 
   saveIssuer: async (issuer: Issuer): Promise<SingleResponse<Issuer>> => {
-    if (API_MODE === "modern") {
-      const response = await api.put(`${ep("settings")}/issuer`, issuer);
-      return response.data;
-    }
-    const response = await api.post(ep("settings"), issuer);
+    const response = await api.put(`/settings/issuer`, issuer);
     return response.data;
   },
 
   getAppSettings: async (): Promise<SingleResponse<AppSettings>> => {
-    if (API_MODE === "modern") {
-      // 서버는 app_settings를 문자열 key-value 맵으로 낸다(예: default_vat_rate:'0.1').
-      // 프론트 AppSettings 형태(number vat·full shape)로 정규화한다.
-      const response = await api.get(`${ep("settings")}/app`);
-      const raw = (response.data?.data ?? {}) as Record<string, string>;
-      const data: AppSettings = { ...DEFAULT_APP_SETTINGS };
-      if (typeof raw.default_document_title === "string") {
-        data.default_document_title = raw.default_document_title;
-      }
-      if (raw.default_vat_rate != null) {
-        // 서버는 분수 문자열('0.1'), 프론트는 퍼센트 number(10) — 1 이하면 ×100.
-        const n = Number(raw.default_vat_rate);
-        if (!Number.isNaN(n)) {
-          data.default_vat_rate = n <= 1 ? Math.round(n * 100) : n;
-        }
-      }
-      return { data };
+    // 서버는 app_settings를 문자열 key-value 맵으로 낸다(예: default_vat_rate:'0.1').
+    // 프론트 AppSettings 형태(number vat·full shape)로 정규화한다.
+    const response = await api.get(`/settings/app`);
+    const raw = (response.data?.data ?? {}) as Record<string, string>;
+    const data: AppSettings = { ...DEFAULT_APP_SETTINGS };
+    if (typeof raw.default_document_title === "string") {
+      data.default_document_title = raw.default_document_title;
     }
-    // legacy: localStorage fallback
-    const stored = localStorage.getItem(APP_SETTINGS_KEY);
-    let parsed: Partial<AppSettings> = {};
-    try {
-      if (stored) parsed = JSON.parse(stored);
-    } catch {
-      localStorage.removeItem(APP_SETTINGS_KEY);
+    if (raw.default_vat_rate != null) {
+      // 서버는 분수 문자열('0.1'), 프론트는 퍼센트 number(10) — 1 이하면 ×100.
+      const n = Number(raw.default_vat_rate);
+      if (!Number.isNaN(n)) {
+        data.default_vat_rate = n <= 1 ? Math.round(n * 100) : n;
+      }
     }
-    const data = { ...DEFAULT_APP_SETTINGS, ...parsed };
     return { data };
   },
 
   updateAppSettings: async (
     settings: Partial<AppSettings>,
   ): Promise<SingleResponse<AppSettings>> => {
-    if (API_MODE === "modern") {
-      // 프론트 형태 → 서버 문자열 맵(vat: 퍼센트 number → 분수 문자열)으로 변환 후 전송.
-      const payload: Record<string, string> = {};
-      if (settings.default_document_title != null) {
-        payload.default_document_title = settings.default_document_title;
-      }
-      if (settings.default_vat_rate != null) {
-        payload.default_vat_rate = String(settings.default_vat_rate / 100);
-      }
-      await api.put(`${ep("settings")}/app`, payload);
-      // 서버가 갱신된 맵을 돌려주지만, 정규화 일관성을 위해 getAppSettings로 재조회한다.
-      return _realSettingsAPI.getAppSettings();
+    // 프론트 형태 → 서버 문자열 맵(vat: 퍼센트 number → 분수 문자열)으로 변환 후 전송.
+    const payload: Record<string, string> = {};
+    if (settings.default_document_title != null) {
+      payload.default_document_title = settings.default_document_title;
     }
-    // legacy: localStorage fallback
-    const current = await _realSettingsAPI.getAppSettings();
-    const merged = { ...current.data, ...settings };
-    localStorage.setItem(APP_SETTINGS_KEY, JSON.stringify(merged));
-    return { data: merged };
+    if (settings.default_vat_rate != null) {
+      payload.default_vat_rate = String(settings.default_vat_rate / 100);
+    }
+    await api.put(`/settings/app`, payload);
+    // 서버가 갱신된 맵을 돌려주지만, 정규화 일관성을 위해 getAppSettings로 재조회한다.
+    return _realSettingsAPI.getAppSettings();
   },
 };
 
@@ -396,6 +313,52 @@ const _realOcrAPI = {
 
 export const ocrAPI = _realOcrAPI;
 
+// --- Real Curation API (검수 큐레이션) ---
+
+const _realCurationAPI = {
+  getJobs: async (params?: {
+    page?: number;
+    limit?: number;
+  }): Promise<ListResponse<CurationJobSummary>> => {
+    const response = await api.get("/curation/jobs", {
+      params: { page: params?.page ?? 1, limit: params?.limit ?? 20 },
+    });
+    return response.data;
+  },
+
+  getJob: async (jobId: number): Promise<SingleResponse<CurationJobDetail>> => {
+    const response = await api.get(`/curation/jobs/${jobId}`);
+    return response.data;
+  },
+
+  patchPair: async (
+    id: number,
+    patch: CurationPairPatch,
+  ): Promise<SingleResponse<CurationPairPatchResult>> => {
+    const response = await api.patch(`/curation/pairs/${id}`, patch);
+    return response.data;
+  },
+
+  reviewJob: async (
+    jobId: number,
+  ): Promise<
+    SingleResponse<{ job_id: number; curation_reviewed: boolean }>
+  > => {
+    const response = await api.post(`/curation/jobs/${jobId}/review`);
+    return response.data;
+  },
+};
+
+// 이미지 URL 빌더 — axios 호출 아님, real-only(mock 부적합한 raw FileResponse).
+// <img src>에 직결한다. getApiBaseUrl() 기반으로 경로만 조립.
+export const curationImageUrl = (
+  jobId: number,
+  kind: CurationImageKind,
+): string => `${getApiBaseUrl()}/curation/jobs/${jobId}/image/${kind}`;
+
+export const curationCropUrl = (jobId: number, row: number): string =>
+  `${getApiBaseUrl()}/curation/jobs/${jobId}/crop/${row}`;
+
 // --- Conditional exports: mock or real API ---
 
 async function loadMockAPIs() {
@@ -460,6 +423,11 @@ export const salesRecordAPI = createMockProxy(
   _realSalesRecordAPI,
   async () =>
     (await getMock()).mockSalesRecordAPI as typeof _realSalesRecordAPI,
+);
+
+export const curationAPI = createMockProxy(
+  _realCurationAPI,
+  async () => (await getMock()).mockCurationAPI as typeof _realCurationAPI,
 );
 
 export default api;

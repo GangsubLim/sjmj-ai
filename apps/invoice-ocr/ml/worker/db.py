@@ -7,6 +7,7 @@ from sqlalchemy import create_engine, text
 
 
 def build_engine():
+    """DB_* env로 backend와 동일한 MySQL 엔진을 만든다."""
     host = os.environ.get("DB_HOST", "127.0.0.1")
     port = os.environ.get("DB_PORT", "3306")
     name = os.environ["DB_NAME"]
@@ -17,7 +18,10 @@ def build_engine():
 
 
 class WorkerQueue:
+    """ocr_jobs 큐 접근 — pending 점유 및 done/failed 전이."""
+
     def __init__(self, engine):
+        """엔진을 주입받아 큐를 초기화한다."""
         self.engine = engine
 
     def claim_next_pending(self) -> dict | None:
@@ -38,6 +42,7 @@ class WorkerQueue:
             return {"id": row.id, "image_path": row.image_path}
 
     def mark_done(self, job_id: int, result_json: dict) -> None:
+        """잡을 done으로 전이하고 결과 JSON을 기록한다."""
         with self.engine.begin() as conn:
             conn.execute(
                 text("UPDATE ocr_jobs SET status='done', result_json=:r WHERE id=:id"),
@@ -45,6 +50,7 @@ class WorkerQueue:
             )
 
     def mark_failed(self, job_id: int, error_json: dict) -> None:
+        """잡을 failed로 전이하고 에러 JSON을 기록한다."""
         with self.engine.begin() as conn:
             conn.execute(
                 text("UPDATE ocr_jobs SET status='failed', result_json=:r WHERE id=:id"),

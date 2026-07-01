@@ -1,6 +1,7 @@
 import * as React from "react";
 import { SaveIcon } from "lucide-react";
 import { toast } from "sonner";
+import { Link } from "react-router-dom";
 
 import type { Issuer, AppSettings } from "@/types/settings";
 import { useSettings } from "@/hooks/use-settings";
@@ -119,6 +120,14 @@ export default function SettingsPage() {
             onChange={setLocalSettings}
           />
           <SalespeopleSection />
+        </div>
+        <div className="mt-8 hidden border-t pt-4 lg:block">
+          <Link
+            to="/curation"
+            className="text-muted-foreground hover:text-foreground text-sm underline"
+          >
+            OCR 학습 큐레이션
+          </Link>
         </div>
       </PageContainer>
     </>

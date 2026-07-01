@@ -97,9 +97,7 @@ def test_update_app_settings_passes_correct_key_value_pairs():
     repo = MagicMock()
     repo.update_setting.side_effect = lambda k, v: call_log.__setitem__(k, v)
     repo.find_all_settings.return_value = {}
-    SettingsService(repo).update_app_settings(
-        {"default_vat_rate": "0.05", "default_unit": "BOX"}
-    )
+    SettingsService(repo).update_app_settings({"default_vat_rate": "0.05", "default_unit": "BOX"})
     assert call_log["default_vat_rate"] == "0.05"
     assert call_log["default_unit"] == "BOX"
 

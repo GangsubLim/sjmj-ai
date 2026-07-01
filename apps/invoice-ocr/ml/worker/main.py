@@ -32,6 +32,7 @@ def load_models():
 
 
 def main():
+    """모델을 1회 적재한 뒤 ocr_jobs를 무한 폴링하며 처리한다."""
     from handwriting.infer_job import infer_job
 
     crops_root = Path(_require("SJMJ_DATA_DIR")) / "ocr_crops"

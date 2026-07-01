@@ -1,6 +1,6 @@
-"""invoices 라우터 — PHP controllers/InvoiceController.php 동형.
+"""invoices 라우터.
 
-검증은 Validator(골든 details 형태 보존), 응답은 구조화 envelope. 엔드포인트는
+검증은 Validator(details 형태 contract 고정), 응답은 구조화 envelope. 엔드포인트는
 sync def라 threadpool에서 실행된다(전역 엔진 공유 + service.transaction()의 conn
 바인딩은 같은 콜스택이라 안전). export는 envelope 밖 Response(text/csv).
 """
@@ -25,7 +25,7 @@ _SORT_ORDER = ("asc", "desc")
 
 
 def _service() -> InvoiceService:
-    # create/update 시 거래처·품목 usage_count 증가(PHP modern 부수효과 동치)
+    # create/update 시 거래처·품목 usage_count 증가(부수효과 — contract 고정)
     return InvoiceService(company_repo=CompanyRepository(), item_repo=ItemRepository())
 
 
@@ -40,13 +40,14 @@ def _qint(request: Request, key: str, default: int) -> int:
 def _validate_invoice(data: dict) -> None:
     Validator().required(data, ["issue_date", "recipient"]).date_format(
         data, "issue_date"
-    ).max_length(data, "recipient", 100).max_length(
-        data, "vehicle_no", 255
-    ).non_empty_array(data, "items").validate_or_fail()
+    ).max_length(data, "recipient", 100).max_length(data, "vehicle_no", 255).non_empty_array(
+        data, "items"
+    ).validate_or_fail()
 
 
 @router.get("/invoices/export")
 def export(request: Request) -> Response:
+    """거래명세서를 CSV로 내보낸다(envelope 밖 raw text/csv)."""
     fmt = request.query_params.get("format", "csv")
     if fmt not in ("csv", "xlsx"):
         bad_request("format은 csv 또는 xlsx만 가능합니다.")
@@ -70,6 +71,7 @@ def export(request: Request) -> Response:
 
 @router.get("/invoices")
 def index(request: Request):
+    """거래명세서 목록을 페이지네이션·정렬·필터로 조회한다."""
     sort_by = request.query_params.get("sort_by", "issue_date")
     sort_order = request.query_params.get("sort_order", "desc")
     filters = {
@@ -87,6 +89,7 @@ def index(request: Request):
 
 @router.get("/invoices/{id}")
 def show(id: int):
+    """거래명세서를 ID로 단건 조회한다."""
     invoice = _service().get_by_id(id)
     if not invoice:
         not_found("거래명세서를 찾을 수 없습니다.")
@@ -95,12 +98,14 @@ def show(id: int):
 
 @router.post("/invoices")
 def store(data: dict = Body(...)):
+    """거래명세서를 생성한다."""
     _validate_invoice(data)
     return envelope.created(_service().create(data))
 
 
 @router.put("/invoices/{id}")
 def update(id: int, data: dict = Body(...)):
+    """거래명세서를 수정한다."""
     _validate_invoice(data)
     invoice = _service().update(id, data)
     if not invoice:
@@ -110,6 +115,7 @@ def update(id: int, data: dict = Body(...)):
 
 @router.delete("/invoices/{id}")
 def destroy(id: int):
+    """거래명세서를 삭제한다."""
     if not _service().delete(id):
         not_found("거래명세서를 찾을 수 없습니다.")
     return envelope.deleted("거래명세서가 삭제되었습니다.")
@@ -117,6 +123,7 @@ def destroy(id: int):
 
 @router.post("/invoices/{id}/duplicate")
 def duplicate(id: int):
+    """기존 거래명세서를 복제해 새 명세서를 만든다."""
     new_invoice = _service().duplicate(id)
     if not new_invoice:
         not_found("원본 거래명세서를 찾을 수 없습니다.")
