@@ -5,6 +5,20 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.3.0] — 2026-07-01
+
+수기 명세서 OCR 학습 데이터를 사람이 검수·정리하는 큐레이션 파이프라인을 추가한다 ([#12](https://github.com/GangsubLim/sjmj-ai/pull/12), [#13](https://github.com/GangsubLim/sjmj-ai/pull/13)).
+
+### Added
+
+- OCR 학습 큐레이션 검수 페이지 — `/curation` 큐에서 잡을 골라 행별 인식 결과를 보고 라벨 교정·제외를 즉시 저장한다 ([#13](https://github.com/GangsubLim/sjmj-ai/pull/13))
+- OCR 큐레이션 백엔드 — training_pairs read-model과 큐레이션 API 6종(잡 목록·상세·pair 수정·검수 완료·이미지) ([#12](https://github.com/GangsubLim/sjmj-ai/pull/12))
+
+### Changed
+
+- 배포 시 ml-worker를 함께 재시작해 ML 코드 수정이 즉시 반영되도록 개선한다 ([#8](https://github.com/GangsubLim/sjmj-ai/pull/8))
+- 프론트 API 계층을 nested pagination 단일 경로로 정리한다(legacy 분기 제거) ([#9](https://github.com/GangsubLim/sjmj-ai/pull/9))
+
 ## [v0.2.1] — 2026-06-29
 
 OCR로 인식한 공급가액을 실제 원 단위 금액으로 바로잡는다 ([#6](https://github.com/GangsubLim/sjmj-ai/pull/6)).
