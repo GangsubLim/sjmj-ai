@@ -10,7 +10,7 @@
 | **배포 추론 (손글씨)** | `worker/` + `handwriting/` | git-tracked · **production (macmini ml-worker)** | `worker.main`(launchd 상시 실행)이 `handwriting.infer_photo`/`infer_job`로 추론. CD `deploy.yml`이 재시작. `handwriting/`는 실험이 아니라 **배포된 추론 경로** |
 | **SP2 스파이크**       | `report/sp2_spike/`        | **gitignore · 로컬 전용 · 실험**                 | 손글씨 VLM 인식(Qwen3-VL) + 작성자-특화 품목 인식(few-shot). 현재 브랜치 작업                                                                                  |
 
-- SP2 결과·방향 spec: `docs/superpowers/specs/2026-06-25-sp2-handwriting-recognizer-findings.md` (레포 내 단일 정본).
+- SP2 결과·방향 spec: `docs/work/2026-06/2026-06-25-sp2-handwriting-recognizer-findings/spec.md` (로컬 전용 — git 비추적, fresh clone에는 없을 수 있음).
 - **SP2 코드는 본 파이프라인이 아니다.** 스파이크 스크립트(`report/sp2_spike/**`)는 gitignore된 실험물이라 `ocr_poc/`의 production 규약(테스트·불변성)을 따르지 않는다. SP2 산출을 본선에 올릴 땐 `RecognizerAdapter` 뒤로 통합한다(spec §8-8).
 
 ## 디렉터리 지도

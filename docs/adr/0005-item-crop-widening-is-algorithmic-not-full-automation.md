@@ -21,7 +21,7 @@
   bbox 교정 기능을 새로 만들어야 하는 훨씬 큰 범위의 작업이다.
 - **품목명도 금액처럼 VLM으로 전체 전사**(크롭 경계 문제 자체를 회피): 기각. SP2 PoC에서
   이미 실측됨 — 범용 VLM 자유전사 baseline 13% vs 현재 작성자-특화 retrieval 방식 top-1 36%
-  (`docs/superpowers/specs/2026-06-25-sp2-handwriting-recognizer-findings.md`). 크롭 경계
+  (`docs/work/2026-06/2026-06-25-sp2-handwriting-recognizer-findings/spec.md`, 로컬 전용). 크롭 경계
   문제를 없애려다 인식 정확도 자체가 후퇴한다.
 - **"완전 자동화"(사람 개입 0)를 로드맵 목표로 명시**: 기각. "경유 1차/2차", "타이어 사이즈
   생략+합산" 같은 관행은 손글씨 이미지 자체에 전산화 규칙이 담겨있지 않아, 크롭·인식 품질과
