@@ -49,7 +49,7 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 
 | 발견                   | 다음 작업                                                         |
 | ---------------------- | ----------------------------------------------------------------- |
-| out_of_bank 누적       | 검수 완료(included) 크롭으로 뱅크 증분 갱신 (fewshot.py 계열)     |
+| out_of_bank 누적       | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`               |
 | warp_suspect 잡        | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계  |
 | in_bank_miss 크롭 잘림 | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조) |
 | degenerate 반복        | read_amount에 퇴화 감지 + 재시도 추가                             |
