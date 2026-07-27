@@ -23,6 +23,7 @@ tests/          pytest. test_*.py — ocr_poc/* 1:1 대응 (+ handwriting 추론
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
                 remote.py — 원격(macmini) ssh/mysql 글루 공통화 (curation_report·warp_gate_report 공유)
                 curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
+                warp_gate_report.py — warp 정합 게이트 캘리브레이션 (전 잡 warped.png 지표·판정 전수, cv2 필요)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore
