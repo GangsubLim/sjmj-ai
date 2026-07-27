@@ -14,6 +14,7 @@ Usage:
 """
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -66,4 +67,84 @@ def diff_bank(current: dict[str, str], desired: dict[str, str]) -> BankDiff:
         replace=tuple(sorted(r for r in both if current[r] != desired[r])),
         remove=tuple(sorted(cur - des)),
         unchanged=tuple(sorted(r for r in both if current[r] == desired[r])),
+    )
+
+
+def inv_of(crop_ref: str) -> str:
+    """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열."""
+    return crop_ref.split("/", 1)[0]
+
+
+def partition_valid(desired: list[dict]) -> tuple[list[dict], list[dict]]:
+    """뱅크에 넣을 수 없는 쌍(빈 canonical_label)을 분리해 보고 가능하게 한다."""
+    valid, invalid = [], []
+    for p in desired:
+        label = (p.get("canonical_label") or "").strip()
+        if not label:
+            invalid.append({**p, "reason": "empty_label"})
+        else:
+            valid.append({**p, "canonical_label": label})
+    return valid, invalid
+
+
+def prune_missing_crops(
+    diff: BankDiff, crop_exists: Callable[[str], bool]
+) -> tuple[BankDiff, tuple[str, ...]]:
+    """크롭 PNG가 없는 ref를 추가·교체 계획에서만 뺀다(spec §3 plan 3단계).
+
+    제거(remove) 대상에는 적용하지 않는다 — 이미 임베딩돼 뱅크에 든 항목에 원본 PNG는
+    필요 없고, 여기서 떨어뜨리면 멀쩡한 뱅크 항목이 조용히 지워진다.
+    """
+    missing = tuple(sorted({r for r in diff.add + diff.replace if not crop_exists(r)}))
+    skip = set(missing)
+    pruned = BankDiff(
+        add=tuple(r for r in diff.add if r not in skip),
+        replace=tuple(r for r in diff.replace if r not in skip),
+        remove=diff.remove,
+        unchanged=diff.unchanged,
+    )
+    return pruned, missing
+
+
+def plan_records(diff: BankDiff, label_by_ref: dict[str, str]) -> list[dict]:
+    """diff를 plan.jsonl 레코드로 직렬화한다(plan과 apply 사이의 유일한 계약)."""
+    return [
+        {"action": action, "crop_ref": ref, "label": label_by_ref.get(ref)}
+        for action, refs in (
+            ("add", diff.add),
+            ("replace", diff.replace),
+            ("remove", diff.remove),
+        )
+        for ref in refs
+    ]
+
+
+def diff_from_records(records: list[dict]) -> BankDiff:
+    """plan.jsonl 레코드를 BankDiff로 되돌린다(unchanged는 기록하지 않으므로 공집합)."""
+
+    def refs(action: str) -> tuple[str, ...]:
+        return tuple(r["crop_ref"] for r in records if r["action"] == action)
+
+    return BankDiff(add=refs("add"), replace=refs("replace"), remove=refs("remove"), unchanged=())
+
+
+@dataclass(frozen=True)
+class MergePlan:
+    """기존 뱅크에서 유지할 인덱스와, 새로 임베딩해 덧붙일 crop_ref 순서."""
+
+    keep_indices: tuple[int, ...]
+    append_refs: tuple[str, ...]
+
+
+def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
+    """교체는 '기존 항목 제거 후 재추가'로 처리한다 — 라벨/임베딩을 통째로 새로 쓴다.
+
+    drop에 add도 포함한다: 정상 경로에선 add ∩ 기존 keys = ∅라 no-op이지만, 스테일
+    plan.jsonl을 재적용할 때는 add 대상이 이미 keys에 있을 수 있어 이를 빼지 않으면
+    append_refs와 중복돼 key가 늘어난다. 포함해두면 '제거 후 재추가'로 수렴해 멱등이 된다.
+    """
+    drop = set(diff.remove) | set(diff.replace) | set(diff.add)
+    return MergePlan(
+        keep_indices=tuple(i for i, k in enumerate(keys) if k not in drop),
+        append_refs=tuple(sorted(set(diff.add) | set(diff.replace))),
     )
