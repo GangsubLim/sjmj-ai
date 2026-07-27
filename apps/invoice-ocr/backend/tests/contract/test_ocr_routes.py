@@ -65,13 +65,16 @@ def test_create_job_rejects_control_char_filename(client):
     assert b["error"]["details"] == {"photo": "파일명에 제어문자를 사용할 수 없습니다."}
 
 
-def test_create_job_normalizes_uppercase_suffix_and_keeps_path_shape(client):
+def test_create_job_normalizes_uppercase_suffix_and_keeps_path_shape(client, tmp_path):
     r = client.post(
         "/api/ocr/jobs",
         files={"photo": ("SCAN.PNG", io.BytesIO(b"\x89PNG x"), "image/png")},
     )
     assert r.status_code == 201
     stored = Path(OcrRepository().find_job(r.json()["data"]["job_id"])["image_path"])
+    # 저장 위치가 $SJMJ_DATA_DIR/ocr_uploads임을 고정 — 아래 거부 테스트의 부정 단언
+    # (not (tmp_path/"ocr_uploads").exists())이 경로 변경으로 공허해지는 것을 막는다.
+    assert stored.parent == tmp_path / "ocr_uploads"
     assert stored.suffix == ".png"  # 대문자 확장자가 소문자로 정규화됨
     # 저장 파일명 형태 불변: uuid4().hex(32자 소문자 hex) + suffix — ml-worker 경로 회귀 방지
     assert len(stored.stem) == 32
