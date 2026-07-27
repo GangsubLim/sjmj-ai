@@ -204,3 +204,30 @@ def merge_amounts(entries):
     if len(entries) == 1:
         return total, entries[0][1]
     return total, "+".join(txt if v is not None else "?" for v, txt in entries)
+
+
+def block_amounts(rows, read_fn):
+    """new행마다 자신 + 같은 블록 cont행을 read_fn으로 읽어 금액을 병합한다(약식 분해 합산).
+
+    new행 선별 술어(new + box 보유)를 이 함수가 단독 소유해 호출부와 발산하지 않게 한다.
+
+    Args:
+        rows: build_proposal이 만든 Row 시퀀스(밴드 순서).
+        read_fn: Row → (금액|None, 원문). 금액칸 OCR 주입점(테스트는 Fake로 대체).
+
+    Returns:
+        (news, amounts) — news는 출력 대상 new행 리스트, amounts는 같은 순서의 병합 결과.
+        orphan cont 블록(new 없이 cont로 시작)은 read_fn을 호출하지 않고 제외한다.
+    """
+    members = {}
+    for r in rows:
+        if r.block is not None:
+            members.setdefault(r.block, []).append(r)
+    news, amounts = [], []
+    for r in rows:
+        if r.rtype != ROW_NEW or not r.box:
+            continue
+        news.append(r)
+        # 기본값 [r]은 block 미부여 Row 방어 — _assemble 산출물에서는 도달 불가(group.py:115).
+        amounts.append(merge_amounts([read_fn(m) for m in members.get(r.block, [r])]))
+    return news, amounts
