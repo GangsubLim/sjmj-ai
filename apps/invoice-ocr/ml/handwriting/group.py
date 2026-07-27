@@ -214,6 +214,8 @@ def block_amounts(rows, read_fn):
     Args:
         rows: build_proposal이 만든 Row 시퀀스(밴드 순서).
         read_fn: Row → (금액|None, 원문). 금액칸 OCR 주입점(테스트는 Fake로 대체).
+            멤버 cont행은 box=None이므로(_assemble은 new/total에만 box 부여) crop 좌표는
+            r.box가 아니라 r.band를 써야 한다.
 
     Returns:
         (news, amounts) — news는 출력 대상 new행 리스트, amounts는 같은 순서의 병합 결과.

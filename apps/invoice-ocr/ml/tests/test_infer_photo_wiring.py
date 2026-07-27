@@ -43,9 +43,28 @@ def test_amount_consumption_is_delegated_to_block_amounts():
 
     assert "block_amounts" in imported
     assert unpacked == {("news", "amounts")}
-    # read_fn 주입(=read_amount 클로저)이 빠지거나 스텁화되면 여기서 잡는다.
+    # read_fn 주입(=read_amount 클로저)이 빠지거나 스텁화되면 여기서 잡는다. 인자 개수만 세면
+    # lambda 스텁(read_fn은 死코드로 잔존)과 인자 뒤바뀜을 놓치므로 2번째 인자 이름까지 못 박는다.
     assert all(len(node.value.args) == 2 for node in assigns)
+    assert all(
+        isinstance(node.value.args[1], ast.Name) and node.value.args[1].id == "read_fn"
+        for node in assigns
+    )
     assert "read_amount" in names
+
+
+def test_block_amounts_results_are_not_rebound():
+    # 위임해두고 뒤에서 amounts를 다시 계산해 덮어쓰면 Issue #19가 그대로 재발한다.
+    # news/amounts는 block_amounts unpack에서 단 한 번만 바인딩돼야 한다.
+    _, fn = _extract_rows_fn()
+    stores = [
+        node.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store)
+    ]
+
+    assert stores.count("news") == 1
+    assert stores.count("amounts") == 1
 
 
 def test_new_row_selection_predicate_is_not_duplicated():

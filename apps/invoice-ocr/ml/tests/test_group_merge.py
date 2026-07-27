@@ -32,6 +32,8 @@ def test_merges_new_and_cont_amounts_with_plus_joined_raw():
 def test_partial_none_sums_read_values_and_marks_unknown():
     # spec §5-3: 읽힌 값만 부분 합산, 못 읽은 항목은 '?'.
     assert merge_amounts([(160, "160"), (40, "40"), (None, "—")]) == (200, "160+40+?")
+    # '?'는 그 자리 행을 가리킨다 — 읽힌 값만 앞으로 몰고 '?'를 뒤에 붙이면 검수자가 오독한다.
+    assert merge_amounts([(None, "—"), (40, "40")]) == (40, "?+40")
 
 
 def test_all_none_yields_none_amount_and_unknown_raw():
@@ -41,6 +43,9 @@ def test_all_none_yields_none_amount_and_unknown_raw():
 
 def test_zero_amount_is_summed_not_treated_as_missing():
     # 금액 0은 유효값 — truthiness가 아니라 is not None으로 걸러야 한다(OCR "0" → 0 도달 가능).
+    # 0이 합계를 좌우하는 케이스여야 변이가 갈린다: truthiness 필터면 vals가 비어 None이 나온다.
+    assert merge_amounts([(0, "0"), (0, "0")]) == (0, "0+0")
+    assert merge_amounts([(0, "0")]) == (0, "0")
     assert merge_amounts([(0, "0"), (40, "40")]) == (40, "0+40")
 
 
