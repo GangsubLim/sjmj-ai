@@ -186,6 +186,114 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
     )
 
 
+TOPK = 5
+
+
+def topk_excluding_self(
+    sims: list[float], labs: list[str], keys: list[str], self_ref: str, k: int = TOPK
+) -> list[tuple[str, float]]:
+    """쿼리 자신(동일 crop_ref)만 제외하고 라벨 중복 제거 top-k를 고른다.
+
+    중복 제거 규칙은 handwriting/infer_photo.py의 topk와 동일 — 운영 retrieval과 같은
+    기준으로 채점한다. 같은 작성자의 다른 전표 크롭은 남긴다(작성자 특화 retrieval이 취지).
+    단, 정렬은 여기서 `sorted`(안정 정렬)를 쓰므로 동점 시 항상 같은 순서가 나온다 — 운영
+    argsort(불안정 정렬, 동점 순서가 구현/버전에 따라 달라짐)와 다르며 채점 결정론을 위한 선택이다.
+    """
+    if len(sims) != len(labs) or len(sims) != len(keys):
+        raise ValueError(f"sims/labs/keys 길이 불일치: {len(sims)}/{len(labs)}/{len(keys)}")
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for j in sorted(range(len(sims)), key=lambda i: -sims[i]):
+        if keys[j] == self_ref or labs[j] in seen:
+            continue
+        seen.add(labs[j])
+        out.append((labs[j], float(sims[j])))
+        if len(out) >= k:
+            break
+    return out
+
+
+def has_peer_sample(self_ref: str, label: str, labs: list[str], keys: list[str]) -> bool:
+    """같은 라벨의 '다른' 크롭이 뱅크에 있는지 — 단일 샘플 라벨의 분모를 분리하기 위한 신호."""
+    return any(lb == label and k != self_ref for lb, k in zip(labs, keys, strict=True))
+
+
+def score_one(
+    sims: list[float],
+    labs: list[str],
+    keys: list[str],
+    self_ref: str,
+    label: str,
+) -> dict:
+    """쌍 1건을 채점한다 — 커버리지(self 포함)와 leave-self-out top-1/top-5를 분리 산출.
+
+    Returns:
+        다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 crop_ref), ``label``(정답 라벨),
+        ``in_bank``(뱅크 커버리지, self 포함), ``top1``/``top5``(leave-self-out 적중
+        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록).
+    """
+    preds = [lb for lb, _ in topk_excluding_self(sims, labs, keys, self_ref, TOPK)]
+    return {
+        "crop_ref": self_ref,
+        "label": label,
+        "in_bank": label in labs,
+        "top1": bool(preds) and preds[0] == label,
+        "top5": label in preds,
+        "has_peer": has_peer_sample(self_ref, label, labs, keys),
+        "preds": preds,
+    }
+
+
+def score_summary(records: list[dict]) -> dict:
+    """커버리지·retrieval 지표를 집계한다(동일 라벨 타 샘플 존재 쌍 한정 분모 병기)."""
+    peers = [r for r in records if r["has_peer"]]
+    return {
+        "n": len(records),
+        "in_bank": sum(r["in_bank"] for r in records),
+        "out_of_bank": sum(not r["in_bank"] for r in records),
+        "top1": sum(r["top1"] for r in records),
+        "top5": sum(r["top5"] for r in records),
+        "peer_n": len(peers),
+        "peer_top1": sum(r["top1"] for r in peers),
+        "peer_top5": sum(r["top5"] for r in peers),
+    }
+
+
+def _pct(k: int, n: int) -> str:
+    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
+
+
+def render_score_md(before: dict, after: dict, meta: dict) -> str:
+    """before/after 요약을 비교 마크다운으로 렌더한다(지표 2종 분리)."""
+    rows = [
+        ("커버리지 in-bank(self 포함)", "in_bank", "n"),
+        ("커버리지 out_of_bank", "out_of_bank", "n"),
+        ("leave-self-out top-1", "top1", "n"),
+        ("leave-self-out top-5", "top5", "n"),
+        ("peer 존재 한정 top-1", "peer_top1", "peer_n"),
+        ("peer 존재 한정 top-5", "peer_top5", "peer_n"),
+    ]
+    lines = [
+        "# 뱅크 증분 갱신 전/후 비교",
+        "",
+        f"- 뱅크 크기: {meta.get('bank_before', '?')} → {meta.get('bank_after', '?')}",
+        f"- 채점 대상(desired 쌍): {after['n']}건 · 동일 채점기로 before/after 산출",
+        "",
+        "| 지표 | before | after |",
+        "| --- | --- | --- |",
+    ]
+    lines += [
+        f"| {name} | {_pct(before[num], before[den])} | {_pct(after[num], after[den])} |"
+        for name, num, den in rows
+    ]
+    lines += [
+        "",
+        "단일 샘플 라벨은 leave-self-out에서 구조적으로 미스이므로, out_of_bank 해소는",
+        "커버리지 행으로 판단하고 retrieval 개선은 peer 존재 한정 행으로 판단한다.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 # ---------------------------------------------------------------------------
 # npz IO 글루 (numpy 지연 import — 코어는 paddle-free/pillow-only 유지)
 # ---------------------------------------------------------------------------

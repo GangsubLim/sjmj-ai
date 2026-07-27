@@ -17,6 +17,7 @@ from tools.bank_update import (
     bank_current_map,
     diff_bank,
     diff_from_records,
+    has_peer_sample,
     inv_of,
     is_crop_ref,
     load_bank,
@@ -24,8 +25,12 @@ from tools.bank_update import (
     partition_valid,
     plan_records,
     prune_missing_crops,
+    render_score_md,
     save_bank_atomic,
+    score_one,
+    score_summary,
     select_desired,
+    topk_excluding_self,
     validate_bank_arrays,
 )
 
@@ -657,3 +662,83 @@ def test_apply_sync_aborts_when_crop_file_missing(tmp_path):
 
     assert bank.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bank.npz"]
+
+
+# --- score: leave-self-out retrieval (§3 score) ---
+
+_LABS = ["안가방", "공임", "안가방"]
+_KEYS = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
+
+
+def test_topk_excluding_self_skips_the_query_crop_itself():
+    preds = topk_excluding_self([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", 5)
+    assert [lb for lb, _ in preds] == ["안가방", "공임"]
+    assert preds[0][1] == 0.8
+
+
+def test_topk_excluding_self_dedups_labels_like_infer_photo():
+    labs = ["안가방", "안가방", "공임"]
+    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
+    preds = topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 5)
+    assert [lb for lb, _ in preds] == ["안가방", "공임"]
+
+
+def test_topk_excluding_self_respects_k():
+    labs = ["a", "b", "c"]
+    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
+    assert len(topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 2)) == 2
+
+
+def test_topk_excluding_self_is_empty_when_only_self_in_bank():
+    assert topk_excluding_self([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5) == []
+
+
+def test_topk_excluding_self_rejects_mismatched_lengths():
+    with pytest.raises(ValueError, match="길이 불일치"):
+        topk_excluding_self([0.9, 0.8], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5)
+
+
+def test_has_peer_sample_false_for_single_sample_label():
+    assert has_peer_sample("job-1/row-0", "안가방", ["안가방"], ["job-1/row-0"]) is False
+
+
+def test_has_peer_sample_true_when_other_crop_shares_label():
+    assert has_peer_sample("job-1/row-0", "안가방", _LABS, _KEYS) is True
+
+
+def test_score_one_counts_coverage_even_when_only_self_carries_label():
+    """단일 샘플 라벨 — 커버리지는 hit, leave-self-out retrieval은 구조적 miss."""
+    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    assert rec["in_bank"] is True
+    assert rec["top1"] is False and rec["top5"] is False
+    assert rec["has_peer"] is False
+
+
+def test_score_one_marks_out_of_bank_when_label_absent():
+    rec = score_one([0.5], ["공임"], ["job-2/row-0"], "job-1/row-0", "안가방")
+    assert rec["in_bank"] is False and rec["top1"] is False
+
+
+def test_score_one_hits_top1_with_peer_sample():
+    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+    assert rec["top1"] is True and rec["top5"] is True and rec["has_peer"] is True
+
+
+def test_score_summary_splits_peer_denominator():
+    records = [
+        {"in_bank": True, "top1": True, "top5": True, "has_peer": True},
+        {"in_bank": True, "top1": False, "top5": False, "has_peer": False},
+        {"in_bank": False, "top1": False, "top5": False, "has_peer": False},
+    ]
+    s = score_summary(records)
+    assert s["n"] == 3 and s["in_bank"] == 2 and s["out_of_bank"] == 1
+    assert s["top1"] == 1 and s["peer_n"] == 1 and s["peer_top1"] == 1
+
+
+def test_render_score_md_shows_before_and_after_coverage():
+    empty = score_summary([])
+    filled = score_summary([{"in_bank": True, "top1": True, "top5": True, "has_peer": True}])
+    md = render_score_md(empty, filled, {"bank_before": 100, "bank_after": 120})
+    assert "커버리지" in md
+    assert "leave-self-out" in md
+    assert "120" in md
