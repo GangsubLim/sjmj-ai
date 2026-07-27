@@ -180,7 +180,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     }
     if (ocr.status !== "done" || !ocr.result) return;
     if (!ocr.result.warp_ok) {
-      toast.warning("문서 보정에 실패했습니다. 직접 입력해주세요");
+      toast.warning(
+        "문서 보정에 실패했습니다. 다시 촬영하거나 직접 입력해주세요",
+      );
       return;
     }
     setItems(
