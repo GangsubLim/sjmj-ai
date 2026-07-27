@@ -50,8 +50,10 @@ def test_create_job_rejects_missing_suffix(client):
 
 
 def test_create_job_rejects_control_char_filename(client):
-    # httpx multipart는 C0 제어문자를 percent-encode(\n→%0A, \x00→%00)하므로 서버에 raw로
-    # 도달하지 않는다. raw 통과가 확인된 U+007F(DEL)로 계약을 고정한다(C0는 unit 테스트 담당).
+    # httpx multipart는 C0 제어문자 대부분을 percent-encode(\n→%0A, \x00→%00)해 서버에 raw로
+    # 도달하지 않지만, U+001B(ESC)는 예외로 남아 raw로 통과한다(httpx/_multipart.py의
+    # _HTML5_FORM_ENCODING_REPLACEMENTS가 `range(0x1F+1) if c != 0x1B`로 구성됨 — 실측 확인).
+    # 계약은 raw 통과가 확인된 U+007F(DEL)로 고정한다(U+001B 포함 나머지 C0는 unit 테스트 담당).
     # 실측 기준: httpx 0.28.1 / starlette 1.3.1 (2026-07-27). starlette가
     # StarletteDeprecationWarning으로 httpx2를 권고 중이므로, httpx2 전환 후 이 테스트가 201로
     # 실패하면 인코딩 동작이 바뀐 것이다 — 재실측 후 U+007F 케이스를 unit 테스트로 이관할 것.
