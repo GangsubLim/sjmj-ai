@@ -13,9 +13,13 @@ Usage:
     uv run python -m tools.bank_update score --before <bank.bak> --after <bank.npz>
 """
 
+import os
 import re
+import shutil
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 ML_ROOT = Path(__file__).resolve().parent.parent
@@ -148,3 +152,94 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
         keep_indices=tuple(i for i, k in enumerate(keys) if k not in drop),
         append_refs=tuple(sorted(set(diff.add) | set(diff.replace))),
     )
+
+
+# ---------------------------------------------------------------------------
+# npz IO 글루 (numpy 지연 import — 코어는 paddle-free/pillow-only 유지)
+# ---------------------------------------------------------------------------
+
+BANK_ARRAY_KEYS = ("emb", "lab", "inv", "keys")
+EMB_DIM = 128
+
+
+def load_bank(path: str | Path):
+    """bank.npz를 (emb, labs, invs, keys)로 적재한다. 구조 불일치는 즉시 실패(부분 병합 금지)."""
+    import numpy as np
+
+    path = Path(path)
+    if not path.exists():
+        raise RuntimeError(f"뱅크 파일 없음: {path}")
+    with np.load(path, allow_pickle=True) as z:
+        missing = [k for k in BANK_ARRAY_KEYS if k not in z.files]
+        if missing:
+            raise RuntimeError(
+                f"뱅크 npz 키 구조 불일치 — 누락 {missing} (기대 {list(BANK_ARRAY_KEYS)})"
+            )
+        return (
+            z["emb"],
+            [str(x) for x in z["lab"]],
+            [str(x) for x in z["inv"]],
+            [str(x) for x in z["keys"]],
+        )
+
+
+def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str]) -> None:
+    """저장 직전 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
+
+    워커(worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다.
+    쓰기 전에 차단한다. crop_ref 형식 key의 중복은 sync 멱등성(keys=UNIQUE 가정)을 깨므로
+    함께 막는다.
+    """
+    import numpy as np
+
+    lengths = {"emb": len(emb), "lab": len(labs), "inv": len(invs), "keys": len(keys)}
+    if len(set(lengths.values())) != 1:
+        raise RuntimeError(f"뱅크 배열 길이 불일치: {lengths}")
+    if emb.ndim != 2 or emb.shape[1] != EMB_DIM:
+        raise RuntimeError(f"임베딩 차원 이상: shape={emb.shape} (기대 (n, {EMB_DIM}))")
+    if not np.isfinite(emb).all():
+        raise RuntimeError("임베딩에 NaN/inf가 있습니다 — 저장을 중단합니다.")
+    crop_ref_counts = Counter(k for k in keys if is_crop_ref(k))
+    duplicates = sorted(k for k, count in crop_ref_counts.items() if count > 1)
+    if duplicates:
+        raise RuntimeError(f"뱅크 key 중복(crop_ref): {duplicates}")
+
+
+def backup_bank(path: str | Path) -> Path:
+    """bank.npz를 같은 디렉터리에 타임스탬프 백업으로 복사한다(실패 시 예외 → apply 중단).
+
+    같은 초 재실행으로 백업 파일명이 충돌하면 무경고 덮어쓰기 대신 즉시 실패한다
+    (spec "백업 실패 시 중단"과 일치).
+    """
+    path = Path(path)
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    dst = path.with_name(f"{path.stem}.{stamp}.npz.bak")
+    if dst.exists():
+        raise RuntimeError(f"백업 파일이 이미 존재함: {dst}")
+    shutil.copy2(path, dst)
+    return dst
+
+
+def save_bank_atomic(
+    path: str | Path, emb, labs: list[str], invs: list[str], keys: list[str]
+) -> None:
+    """검증 통과 시에만 tmp에 쓰고 rename한다 — 부분 쓰기로 운영 뱅크를 깨지 않는다."""
+    import numpy as np
+
+    emb = np.asarray(emb, dtype="float32")
+    validate_bank_arrays(emb, labs, invs, keys)
+    path = Path(path)
+    # tmp 파일명이 .npz로 끝나야 np.savez가 확장자를 추가로 덧붙이지 않는다.
+    tmp = path.with_name(path.name + ".tmp.npz")
+    try:
+        np.savez(
+            tmp,
+            emb=emb,
+            lab=np.array(labs, object),
+            inv=np.array(invs, object),
+            keys=np.array(keys, object),
+        )
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+    os.replace(tmp, path)
