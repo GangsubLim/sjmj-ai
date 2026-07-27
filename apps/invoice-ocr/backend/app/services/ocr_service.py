@@ -1,11 +1,12 @@
 """OCR 잡 업로드·조회·확정. confirm은 행잠금 claim으로 중복 invoice 생성을 막는다."""
 
 import os
+import re
 import uuid
 from pathlib import Path
 
 from app import db
-from app.core.errors import conflict, not_found
+from app.core.errors import bad_request, conflict, not_found
 from app.repositories.companies_repository import CompanyRepository
 from app.repositories.curation_repository import CurationRepository
 from app.repositories.items_repository import ItemRepository
@@ -21,6 +22,39 @@ def _upload_root() -> Path:
     p = Path(raw) / "ocr_uploads"
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+_ALLOWED_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
+# 파일명은 저장 경로(image_path)로 흘러 하류 도구(원격 셸 조립·TSV 파싱)까지 전파되므로
+# 신뢰 경계인 여기서 제어문자를 차단한다(salespeople_service._CONTROL_CHAR와 같은 범위).
+_CONTROL_CHAR = re.compile(r"[\x00-\x1F\x7F]")
+
+
+def _validated_suffix(filename: str) -> str:
+    """업로드 파일명을 검증하고 소문자로 정규화한 확장자를 반환한다.
+
+    Args:
+        filename: 클라이언트가 보낸 원본 파일명(신뢰할 수 없는 입력).
+
+    Returns:
+        `.jpg` / `.jpeg` / `.png` 중 하나(소문자).
+
+    Raises:
+        AppError: 파일명에 제어문자가 있거나 허용되지 않은 확장자일 때 400 VALIDATION_ERROR.
+    """
+    name = filename or ""
+    if _CONTROL_CHAR.search(name):
+        bad_request(
+            "파일명에 허용되지 않는 문자가 포함되어 있습니다.",
+            {"photo": "파일명에 제어문자를 사용할 수 없습니다."},
+        )
+    suffix = Path(name).suffix.lower()
+    if suffix not in _ALLOWED_SUFFIXES:
+        bad_request(
+            "jpg/jpeg/png 형식만 업로드할 수 있습니다.",
+            {"photo": "jpg/jpeg/png 확장자만 업로드할 수 있습니다."},
+        )
+    return suffix
 
 
 class OcrService:
