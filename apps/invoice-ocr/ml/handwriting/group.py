@@ -185,3 +185,22 @@ def proposal_to_dict(proposal):
             for r in proposal.rows
         ],
     }
+
+
+def merge_amounts(entries):
+    """블록 내 행별 (금액|None, 원문)을 병합해 (병합금액|None, 병합원문)을 반환한다.
+
+    entries는 밴드 순서(new 먼저, cont 순차). 금액은 None을 제외한 부분 합산이며 전부 None이면
+    None. 원문은 1행이면 그대로 보존하고, 2행 이상이면 '+'로 join하되 None 항목은 '?'로 적는다.
+
+    Args:
+        entries: 블록 내 행별 (금액|None, OCR 원문) 시퀀스.
+
+    Returns:
+        (병합금액|None, 병합원문) 한 쌍.
+    """
+    vals = [v for v, _ in entries if v is not None]
+    total = sum(vals) if vals else None
+    if len(entries) == 1:
+        return total, entries[0][1]
+    return total, "+".join(txt if v is not None else "?" for v, txt in entries)
