@@ -4,7 +4,7 @@ infer_demo.py는 뱅크 내부 crop만 채점(leave-one-invoice-out). 이 스크
 '진짜 신규 사진'을 추론 시점과 동일 공정으로 처리한다:
   사진 → form_quad 워프+deskew → φ그리드 행 → 이중신호 분류(new/cont/empty)
        → new 행 품목 crop → ft_prod 임베딩(projection) → bank.npz retrieval top-5
-       + 같은 행의 금액칸(공급대가)을 Qwen3-VL-8B(MLX)로 숫자 전사.
+       + 같은 블록(new+cont)의 금액칸(공급대가)을 Qwen3-VL-8B(MLX)로 숫자 전사·병합.
 
 품목명은 작성자-특화 retrieval(뱅크 어휘 한정), 금액은 손글씨 VLM(Qwen3-VL)로 푼다.
 금액 인식기 선택 근거: SP1 stock PP-OCRv5는 손글씨 금액 ~10%(단일 병목)이라 폐기,
@@ -32,7 +32,7 @@ from canon import global_pitch  # noqa: E402
 from dataset_build import load_bgr_path  # noqa: E402
 from fewshot import square  # noqa: E402
 from grid_v4 import AMOUNT_X, DATA_Y, hline_ys, warp  # noqa: E402
-from group import build_proposal  # noqa: E402
+from group import block_amounts, build_proposal  # noqa: E402
 from grouping import AMT_MIN, ITEM_MIN, PAD  # noqa: E402
 from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 from rows import ITEM_X, band_features, detect_grid_rows  # noqa: E402
@@ -136,9 +136,10 @@ def topk(sims, lab, k):
 def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     """워프된 양식 w → 추론 산출. process_one(데모)과 infer_job(운영)이 공유하는 단일 경로.
 
-    행검출 → new 행 품목 crop → ft 임베딩(queries) → 같은 행 금액칸 Qwen3-VL 전사.
+    행검출 → 블록별 금액칸 Qwen3-VL 전사·병합(cont행 합산) → new 행 품목 crop → ft 임베딩(queries).
     반환: (news, crops, queries, amounts, prop, ys, P, bands).
       · 앞 4개(news/crops/queries/amounts) = infer_job result_json 입력
+        (amounts 원문은 2행 이상 블록에서 '+'로 join하며 미인식 행은 '?'로 표기, group.merge_amounts)
       · 뒤 4개(prop/ys/P/bands) = process_one 데모 HTML 오버레이/요약 컨텍스트
     HTML 조립은 process_one에만 남긴다(추론은 여기서 한 번만 한다 — DRY).
     """
@@ -151,18 +152,20 @@ def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     prop = build_proposal(
         bands, item_inks, amt_inks, stroke_rows, [], item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD
     )
-    news = [r for r in prop.rows if r.rtype == "new" and r.box]
+    # 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리). new행 선별·cont행 합산은
+    # block_amounts가 소유한다 — 약식 분해로 품목칸이 빈 행(cont)의 금액도 여기서 읽힌다.
+    ax0, ax1 = AMOUNT_X
+
+    def read_fn(r):
+        return read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter))
+
+    news, amounts = block_amounts(prop.rows, read_fn)
 
     # new 행 품목 crop → 임베딩 → 뱅크 retrieval 쿼리
     x1, x2 = ITEM_X
-    ax0, ax1 = AMOUNT_X
     crops = [w[r.box[0] : r.box[1], x1 - 4 : x2 + 4] for r in news]
     queries = embed_crops(model, crops, device) if crops else np.zeros((0, 0))
 
-    # 같은 행 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리)
-    amounts = [
-        read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter)) for r in news
-    ]
     return news, crops, queries, amounts, prop, ys, P, bands
 
 
