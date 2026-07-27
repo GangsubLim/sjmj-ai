@@ -20,6 +20,7 @@ from tools.bank_update import (
     bank_current_map,
     cmd_apply,
     cmd_plan,
+    cmd_score,
     diff_bank,
     diff_from_records,
     has_peer_sample,
@@ -35,6 +36,7 @@ from tools.bank_update import (
     prune_missing_crops,
     render_score_md,
     require_env,
+    require_removal_confirmation,
     save_bank_atomic,
     score_one,
     score_summary,
@@ -250,6 +252,15 @@ def test_diff_from_records_rejects_record_missing_required_key():
         diff_from_records([{"action": "add"}])
 
 
+def test_diff_from_records_rejects_non_dict_record():
+    """plan.jsonl 한 줄이 JSON 문자열/배열이면 `k not in record`가 부분문자열·원소 검사로
+    통과해 이후 인덱싱에서 원시 TypeError가 난다 — 어느 레코드가 문제인지 담아 즉시 실패해야 한다."""
+    with pytest.raises(ValueError, match="객체가 아님"):
+        diff_from_records(["action crop_ref"])
+    with pytest.raises(ValueError, match="객체가 아님"):
+        diff_from_records([["action", "crop_ref"]])
+
+
 def test_diff_from_records_rejects_unknown_action():
     with pytest.raises(ValueError, match="미지의 action"):
         diff_from_records([{"action": "bogus", "crop_ref": "job-1/row-0"}])
@@ -261,12 +272,14 @@ def test_diff_from_records_rejects_invalid_crop_ref_format():
 
 
 def test_diff_from_records_rejects_add_record_missing_label():
-    with pytest.raises(ValueError, match="label"):
+    with pytest.raises(ValueError, match="유효한 label 없음"):
         diff_from_records([{"action": "add", "crop_ref": "job-1/row-0"}])
 
 
 def test_diff_from_records_rejects_replace_record_with_non_string_label():
-    with pytest.raises(ValueError, match="label"):
+    """`match="label"`은 과대 매칭이다 — 모든 에러 메시지가 끝에 record를 담고 그 record에
+    label 키가 있어, label 검증이 사라져도 다른 분기가 대신 실패하면 통과한다."""
+    with pytest.raises(ValueError, match="유효한 label 없음"):
         diff_from_records([{"action": "replace", "crop_ref": "job-1/row-0", "label": 123}])
 
 
@@ -341,12 +354,15 @@ def _emb(n, dim=EMB_DIM, base=1.0):
     return np.array([[base + i] * dim for i in range(n)], dtype="float32").reshape(n, dim)
 
 
-def _write_bank(path, refs, labs):
-    """합성 bank.npz를 쓴다 — 운영 스키마(emb/lab/inv/keys) 그대로."""
+def _write_bank(path, refs, labs, emb=None):
+    """합성 bank.npz를 쓴다 — 운영 스키마(emb/lab/inv/keys) 그대로.
+
+    emb를 주면 그대로 쓴다(retrieval 채점처럼 임베딩 값이 결과를 좌우하는 테스트용).
+    """
     invs = [r.split("/", 1)[0] for r in refs]
     np.savez(
         path,
-        emb=_emb(len(refs)),
+        emb=_emb(len(refs)) if emb is None else np.asarray(emb, dtype="float32"),
         lab=np.array(labs, object),
         inv=np.array(invs, object),
         keys=np.array(refs, object),
@@ -689,6 +705,32 @@ def test_apply_sync_aborts_when_crop_file_missing(tmp_path):
     assert sorted(p.name for p in tmp_path.iterdir()) == ["bank.npz"]
 
 
+# --- 제거 안전장치 (스테일·오설정 plan의 대량 삭제 차단) ---
+
+
+def test_require_removal_confirmation_rejects_remove_plan_without_yes():
+    """apply는 plan.jsonl만 신뢰하므로, 제거는 명시 승인 없이는 실행되면 안 된다."""
+    with pytest.raises(RuntimeError, match="제거 2건"):
+        require_removal_confirmation(
+            [_rec("remove", "job-1/row-0"), _rec("remove", "job-2/row-0")], confirmed=False
+        )
+
+
+def test_require_removal_confirmation_allows_add_only_plan_without_yes():
+    records = [_rec("add", "job-1/row-0", "안가방"), _rec("replace", "job-2/row-0", "공임")]
+    assert require_removal_confirmation(records, confirmed=False) is None
+
+
+def test_require_removal_confirmation_allows_remove_plan_with_yes():
+    assert require_removal_confirmation([_rec("remove", "job-1/row-0")], confirmed=True) is None
+
+
+def test_require_removal_confirmation_validates_records_before_counting():
+    """형식 불량 plan은 승인 여부와 무관하게 여기서 먼저 죽는다(뱅크를 열기 전)."""
+    with pytest.raises(ValueError, match="crop_ref 형식 불량"):
+        require_removal_confirmation([_rec("remove", "legacy_key_1")], confirmed=True)
+
+
 # --- score: leave-self-out retrieval (§3 score) ---
 
 _LABS = ["안가방", "공임", "안가방"]
@@ -760,13 +802,42 @@ def test_score_summary_splits_peer_denominator():
     assert s["top1"] == 1 and s["peer_n"] == 1 and s["peer_top1"] == 1
 
 
-def test_render_score_md_shows_before_and_after_coverage():
+def _score_rec(*, in_bank=False, top1=False, top5=False, has_peer=False):
+    return {"in_bank": in_bank, "top1": top1, "top5": top5, "has_peer": has_peer}
+
+
+def test_render_score_md_renders_every_cell_with_before_after_percentages():
+    """헤더 문자열만 보면 before 열 누락·before/after 뒤바뀜·퍼센트 오산을 못 잡는다."""
+    before = score_summary(
+        [_score_rec(in_bank=True, top1=True, top5=True, has_peer=True)] + [_score_rec()] * 3
+    )
+    after = score_summary(
+        [
+            _score_rec(in_bank=True, top1=True, top5=True, has_peer=True),
+            _score_rec(in_bank=True, top5=True, has_peer=True),
+            _score_rec(in_bank=True),
+            _score_rec(in_bank=True),
+        ]
+    )
+    md = render_score_md(before, after, {"bank_before": 100, "bank_after": 120})
+
+    assert "- 뱅크 크기: 100 → 120" in md
+    assert "- 채점 대상(desired 쌍): 4건" in md
+    assert "| 커버리지 in-bank(self 포함) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
+    assert "| 커버리지 out_of_bank | 3/4 (75.0%) | 0/4 (0.0%) |" in md
+    assert "| leave-self-out top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
+    assert "| leave-self-out top-5 | 1/4 (25.0%) | 2/4 (50.0%) |" in md
+    assert "| peer 존재 한정 top-1 | 1/1 (100.0%) | 1/2 (50.0%) |" in md
+    assert "| peer 존재 한정 top-5 | 1/1 (100.0%) | 2/2 (100.0%) |" in md
+
+
+def test_render_score_md_renders_dash_when_denominator_is_zero():
+    """채점 대상 0건에서도 ZeroDivisionError 없이 '0/0 (—)'로 렌더돼야 한다."""
     empty = score_summary([])
-    filled = score_summary([{"in_bank": True, "top1": True, "top5": True, "has_peer": True}])
-    md = render_score_md(empty, filled, {"bank_before": 100, "bank_after": 120})
-    assert "커버리지" in md
-    assert "leave-self-out" in md
-    assert "120" in md
+    md = render_score_md(empty, empty, {})
+    assert "- 뱅크 크기: ? → ?" in md
+    assert "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in md
+    assert "| peer 존재 한정 top-1 | 0/0 (—) | 0/0 (—) |" in md
 
 
 # --- DB TSV 파싱 / env 경계 / CLI (mysql 호출 자체는 단위테스트 범위 밖) ---
@@ -875,24 +946,182 @@ def test_cmd_plan_writes_plan_jsonl_and_only_prunes_missing_crops_for_add_or_rep
     assert records == [{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}]
 
 
+def _apply_workspace(tmp_path, monkeypatch, bank_refs, bank_labs):
+    """cmd_apply용 합성 운영 트리(models/bank.npz + data/ocr_crops) + env·Fake 임베딩 주입."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    crops_root = tmp_path / "data" / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _write_bank(models_dir / "bank.npz", bank_refs, bank_labs)
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _fake_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+    return models_dir, crops_root
+
+
 def test_cmd_apply_consumes_plan_jsonl_and_updates_bank(tmp_path, monkeypatch):
+    models_dir, crops_root = _apply_workspace(tmp_path, monkeypatch, ["job-1/row-0"], ["안가방"])
+    _touch_crop(crops_root, "job-2/row-0")
+
+    plan_path = tmp_path / "plan.jsonl"
+    plan_path.write_text('{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}\n')
+
+    cmd_apply(SimpleNamespace(plan=plan_path, yes=False))
+
+    _, labs, _, keys = load_bank(models_dir / "bank.npz")
+    assert keys == ["job-1/row-0", "job-2/row-0"]
+    assert labs == ["안가방", "공임"]
+
+
+def test_cmd_apply_reports_worker_restart_requirement(tmp_path, monkeypatch, capsys):
+    """워커는 기동 시 1회만 뱅크를 적재하므로, 재시작 전까지 갱신은 추론에 반영되지 않는다."""
+    _, crops_root = _apply_workspace(tmp_path, monkeypatch, ["job-1/row-0"], ["안가방"])
+    _touch_crop(crops_root, "job-2/row-0")
+    plan_path = tmp_path / "plan.jsonl"
+    plan_path.write_text('{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}\n')
+
+    cmd_apply(SimpleNamespace(plan=plan_path, yes=False))
+
+    out = capsys.readouterr().out
+    assert "ml-worker" in out and "재시작" in out
+
+
+def test_cmd_apply_refuses_remove_plan_without_yes(tmp_path, monkeypatch):
+    """스테일·오설정 plan(예: 잘못된 --backend-env로 reviewed 0건 → 전량 remove)의 대량 삭제 차단."""
+    models_dir, _ = _apply_workspace(
+        tmp_path, monkeypatch, ["job-1/row-0", "job-2/row-0"], ["안가방", "공임"]
+    )
+    bank = models_dir / "bank.npz"
+    before = bank.read_bytes()
+    plan_path = tmp_path / "plan.jsonl"
+    plan_path.write_text(
+        '{"action": "remove", "crop_ref": "job-1/row-0"}\n'
+        '{"action": "remove", "crop_ref": "job-2/row-0"}\n'
+    )
+
+    with pytest.raises(RuntimeError, match="--yes"):
+        cmd_apply(SimpleNamespace(plan=plan_path, yes=False))
+
+    assert bank.read_bytes() == before
+    assert sorted(p.name for p in models_dir.iterdir()) == ["bank.npz"]
+
+
+def test_cmd_apply_applies_remove_plan_when_confirmed(tmp_path, monkeypatch):
+    models_dir, _ = _apply_workspace(
+        tmp_path, monkeypatch, ["job-1/row-0", "job-2/row-0"], ["안가방", "공임"]
+    )
+    plan_path = tmp_path / "plan.jsonl"
+    plan_path.write_text('{"action": "remove", "crop_ref": "job-1/row-0"}\n')
+
+    cmd_apply(SimpleNamespace(plan=plan_path, yes=True))
+
+    assert load_bank(models_dir / "bank.npz")[3] == ["job-2/row-0"]
+
+
+def test_main_apply_defaults_to_refusing_removals(monkeypatch):
+    """--yes는 opt-in이어야 한다 — 기본값이 뒤집히면 제거 안전장치가 통째로 무력화된다."""
+    parsed = {}
+    monkeypatch.setattr(
+        "tools.bank_update.cmd_apply", lambda args: parsed.update(yes=args.yes, plan=args.plan)
+    )
+    main(["apply", "--plan", "plan.jsonl"])
+    assert parsed["yes"] is False
+
+    main(["apply", "--plan", "plan.jsonl", "--yes"])
+    assert parsed["yes"] is True
+
+
+# --- score CLI 오케스트레이션 (행 정렬이 어긋나면 예외 없이 점수만 조용히 틀린다) ---
+
+_SCORE_SLOT = {"job-1/row-0": 0, "job-2/row-0": 1, "job-3/row-0": 1}
+
+
+def _onehot(slot):
+    vec = np.zeros(EMB_DIM, dtype="float32")
+    vec[slot] = 1.0
+    return vec
+
+
+def _onehot_embed(paths):
+    """crop 경로 → ref별 one-hot 벡터. 상수 벡터와 달리 '어느 쿼리 행인지'가 점수에 드러난다."""
+    rows = [_onehot(_SCORE_SLOT[f"{Path(p).parent.name}/{Path(p).stem}"]) for p in paths]
+    return np.array(rows, dtype="float32").reshape(len(rows), EMB_DIM)
+
+
+def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, monkeypatch):
+    """queries[i]는 valid[i]의 임베딩이어야 한다 — 어긋나면 after top-1이 조용히 무너진다."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
-    _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"])
-    _touch_crop(crops_root, "job-2/row-0")
+    for ref in ("job-1/row-0", "job-2/row-0"):
+        _touch_crop(crops_root, ref)
 
-    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _fake_embed)
+    before_bank = _write_bank(tmp_path / "before.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
+    after_bank = _write_bank(
+        models_dir / "bank.npz",
+        ["job-3/row-0", "job-1/row-0", "job-2/row-0"],
+        ["공임", "안가방", "공임"],
+        emb=[_onehot(1), _onehot(0), _onehot(1)],
+    )
+
+    pairs = [
+        _pair(crop_ref="job-1/row-0", canonical_label="안가방"),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="공임"),
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1, 2})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
     monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
-    plan_path = tmp_path / "plan.jsonl"
-    plan_path.write_text('{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}\n')
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(backend_env="dummy.env", out=out_dir, before=before_bank, after=after_bank)
+    )
 
-    cmd_apply(SimpleNamespace(plan=plan_path))
+    rows = [
+        json.loads(ln) for ln in (out_dir / "score.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    by_ref = {(r["side"], r["crop_ref"]): r for r in rows}
+    assert len(rows) == 4
 
-    _, labs, _, keys = load_bank(models_dir / "bank.npz")
-    assert keys == ["job-1/row-0", "job-2/row-0"]
-    assert labs == ["안가방", "공임"]
+    # before: 안가방은 뱅크에 없고(out_of_bank), 공임은 peer(job-3/row-0)로 맞춘다.
+    assert by_ref[("before", "job-1/row-0")]["in_bank"] is False
+    assert by_ref[("before", "job-2/row-0")]["top1"] is True
+
+    # after: 안가방이 들어와 커버리지는 hit이지만 자기 자신뿐이라 leave-self-out은 구조적 miss.
+    after_1 = by_ref[("after", "job-1/row-0")]
+    assert after_1["in_bank"] is True and after_1["has_peer"] is False and after_1["top1"] is False
+    after_2 = by_ref[("after", "job-2/row-0")]
+    assert after_2["top1"] is True and after_2["preds"][0] == "공임"
+
+    md = (out_dir / "score.md").read_text()
+    assert "- 뱅크 크기: 1 → 3" in md
+    assert "| 커버리지 in-bank(self 포함) | 1/2 (50.0%) | 2/2 (100.0%) |" in md
+
+
+def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
+    """크롭이 없는 쌍은 임베딩할 수 없어 채점 대상에서 빠진다(0건이어도 리포트는 렌더된다)."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    (data_dir / "ocr_crops").mkdir(parents=True)
+    bank = _write_bank(models_dir / "bank.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
+
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs", lambda backend_env: [_pair(canonical_label="안가방")]
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+
+    assert (out_dir / "score.jsonl").read_text().strip() == ""
+    assert (
+        "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
+    )

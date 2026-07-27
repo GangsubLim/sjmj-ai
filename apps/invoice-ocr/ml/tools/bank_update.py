@@ -144,7 +144,14 @@ def plan_records(diff: BankDiff, label_by_ref: dict[str, str]) -> list[dict]:
 
 
 def _validate_plan_record(index: int, record: dict) -> None:
-    """레코드 1건의 필수 키·action·crop_ref 형식·label 요건을 검증한다."""
+    """레코드 1건의 타입·필수 키·action·crop_ref 형식·label 요건을 검증한다.
+
+    dict 검사가 먼저인 이유: plan.jsonl 한 줄이 JSON 문자열/배열이면 아래 `k not in record`가
+    부분문자열·원소 검사로 통과해 버려, 뒤의 인덱싱에서 어느 레코드가 문제인지 알 수 없는
+    원시 TypeError가 난다.
+    """
+    if not isinstance(record, dict):
+        raise ValueError(f"plan 레코드 {index}가 JSON 객체가 아님: {record!r}")
     missing = [k for k in ("action", "crop_ref") if k not in record]
     if missing:
         raise ValueError(f"plan 레코드 {index}에 필수 키 누락 {missing}: {record}")
@@ -619,17 +626,55 @@ def cmd_plan(args) -> None:
         print(f"  보류 {ref}: missing_crop (추가·교체만 보류 — 기존 뱅크 항목은 유지)")
 
 
+REMOVE_PREVIEW = 5
+RESTART_HINT = (
+    "ml-worker는 기동 시 1회만 뱅크를 적재한다(worker/main.py) — 재시작해야 추론에 반영된다:\n"
+    "  launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker"
+)
+
+
+def require_removal_confirmation(records: list[dict], *, confirmed: bool) -> None:
+    """제거가 포함된 plan은 명시 승인(--yes) 없이는 거부한다 — 대량 삭제 안전장치.
+
+    apply는 plan.jsonl만 신뢰하므로 plan 산출 시점의 DB/뱅크 상태를 재확인하지 않는다.
+    그래서 ① plan 이후 다시 desired가 된 항목을 스테일 plan이 지우거나, ② 잘못된
+    `--backend-env`로 만든 plan(reviewed 0건 → 뱅크 crop_ref 전량 remove)이 그대로
+    실행될 수 있다. 추가·교체는 재실행이 멱등이라 그대로 통과시키고(merge_plan 참조),
+    되돌릴 수 없는 제거에만 사람의 확인을 요구한다.
+
+    Args:
+        records: plan.jsonl에서 읽은 레코드 목록. 여기서 형식 검증도 함께 수행된다.
+        confirmed: `--yes`로 제거를 승인했는지 여부.
+
+    Raises:
+        ValueError: 레코드 형식이 불량할 때(diff_from_records 계약).
+        RuntimeError: 제거가 있는데 승인되지 않았을 때.
+    """
+    removes = diff_from_records(records).remove
+    if not removes or confirmed:
+        return
+    preview = ", ".join(removes[:REMOVE_PREVIEW])
+    more = f" 외 {len(removes) - REMOVE_PREVIEW}건" if len(removes) > REMOVE_PREVIEW else ""
+    raise RuntimeError(
+        f"plan에 제거 {len(removes)}건이 있습니다 — 되돌릴 수 없으므로 --yes 없이는 "
+        f"실행하지 않습니다. 대상이 맞는지 plan을 재산출해 확인하세요: {preview}{more}"
+    )
+
+
 def cmd_apply(args) -> None:
-    """plan.jsonl대로 뱅크를 sync한다(백업 자동 생성)."""
+    """plan.jsonl대로 뱅크를 sync한다(백업 자동 생성 · 제거는 --yes 필요)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
     records = [json.loads(ln) for ln in args.plan.read_text().splitlines() if ln.strip()]
+    require_removal_confirmation(records, confirmed=args.yes)
     summary = apply_sync(models_dir / "bank.npz", records, crops_root, prod_embed_fn(models_dir))
     print(
         f"백업: {summary['backup'] or '생략(변경 없음)'}\n"
         f"추가 {summary['added']} · 교체 {summary['replaced']} · "
         f"제거 {summary['removed']} · 뱅크 {summary['before']} → {summary['after']}"
     )
+    if summary["backup"]:
+        print(RESTART_HINT)
 
 
 def cmd_score(args) -> None:
@@ -681,6 +726,11 @@ def main(argv: list[str] | None = None) -> None:
     # — 조용히 무시되던 옵션을 파서 단계에서 거부한다.
     p_apply = sub.add_parser("apply", help="plan.jsonl대로 뱅크 sync(백업 자동)")
     p_apply.add_argument("--plan", type=Path, required=True, help="plan.jsonl 경로")
+    p_apply.add_argument(
+        "--yes",
+        action="store_true",
+        help="제거가 포함된 plan 실행을 승인한다(되돌릴 수 없는 삭제 — 기본은 거부)",
+    )
     p_score = sub.add_parser("score", parents=[common], help="before/after 뱅크 동일 채점기 비교")
     p_score.add_argument("--before", type=Path, required=True, help="갱신 전 뱅크(.npz.bak)")
     p_score.add_argument("--after", type=Path, required=True, help="갱신 후 뱅크(bank.npz)")

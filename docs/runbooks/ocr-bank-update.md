@@ -76,6 +76,14 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
 ```
 
 - **`plan` 산출 후 DB(큐레이션 검수·제외 상태)를 건드렸다면 `apply` 전에 `plan`을 다시 실행한다.** `plan.jsonl`은 실행 시점의 스냅샷이며 `apply`는 그 파일만 신뢰한다.
+- **제거가 포함된 plan은 `--yes` 없이는 거부된다.** 되돌릴 수 없는 삭제이기 때문이다. 붙이기 전에
+  1단계 `plan` 출력의 제거 건수·대상이 의도한 것인지 확인한다 — 잘못된 `--backend-env`로 만든 plan은
+  검수 완료 잡이 0건으로 조회돼 **뱅크의 crop_ref 항목 전량이 제거 대상**으로 나온다.
+
+  ```bash
+  "$PYTHON_BIN" -m tools.bank_update apply --plan results/bank_update/plan.jsonl --yes
+  ```
+
 - 실행 전 `$SJMJ_ML_MODELS_DIR/bank.{YYYYMMDD-HHMMSS}.npz.bak` 백업을 만든다(백업 실패 시 중단).
 - 임베딩은 운영 추론과 동일 경로(`square` → `EVAL_TF` → `ItemEncoder` projection, CPU).
 - 저장 전 정합 검증(4배열 길이·`emb` 128차원·NaN/inf 없음)을 통과해야 하고, tmp 파일에 쓴 뒤
@@ -129,6 +137,7 @@ launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
 | `뱅크 npz 키 구조 불일치`   | 대상 파일이 운영 뱅크가 아님(`emb/lab/inv/keys` 4배열 필요) — 경로 확인                                                                                     |
 | `plan`은 나오는데 대상 0건  | 잡이 검수 완료(0단계)되지 않았을 가능성이 가장 높다                                                                                                         |
 | `제외 ... missing_crop`     | 크롭 PNG가 지워졌거나 재처리로 경로가 어긋남 — 해당 잡 재처리 여부 확인                                                                                     |
+| `--yes` 없이 거부           | plan에 제거가 있다 — 대상이 의도한 것인지 확인 후 `--yes` 추가. 예상 밖의 대량 제거면 `plan`을 올바른 `--backend-env`로 재산출한다                          |
 | `임베딩 개수 불일치`        | 크롭 읽기 실패 — 뱅크는 쓰이지 않았으므로 원인 해결 후 재실행. 백업(`.npz.bak`)은 임베딩보다 먼저 만들어지므로 사용되지 않은 백업 파일이 남을 수 있다(무해) |
 
 ## 참고
