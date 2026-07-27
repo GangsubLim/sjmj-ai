@@ -11,7 +11,9 @@ infer_photo는 모듈 레벨 cv2/torch import라 paddle-free 코어 venv에서 i
 import re
 from collections.abc import Callable
 
-# 재시도 원문 구분자 — 시도별 원문을 이 문자로 join해 재시도 발생·성공 여부를 raw만으로 복원한다.
+# 재시도 원문 구분자 — 시도별 원문을 이 문자로 join해 재시도 발생·성공 여부를 raw에서 읽는다.
+# 판독기가 이 문자를 스스로 출력할 가능성은 배제하지 못하므로, 시도 횟수 복원은 보장이 아니라
+# 진단용 추정이다(하류는 amount_raw를 표시·전달만 하고 재파싱하지 않는다).
 ATTEMPT_SEP = "→"
 
 

@@ -23,12 +23,23 @@ def test_parse_amount_returns_none_when_no_digits():
     assert raw == "!!!"
 
 
+@pytest.mark.parametrize("txt", ["", "   ", "\n"])
+def test_parse_amount_empty_output_is_none_not_zero(txt):
+    # 빈/공백-only 출력도 퇴화다 — falsy 원문을 0으로 접는 회귀를 막는다
+    assert parse_amount(txt) == (None, "")
+
+
 def _fake_reader(outs):
     """시도별 출력을 순서대로 돌려주고 받은 attempt 인덱스를 기록하는 가짜 판독기."""
     calls = []
 
     def read_once(attempt):
         calls.append(attempt)
+        if attempt >= len(outs):
+            # 초과 호출은 SUT 회귀다 — IndexError로 튀면 예외 전파 테스트와 실패 형태가 겹친다
+            pytest.fail(
+                f"read_once가 준비된 출력({len(outs)}개)보다 많이 호출됨: attempt={attempt}"
+            )
         return outs[attempt]
 
     return read_once, calls
@@ -50,10 +61,28 @@ def test_degenerate_first_attempt_retries_and_succeeds():
 def test_all_attempts_degenerate_keeps_none_not_zero():
     read_once, calls = _fake_reader(["!!!", "!!!"])
     value, raw = read_amount_with_retry(read_once)
-    assert value is None
-    assert value != 0  # 미판독(None)을 빈칸(0)으로 기록하지 않는다
+    assert value is None  # 미판독(None)을 빈칸(0)으로 기록하지 않는다
     assert raw == "!!!→!!!"
     assert len(calls) == 2
+
+
+def test_empty_raws_are_kept_so_attempt_count_is_recoverable():
+    # 빈 원문도 버리지 않는다(amount_read.py의 raws.append 불변식) — 시도 흔적이 raw에 남아야 한다
+    read_once, calls = _fake_reader(["", ""])
+    assert read_amount_with_retry(read_once) == (None, "→")
+    assert calls == [0, 1]
+
+
+def test_attempts_one_disables_retry():
+    read_once, calls = _fake_reader(["!!!", "1500"])
+    assert read_amount_with_retry(read_once, attempts=1) == (None, "!!!")
+    assert calls == [0]
+
+
+def test_attempts_three_allows_two_retries():
+    read_once, calls = _fake_reader(["!!!", "!!!", "1500"])
+    assert read_amount_with_retry(read_once, attempts=3) == (1500, "!!!→!!!→1500")
+    assert calls == [0, 1, 2]
 
 
 def test_zero_reading_is_valid_not_degenerate():
