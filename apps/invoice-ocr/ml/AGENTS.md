@@ -21,6 +21,7 @@ handwriting/    손글씨 인식 추론 (git-tracked, production). worker가 imp
 worker/         배포된 ml-worker (worker.main — macmini launchd 상시 실행, git-tracked)
 tests/          pytest. test_*.py — ocr_poc/* 1:1 대응 (+ handwriting 추론 테스트)
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
+                curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore
