@@ -1,11 +1,12 @@
 """OCR 잡 업로드·조회·확정. confirm은 행잠금 claim으로 중복 invoice 생성을 막는다."""
 
 import os
+import re
 import uuid
 from pathlib import Path
 
 from app import db
-from app.core.errors import conflict, not_found
+from app.core.errors import bad_request, conflict, not_found
 from app.repositories.companies_repository import CompanyRepository
 from app.repositories.curation_repository import CurationRepository
 from app.repositories.items_repository import ItemRepository
@@ -23,6 +24,40 @@ def _upload_root() -> Path:
     return p
 
 
+_ALLOWED_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
+# 저장 경로에 이어붙는 것은 suffix뿐(stem은 폐기)이며 화이트리스트가 주 방어선.
+# 제어문자 검사는 이슈 #21 AC가 요구한 심층 방어(비용 0)로,
+# salespeople_service._CONTROL_CHAR와 같은 범위다(수정 시 함께 갱신).
+_CONTROL_CHAR = re.compile(r"[\x00-\x1F\x7F]")
+
+
+def _validated_suffix(filename: str) -> str:
+    """업로드 파일명을 검증하고 소문자로 정규화한 확장자를 반환한다.
+
+    Args:
+        filename: 클라이언트가 보낸 원본 파일명(신뢰할 수 없는 입력).
+
+    Returns:
+        `.jpg` / `.jpeg` / `.png` 중 하나(소문자).
+
+    Raises:
+        AppError: 파일명에 제어문자가 있거나 허용되지 않은 확장자일 때 400 VALIDATION_ERROR.
+    """
+    name = filename or ""
+    if _CONTROL_CHAR.search(name):
+        bad_request(
+            "파일명에 허용되지 않는 문자가 포함되어 있습니다.",
+            {"photo": "파일명에 제어문자를 사용할 수 없습니다."},
+        )
+    suffix = Path(name).suffix.lower()
+    if suffix not in _ALLOWED_SUFFIXES:
+        bad_request(
+            "jpg/jpeg/png 형식만 업로드할 수 있습니다.",
+            {"photo": "jpg/jpeg/png 확장자만 업로드할 수 있습니다."},
+        )
+    return suffix
+
+
 class OcrService:
     """OCR 잡 업로드·조회·확정을 담당하는 서비스."""
 
@@ -36,8 +71,12 @@ class OcrService:
         self.curation_repo = curation_repo or CurationRepository()
 
     def create_job(self, photo_bytes: bytes, filename: str) -> dict:
-        """업로드 이미지를 저장하고 OCR 잡을 생성해 job_id와 상태를 반환한다."""
-        suffix = Path(filename or "").suffix.lower() or ".jpg"
+        """업로드 이미지를 저장하고 OCR 잡을 생성해 job_id와 상태를 반환한다.
+
+        Raises:
+            AppError: 파일명이 허용 확장자(.jpg/.jpeg/.png)가 아니거나 제어문자를 포함할 때 400.
+        """
+        suffix = _validated_suffix(filename)
         dest = _upload_root() / f"{uuid.uuid4().hex}{suffix}"
         dest.write_bytes(photo_bytes)
         job_id = self.repo.insert_job(str(dest))

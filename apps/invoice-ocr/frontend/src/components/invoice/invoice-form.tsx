@@ -416,7 +416,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               <input
                 ref={photoInputRef}
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png"
                 className="hidden"
                 onChange={handlePhotoSelect}
               />
