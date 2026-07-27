@@ -104,7 +104,16 @@ def read_amount(qwen, cell_bgr, tmp_dir, idx):
     def read_once(attempt):
         png = tmp_dir / attempt_png_name(idx, attempt)
         cv2.imwrite(str(png), cell_bgr)
-        out = generate(model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False)
+        try:
+            out = generate(
+                model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False
+            )
+        finally:
+            # generate() 반환 후 이 PNG를 읽는 소비자는 없다(큐레이션 포렌식은 raw 텍스트와
+            # crop_out_dir/row-*.png를 쓴다 — 여기 tmp_dir이 아니다). 즉시 지워 mkdtemp 잔존
+            # 디렉터리에 쌓이는 파일을 없앤다(디렉터리 자체 정리는 호출자 infer_job.py 몫,
+            # 동결 대상이라 이 PR 범위 밖).
+            png.unlink(missing_ok=True)
         return out if isinstance(out, str) else getattr(out, "text", str(out))
 
     return read_amount_with_retry(read_once)
