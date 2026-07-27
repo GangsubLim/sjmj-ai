@@ -87,6 +87,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-suffix: backend
+          cache-dependency-glob: apps/invoice-ocr/backend/uv.lock
       - name: Install dependencies
         run: uv sync --frozen
       - name: Pytest with coverage
@@ -109,9 +111,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
+          cache-suffix: ml
+          cache-dependency-glob: apps/invoice-ocr/ml/uv.lock
       - name: Install dependencies
         # worker extra(sqlalchemy/pymysql)는 test_worker_db가 import한다.
-        # ml extra(paddle)는 테스트가 지연 import라 불필요 → 가볍게 worker만.
-        run: uv sync --frozen --extra worker
+        # cv extra(opencv-headless/numpy)는 warp_gate.compute_metrics 테스트가 쓴다.
+        # ml extra(paddle)는 테스트가 지연 import라 불필요 → 가볍게 worker+cv만.
+        run: uv sync --frozen --extra worker --extra cv
       - name: Pytest
         run: uv run pytest -q

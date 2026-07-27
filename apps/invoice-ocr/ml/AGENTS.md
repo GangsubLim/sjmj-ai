@@ -36,6 +36,13 @@ git-tracked는 `ocr_poc/ handwriting/ worker/ tests/ tools/ pyproject.toml READM
 ```bash
 uv sync                    # 코어(경량): pillow + pytest 만
 uv sync --extra ml         # paddle 계열 (실모델 실행 시)
+uv sync --extra worker --extra cv   # 테스트 전량(worker DB + warp_gate cv2 글루) — CI와 동일 조합
+# ⚠️ --extra ml과 --extra cv 동시 설치는 pyproject.toml [tool.uv].conflicts로 도구가 강제
+#    차단한다(hard fail) — opencv-contrib-python(paddlex 경유)과 opencv-python-headless가
+#    같은 cv2/ 경로에 겹쳐 설치되는 것(OpenCV 공식 비권장)을 막기 위함.
+#    실제 함정은 조합 축소 쪽: 가지치기 주체는 `uv sync`다(`uv run --extra`는 추가만 하고
+#    가지치기하지 않는다). 즉 worker+cv로 동기화된 .venv에서 `uv sync --extra ml`을 돌리면
+#    worker+cv가 제거된다(다시 --extra worker --extra cv로 sync해야 복구, paddle 재설치 수 분).
 uv run pytest              # 테스트 (실데이터 비의존, 합성만)
 cp .env.example .env       # 데이터/DB 경로 주입
 

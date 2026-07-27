@@ -18,6 +18,17 @@ worker = [
     "sqlalchemy>=2.0",
     "pymysql>=1.1",
 ]
+# CI·로컬 테스트 전용 — compute_metrics(cv2 글루) 단위테스트를 CI에서 돌리기 위한 경량 조합.
+# 워커 런타임 의존 추가가 아니다(운영 venv엔 cv2·numpy가 이미 있고 CD는 uv sync를 하지 않는다).
+# 상한 <5: 운영 워커의 cv2가 4.x이므로 major를 맞춘다. 무상한이면 5.0.0.93이 잡혀
+# 임계를 재는 환경(4.x)과 회귀를 막는 환경(5.x)이 갈린다. 단 <5는 4.13을 주므로
+# 4.10 '동일 버전'이 아니라 major 정합까지만 보장한다(정확한 워커 버전은 Task 7에서 기록).
+# numpy도 <3 상한: cv2엔 major 상한(<5)을 걸면서 numpy만 무상한이면 가드가 비대칭이라
+# numpy 2.x가 잡혀 1.x와의 NEP 50 산술 차이로 회귀를 놓칠 수 있다.
+cv = [
+    "opencv-python-headless>=4.10,<5",
+    "numpy>=1.26,<3",
+]
 
 [dependency-groups]
 dev = [
@@ -33,6 +44,10 @@ pythonpath = ["."]
 
 [tool.uv]
 package = false
+# ml(paddle 계열)과 cv(opencv-headless)는 동시 설치 금지 — opencv-contrib-python(paddlex 경유)과
+# opencv-python-headless가 같은 cv2/ 네임스페이스에 겹쳐 설치된다(OpenCV 공식 비권장).
+# uv가 이 조합을 hard fail로 강제한다(uv 0.8.8 실측: worker+cv는 정상, ml+cv는 거부).
+conflicts = [[{ extra = "ml" }, { extra = "cv" }]]
 
 [tool.ruff]
 line-length = 100
