@@ -13,9 +13,13 @@ Usage:
     uv run python -m tools.bank_update score --before <bank.bak> --after <bank.npz>
 """
 
+import argparse
+import json
 import os
 import re
+import shlex
 import shutil
+import subprocess
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -88,6 +92,22 @@ def partition_valid(desired: list[dict]) -> tuple[list[dict], list[dict]]:
             invalid.append({**p, "reason": "empty_label"})
         else:
             valid.append({**p, "canonical_label": label})
+    return valid, invalid
+
+
+def partition_crop_ref(pairs: list[dict]) -> tuple[list[dict], list[dict]]:
+    """crop_ref 형식이 아닌 쌍을 분리해 보고 가능하게 한다(M3).
+
+    plan_records/diff_from_records는 crop_ref 형식을 뱅크 key 계약으로 전제한다.
+    형식 불량 쌍을 여기서 걸러야 apply 단계(diff_from_records의 형식 검증)에서
+    plan.jsonl 전체가 죽는 대신, plan 단계에서 개별 사유로 보고하고 배제할 수 있다.
+    """
+    valid, invalid = [], []
+    for p in pairs:
+        if is_crop_ref(p["crop_ref"]):
+            valid.append(p)
+        else:
+            invalid.append({**p, "reason": "bad_crop_ref"})
     return valid, invalid
 
 
@@ -452,3 +472,222 @@ def apply_sync(
         "before": len(keys),
         "after": len(merged_keys),
     }
+
+
+# ---------------------------------------------------------------------------
+# DB / 모델 글루 (macmini 로컬 실행 — 단위테스트 비대상)
+# ---------------------------------------------------------------------------
+
+ENV_BACKEND = ("SJMJ_BACKEND_ENV", "~/.sjmj-ai/backend.env")
+REVIEWED_SQL = "SELECT id FROM ocr_jobs WHERE curation_reviewed = 1"
+
+
+def require_env(name: str) -> str:
+    """필수 env를 읽는다. 미설정이면 즉시 실패한다(경로 하드코딩 금지 규약)."""
+    val = os.environ.get(name)
+    if not val:
+        raise RuntimeError(
+            f"{name} 미설정 — ml-worker env(~/.sjmj-ai/ml-worker.env)를 로드한 뒤 실행하세요."
+        )
+    return val
+
+
+def parse_reviewed_job_ids(text: str) -> set[int]:
+    """`SELECT id FROM ocr_jobs WHERE curation_reviewed=1`의 --batch TSV를 집합으로 파싱한다.
+
+    헤더('id')는 숫자가 아니라 자연히 걸러진다 — 헤더 유무에 의존하지 않는다(0행이면 빈 집합).
+    """
+    return {int(ln) for ln in (line.strip() for line in text.split("\n")) if ln.isdigit()}
+
+
+def _mysql(backend_env: str, sql: str) -> str:
+    """macmini 로컬 mysql CLI로 질의해 --batch TSV를 얻는다(접속값은 env 파일에서만).
+
+    backend_env는 `os.path.expanduser`로 먼저 `~`를 전개한 뒤 quote한다 — shlex.quote를
+    전개 없이 단독 적용하면 작은따옴표로 감싸져 bash의 `~` 확장이 막힌다.
+
+    H1: 파일이 없으면 셸을 띄우기 전에 즉시 fail-fast한다 — bash `source`가 실패해도
+    `set -a; source ...`만으로는 스크립트가 계속 진행돼(DB_* 미설정인 채로) mysql이
+    엉뚱한 접속값(빈 host 등)으로 조용히 실패하거나, 최악의 경우 다른 프로세스의 잔여
+    env를 오인해 조용히 성공한 것처럼 보일 위험이 있다. `|| exit 91`로 셸 내부에서도
+    한 번 더 막는다(방어 중복이지만 비용이 없다).
+    """
+    backend_env = os.path.expanduser(backend_env)
+    if not Path(backend_env).exists():
+        raise RuntimeError(f"backend env 파일 없음: {backend_env}")
+    script = (
+        f"set -a; source {shlex.quote(backend_env)} || exit 91; set +a; "
+        'export MYSQL_PWD="$DB_PASS"; '
+        'MYSQL_BIN="$(command -v mysql || echo /opt/homebrew/opt/mysql/bin/mysql)"; '
+        f'"$MYSQL_BIN" -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" --batch -e {shlex.quote(sql)}'
+    )
+    proc = subprocess.run(["bash", "-c", script], capture_output=True, check=False)
+    if proc.returncode != 0:
+        # M2: stderr 전체(비밀번호 파편 등 유출 표면)가 아닌 마지막 2줄만 예외 메시지에 담는다.
+        stderr_tail = "\n".join(proc.stderr.decode().splitlines()[-2:])
+        raise RuntimeError(f"mysql 질의 실패(exit {proc.returncode}): {stderr_tail}")
+    return proc.stdout.decode()
+
+
+def fetch_pairs(backend_env: str) -> list[dict]:
+    """training_pairs 전량을 조회한다(파서는 curation_report와 공유 — 컬럼 계약 단일화)."""
+    from tools.curation_report import PAIRS_SQL, parse_pairs_tsv
+
+    return parse_pairs_tsv(_mysql(backend_env, PAIRS_SQL))
+
+
+def fetch_reviewed_job_ids(backend_env: str) -> set[int]:
+    """검수 완료(curation_reviewed=TRUE) 잡 id를 조회한다 — ADR 0004 게이트의 입력."""
+    return parse_reviewed_job_ids(_mysql(backend_env, REVIEWED_SQL))
+
+
+def prod_embed_fn(models_dir):
+    """운영 추론과 동일 경로(square → EVAL_TF → ItemEncoder projection) 임베딩 함수를 만든다.
+
+    cv2/torch/handwriting.infer_photo는 여기서 지연 import한다(handwriting/infer_job.py 규약)
+    — 그래야 paddle-free venv에서도 `python -m tools.bank_update --help`가 성공한다.
+    """
+
+    def embed(paths):
+        import cv2
+
+        from handwriting import infer_photo as ip
+
+        device = "cpu"  # ADR 0002 — MPS/MLX 동시 사용 회피
+        model = ip.load_model_from(Path(models_dir) / "ft_prod.pt", device)
+        crops = []
+        for p in paths:
+            img = cv2.imread(str(p))
+            if img is None:
+                raise RuntimeError(f"크롭 이미지를 읽을 수 없습니다: {p}")
+            crops.append(img)
+        return ip.embed_crops(model, crops, device)
+
+    return embed
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+
+def _desired_pairs(backend_env: str) -> tuple[list[dict], list[dict]]:
+    """검수 게이트 통과 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
+
+    M3: crop_ref 형식 게이트를 라벨 게이트보다 먼저 적용한다 — 둘 다 뱅크에 넣을 수
+    없는 사유이므로 같은 invalid 목록에 합류시켜, 형식 불량 쌍이 plan.jsonl까지
+    흘러가 apply에서야(diff_from_records) 늦게 발각되는 것을 막는다.
+    """
+    pairs = fetch_pairs(backend_env)
+    reviewed = fetch_reviewed_job_ids(backend_env)
+    desired = select_desired(pairs, reviewed)
+    crop_ref_ok, bad_crop_ref = partition_crop_ref(desired)
+    valid, invalid = partition_valid(crop_ref_ok)
+    return valid, invalid + bad_crop_ref
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+
+
+def cmd_plan(args) -> None:
+    """desired 대비 뱅크 diff를 계산해 plan.jsonl과 요약을 낸다."""
+    crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
+    bank_path = Path(require_env("SJMJ_ML_MODELS_DIR")) / "bank.npz"
+    valid, invalid = _desired_pairs(args.backend_env)
+
+    _, labs, _, keys = load_bank(bank_path)
+    desired = {p["crop_ref"]: p["canonical_label"] for p in valid}
+    # 크롭 존재 검사는 diff 이후 추가·교체에만 — desired에서 미리 빼면 기존 뱅크 항목이 remove된다.
+    diff, missing = prune_missing_crops(
+        diff_bank(bank_current_map(labs=labs, keys=keys), desired),
+        lambda ref: (crops_root / f"{ref}.png").exists(),
+    )
+    records = plan_records(diff, desired)
+
+    out = args.out / "plan.jsonl"
+    _write_jsonl(out, records)
+    print(
+        f"desired {len(valid)}쌍(제외 {len(invalid)}) · 뱅크 {len(keys)}항목\n"
+        f"추가 {len(diff.add)} · 교체 {len(diff.replace)} · 제거 {len(diff.remove)} · "
+        f"불변 {len(diff.unchanged)}\n저장: {out}"
+    )
+    for p in invalid:
+        print(f"  제외 {p['crop_ref']}: {p['reason']} (label={p.get('canonical_label')!r})")
+    for ref in missing:
+        print(f"  보류 {ref}: missing_crop (추가·교체만 보류 — 기존 뱅크 항목은 유지)")
+
+
+def cmd_apply(args) -> None:
+    """plan.jsonl대로 뱅크를 sync한다(백업 자동 생성)."""
+    crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
+    models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
+    records = [json.loads(ln) for ln in args.plan.read_text().splitlines() if ln.strip()]
+    summary = apply_sync(models_dir / "bank.npz", records, crops_root, prod_embed_fn(models_dir))
+    print(
+        f"백업: {summary['backup'] or '생략(변경 없음)'}\n"
+        f"추가 {summary['added']} · 교체 {summary['replaced']} · "
+        f"제거 {summary['removed']} · 뱅크 {summary['before']} → {summary['after']}"
+    )
+
+
+def cmd_score(args) -> None:
+    """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
+    crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
+    models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
+    valid, _ = _desired_pairs(args.backend_env)
+    # 크롭이 없는 쌍은 임베딩할 수 없으므로 채점 대상에서 뺀다(뱅크 항목은 그대로 둔다).
+    valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
+    queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
+
+    summaries: dict[str, dict] = {}
+    per_pair: dict[str, list[dict]] = {}
+    meta: dict[str, int] = {}
+    for side, path in (("before", args.before), ("after", args.after)):
+        emb, labs, _, keys = load_bank(path)
+        recs = [
+            score_one((emb @ queries[i]).tolist(), labs, keys, p["crop_ref"], p["canonical_label"])
+            for i, p in enumerate(valid)
+        ]
+        summaries[side] = score_summary(recs)
+        per_pair[side] = recs
+        meta[f"bank_{side}"] = len(keys)
+
+    md = render_score_md(summaries["before"], summaries["after"], meta)
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "score.md").write_text(md)
+    _write_jsonl(
+        args.out / "score.jsonl",
+        [{"side": side, **r} for side in ("before", "after") for r in per_pair[side]],
+    )
+    print(md)
+    print(f"저장: {args.out / 'score.md'}\n저장: {args.out / 'score.jsonl'}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """서브커맨드(plan/apply/score)를 파싱해 실행한다."""
+    ap = argparse.ArgumentParser(prog="bank_update", description=__doc__)
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
+        "--backend-env",
+        default=os.environ.get(ENV_BACKEND[0], ENV_BACKEND[1]),
+        help="운영 DB 접속값 env 파일",
+    )
+    common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="산출물 디렉터리")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("plan", parents=[common], help="diff 계산 → plan.jsonl")
+    # M6: apply는 backend_env/out을 쓰지 않으므로(plan.jsonl만 소비) common을 상속하지 않는다
+    # — 조용히 무시되던 옵션을 파서 단계에서 거부한다.
+    p_apply = sub.add_parser("apply", help="plan.jsonl대로 뱅크 sync(백업 자동)")
+    p_apply.add_argument("--plan", type=Path, required=True, help="plan.jsonl 경로")
+    p_score = sub.add_parser("score", parents=[common], help="before/after 뱅크 동일 채점기 비교")
+    p_score.add_argument("--before", type=Path, required=True, help="갱신 전 뱅크(.npz.bak)")
+    p_score.add_argument("--after", type=Path, required=True, help="갱신 후 뱅크(bank.npz)")
+    args = ap.parse_args(argv)
+
+    {"plan": cmd_plan, "apply": cmd_apply, "score": cmd_score}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    main()

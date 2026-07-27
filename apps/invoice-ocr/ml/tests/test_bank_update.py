@@ -1,9 +1,11 @@
 """tools.bank_update 단위테스트 (DB/모델 비의존 — 합성 데이터 + Fake 임베딩만)."""
 
 import hashlib
+import json
 from dataclasses import FrozenInstanceError
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -12,20 +14,27 @@ from tools.bank_update import (
     EMB_DIM,
     BankDiff,
     MergePlan,
+    _mysql,
     apply_sync,
     backup_bank,
     bank_current_map,
+    cmd_apply,
+    cmd_plan,
     diff_bank,
     diff_from_records,
     has_peer_sample,
     inv_of,
     is_crop_ref,
     load_bank,
+    main,
     merge_plan,
+    parse_reviewed_job_ids,
+    partition_crop_ref,
     partition_valid,
     plan_records,
     prune_missing_crops,
     render_score_md,
+    require_env,
     save_bank_atomic,
     score_one,
     score_summary,
@@ -165,6 +174,22 @@ def test_partition_valid_does_not_mutate_input():
     desired = [_pair(canonical_label="  안가방 ")]
     partition_valid(desired)
     assert desired[0]["canonical_label"] == "  안가방 "
+
+
+# --- crop_ref 형식 게이트 (M3: plan 단계에서 걸러 apply의 late fail을 방지) ---
+
+
+def test_partition_crop_ref_separates_malformed_crop_ref():
+    pairs = [_pair(), _pair(id=2, crop_ref="legacy_key_1")]
+    valid, invalid = partition_crop_ref(pairs)
+    assert [p["crop_ref"] for p in valid] == ["job-1/row-0"]
+    assert invalid[0]["reason"] == "bad_crop_ref"
+
+
+def test_partition_crop_ref_keeps_all_when_well_formed():
+    pairs = [_pair(), _pair(id=2, crop_ref="job-2/row-1")]
+    valid, invalid = partition_crop_ref(pairs)
+    assert len(valid) == 2 and invalid == []
 
 
 # --- 크롭 존재 검사 범위 (spec §3 plan 3단계 — 추가·교체 대상 한정) ---
@@ -742,3 +767,132 @@ def test_render_score_md_shows_before_and_after_coverage():
     assert "커버리지" in md
     assert "leave-self-out" in md
     assert "120" in md
+
+
+# --- DB TSV 파싱 / env 경계 / CLI (mysql 호출 자체는 단위테스트 범위 밖) ---
+
+
+def test_mysql_fails_fast_when_backend_env_file_missing(tmp_path, monkeypatch):
+    """H1: backend env 파일이 없으면 source 실패가 조용히 무시되지 않고 셸 실행 전에 즉시 죽는다."""
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("backend env 존재 검사 전에 subprocess가 실행되면 안 된다")
+
+    monkeypatch.setattr("tools.bank_update.subprocess.run", _boom)
+    with pytest.raises(RuntimeError, match="backend env 파일 없음"):
+        _mysql(str(tmp_path / "missing.env"), "SELECT 1")
+
+
+def test_mysql_query_failure_exposes_only_last_two_stderr_lines(tmp_path, monkeypatch):
+    """M2: 예외 메시지에 stderr 전체 대신 마지막 2줄만 담아 비밀번호 파편 유출 표면을 줄인다."""
+    env_path = tmp_path / "backend.env"
+    env_path.write_text("DB_HOST=127.0.0.1\n")
+
+    class _FakeProc:
+        returncode = 1
+        stdout = b""
+        stderr = b"line1 secret-looking-text\nline2\nline3 last\n"
+
+    monkeypatch.setattr("tools.bank_update.subprocess.run", lambda *a, **k: _FakeProc())
+    with pytest.raises(RuntimeError) as exc_info:
+        _mysql(str(env_path), "SELECT 1")
+    message = str(exc_info.value)
+    assert "line1 secret-looking-text" not in message
+    assert "line2" in message and "line3 last" in message
+
+
+def test_parse_reviewed_job_ids_parses_batch_tsv():
+    assert parse_reviewed_job_ids("id\n3\n7\n12\n") == {3, 7, 12}
+
+
+def test_parse_reviewed_job_ids_is_empty_when_no_rows():
+    assert parse_reviewed_job_ids("") == set()
+    assert parse_reviewed_job_ids("id\n") == set()
+
+
+def test_parse_reviewed_job_ids_ignores_header_regardless_of_position():
+    assert parse_reviewed_job_ids("3\n7\n") == {3, 7}
+
+
+def test_require_env_fails_fast_with_variable_name(monkeypatch):
+    monkeypatch.delenv("SJMJ_ML_MODELS_DIR", raising=False)
+    with pytest.raises(RuntimeError, match="SJMJ_ML_MODELS_DIR"):
+        require_env("SJMJ_ML_MODELS_DIR")
+
+
+def test_require_env_returns_value_when_set(monkeypatch):
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", "/tmp/models")
+    assert require_env("SJMJ_ML_MODELS_DIR") == "/tmp/models"
+
+
+def test_main_requires_a_subcommand():
+    with pytest.raises(SystemExit):
+        main([])
+
+
+def test_main_rejects_unknown_subcommand():
+    with pytest.raises(SystemExit):
+        main(["frobnicate"])
+
+
+def test_main_apply_rejects_backend_env_option():
+    """M6: apply는 조용히 무시하던 --backend-env/--out을 더 이상 받지 않는다(범위 밖 옵션 제거)."""
+    with pytest.raises(SystemExit):
+        main(["apply", "--plan", "plan.jsonl", "--backend-env", "x.env"])
+
+
+# --- CLI 오케스트레이션 (M4: fetch_* monkeypatch + 합성 뱅크 + Fake 임베딩) ---
+
+
+def test_cmd_plan_writes_plan_jsonl_and_only_prunes_missing_crops_for_add_or_replace(
+    tmp_path, monkeypatch
+):
+    """crop 존재 검사는 diff 이후 add/replace에만 적용돼야 한다 — unchanged 항목은 크롭
+    PNG가 없어도 plan.jsonl에 remove로 새어 나오면 안 된다."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"])
+    _touch_crop(crops_root, "job-2/row-0")
+
+    pairs = [
+        _pair(crop_ref="job-1/row-0", canonical_label="안가방"),  # unchanged, 크롭 PNG 없음
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="공임"),  # 신규 add
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1, 2})
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir))
+
+    records = [
+        json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    assert records == [{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}]
+
+
+def test_cmd_apply_consumes_plan_jsonl_and_updates_bank(tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"])
+    _touch_crop(crops_root, "job-2/row-0")
+
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _fake_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    plan_path = tmp_path / "plan.jsonl"
+    plan_path.write_text('{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}\n')
+
+    cmd_apply(SimpleNamespace(plan=plan_path))
+
+    _, labs, _, keys = load_bank(models_dir / "bank.npz")
+    assert keys == ["job-1/row-0", "job-2/row-0"]
+    assert labs == ["안가방", "공임"]
