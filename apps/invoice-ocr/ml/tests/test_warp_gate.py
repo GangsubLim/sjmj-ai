@@ -139,3 +139,122 @@ def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
     # 실패해 원인을 알려준다. 이 테스트는 그 결합을 상수 산술만으로 조기에 고정하는
     # 가드다. 대응은 경계 테스트 수정이 아니라 GOOD_RATIO_FACTOR를 키우는 것이다.
     assert (1 - MAX_BLUE_ASYMMETRY) * GOOD_RATIO_FACTOR >= 2
+
+
+# --- compute_metrics (cv2 글루) ---
+# cv2가 없는 코어 venv에서는 이 절만 스킵된다. 판정 순수함수 테스트는 계속 돈다.
+
+
+def _compute(img):
+    import pytest
+
+    pytest.importorskip("cv2", exc_type=ImportError)
+    from handwriting.warp_gate import compute_metrics
+
+    return compute_metrics(img)
+
+
+def test_compute_metrics_on_healthy_grid_passes_gate(make_warped):
+    m = _compute(make_warped())
+    assert m.hline_count == 16
+    assert m.pitch_dev == 0.0
+    assert m.blue_ratio_left == m.blue_ratio_right > MIN_BLUE_RATIO
+    assert evaluate_warp(m) is True
+
+
+def test_compute_metrics_flags_half_width_grid(make_warped):
+    # 잡 39 유형 — 좌반(x<450)에만 격자. 선 개수·피치는 정상이지만 우반이 비어 있다.
+    m = _compute(make_warped(x_end=450))
+    assert m.hline_count == 16
+    assert m.blue_ratio_right == 0.0
+    assert evaluate_warp(m) is False
+
+
+def test_compute_metrics_flags_sparse_grid(make_warped):
+    # 잡 34 유형 — 배경 과포함으로 격자가 희박하고 간격이 공칭 피치와 발산.
+    m = _compute(make_warped(n_lines=6, pitch=40, x_end=350, thickness=3))
+    assert m.hline_count == 6
+    assert m.pitch_dev > MAX_PITCH_DEV
+    assert evaluate_warp(m) is False
+
+
+def test_compute_metrics_returns_worst_pitch_when_no_lines(make_warped):
+    # 선 2개 미만이면 예외 없이 최악값 — 지표는 항상 유한값(spec §5).
+    from handwriting.warp_gate import WORST_PITCH_DEV
+
+    blank = make_warped(n_lines=0)
+    m = _compute(blank)
+    assert m.hline_count == 0
+    assert m.pitch_dev == WORST_PITCH_DEV
+    assert m.blue_ratio_left == 0.0
+    assert evaluate_warp(m) is False
+
+
+def test_compute_metrics_raises_on_wrong_shape():
+    # 900x2100이 아닌 입력은 데이터 조건이 아니라 호출자 버그다 — 빈 슬라이스 .mean()이
+    # NaN 지표를 조용히 만드는 대신 fail-fast해야 한다.
+    import pytest
+
+    np = pytest.importorskip("numpy")
+
+    bad = np.zeros((300, 200, 3), dtype=np.uint8)
+    with pytest.raises(ValueError, match="900"):
+        _compute(bad)
+
+
+def test_compute_metrics_filters_doubled_lines_from_pitch():
+    # 운영 두 경로(grid_v4의 `b - a < 40` 스킵, canon.global_pitch의 50~130 gap 필터)는
+    # 이중선(간격<40px)을 배제한다. 게이트가 원시 gap 전량으로 MAD를 재면 정상 행검출인
+    # 이중검출 전표를 오탐한다 — MAD 계산 전에도 같은 gap 필터를 적용해야 한다.
+    import pytest
+
+    np = pytest.importorskip("numpy")
+    pytest.importorskip("cv2", exc_type=ImportError)
+    from handwriting.grid_v4 import WARP_H, WARP_W
+
+    img = np.full((WARP_H, WARP_W, 3), 255, np.uint8)
+    y_start, pitch, n_lines, thickness, gap = 620, 83, 16, 3, 10
+    for k in range(n_lines):
+        y = y_start + k * pitch
+        img[y : y + thickness, 0:WARP_W] = (255, 120, 40)
+        img[y + gap : y + gap + thickness, 0:WARP_W] = (255, 120, 40)  # 이중선(gap<40)
+
+    m = _compute(img)
+    assert m.hline_count == 32  # 원시 검출 개수는 이중선까지 그대로 반영한다
+    assert m.pitch_dev <= MAX_PITCH_DEV  # 이중선 gap이 MAD 계산에서 배제돼야 오탐하지 않는다
+
+
+def test_compute_metrics_forces_deterministic_faint_state(make_warped, monkeypatch):
+    # docstring이 "두 함수가 순수함수라 동일 동작"이라 주장했지만 hline_ys는 grid_v4의
+    # 모듈 전역 _FAINT를 읽는다(FaintOn으로 토글). ambient 상태와 무관하게 항상
+    # FaintOn(False)로 고정 호출됨을 spy로 고정한다(spec §3.1: 게이트는 결정론적).
+    import handwriting.grid_v4 as grid_v4
+
+    seen_faint_states = []
+    original_hline_ys = grid_v4.hline_ys
+
+    def spy(warped):
+        seen_faint_states.append(grid_v4._FAINT)
+        return original_hline_ys(warped)
+
+    monkeypatch.setattr(grid_v4, "hline_ys", spy)
+
+    with grid_v4.FaintOn(True):
+        _compute(make_warped())
+
+    assert seen_faint_states == [False]
+
+
+def test_compute_metrics_clamps_nan_pitch_dev_to_worst(make_warped, monkeypatch):
+    # `min(pitch_dev, WORST_PITCH_DEV)`는 pitch_dev가 NaN이면 NaN을 그대로 반환한다
+    # (`min(nan, 1.0) == nan`). evaluate_warp의 `not (<=)` 관용구와 통일된 NaN-안전
+    # 클램프여야 한다.
+    import pytest
+
+    np = pytest.importorskip("numpy")
+    from handwriting.warp_gate import WORST_PITCH_DEV
+
+    monkeypatch.setattr(np, "median", lambda *args, **kwargs: float("nan"))
+
+    m = _compute(make_warped())
+    assert m.pitch_dev == WORST_PITCH_DEV
