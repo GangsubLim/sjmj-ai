@@ -22,6 +22,9 @@ worker = [
 [dependency-groups]
 dev = [
     "pytest>=8.3.0",
+    # npz IO 단위테스트 전용 — 운영 뱅크를 직접 쓰는 경로라 합성 npz로 검증한다.
+    # 코어 런타임 의존성(pillow-only)에는 추가하지 않는다(paddle-free 규약).
+    "numpy>=1.26",
 ]
 
 [tool.pytest.ini_options]

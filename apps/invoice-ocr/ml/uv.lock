@@ -1219,6 +1219,7 @@ worker = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "numpy" },
     { name = "pytest" },
 ]
 
@@ -1235,7 +1236,10 @@ requires-dist = [
 provides-extras = ["ml", "worker"]
 
 [package.metadata.requires-dev]
-dev = [{ name = "pytest", specifier = ">=8.3.0" }]
+dev = [
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pytest", specifier = ">=8.3.0" },
+]
 
 [[package]]
 name = "soupsieve"
