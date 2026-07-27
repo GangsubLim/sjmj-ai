@@ -110,21 +110,53 @@ def prune_missing_crops(
     return pruned, missing
 
 
+ACTIONS = ("add", "replace", "remove")
+LABEL_REQUIRED_ACTIONS = ("add", "replace")
+
+
 def plan_records(diff: BankDiff, label_by_ref: dict[str, str]) -> list[dict]:
     """diff를 plan.jsonl 레코드로 직렬화한다(plan과 apply 사이의 유일한 계약)."""
     return [
         {"action": action, "crop_ref": ref, "label": label_by_ref.get(ref)}
-        for action, refs in (
-            ("add", diff.add),
-            ("replace", diff.replace),
-            ("remove", diff.remove),
-        )
+        for action, refs in zip(ACTIONS, (diff.add, diff.replace, diff.remove), strict=True)
         for ref in refs
     ]
 
 
+def _validate_plan_record(index: int, record: dict) -> None:
+    """레코드 1건의 필수 키·action·crop_ref 형식·label 요건을 검증한다."""
+    missing = [k for k in ("action", "crop_ref") if k not in record]
+    if missing:
+        raise ValueError(f"plan 레코드 {index}에 필수 키 누락 {missing}: {record}")
+    if record["action"] not in ACTIONS:
+        raise ValueError(f"plan 레코드 {index}에 미지의 action {record['action']!r}: {record}")
+    if not is_crop_ref(record["crop_ref"]):
+        raise ValueError(
+            f"plan 레코드 {index}의 crop_ref 형식 불량 {record['crop_ref']!r}: {record}"
+        )
+    if record["action"] in LABEL_REQUIRED_ACTIONS:
+        label = record.get("label")
+        if not isinstance(label, str) or not label.strip():
+            raise ValueError(
+                f"plan 레코드 {index}에 유효한 label 없음(action={record['action']!r}): {record}"
+            )
+
+
 def diff_from_records(records: list[dict]) -> BankDiff:
-    """plan.jsonl 레코드를 BankDiff로 되돌린다(unchanged는 기록하지 않으므로 공집합)."""
+    """plan.jsonl 레코드를 BankDiff로 되돌린다(unchanged는 기록하지 않으므로 공집합).
+
+    plan.jsonl은 외부 입력이라 신뢰하지 않는다 — 필수 키 누락·미지의 action·crop_ref
+    형식 불량·add/replace의 label 누락을 발견하면 조용히 버리지 않고 어느 레코드가
+    문제인지 담아 즉시 실패한다. crop_ref 중복도 거부한다(뱅크 keys UNIQUE 전제와 동일 사유).
+    """
+    for i, record in enumerate(records):
+        _validate_plan_record(i, record)
+
+    duplicate_refs = sorted(
+        ref for ref, count in Counter(r["crop_ref"] for r in records).items() if count > 1
+    )
+    if duplicate_refs:
+        raise ValueError(f"plan 레코드에 중복 crop_ref: {duplicate_refs}")
 
     def refs(action: str) -> tuple[str, ...]:
         return tuple(r["crop_ref"] for r in records if r["action"] == action)
@@ -243,3 +275,72 @@ def save_bank_atomic(
         tmp.unlink(missing_ok=True)
         raise
     os.replace(tmp, path)
+
+
+def apply_sync(
+    bank_path: str | Path,
+    records: list[dict],
+    crops_root: str | Path,
+    embed_fn: Callable[[list[Path]], object],
+) -> dict:
+    """plan 레코드대로 뱅크를 sync한다 — 크롭 존재 확인 → 임베딩 → 백업 → 병합 → 원자적 저장.
+
+    크롭 존재 확인을 백업·임베딩보다 먼저 두는 이유: 어차피 실패할 apply를 위해 백업
+    파일(고아 .bak)을 만들거나 모델을 로딩하지 않기 위함이다.
+
+    embed_fn: crop PNG 경로 리스트 → (n, 128) 임베딩. 운영은 prod_embed_fn(운영 추론과
+    동일 경로), 테스트는 Fake를 주입한다(worker/poll.py의 infer_fn 주입 선례).
+    """
+    import numpy as np
+
+    emb, labs, invs, keys = load_bank(bank_path)
+    validate_bank_arrays(emb, labs, invs, keys)
+
+    if not records:
+        # no-op이면 운영 파일을 아예 건드리지 않는다(백업·재작성 생략 = 멱등성의 관측 가능한 형태).
+        return {
+            "backup": None,
+            "added": 0,
+            "replaced": 0,
+            "removed": 0,
+            "before": len(keys),
+            "after": len(keys),
+        }
+
+    diff = diff_from_records(records)
+    plan = merge_plan(keys, diff)
+    label_by_ref = {
+        r["crop_ref"]: r["label"] for r in records if r["action"] in LABEL_REQUIRED_ACTIONS
+    }
+
+    crops_root = Path(crops_root)
+    paths = [crops_root / f"{ref}.png" for ref in plan.append_refs]
+    missing_crops = [str(p) for p in paths if not p.exists()]
+    if missing_crops:
+        raise RuntimeError(f"크롭 파일 없음(백업·임베딩 전 중단): {missing_crops}")
+
+    new_emb = np.asarray(embed_fn(paths), dtype=emb.dtype) if paths else emb[:0]
+    expected_shape = (len(plan.append_refs), EMB_DIM)
+    if new_emb.shape != expected_shape:
+        raise RuntimeError(f"임베딩 shape 불일치: {new_emb.shape} != 기대 {expected_shape}")
+
+    # 임베딩까지 성공을 확인한 뒤에만 백업한다 — 실패로 끝날 apply가 고아 .bak을 남기지 않도록.
+    backup = backup_bank(bank_path)
+
+    keep = np.array(plan.keep_indices, dtype=int)
+    merged_emb = np.concatenate([emb[keep], new_emb])
+    merged_labs = [labs[i] for i in plan.keep_indices] + [label_by_ref[r] for r in plan.append_refs]
+    merged_invs = [invs[i] for i in plan.keep_indices] + [inv_of(r) for r in plan.append_refs]
+    merged_keys = [keys[i] for i in plan.keep_indices] + list(plan.append_refs)
+
+    save_bank_atomic(bank_path, merged_emb, merged_labs, merged_invs, merged_keys)
+    # diff_from_records가 crop_ref 중복을 거부하므로 add/replace/remove 길이가 실제 병합
+    # 결과와 항상 일치한다 — summary는 diff 길이를 그대로 쓴다.
+    return {
+        "backup": str(backup),
+        "added": len(diff.add),
+        "replaced": len(diff.replace),
+        "removed": len(diff.remove),
+        "before": len(keys),
+        "after": len(merged_keys),
+    }
