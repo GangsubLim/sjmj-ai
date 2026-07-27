@@ -25,8 +25,9 @@ def _upload_root() -> Path:
 
 
 _ALLOWED_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
-# 파일명은 저장 경로(image_path)로 흘러 하류 도구(원격 셸 조립·TSV 파싱)까지 전파되므로
-# 신뢰 경계인 여기서 제어문자를 차단한다(salespeople_service._CONTROL_CHAR와 같은 범위).
+# 저장 경로에 이어붙는 것은 suffix뿐(stem은 폐기)이며 화이트리스트가 주 방어선.
+# 제어문자 검사는 이슈 #21 AC가 요구한 심층 방어(비용 0)로,
+# salespeople_service._CONTROL_CHAR와 같은 범위다(수정 시 함께 갱신).
 _CONTROL_CHAR = re.compile(r"[\x00-\x1F\x7F]")
 
 
@@ -70,8 +71,12 @@ class OcrService:
         self.curation_repo = curation_repo or CurationRepository()
 
     def create_job(self, photo_bytes: bytes, filename: str) -> dict:
-        """업로드 이미지를 저장하고 OCR 잡을 생성해 job_id와 상태를 반환한다."""
-        suffix = Path(filename or "").suffix.lower() or ".jpg"
+        """업로드 이미지를 저장하고 OCR 잡을 생성해 job_id와 상태를 반환한다.
+
+        Raises:
+            AppError: 파일명이 허용 확장자(.jpg/.jpeg/.png)가 아니거나 제어문자를 포함할 때 400.
+        """
+        suffix = _validated_suffix(filename)
         dest = _upload_root() / f"{uuid.uuid4().hex}{suffix}"
         dest.write_bytes(photo_bytes)
         job_id = self.repo.insert_job(str(dest))
