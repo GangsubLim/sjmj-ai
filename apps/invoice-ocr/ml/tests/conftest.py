@@ -24,9 +24,9 @@ def make_warped():
 
     thickness=None(기본)이면 MIN_BLUE_RATIO에서 유도해 정상 합성의 파랑 비율이 임계의
     HEALTHY_RATIO_FACTOR배 근처가 되게 한다 — 고정 두께였다면 Task 7에서 MIN_BLUE_RATIO가
-    합성값(0.036) 위로 캘리브될 때 테스트가 무조건 깨진다. 다만 두께는 최소 3(ceil 바닥값)이라
-    현재 상수(MIN_BLUE_RATIO=0.004)에서는 바닥값 3이 적용돼 실효 ~9배, MIN_BLUE_RATIO>0.006부터
-    유도식이 지배한다.
+    캘리브될 때 테스트가 무조건 깨진다. 두께 하한은 3(ceil 바닥값)이지만 현재 상수
+    (MIN_BLUE_RATIO=0.11)에서는 유도식이 지배해 thickness=28, 실효 비율 ~0.335가 나온다
+    (바닥값 3은 MIN_BLUE_RATIO가 훨씬 작을 때만 적용됨).
     n_lines는 유도하지 않는다: y_start=620·pitch=83에서 DATA_Y 창에 들어가는 선은 최대 17개라
     MIN_HLINES에서 유도하면 임계가 14 이상일 때 그린 선과 검출 선 개수가 어긋난다(실측 확인).
     """

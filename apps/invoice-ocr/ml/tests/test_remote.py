@@ -34,8 +34,18 @@ def test_env_or_treats_empty_value_as_unset(monkeypatch):
 
 
 def test_source_env_prefix_exports_all_vars_and_fails_fast():
+    assert source_env("$HOME/.sjmj-ai/backend.env") == (
+        'set -eu; set -a; source "$HOME/.sjmj-ai/backend.env"; set +a; '
+    )
+
+
+def test_source_env_expands_leading_tilde_to_home_before_quoting():
+    # 게이트A 리뷰: 이중따옴표는 `$VAR`는 확장하지만 `~`는 확장하지 않는다. 리팩터 전
+    # 비인용 스크립트는 `source ~/...`가 셸 단어분리 단계에서 틸드 확장됐지만, 이중인용
+    # 도입 후 `source "~/..."`는 리터럴 `~` 디렉터리를 찾아 원격에서 즉시 실패한다.
+    # `~/` prefix를 인용 전에 `$HOME/`으로 치환해야 원격에서 정상 확장된다.
     assert source_env("~/.sjmj-ai/backend.env") == (
-        'set -eu; set -a; source "~/.sjmj-ai/backend.env"; set +a; '
+        'set -eu; set -a; source "$HOME/.sjmj-ai/backend.env"; set +a; '
     )
 
 

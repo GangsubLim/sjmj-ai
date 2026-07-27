@@ -69,6 +69,19 @@ def test_fails_when_pitch_dev_is_nan():
     assert evaluate_warp(_metrics(pitch_dev=float("nan"))) is False
 
 
+def test_fails_when_blue_ratio_right_is_nan():
+    # 게이트A 리뷰: `min(left, nan)`은 left를 그대로 반환한다(NaN 비교는 항상 False라
+    # min()이 두 번째 인자의 NaN을 흡수). 이후 blue_asymmetry(left, nan)도 0.0으로
+    # 흡수돼(hi=max(left, nan)==left) 좌우 대칭으로 오판 — fail-open 회귀 고정.
+    assert evaluate_warp(_metrics(blue_ratio_right=float("nan"))) is False
+
+
+def test_fails_when_blue_ratio_left_is_nan():
+    # 인자 순서를 뒤집어도 동일하게 닫혀야 한다 — min()의 NaN 흡수는 인자 위치에
+    # 비대칭이므로(첫 인자 NaN은 min()이 그대로 전파해 우연히 닫혔었다) 양쪽 다 고정한다.
+    assert evaluate_warp(_metrics(blue_ratio_left=float("nan"))) is False
+
+
 def test_fails_when_right_half_blue_ratio_below_floor():
     # 잡 39 유형: 전표가 좌반에 찌그러지고 우반은 배경 포스터. blue_ratio_right=0.0은
     # MIN_BLUE_RATIO 하한 미달로 걸린다 — 비대칭 검사가 아니라 하한 검사가 실패 사유다.

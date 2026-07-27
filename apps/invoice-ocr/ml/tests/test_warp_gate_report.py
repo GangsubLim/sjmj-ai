@@ -70,6 +70,10 @@ def test_parse_job_rows_tsv_rejects_unexpected_value():
 def test_job_status_gate_target_when_warped_png_exists():
     assert job_status(True, has_warped=True) == "gate_target"
     assert job_status(None, has_warped=True) == "gate_target"
+    # warp_ok=False라도 warped.png가 남아 있으면 gate_target이다 — 이전에 게이트가
+    # 강등시킨 잡도 (임계 재캘리브 등으로) 재평가 대상에 포함돼야 한다는 뜻이다.
+    # has_warped가 warp_ok보다 우선하는 분기 순서를 고정한다.
+    assert job_status(False, has_warped=True) == "gate_target"
 
 
 def test_job_status_quad_missing_when_no_warp_and_already_false():

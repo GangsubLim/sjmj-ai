@@ -73,7 +73,13 @@ def evaluate_warp(metrics: WarpGateMetrics) -> bool:
     # 항상 False이므로 `>`였다면 NaN이 게이트를 fail-open으로 통과했다.
     if not (metrics.pitch_dev <= MAX_PITCH_DEV):
         return False
-    if not (min(metrics.blue_ratio_left, metrics.blue_ratio_right) >= MIN_BLUE_RATIO):
+    # 좌·우 각각을 독립 검사한다(게이트A 리뷰 finding 1) — `min(left, right)`는 NaN을
+    # 인자 위치에 비대칭으로 흡수한다: min(x, nan)은 nan이 두 번째 인자일 때 x를 그대로
+    # 반환한다(NaN 비교가 항상 False라 갱신되지 않음). blue_ratio_right가 NaN이어도
+    # min()이 left만 보고 통과시켜 fail-open했다 — `and`로 두 필드를 각각 닫는다.
+    if not (
+        metrics.blue_ratio_left >= MIN_BLUE_RATIO and metrics.blue_ratio_right >= MIN_BLUE_RATIO
+    ):
         return False
     return blue_asymmetry(metrics.blue_ratio_left, metrics.blue_ratio_right) <= MAX_BLUE_ASYMMETRY
 

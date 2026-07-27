@@ -41,7 +41,13 @@ def source_env(env_file: str) -> str:
     `set -eu`로 env 파일 부재 시 즉시 실패시킨다(값이 조용히 비어 이후 명령이 알 수
     없는 이유로 실패하는 대신 원인을 바로 드러낸다). 경로는 이중따옴표로 감싸 공백에
     안전하되 `$HOME` 같은 변수 확장은 유지한다(작은따옴표였다면 확장이 막혔을 것).
+
+    이중따옴표는 `$VAR` 확장은 유지하지만 `~`는 확장하지 않는다 — `~/` prefix는 인용
+    전에 `$HOME/`으로 치환한다. 로컬 `os.path.expanduser`는 쓰지 않는다(로컬 홈 ≠
+    원격 홈이라 잘못된 절대경로를 굳힐 수 있다); 확장은 원격 셸이 `$HOME`으로 한다.
     """
+    if env_file.startswith("~/"):
+        env_file = "$HOME/" + env_file[2:]
     return f'set -eu; set -a; source "{env_file}"; set +a; '
 
 
