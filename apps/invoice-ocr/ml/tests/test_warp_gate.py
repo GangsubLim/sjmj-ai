@@ -14,7 +14,9 @@ from handwriting.warp_gate import (
 # 비대칭 초과 테스트가 쓰는 right = GOOD_RATIO * (1 - MAX_BLUE_ASYMMETRY) / 2가
 # MIN_BLUE_RATIO 아래로 내려가면 실패 사유가 비대칭이 아니라 하한 위반으로 뒤바뀐다.
 # 아래 가드 테스트와 각 비대칭 실패 테스트의 지역 assert가 이 조건을 고정한다.
-GOOD_RATIO_FACTOR = 10
+# blue_ratio는 마스크 픽셀 비율(마스크 평균)이라 도메인이 [0, 1]이다 — FACTOR는 이
+# 도메인 밖으로 GOOD_RATIO를 밀어내지 않는 값이어야 한다(아래 가드 테스트가 고정).
+GOOD_RATIO_FACTOR = 8
 GOOD_RATIO = MIN_BLUE_RATIO * GOOD_RATIO_FACTOR
 
 
@@ -137,7 +139,9 @@ def test_blue_asymmetry_is_symmetric():
 def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
     # 임계 캘리브(Task 7)가 이 결합을 깨면 위 비대칭 실패 테스트들의 지역 assert가 먼저
     # 실패해 원인을 알려준다. 이 테스트는 그 결합을 상수 산술만으로 조기에 고정하는
-    # 가드다. 대응은 경계 테스트 수정이 아니라 GOOD_RATIO_FACTOR를 키우는 것이다.
+    # 가드다. 대응은 경계 테스트 수정이 아니라 FACTOR 조정(단 GOOD_RATIO <= 1.0 유지)
+    # 또는 MAX_BLUE_ASYMMETRY 재검토다.
+    assert GOOD_RATIO <= 1.0  # blue_ratio는 마스크 평균이라 도메인이 [0, 1]
     assert (1 - MAX_BLUE_ASYMMETRY) * GOOD_RATIO_FACTOR >= 2
 
 
