@@ -230,6 +230,5 @@ def block_amounts(rows, read_fn):
         if r.rtype != ROW_NEW or not r.box:
             continue
         news.append(r)
-        # 기본값 [r]은 block 미부여 Row 방어 — _assemble 산출물에서는 도달 불가(group.py:115).
-        amounts.append(merge_amounts([read_fn(m) for m in members.get(r.block, [r])]))
+        amounts.append(merge_amounts([read_fn(m) for m in members[r.block]]))
     return news, amounts
