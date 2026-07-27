@@ -54,3 +54,17 @@ def read_amount_with_retry(
         if value is not None:
             return value, ATTEMPT_SEP.join(raws)
     return None, ATTEMPT_SEP.join(raws)
+
+
+def attempt_png_name(idx: int, attempt: int) -> str:
+    """금액칸 idx의 attempt번째 시도가 쓸 고유 임시 PNG 파일명을 만든다.
+
+    Args:
+        idx: 전표 내 금액칸 일련번호.
+        attempt: 0부터 증가하는 시도 인덱스.
+
+    Returns:
+        'amt_{idx}_a{attempt}.png'. 칸끼리도, 같은 칸의 시도끼리도 겹치지 않는다 —
+        재시도가 직전 시도의 파일을 덮어쓰지 않게 하는 방어(MLX generate는 경로 입력).
+    """
+    return f"amt_{idx}_a{attempt}.png"

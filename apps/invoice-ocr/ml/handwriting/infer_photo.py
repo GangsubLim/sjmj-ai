@@ -16,7 +16,6 @@ usage:
 """
 
 import base64
-import re
 import sys
 from pathlib import Path
 
@@ -28,6 +27,7 @@ from torchvision.transforms import v2 as T
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
+from amount_read import attempt_png_name, read_amount_with_retry  # noqa: E402
 from canon import global_pitch  # noqa: E402
 from dataset_build import load_bgr_path  # noqa: E402
 from fewshot import square  # noqa: E402
@@ -90,20 +90,24 @@ def load_ocr():
 def read_amount(qwen, cell_bgr, tmp_dir, idx):
     """금액칸 BGR을 Qwen3-VL로 전사해 (정수|None, 원문)을 반환한다(bench.py와 동일 호출).
 
-    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력 — 칸마다 '고유' 임시
-    PNG를 써야 한다(같은 경로 재사용 시 MLX-VLM이 degenerate 출력 '!!!').
+    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력이라 칸마다, 그리고
+    시도마다 '고유' 임시 PNG를 쓴다 — 재시도가 직전 시도의 파일을 덮어쓰지 않게 하는 방어다.
+    숫자가 0개면 새 임시파일로 1회 재시도하고, 그래도 없으면 None을 유지한다(0 기록 금지).
+    재시도의 실효(다른 출력을 낼지)는 라이브 미검증 — 정책의 정확성만 단위테스트가 보장한다.
     """
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
     model, proc, cfg = qwen
-    png = tmp_dir / f"amt_{idx}.png"
-    cv2.imwrite(str(png), cell_bgr)
-    fp = apply_chat_template(proc, cfg, AMT_PROMPT, num_images=1)
-    out = generate(model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False)
-    txt = out if isinstance(out, str) else getattr(out, "text", str(out))
-    digits = "".join(re.findall(r"\d+", txt))
-    return (int(digits) if digits else None), txt.strip()
+    fp = apply_chat_template(proc, cfg, AMT_PROMPT, num_images=1)  # attempt 무관 — 1회만
+
+    def read_once(attempt):
+        png = tmp_dir / attempt_png_name(idx, attempt)
+        cv2.imwrite(str(png), cell_bgr)
+        out = generate(model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False)
+        return out if isinstance(out, str) else getattr(out, "text", str(out))
+
+    return read_amount_with_retry(read_once)
 
 
 @torch.no_grad()

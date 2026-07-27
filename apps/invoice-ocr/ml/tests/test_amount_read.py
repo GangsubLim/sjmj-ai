@@ -1,6 +1,10 @@
 import pytest
 
-from handwriting.amount_read import parse_amount, read_amount_with_retry
+from handwriting.amount_read import (
+    attempt_png_name,
+    parse_amount,
+    read_amount_with_retry,
+)
 
 
 def test_parse_amount_pure_digits():
@@ -78,3 +82,11 @@ def test_read_once_exception_propagates_and_does_not_retry():
     with pytest.raises(RuntimeError):
         read_amount_with_retry(read_once)
     assert calls == [0]
+
+
+def test_attempt_png_name_differs_per_attempt_and_idx():
+    # 재시도가 직전 시도의 임시 PNG를 덮어쓰지 않게 하는 방어 — 파일명 수준에서 직접 검증
+    assert attempt_png_name(3, 0) != attempt_png_name(3, 1)
+    names = {attempt_png_name(i, a) for i in range(3) for a in range(2)}
+    assert len(names) == 6  # idx×attempt 조합이 전부 서로 다름
+    assert attempt_png_name(3, 0).endswith(".png")
