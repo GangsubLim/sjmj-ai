@@ -1,10 +1,10 @@
 """OCR 잡 업로드·조회·확정. /api/ocr/* (sync def, threadpool)."""
 
-from fastapi import APIRouter, Body, File, UploadFile
+from fastapi import APIRouter, File, UploadFile
 
 from app.core import envelope
 from app.core.errors import not_found
-from app.core.validators import Validator
+from app.schemas.ocr import OcrConfirmRequest
 from app.services.ocr_service import OcrService
 
 router = APIRouter()
@@ -12,12 +12,6 @@ router = APIRouter()
 
 def _service() -> OcrService:
     return OcrService()
-
-
-def _validate_confirm(data: dict) -> None:
-    Validator().required(data, ["issue_date", "recipient"]).date_format(
-        data, "issue_date"
-    ).non_empty_array(data, "items").validate_or_fail()
 
 
 @router.post("/ocr/jobs")
@@ -37,7 +31,8 @@ def get_job(id: int):
 
 
 @router.post("/ocr/jobs/{id}/confirm")
-def confirm(id: int, data: dict = Body(...)):
+def confirm(id: int, data: OcrConfirmRequest):
     """OCR 인식 결과를 확정해 거래명세서로 저장한다."""
-    _validate_confirm(data)
-    return envelope.single(_service().confirm(id, data))
+    # exclude_unset: 미전송 optional(crop_ref/label_source)이 None으로 주입되면 전환 전 dict와
+    # 키 집합이 달라진다. extra 필드는 그대로 보존된다.
+    return envelope.single(_service().confirm(id, data.model_dump(exclude_unset=True)))

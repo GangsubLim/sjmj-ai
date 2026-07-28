@@ -30,6 +30,10 @@ _ALLOWED_SUFFIXES = frozenset({".jpg", ".jpeg", ".png"})
 # salespeople_service._CONTROL_CHAR와 같은 범위다(수정 시 함께 갱신).
 _CONTROL_CHAR = re.compile(r"[\x00-\x1F\x7F]")
 
+# invoice_items에 대응 컬럼이 없는 OCR/UI 전용 필드 — invoice 생성 payload에서 걷어낸다.
+# (repository가 명시 컬럼만 읽어 SQL에는 닿지 않지만, 경계를 코드로 드러내 둔다.)
+_NON_INVOICE_ITEM_KEYS = frozenset({"crop_ref", "label_source"})
+
 
 def _validated_suffix(filename: str) -> str:
     """업로드 파일명을 검증하고 소문자로 정규화한 확장자를 반환한다.
@@ -109,11 +113,12 @@ class OcrService:
             if job["status"] != "done" or job.get("result_json") is None:
                 conflict("아직 확정할 수 없는 잡입니다(추론 미완료).")
 
-            # invoice_items에는 crop_ref 컬럼이 없으므로 제거 후 invoice 생성
+            # OCR/UI 전용 필드를 제거한 뒤 invoice 생성(_NON_INVOICE_ITEM_KEYS 주석 참조).
+            # build_correction은 아래에서 원본 payload를 받는다 — label_source가 살아 있어야 한다.
             invoice_payload = {
                 **payload,
                 "items": [
-                    {k: v for k, v in item.items() if k != "crop_ref"}
+                    {k: v for k, v in item.items() if k not in _NON_INVOICE_ITEM_KEYS}
                     for item in payload.get("items", [])
                 ],
             }

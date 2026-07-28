@@ -361,7 +361,7 @@
       {
         "method": "POST",
         "path": "/api/ocr/jobs/{id}/confirm",
-        "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed)",
+        "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed). items[].label_source 화이트리스트 검증(400)",
         "auth": "public",
         "req": "OcrConfirmRequest",
         "res": "OcrConfirmAck",
@@ -2169,7 +2169,7 @@
             }
           },
           "400": {
-            "description": "Validation failure",
+            "description": "Validation failure (issue_date/recipient/items, items[].label_source 화이트리스트 위반 — details 키는 items.{i}.label_source)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3311,7 +3311,7 @@
       },
       "OcrConfirmRequest": {
         "type": "object",
-        "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref (서버가 제거 후 invoice 생성).",
+        "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref·items[].label_source (서버가 제거 후 invoice 생성). Pydantic 검증(app/schemas/ocr.py) — 실패는 400 VALIDATION_ERROR + details {필드: 메시지}. 미검증 필드(quantity/unit_price 등)는 extra=allow로 전환 전과 동일하게 통과한다.",
         "required": ["issue_date", "recipient", "items"],
         "properties": {
           "issue_date": {
@@ -3352,7 +3352,7 @@
           "items": {
             "type": "array",
             "minItems": 1,
-            "description": "non_empty_array 검증. crop_ref 는 서버가 제거 후 invoice_items 저장.",
+            "description": "1개 이상 필수(min_length=1). crop_ref·label_source 는 서버가 제거 후 invoice_items 저장.",
             "items": {
               "type": "object",
               "properties": {
@@ -3384,6 +3384,22 @@
                   "type": "string",
                   "nullable": true,
                   "description": "OCR 원본 영역 참조. 서버가 correction 저장 후 invoice_items에서 제거."
+                },
+                "label_source": {
+                  "type": "string",
+                  "nullable": true,
+                  "enum": [
+                    "top1_kept",
+                    "candidate_picked:0",
+                    "candidate_picked:1",
+                    "candidate_picked:2",
+                    "candidate_picked:3",
+                    "candidate_picked:4",
+                    "manual_picked",
+                    "manual_typed",
+                    "new_item_created"
+                  ],
+                  "description": "UI 라벨 확정 출처. top1_kept | candidate_picked:{0-4} | manual_picked | manual_typed | new_item_created. 화이트리스트 밖이면 400 VALIDATION_ERROR(details 키는 items.{i}.label_source). 서버가 제거 후 invoice_items 저장하며 correction_json.lines[].label_source에 기록."
                 }
               }
             }

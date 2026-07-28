@@ -1,4 +1,5 @@
 import io
+import json
 from pathlib import Path
 
 import pytest
@@ -135,6 +136,180 @@ def test_confirm_validation_error(client):
     r = client.post(f"/api/ocr/jobs/{job_id}/confirm", json={"recipient": "x"})
     assert r.status_code == 400
     assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def _done_job(rows: list[dict] | None = None) -> int:
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(
+        job_id,
+        "done",
+        {"rows": rows or [], "supply_sum": 0, "warp_ok": True},
+    )
+    return job_id
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "top1_kept",
+        "candidate_picked:0",
+        "candidate_picked:4",
+        "manual_picked",
+        "manual_typed",
+        "new_item_created",
+    ],
+)
+def test_confirm_accepts_every_known_label_source(client, source):
+    payload = td.invoice_with_items()
+    payload["items"][0]["label_source"] = source
+    assert client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload).status_code == 200
+
+
+@pytest.mark.parametrize("source", ["candidate_picked:5", "candidate_picked", "chip", ""])
+def test_confirm_rejects_unknown_label_source_with_400_envelope(client, source):
+    payload = td.invoice_with_items()
+    payload["items"][0]["label_source"] = source
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400  # 422가 아니다 — 외부 계약 불변식
+    b = r.json()
+    assert b["success"] is False
+    assert b["error"]["code"] == "VALIDATION_ERROR"
+    details = b["error"]["details"]
+    assert isinstance(details, dict)
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in details.items())
+    assert "items.0.label_source" in details
+
+
+def test_confirm_still_rejects_missing_required_fields_as_400(client):
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json={"recipient": "x"})
+    assert r.status_code == 400
+    b = r.json()
+    assert b["error"]["code"] == "VALIDATION_ERROR"
+    assert set(b["error"]["details"]) >= {"issue_date", "items"}
+
+
+def test_confirm_rejects_blank_recipient(client):
+    """공백뿐인 recipient는 전환 전 Validator.required와 동일하게 400이다."""
+    payload = td.invoice_with_items({"recipient": "   "})
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400
+    assert "recipient" in r.json()["error"]["details"]
+
+
+def test_confirm_rejects_impossible_calendar_date(client):
+    payload = td.invoice_with_items({"issue_date": "2026-02-30"})
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400
+    assert "issue_date" in r.json()["error"]["details"]
+
+
+def test_confirm_rejects_empty_items(client):
+    payload = td.invoice_with_items({"items": []})
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400
+    assert "items" in r.json()["error"]["details"]
+
+
+def test_confirm_keeps_accepting_frontend_string_numerics(client):
+    """프론트는 입력 중 수량·단가를 문자열로 보낸다.
+
+    invoice-item-row.tsx:100 → calculations.ts:53-54("원래 값 유지") → invoice-form.tsx:301.
+    MySQL이 '12'를 12로 코어스하므로 전환 전에는 200이었다 — Pydantic이 조이면 운영 저장이
+    깨진다. 회귀 가드.
+
+    빈 문자열("")은 여기서 다루지 않는다: 전환 이전에도 STRICT_TRANS_TABLES에서
+    ERROR 1366(Incorrect integer value)로 500이다(quantity·unit_price 양쪽 실측).
+    선행 버그이며 별도 이슈로 분리한다.
+    """
+    payload = td.invoice_with_items()
+    payload["items"][0]["quantity"] = "12"
+    payload["items"][1]["unit_price"] = "50000"
+    assert client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload).status_code == 200
+
+
+def test_confirm_strips_label_source_before_invoice_items(client, db_conn):
+    """label_source는 crop_ref와 같은 이유로 invoice_items에 닿지 않는다."""
+    payload = td.invoice_with_items()
+    payload["items"][0]["crop_ref"] = "job-1/row-0"
+    payload["items"][0]["label_source"] = "manual_typed"
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 200
+    with db_conn.begin() as conn:
+        names = [
+            row[0]
+            for row in conn.execute(
+                text("SELECT name FROM invoice_items WHERE invoice_id = :i ORDER BY item_order"),
+                {"i": r.json()["data"]["invoice_id"]},
+            )
+        ]
+    assert names == ["엔진오일", "브레이크오일", "에어필터"]
+
+
+def test_confirm_persists_label_source_into_correction_json(client, db_conn):
+    """핵심 payoff의 end-to-end 증명 — 라우터(Pydantic) → 서비스 strip → build_correction → DB.
+
+    tests/integration/test_ocr_service.py의 confirm 테스트는 OcrService를 직접 호출해
+    라우터 층을 우회하므로, 이 계약 테스트가 전 구간을 덮는 유일한 단언이다.
+    """
+    job_id = _done_job(
+        [
+            {
+                "row_index": 0,
+                "crop_ref": "job-X/row-0",
+                "item_top5": [{"label": "타이어", "sim": 0.72}],
+                "supply": 100000,
+            }
+        ]
+    )
+    payload = td.invoice_with_items()
+    payload["items"][0]["crop_ref"] = "job-X/row-0"
+    payload["items"][0]["label_source"] = "candidate_picked:2"
+
+    r = client.post(f"/api/ocr/jobs/{job_id}/confirm", json=payload)
+    assert r.status_code == 200
+
+    with db_conn.begin() as conn:
+        raw = conn.execute(
+            text("SELECT correction_json FROM ocr_corrections WHERE job_id = :j"),
+            {"j": job_id},
+        ).scalar()
+    correction = raw if isinstance(raw, dict) else json.loads(raw)
+    assert correction["lines"][0]["label_source"] == "candidate_picked:2"
+
+
+def test_confirm_typo_label_source_key_is_silently_dropped(client, db_conn):
+    """`extra="allow"`가 수용한 위험을 계약으로 고정한다 — 버그를 정상화하는 게 아니다.
+
+    오타 키(`label_soruce`)는 OcrConfirmItem에 정의된 필드가 아니므로 extra="allow"를 타고
+    조용히 통과한다(200). `label_source`는 미전송 취급되어 correction_json에 null로 남는다
+    — 오타 방어선(Task 12, 프론트 `attachLabelSource` 고정)이 도입되기 전까지 이 대가는
+    ocr.py:58-61 주석대로 수용된 리스크다.
+    """
+    job_id = _done_job(
+        [
+            {
+                "row_index": 0,
+                "crop_ref": "job-Z/row-0",
+                "item_top5": [{"label": "타이어", "sim": 0.72}],
+                "supply": 100000,
+            }
+        ]
+    )
+    payload = td.invoice_with_items()
+    payload["items"][0]["crop_ref"] = "job-Z/row-0"
+    payload["items"][0]["label_soruce"] = "candidate_picked:2"  # 오타 키 — 의도적
+
+    r = client.post(f"/api/ocr/jobs/{job_id}/confirm", json=payload)
+    assert r.status_code == 200
+
+    with db_conn.begin() as conn:
+        raw = conn.execute(
+            text("SELECT correction_json FROM ocr_corrections WHERE job_id = :j"),
+            {"j": job_id},
+        ).scalar()
+    correction = raw if isinstance(raw, dict) else json.loads(raw)
+    assert correction["lines"][0]["label_source"] is None
 
 
 def test_confirm_twice_returns_409(client):

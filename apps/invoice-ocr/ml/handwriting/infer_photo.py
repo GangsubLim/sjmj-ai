@@ -43,6 +43,9 @@ BANK = HERE / "runs/bank.npz"
 PROD = HERE / "runs/ft_prod.pt"
 OUT = ML / "review/infer_photo.html"
 Y0, Y1 = DATA_Y
+# backend/app/schemas/ocr.py의 TOP_K/LABEL_SOURCES(candidate_picked:0-4)와 동기 — 이 값을
+# 바꾸면 그쪽도 함께 바꾼다(tests/test_label_source_sync.py가 backend↔spec 동기만 검증하며
+# 여기까지는 안 덮는다).
 TOPK = 5
 COLOR = {
     "new": (0, 170, 0),
