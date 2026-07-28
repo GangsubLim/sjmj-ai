@@ -7,8 +7,11 @@ import { useCompanies } from "@/hooks/use-companies";
 import { useItems } from "@/hooks/use-items";
 import { useAddNewItem } from "@/hooks/use-add-new-item";
 import { useSettings } from "@/hooks/use-settings";
+import { useOcrInfer } from "@/hooks/use-ocr-infer";
+import { ocrAPI } from "@/services/api";
 import { DEFAULT_APP_SETTINGS } from "@/types/settings";
 import type { Item } from "@/types/item";
+import type { OcrResult } from "@/types/ocr";
 
 // cmdk/radix-popover가 jsdom에서 마운트되려면 아래 브라우저 API가 필요하다
 // (invoice-item-row.test.tsx와 동일 셋업).
@@ -30,13 +33,48 @@ vi.mock("@/hooks/use-items", () => ({ useItems: vi.fn() }));
 vi.mock("@/hooks/use-add-new-item", () => ({ useAddNewItem: vi.fn() }));
 vi.mock("@/hooks/use-settings", () => ({ useSettings: vi.fn() }));
 vi.mock("@/hooks/use-media-query", () => ({ useMediaQuery: () => false }));
+vi.mock("@/hooks/use-ocr-infer", () => ({ useOcrInfer: vi.fn() }));
+vi.mock("@/services/api", () => ({
+  ocrAPI: { confirm: vi.fn() },
+  invoiceAPI: { create: vi.fn(), update: vi.fn() },
+  ocrCropUrl: (jobId: number, rowIndex: number) =>
+    `/api/ocr/jobs/${jobId}/crops/${rowIndex}`,
+}));
 
 const mockUseCompanies = vi.mocked(useCompanies);
 const mockUseItems = vi.mocked(useItems);
 const mockUseAddNewItem = vi.mocked(useAddNewItem);
 const mockUseSettings = vi.mocked(useSettings);
+const mockUseOcrInfer = vi.mocked(useOcrInfer);
+const mockConfirm = vi.mocked(ocrAPI.confirm);
 
-function setup() {
+const OCR_RESULT: OcrResult = {
+  rows: [
+    {
+      row_index: 0,
+      crop_ref: "job-7/row-0",
+      item_top5: [
+        { label: "엔진오일", sim: 0.9 },
+        { label: "엔진오일필터", sim: 0.7 },
+      ],
+      supply: 10000,
+      amount_raw: "10000",
+      item_uncertain: true, // 칩이 기본 펼침이 되도록
+    },
+    {
+      row_index: 1,
+      crop_ref: "job-7/row-1",
+      item_top5: [{ label: "타이어", sim: 0.95 }],
+      supply: 20000,
+      amount_raw: "20000",
+      item_uncertain: true,
+    },
+  ],
+  supply_sum: 30000,
+  warp_ok: true,
+};
+
+function setup(ocr?: Partial<ReturnType<typeof useOcrInfer>>) {
   mockUseCompanies.mockReturnValue({
     data: [],
     loading: false,
@@ -57,6 +95,14 @@ function setup() {
     updateIssuer: vi.fn(),
     fetchAppSettings: vi.fn(),
     updateAppSettings: vi.fn(),
+  });
+  mockUseOcrInfer.mockReturnValue({
+    status: "idle",
+    result: null,
+    error: null,
+    jobId: null,
+    upload: vi.fn(),
+    ...ocr,
   });
   return render(
     <MemoryRouter>
@@ -148,5 +194,101 @@ describe("InvoiceForm 신규 품목 등록 배선", () => {
 
     // index 캡처였다면 이제 index 0인 "기존행"이 "듣보1"로 덮어써진다 — 그러면 안 된다
     expect(screen.getByLabelText("품목 1 이름")).toHaveValue("기존행");
+  });
+});
+
+type ConfirmedItem = Record<string, unknown>;
+
+function confirmedItems(): ConfirmedItem[] {
+  const [, payload] = mockConfirm.mock.calls[0];
+  return (payload as { items: ConfirmedItem[] }).items;
+}
+
+async function saveAsConfirm() {
+  fireEvent.change(screen.getByLabelText("거래처 (수신)"), {
+    target: { value: "삼정모터스" },
+  });
+  await act(async () => {
+    fireEvent.click(screen.getAllByRole("button", { name: /저장/ })[0]);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe("InvoiceForm label_source 추적", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockConfirm.mockResolvedValue({ success: true, data: { invoice_id: 1 } });
+  });
+
+  it("칩 선택·초안 유지·수동 추가 행이 각각 다른 label_source로 confirm에 실린다", async () => {
+    setup({ status: "done", result: OCR_RESULT, jobId: 7 });
+
+    // 1행: 후보 칩(rank 1) 선택
+    fireEvent.click(screen.getByLabelText("후보 엔진오일필터, 유사도 0.70"));
+    // 2행: 초안 그대로 둔다
+    // 3행: OCR 초안이 아닌 수동 추가 행
+    fireEvent.click(screen.getByText("품목 추가"));
+    fireEvent.change(screen.getByLabelText("품목 3 이름"), {
+      target: { value: "수동품목" },
+    });
+
+    await saveAsConfirm();
+
+    expect(mockConfirm).toHaveBeenCalledTimes(1);
+    expect(mockConfirm.mock.calls[0][0]).toBe(7);
+    const items = confirmedItems();
+    expect(items[0]).toMatchObject({
+      name: "엔진오일필터",
+      label_source: "candidate_picked:1",
+    });
+    expect(items[1]).toMatchObject({
+      name: "타이어",
+      label_source: "top1_kept",
+    });
+    expect(items[2]).not.toHaveProperty("label_source");
+  });
+
+  it("칩을 누른 뒤 직접 타이핑하면 마지막 조작인 manual_typed가 실린다", async () => {
+    setup({ status: "done", result: OCR_RESULT, jobId: 7 });
+
+    fireEvent.click(screen.getByLabelText("후보 엔진오일필터, 유사도 0.70"));
+    fireEvent.change(screen.getByLabelText("품목 1 이름"), {
+      target: { value: "직접입력품목" },
+    });
+
+    await saveAsConfirm();
+
+    expect(confirmedItems()[0]).toMatchObject({
+      name: "직접입력품목",
+      label_source: "manual_typed",
+    });
+  });
+
+  it("신규 품목 등록 경로로 확정하면 타이핑 출처를 덮고 new_item_created가 실린다", async () => {
+    const addNewItem = vi.fn<(name: string) => Promise<Item | null>>();
+    addNewItem.mockResolvedValue({
+      id: 9,
+      item_name: "듣보품목",
+      default_unit_price: 0,
+    });
+    mockUseAddNewItem.mockReturnValue(addNewItem);
+    setup({ status: "done", result: OCR_RESULT, jobId: 7 });
+
+    fireEvent.change(screen.getByLabelText("품목 1 이름"), {
+      target: { value: "듣보품목" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText('"듣보품목" 새로 추가'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await saveAsConfirm();
+
+    expect(confirmedItems()[0]).toMatchObject({
+      name: "듣보품목",
+      label_source: "new_item_created",
+    });
   });
 });

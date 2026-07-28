@@ -14,6 +14,13 @@ import { toast } from "sonner";
 import type { Invoice, InvoiceItem } from "@/types/invoice";
 import type { AutocompleteSuggestion } from "@/components/ui/autocomplete";
 import { calculateItem, calculateTotals } from "@/utils/calculations";
+import {
+  LABEL_SOURCE,
+  applyLabelSource,
+  attachLabelSource,
+  candidatePicked,
+  type LabelSource,
+} from "@/utils/label-source";
 import { useCompanies } from "@/hooks/use-companies";
 import { useItems } from "@/hooks/use-items";
 import { useAddNewItem } from "@/hooks/use-add-new-item";
@@ -102,6 +109,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   );
   const [ocrMetaByRef, setOcrMetaByRef] = React.useState<
     ReadonlyMap<string, OcrItemMeta>
+  >(new Map());
+  // crop_ref → 마지막 조작 출처. OCR 초안 행에만 쌓이며 confirm payload에 실린다.
+  const [labelSources, setLabelSources] = React.useState<
+    ReadonlyMap<string, LabelSource>
   >(new Map());
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
@@ -201,6 +212,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     setOcrMetaByRef(
       ocr.jobId != null ? rowsToOcrMeta(ocr.result, ocr.jobId) : new Map(),
     );
+    setLabelSources(new Map()); // 새 초안 = 조작 이력 없음(전 잡의 출처가 새지 않도록)
   }, [ocr.status, ocr.result, ocr.error, ocr.jobId]);
 
   // Autocomplete data
@@ -250,6 +262,16 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   );
 
   // Handlers
+  // 마지막 조작이 이긴다 — 같은 crop_ref의 이전 출처를 덮어쓴다.
+  // OCR 초안에서 오지 않은 행(crop_ref 없음)은 추적하지 않는다.
+  const recordLabelSource = (
+    cropRef: string | undefined,
+    source: LabelSource,
+  ) => {
+    if (!cropRef) return;
+    setLabelSources((prev) => applyLabelSource(prev, cropRef, source));
+  };
+
   const handleItemUpdate = (index: number, updated: InvoiceItem) => {
     setItems((prev) => {
       const next = [...prev];
@@ -277,8 +299,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   };
 
   const handleAddNewItem = async (tempId: string, name: string) => {
+    // await 이전의 행 목록에서 읽는다 — crop_ref는 행 생성 시 고정이라 나중에 바뀌지 않는다.
+    // 대기 중 행이 삭제됐다면 남는 항목은 무해하다(저장 시 실재 행의 crop_ref만 조회한다).
+    const cropRef = items.find((row) => row._tempId === tempId)?.crop_ref;
     const created = await addNewItem(name);
     if (!created) return; // 실패 — 입력값을 건드리지 않는다(사용자가 타이핑한 이름 보존)
+    recordLabelSource(cropRef, LABEL_SOURCE.newItemCreated);
     setItems((prev) =>
       // tempId로 대상 행을 찾는다(index가 아님) — await 도중 사용자가 다른 행을
       // 삭제해도 엉뚱한 행이 갱신되지 않는다. 대상 행이 이미 삭제됐으면 조용히 무시.
@@ -321,6 +347,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
     setSaving(true);
     try {
+      // label_source는 OCR 확정 경로에서만 의미가 있다(초안 대비 조작 출처).
+      const payloadItems =
+        ocr.jobId != null
+          ? attachLabelSource(validItems, labelSources)
+          : validItems;
+
       const payload = {
         document_title: documentTitle,
         issue_date: issueDate,
@@ -329,7 +361,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         vehicle_no: vehicleNo,
         show_stamp: showStamp,
         memo,
-        items: validItems.map((item, i) => {
+        items: payloadItems.map((item, i) => {
           const { _tempId, ...rest } = item as InvoiceItem & {
             _tempId?: string;
           };
@@ -375,6 +407,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       { ...DEFAULT_ITEM, item_order: 0, _tempId: crypto.randomUUID() },
     ]);
     setOcrMetaByRef(new Map());
+    setLabelSources(new Map());
   };
 
   // PC 미리보기용 deferred state
@@ -592,6 +625,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               }
               ocrMeta={
                 item.crop_ref ? ocrMetaByRef.get(item.crop_ref) : undefined
+              }
+              onPickCandidate={(_label, rank) =>
+                recordLabelSource(item.crop_ref, candidatePicked(rank))
+              }
+              onLabelSource={(source) =>
+                recordLabelSource(item.crop_ref, source)
               }
             />
           ))}

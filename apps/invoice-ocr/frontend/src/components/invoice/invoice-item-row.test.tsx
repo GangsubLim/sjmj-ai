@@ -51,6 +51,47 @@ describe("InvoiceItemRow", () => {
     expect(onAddNewItem).toHaveBeenCalledWith("듣보품목");
   });
 
+  it("자동완성을 거치지 않고 타이핑하면 manual_typed를 알린다", () => {
+    const onLabelSource = vi.fn();
+    render(
+      <InvoiceItemRow
+        item={ITEM}
+        index={0}
+        itemSuggestions={[{ label: "엔진오일", value: "1" }]}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onLabelSource={onLabelSource}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("품목 1 이름"), {
+      target: { value: "엔진" },
+    });
+
+    expect(onLabelSource).toHaveBeenCalledWith("manual_typed");
+  });
+
+  it("자동완성 제안을 고르면 manual_picked를 알린다", () => {
+    const onLabelSource = vi.fn();
+    render(
+      <InvoiceItemRow
+        item={ITEM}
+        index={0}
+        itemSuggestions={[{ label: "엔진오일", value: "1", meta: "45000" }]}
+        onUpdate={vi.fn()}
+        onDelete={vi.fn()}
+        onLabelSource={onLabelSource}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("품목 1 이름"), {
+      target: { value: "엔진" },
+    });
+    fireEvent.click(screen.getByText("엔진오일"));
+
+    expect(onLabelSource).toHaveBeenLastCalledWith("manual_picked");
+  });
+
   it("onAddNewItem이 없으면 '결과 없음'만 뜬다(호출자가 prop을 넘기지 않는 경우의 방어 동작)", () => {
     render(
       <InvoiceItemRow
