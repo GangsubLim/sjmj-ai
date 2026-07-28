@@ -25,18 +25,15 @@ THOUSAND_MULT = 1000
 # ── 품목 retrieval 미확신 판정 임계 ──────────────────────────────────────
 # top1 유사도가 이 값 미만이면 행에 item_uncertain=True를 붙인다. 검수 UI가 후보 칩을
 # 기본 펼침으로 보여주는 신호일 뿐, 자동 기각·재추론에는 쓰지 않는다 — 적중군과 미스군의
-# 유사도 분포가 겹치기 때문이다(2026-07-27 기준선: 적중 평균 0.847 최저 0.760 vs
-# 미스 평균 0.728 최고 0.874).
-# ⚠️ 잠정값이다. 0.760 = 기준선 적중군의 **최저값** — strict '<' 기준으로 적중 오염이
-#    정확히 0건임이 증명되는 유일한 값이다. miss recall은 (평균, 최대)만으로 하한을
-#    계산할 수 없으므로 **주장하지 않는다**.
-#    산정 근거·확정 절차: docs/work/2026-07/2026-07-28-ocr-candidate-selection/threshold.md
-#    (docs/work는 git 비추적 — fresh clone에는 없다. 없으면 Issue #22를 본다.)
-#    #17 갱신 뱅크 재채점(bank_update score의 top1_sim)으로 대체된다.
-#    조정 규칙: 잠정 상태에서는 **근거 없는 상향(더 많이 플래그)을 금지**한다 —
-#    무근거 편향은 '덜 플래그하는 쪽'이어야 배지가 의미를 유지한다.
-#    T3 재채점 근거가 붙은 뒤에는 양방향 조정을 허용한다.
-ITEM_CONF_THRESHOLD = 0.760
+# 유사도 분포가 겹치기 때문이다.
+# 2026-07-28 #17 갱신 뱅크(271→306) leave-self-out 재채점(bank_update score, 35쌍)으로
+# 확정: hit 10건(평균 0.853, 최소 0.7595) · miss 25건(평균 0.770). 0.75는 hit 오염 0%를
+# 유지하는 최댓값이며, 0.76은 miss recall이 동일(36%)한데 hit 오염만 10%p 늘어 0.75에
+# 강지배된다. 이 임계에서도 miss의 64%(16/25)는 여전히 확신으로 표시된다 — 신호는
+# 완전하지 않다. 표본이 35쌍뿐이라 릴리스 후 out-of-sample 재검증이 필요하다.
+# 산정 근거·재조정 절차: docs/work/2026-07/2026-07-28-ocr-candidate-selection/threshold.md
+# (docs/work는 git 비추적 — fresh clone에는 없다. 없으면 Issue #22를 본다.)
+ITEM_CONF_THRESHOLD = 0.75
 
 
 def _is_item_uncertain(top5: list[dict]) -> bool:
