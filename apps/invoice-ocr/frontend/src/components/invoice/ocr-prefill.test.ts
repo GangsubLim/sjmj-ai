@@ -42,6 +42,9 @@ describe("rowsToItems", () => {
 });
 
 function result(rows: OcrResult["rows"]): OcrResult {
+  // 0.75는 확정 임계(T3 산정, docs/work/2026-07/2026-07-28-ocr-candidate-selection/threshold.md
+  // — git 비추적, 없으면 Issue #22 참조)와 맞추려는 것이 아니라, rowsToOcrMeta가 이 값을
+  // 읽지 않아 테스트 결과에 영향이 없음을 밝히기 위한 임의값이다.
   return { rows, supply_sum: 0, warp_ok: true, item_conf_threshold: 0.85 };
 }
 
@@ -96,5 +99,30 @@ describe("rowsToOcrMeta", () => {
     expect(items[0].name).toBe("타이어");
     expect(items[0].crop_ref).toBe("job-7/row-2");
     expect(items[0]).not.toHaveProperty("item_uncertain");
+  });
+
+  it("여러 행을 각자의 crop_ref 키로 흩는다", () => {
+    const row3 = {
+      row_index: 3,
+      crop_ref: "job-7/row-3",
+      item_top5: [{ label: "브레이크패드", sim: 0.9 }],
+      supply: 45000,
+      amount_raw: "45",
+      item_uncertain: false,
+    };
+    const meta = rowsToOcrMeta(
+      result([{ ...ROW, item_uncertain: true }, row3]),
+      7,
+    );
+
+    expect(meta.size).toBe(2);
+    expect(meta.get("job-7/row-2")!.rowIndex).toBe(2);
+    expect(meta.get("job-7/row-2")!.uncertain).toBe(true);
+    expect(meta.get("job-7/row-3")!.rowIndex).toBe(3);
+    expect(meta.get("job-7/row-3")!.uncertain).toBe(false);
+  });
+
+  it("빈 rows는 빈 맵을 반환한다", () => {
+    expect(rowsToOcrMeta(result([]), 7).size).toBe(0);
   });
 });

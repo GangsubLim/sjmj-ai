@@ -100,7 +100,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     buildInitialItems(initialData),
   );
   const [ocrMetaByRef, setOcrMetaByRef] = React.useState<
-    Map<string, OcrItemMeta>
+    ReadonlyMap<string, OcrItemMeta>
   >(new Map());
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
