@@ -20,6 +20,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 12000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [
           { label: "배추", sim: 0.91 },
           { label: "무", sim: 0.42 },
@@ -36,6 +37,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 8000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [
           { label: "무", sim: 0.77 },
           { label: "배추", sim: 0.21 },
@@ -60,6 +62,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 5000,
         status: "included",
         reviewed_at: "2026-06-30T08:30:00",
+        uncertain: false,
         top5: [{ label: "당근", sim: 0.88 }],
       },
     ],

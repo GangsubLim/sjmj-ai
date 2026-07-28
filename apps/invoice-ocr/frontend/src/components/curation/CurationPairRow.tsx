@@ -65,11 +65,43 @@ export function CurationPairRow({
         onError={handleImageError}
       />
       <div className="flex-1">
-        <div className="text-muted-foreground mb-1 text-xs">
-          #{pair.row_index} · top5:{" "}
-          {pair.top5.map((t) => t.label).join("·") || "—"}
+        <div className="text-muted-foreground mb-1 flex flex-wrap items-center gap-1 text-xs">
+          <span>#{pair.row_index}</span>
+          {pair.uncertain && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
+              <span aria-hidden="true">⚠</span> 미확신
+            </span>
+          )}
+          {pair.top5.length === 0 ? (
+            <span>후보 없음</span>
+          ) : (
+            pair.top5.map((t, rank) => (
+              <button
+                key={`${t.label}-${rank}`}
+                type="button"
+                onClick={() => {
+                  // commitLabel(:44)과 동일 가드 — 이미 선택된 라벨에는 PATCH를 쏘지 않는다.
+                  if (t.label === (pair.canonical_label ?? "")) return;
+                  // 표시값 SSoT는 pair.canonical_label — 옵티미스틱 갱신이 입력창을 재동기한다.
+                  // searchQuery는 제안 조회용 로컬 state라 함께 맞춰 둔다.
+                  setSearchQuery(t.label);
+                  onPatch(pair.id, { canonical_label: t.label });
+                }}
+                aria-label={`후보 ${t.label}, 유사도 ${t.sim.toFixed(2)}`}
+                className={cn(
+                  "hover:bg-accent rounded-full border px-2 py-0.5",
+                  rank === 0 && "border-primary",
+                )}
+              >
+                {t.label}{" "}
+                <span className="text-muted-foreground">
+                  {t.sim.toFixed(2)}
+                </span>
+              </button>
+            ))
+          )}
           {isPairChanged(pair) && (
-            <span className="ml-1 text-amber-600">✎ 변경</span>
+            <span className="text-amber-600">✎ 변경</span>
           )}
         </div>
         <Autocomplete

@@ -36,6 +36,7 @@ function jobDetail(): CurationJobDetail {
         supply: 8000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [
           { label: "무", sim: 0.77 },
           { label: "배추", sim: 0.21 },
@@ -62,6 +63,7 @@ function jobDetailMulti(): CurationJobDetail {
         supply: 5000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [{ label: "배추", sim: 0.91 }],
       },
     ],
