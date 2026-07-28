@@ -114,9 +114,14 @@ def compute_metrics(warped_bgr) -> WarpGateMetrics:
     with FaintOn(False):
         ys = sorted(y for y in hline_ys(warped_bgr) if y0 - 40 <= y <= y1 + 40)
     if len(ys) >= 2:
-        # 이중선(간격<40px) gap은 MAD 계산에서 배제한다 — 운영 두 경로(grid_v4의
-        # `b - a < 40` 스킵, canon.global_pitch의 50~130 gap 필터)와 동일 취급이어야
-        # 정상 행검출인 이중검출 전표를 오탐하지 않는다.
+        # 이중선(간격<40px) gap은 MAD 계산에서 배제한다 — 원시 gap 전량으로 MAD를 재면
+        # 정상 행검출인 이중검출 전표를 오탐한다. 하한 40px는 기존 이중선 배제 선례
+        # (grid_v4.main의 `b - a < 40` 스킵 — 운영 경로가 아니라 진단 CLI다,
+        # canon.global_pitch의 50~130 gap 필터)에서 가져왔을 뿐 어느 쪽과도 같은 필터는
+        # 아니다. 상한이 없어 행선 누락이 만든 과대 gap은 피치 '추정'(global_pitch의
+        # 50~130)에서는 빠지고 MAD에는 남지만, MAD가 중앙값이라 소수 outlier는 흡수되고
+        # gap 다수가 어긋난 파손 워프에서만 pitch_dev가 오른다 — 게이트가 원하는 방향이다.
+        # 이 필터를 바꾸면 MAX_PITCH_DEV(50잡 실측 캘리브)가 무효가 된다.
         gaps = [g for g in np.diff(ys) if g >= 40]
         if gaps:
             pitch = global_pitch({"x": ys})

@@ -220,9 +220,9 @@ def test_compute_metrics_raises_on_wrong_shape():
 
 
 def test_compute_metrics_filters_doubled_lines_from_pitch():
-    # 운영 두 경로(grid_v4의 `b - a < 40` 스킵, canon.global_pitch의 50~130 gap 필터)는
-    # 이중선(간격<40px)을 배제한다. 게이트가 원시 gap 전량으로 MAD를 재면 정상 행검출인
-    # 이중검출 전표를 오탐한다 — MAD 계산 전에도 같은 gap 필터를 적용해야 한다.
+    # 기존 이중선 배제 선례(grid_v4.main의 `b - a < 40` 스킵 — 진단 CLI, canon.global_pitch의
+    # 50~130 gap 필터)와 마찬가지로 게이트도 이중선(간격<40px)을 배제해야 한다. 게이트가
+    # 원시 gap 전량으로 MAD를 재면 정상 행검출인 이중검출 전표를 오탐한다.
     import pytest
 
     np = pytest.importorskip("numpy")
