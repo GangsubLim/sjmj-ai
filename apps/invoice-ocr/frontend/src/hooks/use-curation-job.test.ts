@@ -185,6 +185,111 @@ describe("useCurationJob", () => {
     expect(mockToastError).toHaveBeenCalledTimes(1);
   });
 
+  // 늦게 온 성공도 '서버가 저장했다'는 사실이다. 확정값에 반영하지 않으면 뒤이은 최신
+  // 요청의 실패가 저장된 적 있는 값을 건너뛰고 옛 값까지 되돌려 화면이 서버와 발산한다.
+  it("stale 성공 뒤 최신 요청이 실패하면 서버가 저장한 값으로 롤백한다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // stale 성공 — 서버엔 저장됨
+      dB.reject(new Error("network")); // 최신 실패 — 롤백 담당
+      await pA;
+      await pB;
+    });
+
+    // 서버는 "A"를 들고 있다. 초기 확정값 "무"로 돌아가면 저장된 값과 화면이 발산한다.
+    expect(result.current.job!.pairs[0].canonical_label).toBe("A");
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  // 위와 같은 발산의 도착 순서만 뒤집은 경우 — 롤백으로 화면이 이미 확정값을 비추고
+  // 있으므로 뒤늦게 온 성공은 덮을 선택이 없다. 여기서 멈추면 발산이 그대로 남는다.
+  it("최신 요청 실패로 롤백된 뒤 도착한 stale 성공은 화면까지 반영한다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dB.reject(new Error("network")); // 최신 실패 — 확정값("무")으로 롤백
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 그 뒤 도착한 stale 성공
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("A");
+    expect(mockToastError).toHaveBeenCalledTimes(1); // 실패 토스트는 그대로 1회
+  });
+
+  // stale 성공을 확정값에 반영하되 '발행 순서'로만 받아들여야 한다 — 뒤늦게 도착한 옛
+  // 성공이 더 최신 확정을 덮으면 롤백 기준선이 과거로 후퇴한다.
+  it("뒤늦게 도착한 옛 성공은 더 최신 확정값을 덮지 않는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise)
+      .mockRejectedValueOnce(new Error("network"));
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) }); // 최신 성공이 먼저
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 옛 성공이 나중
+      await pB;
+      await pA;
+    });
+
+    // 세 번째 요청을 실패시켜 롤백 기준선(=확정값)이 무엇인지 관찰한다.
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "C" });
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+  });
+
   it("성공 PATCH는 응답을 merge하되 top5를 보존한다", async () => {
     mockGetJob.mockResolvedValue({ data: jobDetail() });
     mockPatchPair.mockResolvedValue({ data: patchResult() });

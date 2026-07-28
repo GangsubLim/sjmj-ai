@@ -47,6 +47,16 @@ export function useCurationJob(
   // 되돌아가, 라벨링 도구가 저장되지 않은 값을 '현재 라벨'로 보여주게 된다.
   const confirmedRef = useRef<Map<number, CurationJobPair>>(new Map());
 
+  // 확정값을 기록한 요청의 seq. 늦게 온 성공도 서버에 저장된 사실이라 확정값에는 반영해야
+  // 하는데, 응답 순서는 발행 순서와 다를 수 있어 뒤늦게 도착한 옛 성공이 더 최신 확정을
+  // 되돌릴 수 있다 — 발행 순서가 더 뒤인 확정만 받아들여 기준선의 후퇴를 막는다.
+  const confirmedSeqRef = useRef<Map<number, number>>(new Map());
+
+  // 최신 요청이 실패해 화면을 확정값으로 되돌린 시점의 seq. 이 상태에서는 화면이 확정값을
+  // 그대로 비추고 있어 덮을 선택이 없으므로, 뒤늦게 도착한 성공이 확정값을 갱신하면 화면도
+  // 따라가야 한다(멈추면 서버엔 저장됐는데 화면은 옛값인 발산이 그대로 남는다).
+  const rolledBackSeqRef = useRef<Map<number, number>>(new Map());
+
   useEffect(() => {
     // ref는 재할당되지 않는 Map이라 effect 본문에서 한 번 잡아 cleanup에서 쓴다.
     const seqs = seqRef.current;
@@ -105,13 +115,22 @@ export function useCurationJob(
       );
       try {
         const res = await curationAPI.patchPair(id, patch);
-        if (isStale()) return; // 늦게 온 성공 — 최신 선택을 덮지 않는다
         // 2) 성공: 응답을 merge. job_id는 버리고 top5는 기존 값 보존(계약 비대칭).
         const { job_id: _jobId, ...base } = res.data;
+        // 성공은 stale이어도 '서버가 저장했다'는 사실이므로 확정값에는 먼저 반영한다 —
+        // 여기서 그냥 버리면 뒤이은 최신 요청의 실패가 저장된 적 있는 값을 건너뛰고 옛
+        // 값으로 롤백해, 라벨링 도구가 서버와 다른 라벨을 보여준다.
+        if (seq <= (confirmedSeqRef.current.get(id) ?? 0)) return;
+        confirmedSeqRef.current.set(id, seq);
         confirmedRef.current.set(id, {
           ...(confirmedRef.current.get(id) ?? prevPair),
           ...base,
         });
+        // 화면은 이 요청이 최신일 때만 덮는다 — 예외는 최신 요청이 이미 실패해 화면이
+        // 확정값을 비추고 있는 경우(덮을 선택이 없고, 멈추면 발산이 남는다).
+        const isRolledBack =
+          rolledBackSeqRef.current.get(id) === seqRef.current.get(id);
+        if (isStale() && !isRolledBack) return; // 늦게 온 성공 — 최신 선택을 덮지 않는다
         setJob((prev) =>
           prev
             ? {
@@ -126,6 +145,7 @@ export function useCurationJob(
         if (isStale()) return; // 늦게 온 실패 — 이후 성공한 선택을 되돌리지 않고 토스트도 없다
         // 3) 실패: 해당 pair만 서버 확정 스냅샷으로 롤백 + 에러 토스트.
         const rollback = confirmedRef.current.get(id) ?? prevPair;
+        rolledBackSeqRef.current.set(id, seq); // 이후 도착할 성공이 화면까지 갱신하도록
         setJob((prev) =>
           prev
             ? {
