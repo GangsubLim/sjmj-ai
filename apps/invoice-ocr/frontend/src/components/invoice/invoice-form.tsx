@@ -276,18 +276,24 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     ]);
   };
 
-  const handleAddNewItem = async (index: number, name: string) => {
+  const handleAddNewItem = async (tempId: string, name: string) => {
     const created = await addNewItem(name);
     if (!created) return; // 실패 — 입력값을 건드리지 않는다(사용자가 타이핑한 이름 보존)
-    setItems((prev) => {
-      const next = [...prev];
-      next[index] = {
-        ...next[index],
-        name: created.item_name,
-        unit_price: created.default_unit_price ?? next[index].unit_price,
-      };
-      return next;
-    });
+    setItems((prev) =>
+      // tempId로 대상 행을 찾는다(index가 아님) — await 도중 사용자가 다른 행을
+      // 삭제해도 엉뚱한 행이 갱신되지 않는다. 대상 행이 이미 삭제됐으면 조용히 무시.
+      prev.map((row) =>
+        row._tempId === tempId
+          ? {
+              ...row,
+              name: created.item_name,
+              // 백엔드가 default_unit_price를 항상 0으로 채워 반환하므로(값 없음과
+              // 구분 불가) 0은 "값 없음"으로 취급해 기존 단가를 보존한다.
+              unit_price: created.default_unit_price || row.unit_price,
+            }
+          : row,
+      ),
+    );
     refetchItems(); // 방금 만든 품목이 자동완성 목록에 뜨도록
   };
 
@@ -581,7 +587,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               itemSuggestions={itemAutoSuggestions}
               onUpdate={handleItemUpdate}
               onDelete={handleItemDelete}
-              onAddNewItem={(name) => handleAddNewItem(index, name)}
+              onAddNewItem={(name) =>
+                handleAddNewItem(items[index]._tempId, name)
+              }
               ocrMeta={
                 item.crop_ref ? ocrMetaByRef.get(item.crop_ref) : undefined
               }

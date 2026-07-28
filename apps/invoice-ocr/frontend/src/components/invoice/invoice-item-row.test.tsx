@@ -51,7 +51,7 @@ describe("InvoiceItemRow", () => {
     expect(onAddNewItem).toHaveBeenCalledWith("듣보품목");
   });
 
-  it("onAddNewItem이 없으면 '결과 없음'만 뜬다(현재 등록 UI의 버그 재현 가드)", () => {
+  it("onAddNewItem이 없으면 '결과 없음'만 뜬다(호출자가 prop을 넘기지 않는 경우의 방어 동작)", () => {
     render(
       <InvoiceItemRow
         item={ITEM}

@@ -27,7 +27,7 @@ function getErrorMessage(e: unknown): string {
 export function useAddNewItem(): (name: string) => Promise<Item | null> {
   return useCallback(async (name: string) => {
     try {
-      const res = await itemSuggestionsAPI.add({ item_name: name });
+      const res = await itemSuggestionsAPI.add({ item_name: name.trim() });
       toast.success(
         "품목이 등록되었습니다 (자동완성 즉시 반영 · OCR 추천은 다음 뱅크 갱신 후)",
       );
