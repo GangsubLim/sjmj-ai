@@ -356,8 +356,9 @@ export const curationImageUrl = (
   kind: CurationImageKind,
 ): string => `${getApiBaseUrl()}/curation/jobs/${jobId}/image/${kind}`;
 
-export const curationCropUrl = (jobId: number, row: number): string =>
-  `${getApiBaseUrl()}/curation/jobs/${jobId}/crop/${row}`;
+// crop 이미지는 등록 UI(확정 전)와 큐레이션 UI(확정 후)가 모두 쓰므로 /ocr 네임스페이스에 있다.
+export const ocrCropUrl = (jobId: number, row: number): string =>
+  `${getApiBaseUrl()}/ocr/jobs/${jobId}/crop/${row}`;
 
 // --- Conditional exports: mock or real API ---
 

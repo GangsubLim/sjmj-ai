@@ -6,7 +6,7 @@ import { Autocomplete } from "@/components/ui/autocomplete";
 import { Button } from "@/components/ui/button";
 import { useItems } from "@/hooks/use-items";
 import { useDebounce } from "@/hooks/use-debounce";
-import { curationCropUrl } from "@/services/api";
+import { ocrCropUrl } from "@/services/api";
 import { isPairChanged } from "@/utils/curation";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import { cn } from "@/lib/utils";
@@ -59,7 +59,7 @@ export function CurationPairRow({
       data-testid={`pair-${pair.id}`}
     >
       <img
-        src={curationCropUrl(jobId, pair.row_index)}
+        src={ocrCropUrl(jobId, pair.row_index)}
         alt={`행 ${pair.row_index} crop`}
         className="h-10 w-16 rounded border object-cover"
         onError={handleImageError}

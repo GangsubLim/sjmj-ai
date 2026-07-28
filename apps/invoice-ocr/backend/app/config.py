@@ -56,3 +56,11 @@ def get_static_dir() -> Path | None:
     raw = os.environ.get("SJMJ_STATIC_DIR")
     candidate = Path(raw) if raw else Path(__file__).resolve().parents[2] / "frontend" / "dist"
     return candidate if candidate.is_dir() else None
+
+
+def data_root() -> Path:
+    """데이터 루트. SJMJ_DATA_DIR 미설정은 운영 오설정이므로 명확히 실패시킨다."""
+    raw = os.environ.get("SJMJ_DATA_DIR")
+    if not raw:
+        raise RuntimeError("SJMJ_DATA_DIR 미설정 — 데이터 경로 조립 불가")
+    return Path(raw)

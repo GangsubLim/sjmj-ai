@@ -329,3 +329,108 @@ def test_confirm_pending_job_returns_409(client):
     r = client.post(f"/api/ocr/jobs/{job_id}/confirm", json=td.invoice_with_items())
     assert r.status_code == 409
     assert r.json()["error"]["code"] == "CONFLICT"
+
+
+# ── GET /api/ocr/jobs/{id}/crop/{row} ──────────────────────────────────────
+# tests/contract/test_curation_routes.py:319-334, 396-414에서 이관·개작
+# (crop은 확정 전에도 필요해 /curation이 아닌 /ocr 네임스페이스에 둔다).
+
+_CROP_PNG_BYTES = b"\x89PNG\r\n\x1a\n"
+
+
+def test_crop_image_returns_png(client, tmp_path):
+    job_id = _done_job()
+    crop_dir = tmp_path / "ocr_crops" / f"job-{job_id}"
+    crop_dir.mkdir(parents=True)
+    (crop_dir / "row-0.png").write_bytes(_CROP_PNG_BYTES)
+    res = client.get(f"/api/ocr/jobs/{job_id}/crop/0")
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "image/png"
+    assert res.content == _CROP_PNG_BYTES
+
+
+def test_crop_image_404_when_file_missing(client, tmp_path):
+    res = client.get(f"/api/ocr/jobs/{_done_job()}/crop/0")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_crop_404_when_job_missing(client):
+    res = client.get("/api/ocr/jobs/999999/crop/0")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_crop_blocks_path_traversal_via_row(client, tmp_path):
+    """SJMJ_DATA_DIR(=tmp_path) 밖에 민감 파일을 두고 row로 도달 불가함을 실증한다.
+
+    tests/contract/test_curation_routes.py:404-417에서 토큰·단언 그대로 이관(보안 회귀 방지).
+    row는 int path 파라미터라 단일 세그먼트 조작 토큰은 422→400 변환기가 거부한다.
+    (%2e%2e는 서버에서 ".."로 디코드되지만 단일 세그먼트라 int 파싱에서 걸린다.)
+    """
+    outside = tmp_path.parent / "outside-secret.png"
+    outside.write_bytes(b"SECRET-OUTSIDE-DATA-ROOT")
+    job_id = _done_job()
+
+    for evil in ("%2e%2e", "row-0.png", "..%2e"):
+        res = client.get(f"/api/ocr/jobs/{job_id}/crop/{evil}")
+        assert res.status_code == 400, f"traversal token not rejected: {evil!r}"
+        assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+        assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
+
+
+def _all_route_paths(app) -> list[str]:
+    """app.routes를 재귀적으로 펼쳐 모든 라우트 path를 모은다.
+
+    FastAPI 0.138(starlette 1.3.1)의 include_router는 최상위 app.routes에
+    `_IncludedRouter`(path 속성 없음)만 노출하고 실제 라우트는
+    `original_router.routes`에 중첩된다 — 단순 `app.routes` 순회로는
+    하위 라우트를 못 찾아 부정 단언이 항상 공허하게 참이 된다.
+    """
+    paths: list[str] = []
+    stack = list(app.routes)
+    while stack:
+        route = stack.pop()
+        path = getattr(route, "path", None)
+        if path is not None:
+            paths.append(path)
+        nested = getattr(route, "routes", None) or getattr(
+            getattr(route, "original_router", None), "routes", None
+        )
+        if nested:
+            stack.extend(nested)
+    return paths
+
+
+def test_old_curation_crop_route_is_gone():
+    """status code로는 판별할 수 없다 — frontend/dist가 있으면 SPA catch-all
+    (app/main.py:42-48)이 미매칭 GET에 200 index.html을 준다. 라우트 테이블을 직접 본다."""
+    from app.main import app
+
+    paths = _all_route_paths(app)
+    # positive control: 수집기 자체가 깨지면 아래 부정 단언이 공허하게 참이 되므로,
+    # 신 경로가 실제로 수집됨을 먼저 확인해 수집기 정상 동작을 실증한다.
+    assert "/ocr/jobs/{id}/crop/{row}" in paths
+    assert not any(path.endswith("/curation/jobs/{job_id}/crop/{row}") for path in paths)
+
+
+def test_crop_rejects_absurdly_large_row_without_500_or_path_leak(client, tmp_path):
+    """row 상한 부재로 파일명 초과 OSError → 500 + 절대경로 노출을 재현·회귀 방지한다.
+
+    (품질 리뷰 재현) huge row는 예전엔 filesystem 계층까지 도달해 OSError가 나고
+    전역 핸들러(app/core/errors.py:_unhandled_handler)가 str(exc)를 그대로 실어
+    SJMJ_DATA_DIR 절대경로가 응답에 노출됐다. 400 VALIDATION_ERROR로 흡수해야 한다.
+    """
+    job_id = _done_job()
+    huge_row = "9" * 300
+    res = client.get(f"/api/ocr/jobs/{job_id}/crop/{huge_row}")
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert str(tmp_path) not in res.text
+
+
+def test_crop_rejects_negative_row(client):
+    job_id = _done_job()
+    res = client.get(f"/api/ocr/jobs/{job_id}/crop/-1")
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"

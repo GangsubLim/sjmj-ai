@@ -370,6 +370,16 @@
       },
       {
         "method": "GET",
+        "path": "/api/ocr/jobs/{id}/crop/{row}",
+        "summary": "행 crop 이미지 (등록 UI가 confirm 이전에도 조회 — 워커 추론 시점에 저장)",
+        "auth": "public",
+        "req": null,
+        "res": "binary image/png (raw FileResponse, envelope 예외)",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      },
+      {
+        "method": "GET",
         "path": "/api/curation/jobs",
         "summary": "검수 큐 목록(페이지네이션)",
         "auth": "public",
@@ -412,16 +422,6 @@
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}/image/{kind}",
         "summary": "원본/워프 전표 이미지",
-        "auth": "public",
-        "req": null,
-        "res": "binary image/png (raw FileResponse, envelope 예외)",
-        "router": "curation",
-        "source": "app/routers/curation.py"
-      },
-      {
-        "method": "GET",
-        "path": "/api/curation/jobs/{job_id}/crop/{row}",
-        "summary": "행 crop 이미지",
         "auth": "public",
         "req": null,
         "res": "binary image/png (raw FileResponse, envelope 예외)",
@@ -506,7 +506,7 @@
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
       "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 문자열 맵(contract 테스트로 고정).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
-      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/curation/jobs/{job_id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
+      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/ocr/jobs/{id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
@@ -2201,6 +2201,66 @@
         }
       }
     },
+    "/api/ocr/jobs/{id}/crop/{row}": {
+      "get": {
+        "summary": "행 crop 이미지 (raw FileResponse, envelope 예외). 등록 UI가 confirm 이전에도 조회 — 워커 추론 시점(infer_job)에 저장되므로.",
+        "tags": ["ocr"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "row",
+            "in": "path",
+            "required": true,
+            "description": "0~9999 범위만 허용(Path(ge=0, le=9999)). 실제 거래명세서 행 수를 크게 상회하는 값·음수는 400 VALIDATION_ERROR — 파일명 초과로 인한 500·경로 노출 방지(품질 리뷰 반영).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9999
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "crop raw 바이트",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "row 범위 초과·음수",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "산출물 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/curation/jobs": {
       "get": {
         "summary": "검수 큐 — confirmed 잡 목록(검수상태·미처리수, 페이지네이션)",
@@ -2464,53 +2524,6 @@
                   "type": "string",
                   "format": "binary",
                   "description": "kind=original 이고 업로드 파일이 JPEG인 경우"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "산출물 없음",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/curation/jobs/{job_id}/crop/{row}": {
-      "get": {
-        "summary": "행 crop 이미지 (raw FileResponse, envelope 예외)",
-        "tags": ["curation"],
-        "parameters": [
-          {
-            "name": "job_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "name": "row",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "crop raw 바이트",
-            "content": {
-              "image/png": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
                 }
               }
             }

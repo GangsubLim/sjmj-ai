@@ -1,11 +1,11 @@
 """OCR 잡 업로드·조회·확정. confirm은 행잠금 claim으로 중복 invoice 생성을 막는다."""
 
-import os
 import re
 import uuid
 from pathlib import Path
 
 from app import db
+from app.config import data_root
 from app.core.errors import bad_request, conflict, not_found
 from app.repositories.companies_repository import CompanyRepository
 from app.repositories.curation_repository import CurationRepository
@@ -16,10 +16,7 @@ from app.services.ocr_correction import build_correction, build_training_pairs
 
 
 def _upload_root() -> Path:
-    raw = os.environ.get("SJMJ_DATA_DIR")
-    if not raw:
-        raise RuntimeError("SJMJ_DATA_DIR 미설정 — 업로드 저장 경로 없음")
-    p = Path(raw) / "ocr_uploads"
+    p = data_root() / "ocr_uploads"
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -134,3 +131,19 @@ class OcrService:
             self.curation_repo.insert_training_pairs(pairs)
 
         return {"invoice_id": invoice_id}
+
+    def crop_image(self, job_id: int, row: int) -> str:
+        """행 crop 이미지 절대경로를 반환한다. 잡·파일이 없으면 404.
+
+        crop PNG는 워커의 추론 시점(infer_job)에 저장되므로 confirm 이전에도 존재한다.
+        경로는 서버가 (job_id, row) 정수로만 조립한다 — crop_ref 문자열을 신뢰하지 않는다.
+        존재 확인은 result_json을 파싱하는 find_job이 아니라 경량 job_exists를 쓴다 —
+        등록 UI가 행마다 이 경로를 호출하므로(썸네일 N개), 잡당 1회면 될 파싱 비용이
+        행 수만큼 반복되는 것을 막는다(부수로 result_json이 깨진 잡도 500 대신 정상 404).
+        """
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        path = data_root() / "ocr_crops" / f"job-{job_id}" / f"row-{row}.png"
+        if not path.is_file():
+            not_found("crop 이미지가 없습니다.")
+        return str(path)

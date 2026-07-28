@@ -1,6 +1,6 @@
 """curation 라우터 — 검수 큐/잡 상세/쌍 큐레이션/검수완료/이미지. /api/curation/*.
 
-이미지 2종(image/{kind}·crop/{row})은 FileResponse raw 바이트로 success envelope의
+전표 이미지(image/{kind})는 FileResponse raw 바이트로 success envelope의
 명시적 예외(api-conventions.md 참조). 그 외는 표준 envelope.
 """
 
@@ -71,9 +71,3 @@ def image(job_id: int, kind: ImageKind):
     if kind is ImageKind.original:
         return FileResponse(svc.original_image(job_id))
     return FileResponse(svc.warped_image(job_id), media_type="image/png")
-
-
-@router.get("/curation/jobs/{job_id}/crop/{row}")
-def crop(job_id: int, row: int):
-    """행 crop 이미지를 raw 바이트로 반환한다(envelope 예외)."""
-    return FileResponse(_service().crop_image(job_id, row), media_type="image/png")

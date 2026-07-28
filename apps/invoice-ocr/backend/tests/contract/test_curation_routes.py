@@ -304,7 +304,7 @@ def test_review_404_when_missing(client, db_conn):
     assert res.status_code == 404
 
 
-# ── GET /api/curation/jobs/{id}/image/{kind} + /crop/{row} ─────────────────
+# ── GET /api/curation/jobs/{id}/image/{kind} ───────────────────────────────
 
 
 @pytest.fixture
@@ -314,25 +314,6 @@ def _data_dir(tmp_path, monkeypatch):
 
 
 _PNG_BYTES = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16  # 최소 PNG 시그니처
-
-
-def test_crop_image_returns_png(client, db_conn, _data_dir):
-    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
-    crop_dir = _data_dir / "ocr_crops" / f"job-{job_id}"
-    crop_dir.mkdir(parents=True)
-    (crop_dir / "row-0.png").write_bytes(_PNG_BYTES)
-
-    res = client.get(f"/api/curation/jobs/{job_id}/crop/0")
-    assert res.status_code == 200
-    assert res.headers["content-type"] == "image/png"
-    assert res.content == _PNG_BYTES
-
-
-def test_crop_image_404_when_file_missing(client, db_conn, _data_dir):
-    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
-    res = client.get(f"/api/curation/jobs/{job_id}/crop/0")
-    assert res.status_code == 404
-    assert res.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_warped_image_404_when_not_saved(client, db_conn, _data_dir):
@@ -393,28 +374,11 @@ def test_original_image_404_when_file_missing(client, db_conn, _data_dir):
     assert res.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_image_and_crop_404_when_job_missing(client, db_conn, _data_dir):
+def test_image_404_when_job_missing(client, db_conn, _data_dir):
     # 존재하지 않는 잡 — job_exists 가드가 파일 조회 전에 404를 낸다.
-    for path in ("image/original", "crop/0"):
-        res = client.get(f"/api/curation/jobs/999999/{path}")
-        assert res.status_code == 404, path
-        assert res.json()["error"]["code"] == "NOT_FOUND"
-
-
-def test_crop_blocks_path_traversal_via_row(client, db_conn, _data_dir, tmp_path):
-    # SJMJ_DATA_DIR(=tmp_path) 밖에 민감 파일을 두고, row로 도달 불가함을 실증한다.
-    outside = tmp_path.parent / "outside-secret.png"
-    outside.write_bytes(b"SECRET-OUTSIDE-DATA-ROOT")
-    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
-
-    # row는 int 타입 — 경로 조작 토큰은 422→400 검증 에러로 거부되어
-    # SJMJ_DATA_DIR/ocr_crops/job-{id}/row-{int}.png 밖으로 절대 벗어날 수 없다.
-    # (%2e%2e는 서버에서 ".."로 디코드되지만 단일 세그먼트라 row int 파싱에서 거부된다.)
-    for evil in ("%2e%2e", "row-0.png", "..%2e"):
-        res = client.get(f"/api/curation/jobs/{job_id}/crop/{evil}")
-        assert res.status_code == 400, f"traversal token not rejected: {evil!r}"
-        assert res.json()["error"]["code"] == "VALIDATION_ERROR"
-        assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
+    res = client.get("/api/curation/jobs/999999/image/original")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_image_blocks_path_traversal_via_kind(client, db_conn, _data_dir, tmp_path):

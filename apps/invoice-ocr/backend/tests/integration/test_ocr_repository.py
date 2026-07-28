@@ -67,3 +67,14 @@ def test_claim_job_returns_parsed_job():
 def test_claim_job_not_found_returns_none():
     repo = OcrRepository()
     assert repo.claim_job(999999) is None
+
+
+def test_job_exists_true_for_existing_job():
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    assert repo.job_exists(job_id) is True
+
+
+def test_job_exists_false_for_missing_job():
+    repo = OcrRepository()
+    assert repo.job_exists(999999) is False

@@ -1,7 +1,7 @@
 import pytest
 
 from app.core.errors import AppError
-from app.services.ocr_service import _validated_suffix
+from app.services.ocr_service import OcrService, _validated_suffix
 
 
 @pytest.mark.parametrize(
@@ -49,3 +49,36 @@ def test_control_char_check_precedes_suffix_check():
     with pytest.raises(AppError) as ei:
         _validated_suffix("scan\x07.sh")
     assert ei.value.details == {"photo": "파일명에 제어문자를 사용할 수 없습니다."}
+
+
+class _StubRepo:
+    """find_job을 제공하지 않는 스텁 — crop_image가 job_exists만 쓰는지 실증한다."""
+
+    def __init__(self, exists: bool):
+        self._exists = exists
+
+    def job_exists(self, job_id: int) -> bool:
+        return self._exists
+
+
+def test_crop_image_uses_job_exists_not_find_job(tmp_path, monkeypatch):
+    """crop_image는 result_json 파싱하는 find_job이 아니라 경량 job_exists를 써야 한다.
+
+    _StubRepo에 find_job이 없으므로, crop_image가 find_job을 호출하면
+    AttributeError로 즉시 드러난다(성능 회귀 가드).
+    """
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    crop_dir = tmp_path / "ocr_crops" / "job-1"
+    crop_dir.mkdir(parents=True)
+    (crop_dir / "row-0.png").write_bytes(b"\x89PNG")
+    service = OcrService(repo=_StubRepo(True))
+    assert service.crop_image(1, 0).endswith("row-0.png")
+
+
+def test_crop_image_404_when_job_missing_via_job_exists(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    service = OcrService(repo=_StubRepo(False))
+    with pytest.raises(AppError) as ei:
+        service.crop_image(999, 0)
+    assert ei.value.status == 404
+    assert ei.value.code == "NOT_FOUND"
