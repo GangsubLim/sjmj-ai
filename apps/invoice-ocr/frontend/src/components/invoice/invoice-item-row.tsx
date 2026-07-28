@@ -22,6 +22,7 @@ interface InvoiceItemRowProps {
   onDelete: (index: number) => void;
   onAddNewItem?: (name: string) => void;
   ocrMeta?: OcrItemMeta;
+  // Task 12에서 배선 예정 — 현재는 어떤 호출자도 넘기지 않는다(선택 이력 로깅용).
   onPickCandidate?: (label: string, rank: number) => void;
 }
 

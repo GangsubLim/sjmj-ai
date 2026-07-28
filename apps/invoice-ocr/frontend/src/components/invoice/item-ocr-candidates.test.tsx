@@ -48,6 +48,30 @@ describe("ItemOcrCandidates", () => {
     expect(screen.getByRole("button", { name: /타이어/ })).toBeInTheDocument();
   });
 
+  it("토글 버튼은 펼침 상태와 무관하게 항상 마운트되고 aria-expanded로 상태를 전달한다", () => {
+    render(<ItemOcrCandidates meta={meta()} onPick={vi.fn()} />);
+    const toggle = screen.getByRole("button", { name: /후보/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("button", { name: /타이어/ })).toBeInTheDocument();
+  });
+
+  it("펼친 뒤 토글 버튼을 다시 누르면 후보 칩이 접힌다", () => {
+    render(<ItemOcrCandidates meta={meta()} onPick={vi.fn()} />);
+    const toggle = screen.getByRole("button", { name: /후보/ });
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: /타이어/ })).toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    expect(
+      screen.queryByRole("button", { name: /타이어/ }),
+    ).not.toBeInTheDocument();
+  });
+
   it("칩 클릭 시 라벨과 0-based rank를 함께 넘긴다", () => {
     const onPick = vi.fn();
     render(
@@ -64,6 +88,15 @@ describe("ItemOcrCandidates", () => {
     expect(screen.getByRole("button", { name: /타이어/ })).toHaveTextContent(
       "0.72",
     );
+  });
+
+  it("칩의 접근 가능한 이름에 후보와 유사도 의미를 명시한다", () => {
+    render(
+      <ItemOcrCandidates meta={meta({ uncertain: true })} onPick={vi.fn()} />,
+    );
+    expect(
+      screen.getByRole("button", { name: "후보 타이어, 유사도 0.72" }),
+    ).toBeInTheDocument();
   });
 
   it("후보가 0개면 칩 대신 직접 입력 안내를 보여준다", () => {

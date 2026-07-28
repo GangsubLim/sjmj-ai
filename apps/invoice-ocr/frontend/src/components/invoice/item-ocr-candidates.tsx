@@ -21,6 +21,7 @@ interface ItemOcrCandidatesProps {
  */
 export function ItemOcrCandidates({ meta, onPick }: ItemOcrCandidatesProps) {
   const [expanded, setExpanded] = React.useState(meta.uncertain);
+  const listId = `item-ocr-candidates-list-${meta.jobId}-${meta.rowIndex}`;
 
   return (
     <div
@@ -36,33 +37,49 @@ export function ItemOcrCandidates({ meta, onPick }: ItemOcrCandidatesProps) {
       />
       {meta.uncertain && (
         <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
-          ⚠ 미확신
+          <span aria-hidden="true">⚠</span> 미확신
         </span>
       )}
-      {!expanded ? (
-        <Button variant="outline" size="sm" onClick={() => setExpanded(true)}>
-          후보 ▾
-        </Button>
-      ) : meta.candidates.length === 0 ? (
-        <span className="text-muted-foreground text-xs">
-          추천 후보가 없습니다 — 품목명을 직접 입력하세요
-        </span>
-      ) : (
-        meta.candidates.map((c, rank) => (
-          <button
-            key={`${c.label}-${rank}`}
-            type="button"
-            onClick={() => onPick(c.label, rank)}
-            className={cn(
-              "hover:bg-accent rounded-full border px-2 py-0.5 text-xs",
-              rank === 0 && "border-primary",
-            )}
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        aria-expanded={expanded}
+        aria-controls={listId}
+        onClick={() => setExpanded((prev) => !prev)}
+      >
+        후보 <span aria-hidden="true">▾</span>
+      </Button>
+      {expanded &&
+        (meta.candidates.length === 0 ? (
+          <span id={listId} className="text-muted-foreground text-xs">
+            추천 후보가 없습니다 — 품목명을 직접 입력하세요
+          </span>
+        ) : (
+          <span
+            id={listId}
+            className="contents"
+            data-slot="item-ocr-candidates-list"
           >
-            {c.label}{" "}
-            <span className="text-muted-foreground">{c.sim.toFixed(2)}</span>
-          </button>
-        ))
-      )}
+            {meta.candidates.map((pred, rank) => (
+              <button
+                key={`${pred.label}-${rank}`}
+                type="button"
+                onClick={() => onPick(pred.label, rank)}
+                aria-label={`후보 ${pred.label}, 유사도 ${pred.sim.toFixed(2)}`}
+                className={cn(
+                  "hover:bg-accent rounded-full border px-2 py-0.5 text-xs",
+                  rank === 0 && "border-primary",
+                )}
+              >
+                {pred.label}{" "}
+                <span className="text-muted-foreground">
+                  {pred.sim.toFixed(2)}
+                </span>
+              </button>
+            ))}
+          </span>
+        ))}
     </div>
   );
 }
