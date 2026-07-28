@@ -17,21 +17,24 @@ Usage:
 import argparse
 import io
 import json
-import os
 import shlex
-import subprocess
 import tarfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
+from tools.remote import (
+    ENV_BACKEND_ENV,
+    ENV_SSH_HOST,
+    ENV_WORKER_ENV,
+    env_or,
+    mysql_script,
+    run_ssh,
+    source_env,
+)
+
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "curation"
-
-# 원격 접속값(env 주입, 기본은 현행 배포 관례 — deploy/ 참조)
-ENV_SSH_HOST = ("SJMJ_SSH_HOST", "macmini")
-ENV_BACKEND_ENV = ("SJMJ_REMOTE_BACKEND_ENV", "~/.sjmj-ai/backend.env")
-ENV_WORKER_ENV = ("SJMJ_REMOTE_WORKER_ENV", "~/.sjmj-ai/ml-worker.env")
 
 PAIR_COLS = (
     "id, crop_ref, job_id, row_index, draft_label, final_label, "
@@ -317,28 +320,6 @@ def render_report(enriched: list[dict], meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _env(pair: tuple[str, str]) -> str:
-    name, default = pair
-    return os.environ.get(name, default)
-
-
-def _ssh(host: str, script: str) -> bytes:
-    """원격 셸 스크립트를 실행하고 stdout(bytes)을 반환한다. 실패 시 stderr 포함 예외."""
-    proc = subprocess.run(["ssh", host, script], capture_output=True, check=False)
-    if proc.returncode != 0:
-        raise RuntimeError(f"ssh 실패(exit {proc.returncode}): {proc.stderr.decode()[:500]}")
-    return proc.stdout
-
-
-def _mysql_script(backend_env: str, sql: str, raw: bool) -> str:
-    flags = "--batch --raw" if raw else "--batch"
-    return (
-        f'set -a; source {backend_env}; set +a; export MYSQL_PWD="$DB_PASS"; '
-        'MYSQL_BIN="$(command -v mysql || echo /opt/homebrew/opt/mysql/bin/mysql)"; '
-        f'"$MYSQL_BIN" -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" {flags} -e "{sql}"'
-    )
-
-
 _BANK_PY = (
     "import numpy as np, json, os, collections; "
     "z = np.load(os.environ['SJMJ_ML_MODELS_DIR'] + '/bank.npz', allow_pickle=True); "
@@ -351,10 +332,10 @@ _BANK_PY = (
 def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
     """서버에서 training_pairs·result_json·뱅크 라벨을 동기화해 캐시 JSON으로 저장한다."""
     cache.mkdir(parents=True, exist_ok=True)
-    pairs = parse_pairs_tsv(_ssh(host, _mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
-    jobs = parse_jobs_tsv(_ssh(host, _mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
-    bank_script = f'set -a; source {worker_env}; set +a; "$PYTHON_BIN" -c "{_BANK_PY}"'
-    bank = json.loads(_ssh(host, bank_script).decode())
+    pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
+    jobs = parse_jobs_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
+    bank_script = f'{source_env(worker_env)}"$PYTHON_BIN" -c "{_BANK_PY}"'
+    bank = json.loads(run_ssh(host, bank_script).decode())
     meta = {
         "fetched_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
         "host": host,
@@ -378,17 +359,15 @@ def pull_images(
     if not job_ids:
         return out_dir
     names = " ".join(f"job-{j}" for j in job_ids)
-    tar_script = (
-        f'set -a; source {backend_env}; set +a; tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {names}'
-    )
-    with tarfile.open(fileobj=io.BytesIO(_ssh(host, tar_script))) as tf:
+    tar_script = f'{source_env(backend_env)}tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {names}'
+    with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script))) as tf:
         tf.extractall(out_dir, filter="data")
     if with_originals:
         jobs = json.loads((cache / "jobs.json").read_text())
         for j in jobs:
             if j["job_id"] in job_ids:
                 # image_path는 신뢰 DB 값이지만 원격 셸에 들어가므로 방어적으로 quote한다.
-                data = _ssh(host, f"cat {shlex.quote(j['image_path'])}")
+                data = run_ssh(host, f"cat {shlex.quote(j['image_path'])}")
                 dst = out_dir / f"job-{j['job_id']}"
                 dst.mkdir(parents=True, exist_ok=True)
                 (dst / "original.jpg").write_bytes(data)
@@ -439,7 +418,7 @@ def _failure_job_ids(enriched: list[dict]) -> list[int]:
 def main(argv: list[str] | None = None) -> None:
     """서브커맨드(fetch/report/pull-images)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="curation_report", description=__doc__)
-    ap.add_argument("--host", default=_env(ENV_SSH_HOST), help="ssh 호스트(별칭)")
+    ap.add_argument("--host", default=env_or(ENV_SSH_HOST), help="ssh 호스트(별칭)")
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help="로컬 캐시 디렉터리")
     sub = ap.add_subparsers(dest="cmd", required=True)
     sub.add_parser("fetch", help="서버에서 pairs/jobs/bank 동기화")
@@ -449,8 +428,8 @@ def main(argv: list[str] | None = None) -> None:
     p_img.add_argument("--originals", action="store_true", help="원본 사진도 포함")
     args = ap.parse_args(argv)
 
-    backend_env = _env(ENV_BACKEND_ENV)
-    worker_env = _env(ENV_WORKER_ENV)
+    backend_env = env_or(ENV_BACKEND_ENV)
+    worker_env = env_or(ENV_WORKER_ENV)
 
     if args.cmd == "fetch":
         meta = fetch_all(args.host, backend_env, worker_env, args.cache)

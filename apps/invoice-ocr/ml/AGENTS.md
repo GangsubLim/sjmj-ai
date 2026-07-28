@@ -21,7 +21,9 @@ handwriting/    손글씨 인식 추론 (git-tracked, production). worker가 imp
 worker/         배포된 ml-worker (worker.main — macmini launchd 상시 실행, git-tracked)
 tests/          pytest. test_*.py — ocr_poc/* 1:1 대응 (+ handwriting 추론 테스트)
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
+                remote.py — 원격(macmini) ssh/mysql 글루 공통화 (curation_report·warp_gate_report 공유)
                 curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
+                warp_gate_report.py — warp 정합 게이트 캘리브레이션 (전 잡 warped.png 지표·판정 전수, cv2 필요)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore
@@ -36,6 +38,13 @@ git-tracked는 `ocr_poc/ handwriting/ worker/ tests/ tools/ pyproject.toml READM
 ```bash
 uv sync                    # 코어(경량): pillow + pytest 만
 uv sync --extra ml         # paddle 계열 (실모델 실행 시)
+uv sync --extra worker --extra cv   # 테스트 전량(worker DB + warp_gate cv2 글루) — CI와 동일 조합
+# ⚠️ --extra ml과 --extra cv 동시 설치는 pyproject.toml [tool.uv].conflicts로 도구가 강제
+#    차단한다(hard fail) — opencv-contrib-python(paddlex 경유)과 opencv-python-headless가
+#    같은 cv2/ 경로에 겹쳐 설치되는 것(OpenCV 공식 비권장)을 막기 위함.
+#    실제 함정은 조합 축소 쪽: 가지치기 주체는 `uv sync`다(`uv run --extra`는 추가만 하고
+#    가지치기하지 않는다). 즉 worker+cv로 동기화된 .venv에서 `uv sync --extra ml`을 돌리면
+#    worker+cv가 제거된다(다시 --extra worker --extra cv로 sync해야 복구, paddle 재설치 수 분).
 uv run pytest              # 테스트 (실데이터 비의존, 합성만)
 cp .env.example .env       # 데이터/DB 경로 주입
 
