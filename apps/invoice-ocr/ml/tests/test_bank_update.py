@@ -791,6 +791,26 @@ def test_score_one_hits_top1_with_peer_sample():
     assert rec["top1"] is True and rec["top5"] is True and rec["has_peer"] is True
 
 
+def test_score_one_reports_leave_self_out_top1_sim():
+    # self(job-1/row-0, 0.99)를 뺀 top1은 job-3/row-0의 '안가방'(0.8)
+    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+    assert rec["top1_sim"] == pytest.approx(0.8)
+
+
+def test_score_one_top1_sim_is_none_when_no_candidate_remains():
+    # 단일 샘플 라벨 — self를 빼면 후보가 0이라 유사도를 말할 수 없다
+    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    assert rec["top1_sim"] is None
+
+
+def test_score_one_top1_sim_follows_self_exclusion_not_raw_max():
+    # raw max는 self의 0.99지만, self 제외 후 top1은 '공임'(0.9)으로 바뀐다.
+    # top1_sim은 예측(top1)과 같은 후보를 가리켜야 한다.
+    rec = score_one([0.99, 0.9, 0.3], _LABS, _KEYS, "job-1/row-0", "안가방")
+    assert rec["top1"] is False
+    assert rec["top1_sim"] == pytest.approx(0.9)
+
+
 def test_score_summary_splits_peer_denominator():
     records = [
         {"in_bank": True, "top1": True, "top5": True, "has_peer": True},
@@ -1042,6 +1062,22 @@ def _onehot(slot):
     return vec
 
 
+_PEER_SIM = 0.8
+
+
+def _peer_of(slot):
+    """slot 쿼리와 sim=_PEER_SIM만큼만 닮은 단위벡터(나머지는 미사용 축으로 채운다).
+
+    피어를 self와 같은 벡터(sim 1.0)로 두면 leave-self-out이 검증되지 않는다 — self 제외를
+    통째로 지워도 top1_sim이 1.0으로 같기 때문. 유사도를 1.0에서 떼어놔야 '자기 자신이
+    빠졌는지'가 값으로 드러난다.
+    """
+    vec = np.zeros(EMB_DIM, dtype="float32")
+    vec[slot] = _PEER_SIM
+    vec[EMB_DIM - 1] = (1.0 - _PEER_SIM**2) ** 0.5
+    return vec
+
+
 def _onehot_embed(paths):
     """crop 경로 → ref별 one-hot 벡터. 상수 벡터와 달리 '어느 쿼리 행인지'가 점수에 드러난다."""
     rows = [_onehot(_SCORE_SLOT[f"{Path(p).parent.name}/{Path(p).stem}"]) for p in paths]
@@ -1058,12 +1094,13 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
     for ref in ("job-1/row-0", "job-2/row-0"):
         _touch_crop(crops_root, ref)
 
-    before_bank = _write_bank(tmp_path / "before.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
+    # job-3은 job-2의 피어(같은 라벨)지만 벡터는 self와 다르게 둔다 — _peer_of 참조.
+    before_bank = _write_bank(tmp_path / "before.npz", ["job-3/row-0"], ["공임"], emb=[_peer_of(1)])
     after_bank = _write_bank(
         models_dir / "bank.npz",
         ["job-3/row-0", "job-1/row-0", "job-2/row-0"],
         ["공임", "안가방", "공임"],
-        emb=[_onehot(1), _onehot(0), _onehot(1)],
+        emb=[_peer_of(1), _onehot(0), _onehot(1)],
     )
 
     pairs = [
@@ -1096,6 +1133,14 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
     assert after_1["in_bank"] is True and after_1["has_peer"] is False and after_1["top1"] is False
     after_2 = by_ref[("after", "job-2/row-0")]
     assert after_2["top1"] is True and after_2["preds"][0] == "공임"
+
+    # score.jsonl에 유사도가 남아야 임계 산정이 가능하다(이 도구 확장의 존재 이유).
+    # after_2: self(job-2, sim 1.0)를 빼야 top1이 job-3/row-0의 '공임'(_PEER_SIM)이 된다 —
+    # self 제외가 없으면 여기서 1.0이 나온다. 즉 이 단언이 leave-self-out의 판별자다.
+    assert after_2["top1_sim"] == pytest.approx(_PEER_SIM)
+    # after_1: self(job-1) 제외해도 job-2/job-3('공임', 다른 슬롯이라 sim 0.0)가 후보로 남는다
+    # — has_peer(동일 라벨 '안가방' 존재)는 False지만 top1_sim은 후보 유무만 본다.
+    assert after_1["top1_sim"] == pytest.approx(0.0)
 
     md = (out_dir / "score.md").read_text()
     assert "- 뱅크 크기: 1 → 3" in md

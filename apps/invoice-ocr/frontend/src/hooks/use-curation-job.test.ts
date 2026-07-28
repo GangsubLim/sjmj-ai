@@ -36,6 +36,7 @@ function jobDetail(): CurationJobDetail {
         supply: 8000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [
           { label: "무", sim: 0.77 },
           { label: "배추", sim: 0.21 },
@@ -62,6 +63,7 @@ function jobDetailMulti(): CurationJobDetail {
         supply: 5000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [{ label: "배추", sim: 0.91 }],
       },
     ],
@@ -86,8 +88,207 @@ function patchResult(
   };
 }
 
+// resolve/reject를 외부에서 제어할 수 있는 Promise — 응답 도착 순서를 시험 코드가 결정한다.
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useCurationJob", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("역순 응답에서 마지막 선택이 유지된다(늦은 A 응답이 B를 덮지 않는다)", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      const pA = result.current.patchPair(9001, { canonical_label: "A" });
+      const pB = result.current.patchPair(9001, { canonical_label: "B" });
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) }); // 두 번째 요청이 먼저 도착
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 첫 번째 요청이 나중에 도착 → 버려져야 한다
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+  });
+
+  it("stale 요청의 실패는 이후 선택을 되돌리지 않고 토스트도 띄우지 않는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      const pA = result.current.patchPair(9001, { canonical_label: "A" });
+      const pB = result.current.patchPair(9001, { canonical_label: "B" });
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) });
+      dA.reject(new Error("network"));
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
+
+  // 롤백 기준선이 '요청 시작 시점의 로컬 값'이면 앞 요청의 옵티미스틱 값(서버에 저장된 적
+  // 없는 값)으로 되돌아가 화면과 서버가 발산한다 — 서버 확정 스냅샷으로 되돌려야 한다.
+  it("겹친 두 요청이 모두 실패하면 서버 확정값까지 되돌린다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 두 요청 사이에 렌더를 끼운다 — 실제 연속 클릭처럼 두 번째 요청이 시작될 때
+    // 로컬 값은 이미 첫 요청의 옵티미스틱 값("A")이다.
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dA.reject(new Error("network")); // stale 실패 — 조용히 버려진다
+      dB.reject(new Error("network")); // 최신 실패 — 롤백 담당
+      await pA;
+      await pB;
+    });
+
+    // 서버는 아직 "무"(초기 확정값)다. "A"로 남으면 저장된 적 없는 값이 화면에 남는 것.
+    expect(result.current.job!.pairs[0].canonical_label).toBe("무");
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  // 늦게 온 성공도 '서버가 저장했다'는 사실이다. 확정값에 반영하지 않으면 뒤이은 최신
+  // 요청의 실패가 저장된 적 있는 값을 건너뛰고 옛 값까지 되돌려 화면이 서버와 발산한다.
+  it("stale 성공 뒤 최신 요청이 실패하면 서버가 저장한 값으로 롤백한다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // stale 성공 — 서버엔 저장됨
+      dB.reject(new Error("network")); // 최신 실패 — 롤백 담당
+      await pA;
+      await pB;
+    });
+
+    // 서버는 "A"를 들고 있다. 초기 확정값 "무"로 돌아가면 저장된 값과 화면이 발산한다.
+    expect(result.current.job!.pairs[0].canonical_label).toBe("A");
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
+  // 위와 같은 발산의 도착 순서만 뒤집은 경우 — 롤백으로 화면이 이미 확정값을 비추고
+  // 있으므로 뒤늦게 온 성공은 덮을 선택이 없다. 여기서 멈추면 발산이 그대로 남는다.
+  it("최신 요청 실패로 롤백된 뒤 도착한 stale 성공은 화면까지 반영한다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dB.reject(new Error("network")); // 최신 실패 — 확정값("무")으로 롤백
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 그 뒤 도착한 stale 성공
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("A");
+    expect(mockToastError).toHaveBeenCalledTimes(1); // 실패 토스트는 그대로 1회
+  });
+
+  // stale 성공을 확정값에 반영하되 '발행 순서'로만 받아들여야 한다 — 뒤늦게 도착한 옛
+  // 성공이 더 최신 확정을 덮으면 롤백 기준선이 과거로 후퇴한다.
+  it("뒤늦게 도착한 옛 성공은 더 최신 확정값을 덮지 않는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise)
+      .mockRejectedValueOnce(new Error("network"));
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) }); // 최신 성공이 먼저
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 옛 성공이 나중
+      await pB;
+      await pA;
+    });
+
+    // 세 번째 요청을 실패시켜 롤백 기준선(=확정값)이 무엇인지 관찰한다.
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "C" });
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+  });
 
   it("성공 PATCH는 응답을 merge하되 top5를 보존한다", async () => {
     mockGetJob.mockResolvedValue({ data: jobDetail() });
@@ -116,6 +317,30 @@ describe("useCurationJob", () => {
     });
 
     expect(result.current.job!.pairs[0].status).toBe("included"); // 롤백
+    expect(mockToastError).toHaveBeenCalled(); // 정상(최신) 실패 경로는 토스트를 띄운다
+  });
+
+  it("언마운트 후 도착한 in-flight 응답은 무시하고 롤백·토스트도 없다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const d = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair.mockReturnValueOnce(d.promise);
+
+    const { result, unmount } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let patchPromise!: Promise<void>;
+    act(() => {
+      patchPromise = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+
+    unmount();
+
+    await act(async () => {
+      d.reject(new Error("network"));
+      await patchPromise;
+    });
+
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 
   it("연속 PATCH 중 한 pair 실패가 다른 pair 변경을 되돌리지 않는다", async () => {

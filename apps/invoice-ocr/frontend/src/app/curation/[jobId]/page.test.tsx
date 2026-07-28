@@ -28,6 +28,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
         supply: 8000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [{ label: "무", sim: 0.77 }],
       },
     ],

@@ -28,6 +28,17 @@ class OcrRepository:
             )
             return int(result.lastrowid)
 
+    def job_exists(self, job_id: int) -> bool:
+        """ocr_jobs에 해당 id가 존재하는지 여부(result_json 파싱 없는 경량 확인).
+
+        curation_repository.CurationRepository.job_exists와 동일 패턴(repo 격리상 의도적 중복).
+        """
+        with connection() as conn:
+            return (
+                conn.execute(text("SELECT 1 FROM ocr_jobs WHERE id = :id"), {"id": job_id}).first()
+                is not None
+            )
+
     def find_job(self, job_id: int) -> dict | None:
         """OCR 작업을 ID로 단건 조회한다(result_json 파싱 포함)."""
         with connection() as conn:

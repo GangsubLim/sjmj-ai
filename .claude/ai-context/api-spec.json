@@ -361,10 +361,20 @@
       {
         "method": "POST",
         "path": "/api/ocr/jobs/{id}/confirm",
-        "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed)",
+        "summary": "Confirm draft → create invoice + link job + log correction (atomic claim; 409 if already confirmed). items[].label_source 화이트리스트 검증(400)",
         "auth": "public",
         "req": "OcrConfirmRequest",
         "res": "OcrConfirmAck",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/ocr/jobs/{id}/crop/{row}",
+        "summary": "행 crop 이미지 (등록 UI가 confirm 이전에도 조회 — 워커 추론 시점에 저장)",
+        "auth": "public",
+        "req": null,
+        "res": "binary image/png (raw FileResponse, envelope 예외)",
         "router": "ocr",
         "source": "app/routers/ocr.py"
       },
@@ -412,16 +422,6 @@
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}/image/{kind}",
         "summary": "원본/워프 전표 이미지",
-        "auth": "public",
-        "req": null,
-        "res": "binary image/png (raw FileResponse, envelope 예외)",
-        "router": "curation",
-        "source": "app/routers/curation.py"
-      },
-      {
-        "method": "GET",
-        "path": "/api/curation/jobs/{job_id}/crop/{row}",
-        "summary": "행 crop 이미지",
         "auth": "public",
         "req": null,
         "res": "binary image/png (raw FileResponse, envelope 예외)",
@@ -490,6 +490,8 @@
       "OcrJobCreate": ["POST /api/ocr/jobs"],
       "OcrJobAck": ["POST /api/ocr/jobs"],
       "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
+      "OcrResult": ["GET /api/ocr/jobs/{id}"],
+      "OcrResultRow": ["GET /api/ocr/jobs/{id}"],
       "OcrConfirmRequest": ["POST /api/ocr/jobs/{id}/confirm"],
       "OcrConfirmAck": ["POST /api/ocr/jobs/{id}/confirm"],
       "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"],
@@ -506,12 +508,12 @@
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
       "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 문자열 맵(contract 테스트로 고정).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
-      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/curation/jobs/{job_id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
+      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/ocr/jobs/{id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
       "route-ordering": "API 라우터는 SPA catch-all(GET /{full_path}, app/main.py:_mount_static)보다 먼저 등록되어야 우선 매칭. invoices 내부에서도 /export 가 /{id} 보다 먼저 선언돼 충돌 회피.",
-      "validation": "core/validators.Validator (fluent). 라우터에서 검증 후 service 호출. body 는 dict=Body(...) free-form (Pydantic 모델 아님 — 검증 메시지·details 형태를 contract 테스트로 고정).",
+      "validation": "슬라이스별 이원화(점진 전환 중). 미전환(invoices/companies/items/settings/salespeople/sales_records): core/validators.Validator (fluent) + body 는 dict=Body(...) free-form. 전환 완료(curation → app/schemas/curation.py, ocr → app/schemas/ocr.py): Pydantic request 모델 + field_validator. 어느 쪽이든 검증 실패는 400 VALIDATION_ERROR + details {필드: 메시지}(Pydantic 기본 422는 RequestValidationError 핸들러가 400으로 변환) — 메시지·details 형태를 contract 테스트로 고정.",
       "version-sync": "info.version == 루트 VERSION == backend app/config.py:APP_VERSION (test_version_sync.py 검증)."
     }
   },
@@ -2169,7 +2171,7 @@
             }
           },
           "400": {
-            "description": "Validation failure",
+            "description": "Validation failure (issue_date/recipient/items, items[].label_source 화이트리스트 위반 — details 키는 items.{i}.label_source)",
             "content": {
               "application/json": {
                 "schema": {
@@ -2190,6 +2192,66 @@
           },
           "409": {
             "description": "Already confirmed or job not done",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ocr/jobs/{id}/crop/{row}": {
+      "get": {
+        "summary": "행 crop 이미지 (raw FileResponse, envelope 예외). 등록 UI가 confirm 이전에도 조회 — 워커 추론 시점(infer_job)에 저장되므로.",
+        "tags": ["ocr"],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "row",
+            "in": "path",
+            "required": true,
+            "description": "0~9999 범위만 허용(Path(ge=0, le=9999)). 실제 거래명세서 행 수를 크게 상회하는 값·음수는 400 VALIDATION_ERROR — 파일명 초과로 인한 500·경로 노출 방지(품질 리뷰 반영).",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9999
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "crop raw 바이트",
+            "content": {
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "row 범위 초과·음수",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "산출물 없음",
             "content": {
               "application/json": {
                 "schema": {
@@ -2464,53 +2526,6 @@
                   "type": "string",
                   "format": "binary",
                   "description": "kind=original 이고 업로드 파일이 JPEG인 경우"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "산출물 없음",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorEnvelope"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/curation/jobs/{job_id}/crop/{row}": {
-      "get": {
-        "summary": "행 crop 이미지 (raw FileResponse, envelope 예외)",
-        "tags": ["curation"],
-        "parameters": [
-          {
-            "name": "job_id",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          },
-          {
-            "name": "row",
-            "in": "path",
-            "required": true,
-            "schema": {
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "crop raw 바이트",
-            "content": {
-              "image/png": {
-                "schema": {
-                  "type": "string",
-                  "format": "binary"
                 }
               }
             }
@@ -3298,9 +3313,7 @@
             "enum": ["pending", "running", "done", "failed"]
           },
           "result": {
-            "type": "object",
-            "nullable": true,
-            "description": "status=done 일 때 포함"
+            "$ref": "#/components/schemas/OcrResult"
           },
           "error": {
             "type": "string",
@@ -3309,9 +3322,76 @@
           }
         }
       },
+      "OcrResult": {
+        "type": "object",
+        "description": "status=done 일 때만 포함되는 ML 워커 추론 결과(ml/handwriting/infer_job.py:assemble_result_json 이 생산). DB ocr_jobs.result_json 원본을 가공 없이 그대로 싣는다.",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OcrResultRow"
+            }
+          },
+          "supply_sum": {
+            "type": "integer",
+            "description": "rows[].supply 합계(천원곱 적용 후)."
+          },
+          "warp_ok": {
+            "type": "boolean",
+            "description": "전표 워프·격자 정합 게이트 통과 여부. false 면 rows 는 빈 배열."
+          },
+          "item_conf_threshold": {
+            "type": "number",
+            "description": "rows[].item_uncertain 판정에 쓰인 top1 유사도 임계값. 플래그 도입(Issue #22) 이전 잡에는 없다."
+          }
+        }
+      },
+      "OcrResultRow": {
+        "type": "object",
+        "description": "추론된 명세서 한 행. 등록 UI 프리필과 큐레이션 조인(row_index 키)의 원천.",
+        "properties": {
+          "row_index": {
+            "type": "integer",
+            "description": "0-based 행 번호. GET /api/ocr/jobs/{id}/crop/{row} 의 row 이자 큐레이션 pairs 조인 키."
+          },
+          "crop_ref": {
+            "type": "string",
+            "description": "\"job-{job_id}/row-{row_index}\" 형태의 논리 참조. 서버는 이 문자열을 파일 경로로 신뢰하지 않는다."
+          },
+          "item_top5": {
+            "type": "array",
+            "description": "품목 retrieval 후보 상위 K개(K=5, ml handwriting/infer_photo.py:TOPK). 후보가 없으면 빈 배열.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "sim": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "supply": {
+            "type": "integer",
+            "nullable": true,
+            "description": "금액 OCR 결과(천원곱 적용). 인식 실패 시 null."
+          },
+          "amount_raw": {
+            "type": "string",
+            "nullable": true,
+            "description": "금액 OCR 원문(천원곱 이전)."
+          },
+          "item_uncertain": {
+            "type": "boolean",
+            "description": "top1 유사도가 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡에는 없다(부재 = 확신)."
+          }
+        }
+      },
       "OcrConfirmRequest": {
         "type": "object",
-        "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref (서버가 제거 후 invoice 생성).",
+        "description": "OCR 확정 입력 (POST /api/ocr/jobs/{id}/confirm). InvoiceWriteRequest 와 동일 필드 + items[].crop_ref·items[].label_source (서버가 제거 후 invoice 생성). Pydantic 검증(app/schemas/ocr.py) — 실패는 400 VALIDATION_ERROR + details {필드: 메시지}. 미검증 필드(quantity/unit_price 등)는 extra=allow로 전환 전과 동일하게 통과한다.",
         "required": ["issue_date", "recipient", "items"],
         "properties": {
           "issue_date": {
@@ -3320,7 +3400,9 @@
             "description": "YYYY-MM-DD"
           },
           "recipient": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 100,
+            "description": "공백만 있는 값 불가. 상한은 invoices.recipient 컬럼 폭(VARCHAR(100))이자 invoices 라우터와 동일 — 초과분은 400이지 500이 아니다."
           },
           "recipient2": {
             "type": "string",
@@ -3352,12 +3434,14 @@
           "items": {
             "type": "array",
             "minItems": 1,
-            "description": "non_empty_array 검증. crop_ref 는 서버가 제거 후 invoice_items 저장.",
+            "description": "1개 이상 필수(min_length=1). crop_ref·label_source 는 서버가 제거 후 invoice_items 저장.",
             "items": {
               "type": "object",
+              "required": ["name"],
               "properties": {
                 "name": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "필수(빈 문자열은 허용). 누락 시 400 — repository가 기본값 없이 인덱싱해 500이 되는 유일한 item 필드."
                 },
                 "quantity": {
                   "type": "integer"
@@ -3384,6 +3468,22 @@
                   "type": "string",
                   "nullable": true,
                   "description": "OCR 원본 영역 참조. 서버가 correction 저장 후 invoice_items에서 제거."
+                },
+                "label_source": {
+                  "type": "string",
+                  "nullable": true,
+                  "enum": [
+                    "top1_kept",
+                    "candidate_picked:0",
+                    "candidate_picked:1",
+                    "candidate_picked:2",
+                    "candidate_picked:3",
+                    "candidate_picked:4",
+                    "manual_picked",
+                    "manual_typed",
+                    "new_item_created"
+                  ],
+                  "description": "UI 라벨 확정 출처. top1_kept | candidate_picked:{0-4} | manual_picked | manual_typed | new_item_created. 화이트리스트 밖이면 400 VALIDATION_ERROR(details 키는 items.{i}.label_source). 서버가 제거 후 invoice_items 저장하며 correction_json.lines[].label_source에 기록."
                 }
               }
             }
@@ -3480,6 +3580,10 @@
                 }
               }
             }
+          },
+          "uncertain": {
+            "type": "boolean",
+            "description": "품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡은 false. GET /jobs/{id} 전용 — PATCH /pairs/{id} 응답에는 없다(top5와 같은 계약 비대칭)."
           }
         }
       },

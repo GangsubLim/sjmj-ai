@@ -20,6 +20,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 12000,
         status: "included",
         reviewed_at: null,
+        uncertain: false,
         top5: [
           { label: "배추", sim: 0.91 },
           { label: "무", sim: 0.42 },
@@ -36,8 +37,12 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 8000,
         status: "included",
         reviewed_at: null,
+        // mock 모드에서도 미확신 배지가 한 번은 재현되도록 이 pair만 미확신으로 둔다.
+        // 서버 값은 ITEM_CONF_THRESHOLD(0.75) 기준 top1 sim 파생이므로 sim도 함께
+        // 임계 아래로 낮춘다 — 안 그러면 서버가 만들 수 없는 조합이 된다.
+        uncertain: true,
         top5: [
-          { label: "무", sim: 0.77 },
+          { label: "무", sim: 0.62 },
           { label: "배추", sim: 0.21 },
         ],
       },
@@ -60,6 +65,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         supply: 5000,
         status: "included",
         reviewed_at: "2026-06-30T08:30:00",
+        uncertain: false,
         top5: [{ label: "당근", sim: 0.88 }],
       },
     ],

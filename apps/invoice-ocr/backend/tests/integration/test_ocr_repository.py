@@ -67,3 +67,21 @@ def test_claim_job_returns_parsed_job():
 def test_claim_job_not_found_returns_none():
     repo = OcrRepository()
     assert repo.claim_job(999999) is None
+
+
+def test_job_exists_true_for_existing_job():
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    assert repo.job_exists(job_id) is True
+
+
+def test_job_exists_false_for_missing_job():
+    """빈 테이블이 아니라 '다른 잡이 있는데도 False'를 고정해 WHERE 술어를 핀한다.
+
+    db_conn이 매 테스트 모든 테이블을 TRUNCATE하므로, 잡을 심지 않으면 WHERE가 빠지거나
+    엉뚱한 컬럼을 비교해도 항상 False가 되어 통과한다.
+    """
+    repo = OcrRepository()
+    existing = repo.insert_job("/x.jpg")
+    assert repo.job_exists(existing + 1) is False
+    assert repo.job_exists(999999) is False

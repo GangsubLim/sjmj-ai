@@ -134,9 +134,10 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
 2. **`GET /api/sales-records`** — 컬렉션 성격이지만 `single()` 로 `{salespeople, records}` 단일 집계를 반환. **pagination 없음, 목록 아님.**
 3. **가짜 pagination** — `GET /api/companies/{id}/invoices`(page1/limit9999/totalPages1)와 `GET /api/salespeople`(page1/limit=total/totalPages1)은 전건을 반환하며 pagination 메타는 형식만 채운다.
 4. **`GET /health`** — `/api` prefix 없이도 노출되고 envelope 미적용 raw `{status, version}`.
-5. **`GET /api/curation/jobs/{job_id}/image/{kind}` · `GET /api/curation/jobs/{job_id}/crop/{row}`** —
-   envelope 밖 **raw 이미지 바이트**(`FileResponse`). `job_id`/`row`(정수)·`kind`(enum `original|warped`)만 받아
-   서버가 `SJMJ_DATA_DIR` 하위 경로를 조립한다(crop_ref 문자열을 raw 경로로 신뢰하지 않음 — path traversal 차단).
+5. **`GET /api/curation/jobs/{job_id}/image/{kind}` · `GET /api/ocr/jobs/{id}/crop/{row}`** —
+   envelope 밖 **raw 이미지 바이트**(`FileResponse`). `job_id`/`id`/`row`(정수)·`kind`(enum `original|warped`)만
+   받아 서버가 `SJMJ_DATA_DIR` 하위 경로를 조립한다(crop_ref 문자열을 raw 경로로 신뢰하지 않음 — path traversal 차단).
+   crop 은 ocr 네임스페이스에 있다(등록 UI가 확정 전에도 쓰기 때문 — 크롭 PNG는 추론 시점에 저장된다).
    **media_type:** `kind=warped`·`crop` 는 항상 `image/png`(서버에서 변환·저장). `kind=original` 은 업로드 포맷
    그대로(`image/jpeg` 또는 `image/png` — `FileResponse` media_type 미지정이므로 파일 확장자로 추론됨).
    없는 산출물(백필된 구 잡의 `warped.png` 등)은 404 에러 envelope.

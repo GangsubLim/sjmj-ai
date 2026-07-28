@@ -1,3 +1,6 @@
+import pytest
+
+from app.schemas.ocr import LABEL_SOURCES
 from app.services.ocr_correction import build_correction, build_training_pairs
 
 
@@ -26,6 +29,7 @@ def test_label_changed_and_supply_unchanged():
             "draft_supply": 120000,
             "final_supply": 120000,
             "supply_changed": False,
+            "label_source": None,
         }
     ]
     assert out["rows_added"] == 0
@@ -122,3 +126,98 @@ def test_build_training_pairs_parses_multidigit_row_index():
     assert pair["row_index"] == 12
     assert pair["canonical_label"] == "X"
     assert pair["supply"] is None
+
+
+_DRAFT = {
+    "rows": [
+        {
+            "crop_ref": "job-1/row-0",
+            "item_top5": [{"label": "타이어", "sim": 0.72}],
+            "supply": 85000,
+        }
+    ]
+}
+
+
+def _final(**over) -> list[dict]:
+    return [{"crop_ref": "job-1/row-0", "name": "타이어", "supply": 85000, **over}]
+
+
+@pytest.mark.parametrize("source", sorted(LABEL_SOURCES))
+def test_label_source_is_copied_verbatim(source):
+    # 어휘를 손으로 복제하지 않고 SSoT(app.schemas.ocr.LABEL_SOURCES)에서 파생시킨다 —
+    # 목록이 늘면(TOP_K 변경 등) 이 테스트가 자동으로 따라간다.
+    out = build_correction(_DRAFT, _final(label_source=source))
+    assert out["lines"][0]["label_source"] == source
+
+
+def test_unknown_label_source_is_copied_too():
+    """서비스는 어휘를 검증하지 않고 그대로 복사한다 — 화이트리스트는 라우터(Pydantic) 책임.
+
+    위 parametrize가 '전량 커버'로 읽히지만 build_correction은 값에 무관심한 통과 함수라
+    판별력이 1건과 같다. 그 성질 자체를 여기서 명시적으로 고정한다.
+    """
+    out = build_correction(_DRAFT, _final(label_source="not_a_known_source"))
+    assert out["lines"][0]["label_source"] == "not_a_known_source"
+
+
+_DRAFT_2ROW = {
+    "rows": [
+        {
+            "crop_ref": "job-1/row-0",
+            "item_top5": [{"label": "타이어", "sim": 0.72}],
+            "supply": 85000,
+        },
+        {
+            "crop_ref": "job-1/row-1",
+            "item_top5": [{"label": "엔진오일", "sim": 0.66}],
+            "supply": 42000,
+        },
+    ]
+}
+
+
+def test_label_source_follows_its_own_row_not_input_position():
+    """각 line의 label_source는 그 line에 crop_ref로 매칭된 item에서 와야 한다.
+
+    최종 item 순서를 초안 행 순서와 뒤집어 준다 — 인덱스 기준(final_items[i])이나
+    final_items[0] 고정으로 회귀하면 provenance가 행 간에 뒤바뀌어 재학습 데이터가
+    조용히 오염된다. 단일 행 fixture로는 이 회귀가 전부 GREEN이다.
+    """
+    final = [
+        {
+            "crop_ref": "job-1/row-1",
+            "name": "엔진오일",
+            "supply": 42000,
+            "label_source": "manual_typed",
+        },
+        {
+            "crop_ref": "job-1/row-0",
+            "name": "타이어",
+            "supply": 85000,
+            "label_source": "candidate_picked:2",
+        },
+    ]
+    by_ref = {line["crop_ref"]: line for line in build_correction(_DRAFT_2ROW, final)["lines"]}
+    assert by_ref["job-1/row-0"]["label_source"] == "candidate_picked:2"
+    assert by_ref["job-1/row-1"]["label_source"] == "manual_typed"
+
+
+def test_label_source_is_null_when_client_omits_it():
+    out = build_correction(_DRAFT, _final())
+    assert out["lines"][0]["label_source"] is None
+
+
+def test_rows_without_crop_ref_produce_no_line_at_all():
+    # OCR 초안에서 오지 않은 행은 lines[]에 없다 → label_source를 실을 자리 자체가 없다
+    out = build_correction(_DRAFT, [{"name": "수동추가", "label_source": "manual_typed"}])
+    assert out["lines"] == []
+    assert out["rows_added"] == 1
+    assert out["rows_dropped"] == 1
+
+
+def test_training_pairs_ignore_label_source():
+    # training_pairs 스키마는 건드리지 않는다(마이그레이션 0) — 이 계약을 고정한다
+    correction = build_correction(_DRAFT, _final(label_source="candidate_picked:2"))
+    pairs = build_training_pairs(1, 10, correction)
+    assert "label_source" not in pairs[0]

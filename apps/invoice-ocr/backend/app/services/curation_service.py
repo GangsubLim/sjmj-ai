@@ -3,9 +3,9 @@
 라우터(HTTP)와 repository(SQL) 사이의 정규화·비즈니스 로직 계층.
 """
 
-import os
 from pathlib import Path
 
+from app.config import crop_dir
 from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
 
@@ -41,24 +41,32 @@ class CurationService:
             not_found("OCR 잡을 찾을 수 없습니다.")
         job = detail["job"]
         result = job.get("result_json") or {}
-        top5_by_row = {
-            r.get("row_index"): (r.get("item_top5") or []) for r in result.get("rows", [])
-        }
-        pairs = [
-            {
-                "id": int(p["id"]),
-                "crop_ref": p["crop_ref"],
-                "row_index": int(p["row_index"]),
-                "draft_label": p["draft_label"],
-                "final_label": p["final_label"],
-                "canonical_label": p["canonical_label"],
-                "supply": p["supply"],
-                "status": p["status"],
-                "reviewed_at": p["reviewed_at"],
-                "top5": top5_by_row.get(int(p["row_index"]), []),
-            }
-            for p in detail["pairs"]
-        ]
+        # result_json은 ML 워커가 쓴 외부 데이터다 — rows가 null이거나 원소가 dict가 아니면
+        # 잡 상세 전체가 500이 되어 그 잡의 검수가 완전히 막힌다. 아래 조인 실패와 같은
+        # fail-safe(빈 행)로 닫는다.
+        raw_rows = result.get("rows")
+        rows = raw_rows if isinstance(raw_rows, list) else []
+        rows_by_index = {r.get("row_index"): r for r in rows if isinstance(r, dict)}
+        pairs = []
+        for p in detail["pairs"]:
+            # 조인 실패(재처리 등으로 row_index 부재)는 빈 행으로 본다 — 배지를 잘못 띄우지 않는다.
+            row = rows_by_index.get(int(p["row_index"])) or {}
+            pairs.append(
+                {
+                    "id": int(p["id"]),
+                    "crop_ref": p["crop_ref"],
+                    "row_index": int(p["row_index"]),
+                    "draft_label": p["draft_label"],
+                    "final_label": p["final_label"],
+                    "canonical_label": p["canonical_label"],
+                    "supply": p["supply"],
+                    "status": p["status"],
+                    "reviewed_at": p["reviewed_at"],
+                    "top5": row.get("item_top5") or [],
+                    # item_conf_threshold 도입 이전 잡은 플래그가 없다 → 확신(하위호환).
+                    "uncertain": bool(row.get("item_uncertain", False)),
+                }
+            )
         return {
             "job_id": int(job["id"]),
             "invoice_id": job["invoice_id"],
@@ -94,13 +102,6 @@ class CurationService:
         self.repo.mark_reviewed(job_id)
         return {"job_id": job_id, "curation_reviewed": True}
 
-    def _data_dir(self) -> Path:
-        raw = os.environ.get("SJMJ_DATA_DIR")
-        if not raw:
-            # 오설정 가드: SJMJ_DATA_DIR 누락 시 명확 실패(운영 전용 — 테스트는 항상 설정).
-            raise RuntimeError("SJMJ_DATA_DIR 미설정 — 이미지 경로 조립 불가")
-        return Path(raw)
-
     def original_image(self, job_id: int) -> str:
         """원본 업로드 이미지 절대경로를 반환한다. 없으면 404."""
         if not self.repo.job_exists(job_id):
@@ -114,16 +115,7 @@ class CurationService:
         """워프된 전표 이미지 절대경로를 반환한다. 없으면 404."""
         if not self.repo.job_exists(job_id):
             not_found("OCR 잡을 찾을 수 없습니다.")
-        path = self._data_dir() / "ocr_crops" / f"job-{job_id}" / "warped.png"
+        path = crop_dir(job_id) / "warped.png"
         if not path.is_file():
             not_found("워프 이미지가 없습니다.")
-        return str(path)
-
-    def crop_image(self, job_id: int, row: int) -> str:
-        """행 crop 이미지 절대경로를 반환한다. 없으면 404."""
-        if not self.repo.job_exists(job_id):
-            not_found("OCR 잡을 찾을 수 없습니다.")
-        path = self._data_dir() / "ocr_crops" / f"job-{job_id}" / f"row-{row}.png"
-        if not path.is_file():
-            not_found("crop 이미지가 없습니다.")
         return str(path)

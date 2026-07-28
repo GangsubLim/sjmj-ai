@@ -213,6 +213,11 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
     )
 
 
+# 직접 미러링 대상은 운영 retrieval인 handwriting/infer_photo.py의 TOPK다 — '운영과 같은
+# 기준으로 채점한다'(topk_excluding_self)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
+# 기준으로 산출된 유사도가 임계 캘리브레이션 근거가 된다. 그 TOPK는 다시 backend/app/
+# schemas/ocr.py의 TOP_K/LABEL_SOURCES와 frontend/src/utils/label-source.ts의 TOP_K에
+# 물려 있다. ml 쪽 2곳은 tests/test_topk_sync.py(ml/tests)가 api-spec.json enum과 대조한다.
 TOPK = 5
 
 
@@ -257,9 +262,11 @@ def score_one(
     Returns:
         다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 crop_ref), ``label``(정답 라벨),
         ``in_bank``(뱅크 커버리지, self 포함), ``top1``/``top5``(leave-self-out 적중
-        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록).
+        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록),
+        ``top1_sim``(leave-self-out top-1 유사도. 후보가 없으면 ``None``).
     """
-    preds = [lb for lb, _ in topk_excluding_self(sims, labs, keys, self_ref, TOPK)]
+    ranked = topk_excluding_self(sims, labs, keys, self_ref, TOPK)
+    preds = [lb for lb, _ in ranked]
     return {
         "crop_ref": self_ref,
         "label": label,
@@ -268,6 +275,7 @@ def score_one(
         "top5": label in preds,
         "has_peer": has_peer_sample(self_ref, label, labs, keys),
         "preds": preds,
+        "top1_sim": ranked[0][1] if ranked else None,
     }
 
 
