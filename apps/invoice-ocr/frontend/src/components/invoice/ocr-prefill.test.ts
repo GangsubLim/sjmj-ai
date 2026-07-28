@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { rowsToItems } from "./ocr-prefill";
+import { rowsToItems, rowsToOcrMeta } from "./ocr-prefill";
+import type { OcrResult } from "@/types/ocr";
 
 describe("rowsToItems", () => {
   it("maps top-1 label to name and supply to unit_price, carrying crop_ref", () => {
@@ -37,5 +38,63 @@ describe("rowsToItems", () => {
     });
     expect(items[0].name).toBe("");
     expect(items[0].unit_price).toBe(0);
+  });
+});
+
+function result(rows: OcrResult["rows"]): OcrResult {
+  return { rows, supply_sum: 0, warp_ok: true, item_conf_threshold: 0.85 };
+}
+
+const ROW = {
+  row_index: 2,
+  crop_ref: "job-7/row-2",
+  item_top5: [
+    { label: "타이어", sim: 0.72 },
+    { label: "튜브", sim: 0.68 },
+  ],
+  supply: 85000,
+  amount_raw: "85",
+};
+
+describe("rowsToOcrMeta", () => {
+  it("crop_ref를 키로 후보 전체를 보존한다", () => {
+    const meta = rowsToOcrMeta(result([{ ...ROW, item_uncertain: true }]), 7);
+    expect(meta.get("job-7/row-2")!.candidates).toEqual(ROW.item_top5);
+    expect(meta.get("job-7/row-2")!.rowIndex).toBe(2);
+    expect(meta.get("job-7/row-2")!.jobId).toBe(7);
+  });
+
+  it("item_uncertain을 그대로 매핑한다", () => {
+    expect(
+      rowsToOcrMeta(result([{ ...ROW, item_uncertain: true }]), 7).get(
+        "job-7/row-2",
+      )!.uncertain,
+    ).toBe(true);
+    expect(
+      rowsToOcrMeta(result([{ ...ROW, item_uncertain: false }]), 7).get(
+        "job-7/row-2",
+      )!.uncertain,
+    ).toBe(false);
+  });
+
+  it("플래그가 없는 과거 잡은 확신으로 본다", () => {
+    expect(rowsToOcrMeta(result([ROW]), 7).get("job-7/row-2")!.uncertain).toBe(
+      false,
+    );
+  });
+
+  it("후보가 없는 행도 빈 배열로 항목을 남긴다", () => {
+    const meta = rowsToOcrMeta(
+      result([{ ...ROW, item_top5: [], item_uncertain: true }]),
+      7,
+    );
+    expect(meta.get("job-7/row-2")!.candidates).toEqual([]);
+  });
+
+  it("rowsToItems는 기존 동작(top1만 추출)을 유지한다", () => {
+    const items = rowsToItems(result([{ ...ROW, item_uncertain: true }]));
+    expect(items[0].name).toBe("타이어");
+    expect(items[0].crop_ref).toBe("job-7/row-2");
+    expect(items[0]).not.toHaveProperty("item_uncertain");
   });
 });
