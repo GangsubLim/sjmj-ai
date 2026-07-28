@@ -1,4 +1,13 @@
-from handwriting.infer_job import assemble_result_json
+from handwriting.infer_job import ITEM_CONF_THRESHOLD, assemble_result_json
+
+# 임계는 Task 3의 재채점으로 바뀐다 — 테스트가 상수를 하드코딩하면 캘리브 때마다 무조건 깨진다.
+# tests/conftest.py의 make_warped가 MIN_BLUE_RATIO에서 두께를 유도한 것과 같은 이유다.
+_EPS = 0.01
+
+
+def _row(sim: float | None) -> dict:
+    top5 = [] if sim is None else [{"label": "타이어", "sim": sim}]
+    return {"row_index": 0, "item_top5": top5, "supply": 85, "amount_raw": "85"}
 
 
 def test_assembles_crop_ref_and_supply_sum():
@@ -48,4 +57,48 @@ def test_amount_raw_kept_as_face_text():
 
 def test_warp_failure_yields_empty_rows():
     out = assemble_result_json(7, [], False)
-    assert out == {"rows": [], "supply_sum": 0, "warp_ok": False}
+    assert out == {
+        "rows": [],
+        "supply_sum": 0,
+        "warp_ok": False,
+        "item_conf_threshold": ITEM_CONF_THRESHOLD,
+    }
+
+
+def test_row_below_threshold_is_flagged_uncertain():
+    out = assemble_result_json(1, [_row(ITEM_CONF_THRESHOLD - _EPS)], True)
+    assert out["rows"][0]["item_uncertain"] is True
+
+
+def test_row_at_threshold_is_confident():
+    # 경계는 '미만'만 미확신 — 임계 자체는 확신 쪽이다
+    out = assemble_result_json(1, [_row(ITEM_CONF_THRESHOLD)], True)
+    assert out["rows"][0]["item_uncertain"] is False
+
+
+def test_row_without_candidates_is_uncertain():
+    out = assemble_result_json(1, [_row(None)], True)
+    assert out["rows"][0]["item_uncertain"] is True
+
+
+def test_nan_sim_is_flagged_uncertain():
+    # NaN 비교는 항상 False → `<` 관용구였다면 미확신 대신 "확신"으로 fail-open했다.
+    # warp_gate.py의 `not (>=)` 관용구와 동일하게 fail-close(미확신)로 닫혀야 한다.
+    out = assemble_result_json(1, [_row(float("nan"))], True)
+    assert out["rows"][0]["item_uncertain"] is True
+
+
+def test_result_carries_the_threshold_used_for_the_decision():
+    # 캘리브가 바뀐 뒤에도 과거 잡의 플래그를 그 시점 기준으로 해석하기 위한 필드
+    out = assemble_result_json(1, [_row(0.9)], True)
+    assert out["item_conf_threshold"] == ITEM_CONF_THRESHOLD
+
+
+def test_existing_fields_are_untouched_by_the_new_flag():
+    out = assemble_result_json(42, [_row(0.9)], True)
+    row = out["rows"][0]
+    assert row["crop_ref"] == "job-42/row-0"
+    assert row["supply"] == 85000
+    assert row["amount_raw"] == "85"
+    assert out["supply_sum"] == 85000
+    assert out["warp_ok"] is True
