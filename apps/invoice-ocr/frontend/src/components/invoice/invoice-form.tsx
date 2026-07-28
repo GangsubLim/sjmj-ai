@@ -16,6 +16,7 @@ import type { AutocompleteSuggestion } from "@/components/ui/autocomplete";
 import { calculateItem, calculateTotals } from "@/utils/calculations";
 import { useCompanies } from "@/hooks/use-companies";
 import { useItems } from "@/hooks/use-items";
+import { useAddNewItem } from "@/hooks/use-add-new-item";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useSettings } from "@/hooks/use-settings";
 import { useMediaQuery } from "@/hooks/use-media-query";
@@ -209,7 +210,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
   const [itemQuery] = React.useState("");
   const debouncedItemQuery = useDebounce(itemQuery, 300);
-  const { data: itemSuggestions } = useItems(debouncedItemQuery);
+  const { data: itemSuggestions, refetch: refetchItems } =
+    useItems(debouncedItemQuery);
+  const addNewItem = useAddNewItem();
 
   const companySuggestions: AutocompleteSuggestion[] = (companies ?? []).map(
     (c) => ({
@@ -271,6 +274,21 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         _tempId: crypto.randomUUID(),
       },
     ]);
+  };
+
+  const handleAddNewItem = async (index: number, name: string) => {
+    const created = await addNewItem(name);
+    if (!created) return; // 실패 — 입력값을 건드리지 않는다(사용자가 타이핑한 이름 보존)
+    setItems((prev) => {
+      const next = [...prev];
+      next[index] = {
+        ...next[index],
+        name: created.item_name,
+        unit_price: created.default_unit_price ?? next[index].unit_price,
+      };
+      return next;
+    });
+    refetchItems(); // 방금 만든 품목이 자동완성 목록에 뜨도록
   };
 
   const handleCompanySelect = (
@@ -563,6 +581,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               itemSuggestions={itemAutoSuggestions}
               onUpdate={handleItemUpdate}
               onDelete={handleItemDelete}
+              onAddNewItem={(name) => handleAddNewItem(index, name)}
               ocrMeta={
                 item.crop_ref ? ocrMetaByRef.get(item.crop_ref) : undefined
               }
