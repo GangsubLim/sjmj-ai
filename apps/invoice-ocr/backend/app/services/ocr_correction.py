@@ -6,6 +6,7 @@ def build_correction(result_json: dict, final_items: list[dict]) -> dict:
 
     - crop_ref 없는 최종 item = 사람이 추가한 행(rows_added)
     - 최종 payload에서 매칭 안 된 초안 crop = 사람이 버린 행(rows_dropped)
+    - label_source: 클라이언트가 보낸 UI 조작 출처(없으면 None). 검증은 라우터(Pydantic)가 한다.
     """
     draft_by_ref = {r["crop_ref"]: r for r in result_json.get("rows", []) if r.get("crop_ref")}
     lines: list[dict] = []
@@ -31,6 +32,10 @@ def build_correction(result_json: dict, final_items: list[dict]) -> dict:
                     "draft_supply": draft_supply,
                     "final_supply": final_supply,
                     "supply_changed": draft_supply != final_supply,
+                    # UI 조작 출처(어떤 경로로 이 라벨을 확정했는가). 품목 DB 존재 여부가 아니다 —
+                    # 그건 training_pairs.canonical_label ⨝ item_suggestions.item_name으로 사후
+                    # 관측 가능하므로 저장하지 않는다. 값 목록은 app/schemas/ocr.py가 소유한다.
+                    "label_source": item.get("label_source"),
                 }
             )
         else:

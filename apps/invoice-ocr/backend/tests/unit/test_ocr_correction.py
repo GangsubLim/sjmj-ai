@@ -1,3 +1,5 @@
+import pytest
+
 from app.services.ocr_correction import build_correction, build_training_pairs
 
 
@@ -26,6 +28,7 @@ def test_label_changed_and_supply_unchanged():
             "draft_supply": 120000,
             "final_supply": 120000,
             "supply_changed": False,
+            "label_source": None,
         }
     ]
     assert out["rows_added"] == 0
@@ -122,3 +125,54 @@ def test_build_training_pairs_parses_multidigit_row_index():
     assert pair["row_index"] == 12
     assert pair["canonical_label"] == "X"
     assert pair["supply"] is None
+
+
+_DRAFT = {
+    "rows": [
+        {
+            "crop_ref": "job-1/row-0",
+            "item_top5": [{"label": "타이어", "sim": 0.72}],
+            "supply": 85000,
+        }
+    ]
+}
+
+
+def _final(**over) -> list[dict]:
+    return [{"crop_ref": "job-1/row-0", "name": "타이어", "supply": 85000, **over}]
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "top1_kept",
+        "candidate_picked:0",
+        "candidate_picked:3",
+        "manual_picked",
+        "manual_typed",
+        "new_item_created",
+    ],
+)
+def test_label_source_is_copied_verbatim(source):
+    out = build_correction(_DRAFT, _final(label_source=source))
+    assert out["lines"][0]["label_source"] == source
+
+
+def test_label_source_is_null_when_client_omits_it():
+    out = build_correction(_DRAFT, _final())
+    assert out["lines"][0]["label_source"] is None
+
+
+def test_rows_without_crop_ref_produce_no_line_at_all():
+    # OCR 초안에서 오지 않은 행은 lines[]에 없다 → label_source를 실을 자리 자체가 없다
+    out = build_correction(_DRAFT, [{"name": "수동추가", "label_source": "manual_typed"}])
+    assert out["lines"] == []
+    assert out["rows_added"] == 1
+    assert out["rows_dropped"] == 1
+
+
+def test_training_pairs_ignore_label_source():
+    # training_pairs 스키마는 건드리지 않는다(마이그레이션 0) — 이 계약을 고정한다
+    correction = build_correction(_DRAFT, _final(label_source="candidate_picked:2"))
+    pairs = build_training_pairs(1, 10, correction)
+    assert "label_source" not in pairs[0]
