@@ -257,9 +257,11 @@ def score_one(
     Returns:
         다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 crop_ref), ``label``(정답 라벨),
         ``in_bank``(뱅크 커버리지, self 포함), ``top1``/``top5``(leave-self-out 적중
-        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록).
+        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록),
+        ``top1_sim``(leave-self-out top-1 유사도. 후보가 없으면 ``None``).
     """
-    preds = [lb for lb, _ in topk_excluding_self(sims, labs, keys, self_ref, TOPK)]
+    ranked = topk_excluding_self(sims, labs, keys, self_ref, TOPK)
+    preds = [lb for lb, _ in ranked]
     return {
         "crop_ref": self_ref,
         "label": label,
@@ -268,6 +270,7 @@ def score_one(
         "top5": label in preds,
         "has_peer": has_peer_sample(self_ref, label, labs, keys),
         "preds": preds,
+        "top1_sim": ranked[0][1] if ranked else None,
     }
 
 
