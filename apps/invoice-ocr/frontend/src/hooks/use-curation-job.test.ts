@@ -86,8 +86,66 @@ function patchResult(
   };
 }
 
+// resolve/reject를 외부에서 제어할 수 있는 Promise — 응답 도착 순서를 시험 코드가 결정한다.
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("useCurationJob", () => {
   beforeEach(() => vi.clearAllMocks());
+
+  it("역순 응답에서 마지막 선택이 유지된다(늦은 A 응답이 B를 덮지 않는다)", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      const pA = result.current.patchPair(9001, { canonical_label: "A" });
+      const pB = result.current.patchPair(9001, { canonical_label: "B" });
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) }); // 두 번째 요청이 먼저 도착
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // 첫 번째 요청이 나중에 도착 → 버려져야 한다
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+  });
+
+  it("stale 요청의 실패는 이후 선택을 되돌리지 않고 토스트도 띄우지 않는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    await act(async () => {
+      const pA = result.current.patchPair(9001, { canonical_label: "A" });
+      const pB = result.current.patchPair(9001, { canonical_label: "B" });
+      dB.resolve({ data: patchResult({ canonical_label: "B" }) });
+      dA.reject(new Error("network"));
+      await pB;
+      await pA;
+    });
+
+    expect(result.current.job!.pairs[0].canonical_label).toBe("B");
+    expect(mockToastError).not.toHaveBeenCalled();
+  });
 
   it("성공 PATCH는 응답을 merge하되 top5를 보존한다", async () => {
     mockGetJob.mockResolvedValue({ data: jobDetail() });
@@ -116,6 +174,30 @@ describe("useCurationJob", () => {
     });
 
     expect(result.current.job!.pairs[0].status).toBe("included"); // 롤백
+    expect(mockToastError).toHaveBeenCalled(); // 정상(최신) 실패 경로는 토스트를 띄운다
+  });
+
+  it("언마운트 후 도착한 in-flight 응답은 무시하고 롤백·토스트도 없다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const d = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair.mockReturnValueOnce(d.promise);
+
+    const { result, unmount } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let patchPromise!: Promise<void>;
+    act(() => {
+      patchPromise = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+
+    unmount();
+
+    await act(async () => {
+      d.reject(new Error("network"));
+      await patchPromise;
+    });
+
+    expect(mockToastError).not.toHaveBeenCalled();
   });
 
   it("연속 PATCH 중 한 pair 실패가 다른 pair 변경을 되돌리지 않는다", async () => {

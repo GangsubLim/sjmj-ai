@@ -35,6 +35,24 @@ export function useCurationJob(
     jobRef.current = job;
   }, [job]);
 
+  // pair별 요청 시퀀스. 늦게 도착한 응답이 최신 선택을 덮거나 롤백하지 못하게 막는다.
+  // 지금까지 이 레이스가 안 보인 이유는 commit이 텍스트 blur로만 나서 사람 손 속도가
+  // 사실상 직렬화 역할을 했기 때문이다 — 후보 칩은 그 방어를 없앤다.
+  // pending 동안 칩을 비활성화하는 대안은 쓰지 않는다(연속 교정 속도가 이 기능의 목적).
+  const seqRef = useRef<Map<number, number>>(new Map());
+
+  useEffect(() => {
+    return () => {
+      // 언마운트 후 도착하는 in-flight 응답을 전부 stale 처리한다(형제 훅
+      // use-curation-jobs.ts의 reqId 무효화와 동일 idiom). 페이지 이탈 후 늦게
+      // 실패한 PATCH가 맥락 없는 에러 토스트를 띄우는 것을 막는다.
+      for (const [pairId, seq] of seqRef.current) {
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        seqRef.current.set(pairId, seq + 1);
+      }
+    };
+  }, []);
+
   const fetch = useCallback(async () => {
     if (!jobId) return;
     setLoading(true);
@@ -60,6 +78,12 @@ export function useCurationJob(
         (p) => p.id === id,
       );
       if (!prevPair) return;
+
+      // pair별 시퀀스 토큰 증가 — 이 요청이 stale해지는 기준선.
+      const seq = (seqRef.current.get(id) ?? 0) + 1;
+      seqRef.current.set(id, seq);
+      const isStale = () => seqRef.current.get(id) !== seq;
+
       // 1) 옵티미스틱: 로컬 pair만 즉시 불변 갱신.
       setJob((prev) =>
         prev
@@ -73,6 +97,7 @@ export function useCurationJob(
       );
       try {
         const res = await curationAPI.patchPair(id, patch);
+        if (isStale()) return; // 늦게 온 성공 — 최신 선택을 덮지 않는다
         // 2) 성공: 응답을 merge. job_id는 버리고 top5는 기존 값 보존(계약 비대칭).
         const { job_id: _jobId, ...base } = res.data;
         setJob((prev) =>
@@ -86,7 +111,8 @@ export function useCurationJob(
             : prev,
         );
       } catch (e) {
-        // 3) 실패: 해당 pair만 직전 값으로 롤백(동시 발행된 다른 pair 변경은 보존) + 에러 토스트.
+        if (isStale()) return; // 늦게 온 실패 — 이후 성공한 선택을 되돌리지 않고 토스트도 없다
+        // 3) 실패: 해당 pair만 그 요청 시작 시점 스냅샷으로 롤백 + 에러 토스트.
         setJob((prev) =>
           prev
             ? {
