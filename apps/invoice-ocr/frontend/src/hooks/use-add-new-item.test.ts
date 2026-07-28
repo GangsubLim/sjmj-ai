@@ -84,6 +84,57 @@ describe("useAddNewItem", () => {
     );
   });
 
+  // 500 응답의 error.message는 str(exc)(파이썬 예외 문자열)이라 운영자에게 보여줄 값이 아니다.
+  it("5xx 서버 메시지는 노출하지 않고 고정 문구로 폴백한다", async () => {
+    mockAdd.mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 500,
+        data: { error: { code: "SERVER_ERROR", message: "KeyError: 'x'" } },
+      },
+    });
+    const { result } = renderHook(() => useAddNewItem());
+
+    await act(async () => {
+      await result.current("신품목");
+    });
+
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      "품목 등록에 실패했습니다",
+    );
+  });
+
+  // 네트워크 단절 축은 response가 없어 'Network Error' 같은 영문이 그대로 뜬다.
+  it("응답 없는 네트워크 오류도 한국어 고정 문구로 알린다", async () => {
+    mockAdd.mockRejectedValue(
+      Object.assign(new Error("Network Error"), { isAxiosError: true }),
+    );
+    const { result } = renderHook(() => useAddNewItem());
+
+    await act(async () => {
+      await result.current("신품목");
+    });
+
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      "품목 등록에 실패했습니다",
+    );
+  });
+
+  it("공백만 입력되면 요청 없이 안내하고 null을 돌려준다", async () => {
+    const { result } = renderHook(() => useAddNewItem());
+
+    let created: unknown = "sentinel";
+    await act(async () => {
+      created = await result.current("   ");
+    });
+
+    expect(created).toBeNull();
+    expect(mockAdd).not.toHaveBeenCalled();
+    expect(vi.mocked(toast.error)).toHaveBeenCalledWith(
+      "품목명을 입력해주세요",
+    );
+  });
+
   it("Error가 아닌 값이 던져지면 기본 메시지로 폴백한다", async () => {
     mockAdd.mockRejectedValue("문자열 throw");
     const { result } = renderHook(() => useAddNewItem());

@@ -114,6 +114,11 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   const [labelSources, setLabelSources] = React.useState<
     ReadonlyMap<string, LabelSource>
   >(new Map());
+  // 지금 화면의 초안을 만든 잡. ocr.jobId는 업로드 즉시 새 잡으로 바뀌지만 초안은 그
+  // 잡이 성공했을 때만 교체되므로, 재촬영이 실패·warp 실패하거나 아직 추론 중일 때
+  // ocr.jobId로 confirm하면 "잡 B에 잡 A의 행"이 실려 crop_ref가 매칭되지 않는다
+  // (label_source 유실 + 무관한 invoice에 link돼 재확정 불가). 확정 대상은 여기서 고정한다.
+  const [draftJobId, setDraftJobId] = React.useState<number | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
   const isInitialMount = React.useRef(true);
@@ -213,6 +218,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       ocr.jobId != null ? rowsToOcrMeta(ocr.result, ocr.jobId) : new Map(),
     );
     setLabelSources(new Map()); // 새 초안 = 조작 이력 없음(전 잡의 출처가 새지 않도록)
+    setDraftJobId(ocr.jobId); // 확정 대상 = 이 초안을 만든 잡
   }, [ocr.status, ocr.result, ocr.error, ocr.jobId]);
 
   // Autocomplete data
@@ -349,7 +355,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     try {
       // label_source는 OCR 확정 경로에서만 의미가 있다(초안 대비 조작 출처).
       const payloadItems =
-        ocr.jobId != null
+        draftJobId != null
           ? attachLabelSource(validItems, labelSources)
           : validItems;
 
@@ -362,7 +368,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         show_stamp: showStamp,
         memo,
         items: payloadItems.map((item, i) => {
-          const { _tempId, ...rest } = item as InvoiceItem & {
+          // 캐스트 대상을 `typeof item`으로 잡는다 — InvoiceItem으로 좁히면 rest의 정적
+          // 타입에서 label_source가 사라져(런타임엔 스프레드로 살아남는다) attachLabelSource가
+          // 반환 타입에 세워둔 컴파일 타임 가드가 무력화된다.
+          const { _tempId, ...rest } = item as typeof item & {
             _tempId?: string;
           };
           return { ...rest, item_order: i };
@@ -375,8 +384,8 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       if (mode === "edit" && initialData?.id) {
         await invoiceAPI.update(initialData.id, payload);
         toast.success("거래명세서가 수정되었습니다");
-      } else if (ocr.jobId != null) {
-        await ocrAPI.confirm(ocr.jobId, payload);
+      } else if (draftJobId != null) {
+        await ocrAPI.confirm(draftJobId, payload);
         toast.success("거래명세서가 저장되었습니다");
       } else {
         await invoiceAPI.create(payload);
@@ -408,6 +417,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     ]);
     setOcrMetaByRef(new Map());
     setLabelSources(new Map());
+    setDraftJobId(null);
   };
 
   // PC 미리보기용 deferred state

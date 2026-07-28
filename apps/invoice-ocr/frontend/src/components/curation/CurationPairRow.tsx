@@ -8,6 +8,7 @@ import { useItems } from "@/hooks/use-items";
 import { useDebounce } from "@/hooks/use-debounce";
 import { ocrCropUrl } from "@/services/api";
 import { isPairChanged } from "@/utils/curation";
+import { CandidateChip } from "@/components/ocr/candidate-chip";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import { cn } from "@/lib/utils";
 
@@ -61,6 +62,7 @@ export function CurationPairRow({
       <img
         src={ocrCropUrl(jobId, pair.row_index)}
         alt={`행 ${pair.row_index} crop`}
+        loading="lazy"
         className="h-10 w-16 rounded border object-cover"
         onError={handleImageError}
       />
@@ -76,27 +78,20 @@ export function CurationPairRow({
             <span>후보 없음</span>
           ) : (
             pair.top5.map((pred, rank) => (
-              <button
+              <CandidateChip
                 key={`${pred.label}-${rank}`}
-                type="button"
-                onClick={() => {
+                label={pred.label}
+                sim={pred.sim}
+                rank={rank}
+                selected={pred.label === (pair.canonical_label ?? "")}
+                onSelect={(label) => {
                   // commitLabel(:44)과 동일 가드 — 이미 선택된 라벨에는 PATCH를 쏘지 않는다.
-                  if (pred.label === (pair.canonical_label ?? "")) return;
+                  if (label === (pair.canonical_label ?? "")) return;
                   // 표시값 SSoT는 pair.canonical_label — 옵티미스틱 갱신이 입력창을 재동기하므로
                   // searchQuery(Autocomplete 제안 조회 전용)는 여기서 맞출 필요가 없다.
-                  onPatch(pair.id, { canonical_label: pred.label });
+                  onPatch(pair.id, { canonical_label: label });
                 }}
-                aria-label={`후보 ${pred.label}, 유사도 ${pred.sim.toFixed(2)}`}
-                className={cn(
-                  "hover:bg-accent rounded-full border px-2 py-0.5",
-                  rank === 0 && "border-primary",
-                )}
-              >
-                {pred.label}{" "}
-                <span className="text-muted-foreground">
-                  {pred.sim.toFixed(2)}
-                </span>
-              </button>
+              />
             ))
           )}
           {isPairChanged(pair) && (

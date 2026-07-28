@@ -123,23 +123,25 @@ def test_job_detail_includes_pairs_with_top5(client, db_conn):
 
 def test_job_detail_pair_uncertain_reflects_item_uncertain_flag(client, db_conn):
     with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/x.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        # result_json의 crop_ref를 실제 job_id로 채운다 — 'job-1'을 하드코딩하면 TRUNCATE로
+        # AUTO_INCREMENT가 리셋돼 job_id가 우연히 1인 것에 기대게 되고, 같은 테스트에 잡을
+        # 하나 더 시드하는 순간 training_pairs.crop_ref와 어긋난다(조인 키 오독 유발).
         conn.execute(
-            text(
-                "INSERT INTO ocr_jobs (status, image_path, result_json) "
-                "VALUES ('done', '/x.jpg', :rj)"
-            ),
+            text("UPDATE ocr_jobs SET result_json = :rj WHERE id = :id"),
             {
+                "id": job_id,
                 "rj": (
                     '{"rows": ['
-                    '{"row_index": 0, "crop_ref": "job-1/row-0", "item_top5": [], '
+                    f'{{"row_index": 0, "crop_ref": "job-{job_id}/row-0", "item_top5": [], '
                     '"item_uncertain": true, "supply": 100000}, '
-                    '{"row_index": 1, "crop_ref": "job-1/row-1", "item_top5": [], '
+                    f'{{"row_index": 1, "crop_ref": "job-{job_id}/row-1", "item_top5": [], '
                     '"supply": 100000}], '
                     '"supply_sum": 200000, "warp_ok": true}'
-                )
+                ),
             },
         )
-        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         conn.execute(
             text(
                 "INSERT INTO training_pairs "
@@ -159,6 +161,8 @@ def test_job_detail_pair_uncertain_reflects_item_uncertain_flag(client, db_conn)
             {"r": f"job-{job_id}/row-1", "j": job_id},
         )
     res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["success"] is True
     pairs = {p["row_index"]: p for p in res.json()["data"]["pairs"]}
     # item_uncertain: true인 행 → uncertain True
     assert pairs[0]["uncertain"] is True

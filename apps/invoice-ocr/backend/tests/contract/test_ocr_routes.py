@@ -6,6 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.repositories.ocr_repository import OcrRepository
+from app.routers.ocr import _MAX_CROP_ROW
 from tests.fixtures import test_data as td
 
 pytestmark = pytest.mark.usefixtures("db_conn")
@@ -197,6 +198,30 @@ def test_confirm_rejects_blank_recipient(client):
     assert "recipient" in r.json()["error"]["details"]
 
 
+def test_confirm_rejects_overlong_recipient(client):
+    """invoices.recipient는 VARCHAR(100) — 초과분은 400이지 500이 아니다.
+
+    이 payload는 invoices 라우터의 max_length(recipient, 100)를 우회해 repository로 직행하므로,
+    상한이 없으면 MySQL ERROR 1406 → 미처리 예외 → 500 SERVER_ERROR + str(exc)(SQL문·파라미터
+    노출)로 샌다.
+    """
+    payload = td.invoice_with_items({"recipient": "가" * 101})
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "recipient" in r.json()["error"]["details"]
+
+
+def test_confirm_rejects_item_without_name(client):
+    """name 없는 item은 400 — repository가 item['name']을 기본값 없이 인덱싱해 500이 된다."""
+    payload = td.invoice_with_items()
+    del payload["items"][1]["name"]
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "items.1.name" in r.json()["error"]["details"]
+
+
 def test_confirm_rejects_impossible_calendar_date(client):
     payload = td.invoice_with_items({"issue_date": "2026-02-30"})
     r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
@@ -211,7 +236,7 @@ def test_confirm_rejects_empty_items(client):
     assert "items" in r.json()["error"]["details"]
 
 
-def test_confirm_keeps_accepting_frontend_string_numerics(client):
+def test_confirm_keeps_accepting_frontend_string_numerics(client, db_conn):
     """프론트는 입력 중 수량·단가를 문자열로 보낸다.
 
     invoice-item-row.tsx:100 → calculations.ts:53-54("원래 값 유지") → invoice-form.tsx:301.
@@ -225,11 +250,30 @@ def test_confirm_keeps_accepting_frontend_string_numerics(client):
     payload = td.invoice_with_items()
     payload["items"][0]["quantity"] = "12"
     payload["items"][1]["unit_price"] = "50000"
-    assert client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload).status_code == 200
+    r = client.post(f"/api/ocr/jobs/{_done_job()}/confirm", json=payload)
+    assert r.status_code == 200
+    # 200만으로는 가드가 성립하지 않는다 — 모델이 두 필드를 정의 필드로 흡수하면서 값이
+    # 유실되거나 기본값(0)으로 대체돼도 200이다. 저장된 정수값까지 확인한다.
+    with db_conn.begin() as conn:
+        stored = conn.execute(
+            text(
+                "SELECT quantity, unit_price FROM invoice_items "
+                "WHERE invoice_id = :i ORDER BY item_order"
+            ),
+            {"i": r.json()["data"]["invoice_id"]},
+        ).fetchall()
+    assert stored[0][0] == 12
+    assert stored[1][1] == 50000
 
 
-def test_confirm_strips_label_source_before_invoice_items(client, db_conn):
-    """label_source는 crop_ref와 같은 이유로 invoice_items에 닿지 않는다."""
+def test_confirm_with_ocr_only_keys_still_saves_invoice_items(client, db_conn):
+    """crop_ref·label_source가 실린 payload도 invoice_items를 정상 저장한다(전 구간 회귀).
+
+    strip 자체는 여기서 고정되지 않는다 — InvoiceRepository.insert_item이 명시 바인드
+    파라미터만 쓰므로 strip을 지워도 SQL·저장 결과가 같다. 그 불변식은 관측 가능한 seam에서
+    tests/unit/test_ocr_service.py::test_confirm_strips_ocr_only_keys_at_the_invoice_service_seam
+    가 고정한다. 이 테스트가 덮는 것은 '라우터→서비스 경유로 item 3건이 순서대로 저장된다'다.
+    """
     payload = td.invoice_with_items()
     payload["items"][0]["crop_ref"] = "job-1/row-0"
     payload["items"][0]["label_source"] = "manual_typed"
@@ -361,22 +405,23 @@ def test_crop_404_when_job_missing(client):
     assert res.json()["error"]["code"] == "NOT_FOUND"
 
 
-def test_crop_blocks_path_traversal_via_row(client, tmp_path):
+def test_crop_blocks_path_traversal_via_row(client):
     """SJMJ_DATA_DIR(=tmp_path) 밖에 민감 파일을 두고 row로 도달 불가함을 실증한다.
 
     tests/contract/test_curation_routes.py:404-417에서 토큰·단언 그대로 이관(보안 회귀 방지).
     row는 int path 파라미터라 단일 세그먼트 조작 토큰은 422→400 변환기가 거부한다.
     (%2e%2e는 서버에서 ".."로 디코드되지만 단일 세그먼트라 int 파싱에서 걸린다.)
+
+    세 토큰 모두 int 파싱에서 걸려 경로 조립에 도달하지 않으므로, 실제 경로 조립(절대성 +
+    레이아웃)은 tests/unit/test_ocr_service.py::test_crop_image_uses_job_exists_not_find_job
+    가 조립 경로 전체를 동등 비교로 고정한다.
     """
-    outside = tmp_path.parent / "outside-secret.png"
-    outside.write_bytes(b"SECRET-OUTSIDE-DATA-ROOT")
     job_id = _done_job()
 
     for evil in ("%2e%2e", "row-0.png", "..%2e"):
         res = client.get(f"/api/ocr/jobs/{job_id}/crop/{evil}")
         assert res.status_code == 400, f"traversal token not rejected: {evil!r}"
         assert res.json()["error"]["code"] == "VALIDATION_ERROR"
-        assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
 
 
 def _all_route_paths(app) -> list[str]:
@@ -434,3 +479,19 @@ def test_crop_rejects_negative_row(client):
     res = client.get(f"/api/ocr/jobs/{job_id}/crop/-1")
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_crop_row_upper_bound_is_inclusive_at_max(client):
+    """상한 경계 고정 — _MAX_CROP_ROW(9999)는 통과하고 그다음 값부터 400이다.
+
+    커버가 -1과 300자리 숫자뿐이면 le를 le=5로 좁혀도 둘 다 통과한다 — 수십 행짜리 실제
+    명세서의 정상 요청이 400으로 죽는 회귀를 계약이 못 잡는다.
+    """
+    job_id = _done_job()
+    ok = client.get(f"/api/ocr/jobs/{job_id}/crop/{_MAX_CROP_ROW}")
+    assert ok.status_code == 404  # 검증 통과 → 파일 부재로 404
+    assert ok.json()["error"]["code"] == "NOT_FOUND"
+
+    over = client.get(f"/api/ocr/jobs/{job_id}/crop/{_MAX_CROP_ROW + 1}")
+    assert over.status_code == 400
+    assert over.json()["error"]["code"] == "VALIDATION_ERROR"

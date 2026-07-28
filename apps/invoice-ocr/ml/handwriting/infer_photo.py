@@ -43,9 +43,12 @@ BANK = HERE / "runs/bank.npz"
 PROD = HERE / "runs/ft_prod.pt"
 OUT = ML / "review/infer_photo.html"
 Y0, Y1 = DATA_Y
-# backend/app/schemas/ocr.py의 TOP_K/LABEL_SOURCES(candidate_picked:0-4)와 동기 — 이 값을
-# 바꾸면 그쪽도 함께 바꾼다(tests/test_label_source_sync.py가 backend↔spec 동기만 검증하며
-# 여기까지는 안 덮는다).
+# 이 값에 종속된 곳이 3군데다 — 하나만 바꾸면 조용히 어긋난다:
+#   backend/app/schemas/ocr.py의 TOP_K/LABEL_SOURCES(candidate_picked:0..TOP_K-1) — 넘치면
+#     confirm 전체가 400,
+#   frontend/src/utils/label-source.ts의 TOP_K — 작으면 그 위 rank의 후보가 칩으로 못 뜨고 유실,
+#   tools/bank_update.py의 TOPK — 어긋나면 운영과 다른 기준으로 임계가 캘리브된다.
+# ml 쪽 2곳은 tests/test_topk_sync.py(ml/tests)가 api-spec.json enum과 대조해 CI에서 잡는다.
 TOPK = 5
 COLOR = {
     "new": (0, 170, 0),

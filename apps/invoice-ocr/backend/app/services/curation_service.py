@@ -5,7 +5,7 @@
 
 from pathlib import Path
 
-from app.config import data_root
+from app.config import crop_dir
 from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
 
@@ -41,7 +41,12 @@ class CurationService:
             not_found("OCR 잡을 찾을 수 없습니다.")
         job = detail["job"]
         result = job.get("result_json") or {}
-        rows_by_index = {r.get("row_index"): r for r in result.get("rows", [])}
+        # result_json은 ML 워커가 쓴 외부 데이터다 — rows가 null이거나 원소가 dict가 아니면
+        # 잡 상세 전체가 500이 되어 그 잡의 검수가 완전히 막힌다. 아래 조인 실패와 같은
+        # fail-safe(빈 행)로 닫는다.
+        raw_rows = result.get("rows")
+        rows = raw_rows if isinstance(raw_rows, list) else []
+        rows_by_index = {r.get("row_index"): r for r in rows if isinstance(r, dict)}
         pairs = []
         for p in detail["pairs"]:
             # 조인 실패(재처리 등으로 row_index 부재)는 빈 행으로 본다 — 배지를 잘못 띄우지 않는다.
@@ -110,7 +115,7 @@ class CurationService:
         """워프된 전표 이미지 절대경로를 반환한다. 없으면 404."""
         if not self.repo.job_exists(job_id):
             not_found("OCR 잡을 찾을 수 없습니다.")
-        path = data_root() / "ocr_crops" / f"job-{job_id}" / "warped.png"
+        path = crop_dir(job_id) / "warped.png"
         if not path.is_file():
             not_found("워프 이미지가 없습니다.")
         return str(path)

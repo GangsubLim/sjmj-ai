@@ -35,6 +35,11 @@ def build_correction(result_json: dict, final_items: list[dict]) -> dict:
                     # UI 조작 출처(어떤 경로로 이 라벨을 확정했는가). 품목 DB 존재 여부가 아니다 —
                     # 그건 training_pairs.canonical_label ⨝ item_suggestions.item_name으로 사후
                     # 관측 가능하므로 저장하지 않는다. 값 목록은 app/schemas/ocr.py가 소유한다.
+                    # 초안(draft_label·top5)과의 정합성은 의도적으로 확인하지 않는다 —
+                    # "클라이언트가 주장한 조작 출처"를 그대로 보존하는 것이 이 필드의 정의이고,
+                    # 서버가 추론으로 덮으면 재학습 분석에서 관측값과 추정값을 구분할 수 없게 된다.
+                    # 모순(top1_kept인데 label_changed 등)은 correction_json에 draft/final이 함께
+                    # 남으므로 사후 쿼리로 감사 가능하다.
                     "label_source": item.get("label_source"),
                 }
             )

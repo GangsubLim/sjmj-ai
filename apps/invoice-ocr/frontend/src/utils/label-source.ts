@@ -17,12 +17,22 @@ export const LABEL_SOURCE = {
 } as const;
 
 type FixedLabelSource = (typeof LABEL_SOURCE)[keyof typeof LABEL_SOURCE];
-export type LabelSource = FixedLabelSource | `candidate_picked:${number}`;
+
+// 브랜드 타입 — `candidate_picked:${number}`만으로는 'candidate_picked:99'나
+// 'candidate_picked:1.5'까지 타입 검사를 통과해, 이 모듈의 런타임 가드를 우회한 값이
+// confirm 전체를 400으로 만들 수 있다. 브랜드를 붙여 생성자를 candidatePicked 하나로 좁힌다.
+declare const CANDIDATE_PICKED: unique symbol;
+type CandidatePicked = `candidate_picked:${number}` & {
+  readonly [CANDIDATE_PICKED]: true;
+};
+
+export type LabelSource = FixedLabelSource | CandidatePicked;
 
 /**
  * 후보 rank 상한(0-based, exclusive). 백엔드 `app/schemas/ocr.py`의 `TOP_K`와 동기 —
- * ml top-K가 바뀌면 여기도 함께 바꾼다. `candidatePicked`의 범위 가드와 테스트의 허용
- * 어휘 계산 양쪽이 이 값 하나에서 파생된다.
+ * ml top-K가 바뀌면 여기도 함께 바꾼다. `candidatePicked`의 범위 가드, 후보 목록의
+ * 경계 절단(`rowsToOcrMeta`), 테스트의 허용 어휘 계산이 모두 이 값 하나에서 파생된다.
+ * 드리프트는 label-source.test.ts가 api-spec.json의 enum과 대조해 잡는다.
  */
 export const TOP_K = 5;
 
@@ -31,9 +41,9 @@ export const TOP_K = 5;
  *
  * 범위를 벗어난 rank는 폴백하지 않고 즉시 throw한다 — 조용히 top1_kept 등으로
  * 폴백하면 실제로 무슨 후보를 골랐는지 알 수 없는 감사 기록이 티 안 나게 저장된다.
- * 반대로 여기서 막지 않고 confirm까지 흘려보내면 서버 화이트리스트가 요청 전체를
- * 400으로 거부해 관련 없는 나머지 품목까지 통째로 저장 실패한다. throw는 이 한 번의
- * 클릭만 실패시키고(recordLabelSource 미호출, 이전 값 유지) 그 손실 범위를 최소화한다.
+ * 다만 이 throw는 최후의 안전망일 뿐이다: 서버가 TOP_K를 넘는 후보를 주더라도
+ * `rowsToOcrMeta`가 경계에서 TOP_K개로 잘라내므로 UI에서 도달 가능한 rank는 항상
+ * 범위 안이다(외부 데이터 검증은 경계에서, 여기서는 개발자 실수만 잡는다).
  */
 export function candidatePicked(rank: number): LabelSource {
   if (!Number.isInteger(rank) || rank < 0 || rank >= TOP_K) {
@@ -41,7 +51,7 @@ export function candidatePicked(rank: number): LabelSource {
       `candidatePicked: rank(${rank})는 0..${TOP_K - 1} 범위를 벗어났습니다.`,
     );
   }
-  return `candidate_picked:${rank}`;
+  return `candidate_picked:${rank}` as CandidatePicked;
 }
 
 /** 마지막 조작이 이긴다 — 같은 crop_ref의 이전 값을 덮어쓴 새 맵을 돌려준다. */

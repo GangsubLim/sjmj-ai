@@ -213,9 +213,11 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
     )
 
 
-# backend/app/schemas/ocr.py의 TOP_K/LABEL_SOURCES(candidate_picked:0-4)와 동기 — 이 값을
-# 바꾸면 그쪽도 함께 바꾼다(tests/test_label_source_sync.py가 backend↔spec 동기만 검증하며
-# 여기까지는 안 덮는다).
+# 직접 미러링 대상은 운영 retrieval인 handwriting/infer_photo.py의 TOPK다 — '운영과 같은
+# 기준으로 채점한다'(topk_excluding_self)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
+# 기준으로 산출된 유사도가 임계 캘리브레이션 근거가 된다. 그 TOPK는 다시 backend/app/
+# schemas/ocr.py의 TOP_K/LABEL_SOURCES와 frontend/src/utils/label-source.ts의 TOP_K에
+# 물려 있다. ml 쪽 2곳은 tests/test_topk_sync.py(ml/tests)가 api-spec.json enum과 대조한다.
 TOPK = 5
 
 

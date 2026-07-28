@@ -99,9 +99,13 @@ function InvoiceItemRow({
         {ocrMeta && (
           <ItemOcrCandidates
             meta={ocrMeta}
+            selectedLabel={item.name}
             onPick={(label, rank) => {
-              handleField("name", label);
+              // 출처 보고를 먼저 한다 — 소비자(invoice-form)가 rank를 검증하다 throw하면
+              // 이름 변경도 일어나지 않아 클릭이 통째로 무산된다. 반대 순서면 "이름은
+              // 후보 N인데 label_source는 기본값(top1_kept)"인 오염된 감사 기록이 남는다.
               onPickCandidate?.(label, rank);
+              handleField("name", label);
             }}
           />
         )}

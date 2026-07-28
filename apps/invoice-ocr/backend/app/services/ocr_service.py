@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from app import db
-from app.config import data_root
+from app.config import crop_dir, data_root
 from app.core.errors import bad_request, conflict, not_found
 from app.repositories.companies_repository import CompanyRepository
 from app.repositories.curation_repository import CurationRepository
@@ -143,7 +143,7 @@ class OcrService:
         """
         if not self.repo.job_exists(job_id):
             not_found("OCR 잡을 찾을 수 없습니다.")
-        path = data_root() / "ocr_crops" / f"job-{job_id}" / f"row-{row}.png"
+        path = crop_dir(job_id) / f"row-{row}.png"
         if not path.is_file():
             not_found("crop 이미지가 없습니다.")
         return str(path)

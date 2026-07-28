@@ -52,14 +52,21 @@ def _reject_blank(v: str) -> str:
 NonEmptyStr = Annotated[str, AfterValidator(_reject_blank)]
 IsoDateStr = Annotated[str, StringConstraints(pattern=r"^\d{4}-\d{2}-\d{2}$")]
 
+# invoices.recipient 컬럼 폭(VARCHAR(100))이자 invoices 라우터의 상한
+# (routers/invoices.py:_validate_invoice의 max_length(recipient, 100))과 동일 값.
+# 같은 컬럼에 쓰는 두 입력 경로가 어긋나면, 초과분이 400이 아니라 MySQL ERROR 1406 →
+# 500 SERVER_ERROR(str(exc)에 SQL·파라미터 노출)로 샌다.
+RECIPIENT_MAX_LENGTH = 100
+
 
 class OcrConfirmItem(BaseModel):
     """확정 payload의 품목 1건.
 
-    검증 대상은 ocr 슬라이스가 소유하는 두 필드(crop_ref·label_source)뿐이다. 금액·수량 등
-    나머지는 invoices 슬라이스의 도메인이며, 이 경로는 전환 전(free-form dict)과 동일하게
-    통과시킨다 — 프론트가 quantity/unit_price를 ""·"12" 같은 문자열로도 보내기 때문이다
-    (frontend/src/utils/calculations.ts "원래 값 유지"). 여기서 조이면 운영 저장이 깨진다.
+    검증 대상은 ocr 슬라이스가 소유하는 두 필드(crop_ref·label_source)와, 없으면 500이 되는
+    name뿐이다. 금액·수량 등 나머지는 invoices 슬라이스의 도메인이며, 이 경로는 전환 전
+    (free-form dict)과 동일하게 통과시킨다 — 프론트가 quantity/unit_price를 ""·"12" 같은
+    문자열로도 보내기 때문이다(frontend/src/utils/calculations.ts "원래 값 유지").
+    여기서 조이면 운영 저장이 깨진다.
 
     extra="allow"이므로 `label_soruce` 같은 오타 키는 조용히 통과한다(200, provenance만 유실).
     생산자는 프론트 `attachLabelSource` 하나뿐이며, Task 12에서 프론트에 오타 방어선
@@ -72,6 +79,11 @@ class OcrConfirmItem(BaseModel):
 
     model_config = ConfigDict(extra="allow")
 
+    # invoice_repository.insert_item은 item["name"]만 기본값 없이 직접 인덱싱한다
+    # (invoice_repository.py:128 — 나머지 필드는 전부 .get(기본값)). 여기서 필수로 고정하지
+    # 않으면 name 누락 한 건이 400이 아니라 KeyError → 500 SERVER_ERROR가 된다.
+    # 값 자체는 좁히지 않는다(빈 문자열 허용) — 내용 규칙은 invoices 슬라이스의 도메인.
+    name: str
     crop_ref: str | None = None
     label_source: str | None = None
 
@@ -100,7 +112,7 @@ class OcrConfirmRequest(BaseModel):
     model_config = ConfigDict(extra="allow")
 
     issue_date: IsoDateStr
-    recipient: NonEmptyStr
+    recipient: Annotated[NonEmptyStr, StringConstraints(max_length=RECIPIENT_MAX_LENGTH)]
     items: list[OcrConfirmItem] = Field(min_length=1)
 
     @field_validator("issue_date")

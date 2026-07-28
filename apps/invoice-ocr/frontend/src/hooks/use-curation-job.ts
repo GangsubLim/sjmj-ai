@@ -41,17 +41,24 @@ export function useCurationJob(
   // pending 동안 칩을 비활성화하는 대안은 쓰지 않는다(연속 교정 속도가 이 기능의 목적).
   const seqRef = useRef<Map<number, number>>(new Map());
 
+  // pair별 '서버가 마지막으로 확인한 값'. 롤백 기준선은 요청 시작 시점의 로컬 값이 아니라
+  // 이것이어야 한다 — 같은 pair에 겹친 두 요청이 모두 실패하면(네트워크 단절 시 전형적)
+  // 앞 요청의 실패는 stale로 버려지고 뒤 요청은 서버에 저장된 적 없는 옵티미스틱 값으로
+  // 되돌아가, 라벨링 도구가 저장되지 않은 값을 '현재 라벨'로 보여주게 된다.
+  const confirmedRef = useRef<Map<number, CurationJobPair>>(new Map());
+
   useEffect(() => {
+    // ref는 재할당되지 않는 Map이라 effect 본문에서 한 번 잡아 cleanup에서 쓴다.
+    const seqs = seqRef.current;
     return () => {
-      // 언마운트 후 도착하는 in-flight 응답을 전부 stale 처리한다(형제 훅
-      // use-curation-jobs.ts의 reqId 무효화와 동일 idiom). 페이지 이탈 후 늦게
-      // 실패한 PATCH가 맥락 없는 에러 토스트를 띄우는 것을 막는다.
-      for (const [pairId, seq] of seqRef.current) {
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-        seqRef.current.set(pairId, seq + 1);
+      // jobId 교체·언마운트 후 도착하는 in-flight 응답을 전부 stale 처리한다(형제 훅
+      // use-curation-jobs.ts의 reqId 무효화와 동일 idiom). 이전 잡/페이지의 늦게 실패한
+      // PATCH가 맥락 없는 에러 토스트를 띄우는 것을 막는다.
+      for (const [pairId, seq] of seqs) {
+        seqs.set(pairId, seq + 1);
       }
     };
-  }, []);
+  }, [jobId]);
 
   const fetch = useCallback(async () => {
     if (!jobId) return;
@@ -60,6 +67,7 @@ export function useCurationJob(
     try {
       const res = await curationAPI.getJob(jobId);
       setJob(res.data);
+      confirmedRef.current = new Map(res.data.pairs.map((p) => [p.id, p]));
     } catch (e) {
       setError(errorMessage(e, "잡을 불러올 수 없습니다"));
     } finally {
@@ -100,6 +108,10 @@ export function useCurationJob(
         if (isStale()) return; // 늦게 온 성공 — 최신 선택을 덮지 않는다
         // 2) 성공: 응답을 merge. job_id는 버리고 top5는 기존 값 보존(계약 비대칭).
         const { job_id: _jobId, ...base } = res.data;
+        confirmedRef.current.set(id, {
+          ...(confirmedRef.current.get(id) ?? prevPair),
+          ...base,
+        });
         setJob((prev) =>
           prev
             ? {
@@ -112,12 +124,13 @@ export function useCurationJob(
         );
       } catch (e) {
         if (isStale()) return; // 늦게 온 실패 — 이후 성공한 선택을 되돌리지 않고 토스트도 없다
-        // 3) 실패: 해당 pair만 그 요청 시작 시점 스냅샷으로 롤백 + 에러 토스트.
+        // 3) 실패: 해당 pair만 서버 확정 스냅샷으로 롤백 + 에러 토스트.
+        const rollback = confirmedRef.current.get(id) ?? prevPair;
         setJob((prev) =>
           prev
             ? {
                 ...prev,
-                pairs: prev.pairs.map((p) => (p.id === id ? prevPair : p)),
+                pairs: prev.pairs.map((p) => (p.id === id ? rollback : p)),
               }
             : prev,
         );

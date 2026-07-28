@@ -1,3 +1,5 @@
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
 import {
@@ -8,6 +10,51 @@ import {
   candidatePicked,
   type LabelSource,
 } from "./label-source";
+
+// 엔드포인트 SSoT(레포 루트 .claude/ai-context/api-spec.json)의 label_source enum.
+// 백엔드 tests/test_label_source_sync.py가 backend↔spec을 잡고, 여기서 프론트↔spec을 잡는다.
+// cwd에서 위로 훑어 찾는다 — jsdom 환경의 import.meta.url은 file:이 아닌 http: URL이라
+// 파일 경로 기준점으로 쓸 수 없고, cwd는 실행 위치(프론트 디렉터리/레포 루트)에 따라 달라진다.
+function findSpecPath(): string {
+  let dir = process.cwd();
+  for (;;) {
+    const candidate = resolve(dir, ".claude/ai-context/api-spec.json");
+    if (existsSync(candidate)) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) throw new Error("api-spec.json을 찾지 못했습니다");
+    dir = parent;
+  }
+}
+
+function specLabelSourceEnum(): string[] {
+  const spec = JSON.parse(readFileSync(findSpecPath(), "utf-8"));
+  return spec.components.schemas.OcrConfirmRequest.properties.items.items
+    .properties.label_source.enum as string[];
+}
+
+describe("TOP_K 드리프트 가드", () => {
+  // TOP_K가 서버(backend TOP_K=5 → spec enum)와 어긋나면, 작을 때는 유효한 후보 클릭이
+  // RangeError 경로로 빠지고 클 때는 정상 선택이 confirm 전체 400을 만든다. 짝 테스트가
+  // 같은 TOP_K에서 허용 집합을 파생시키는 것만으로는(회귀 감지 0) 이 드리프트를 못 잡는다.
+  it("TOP_K는 api-spec.json의 candidate_picked 개수와 일치한다", () => {
+    const candidateRanks = specLabelSourceEnum().filter((v) =>
+      v.startsWith("candidate_picked:"),
+    );
+    expect(candidateRanks).toHaveLength(TOP_K);
+  });
+
+  it("생성 가능한 모든 값이 api-spec.json enum에 들어 있다", () => {
+    const allowed = new Set(specLabelSourceEnum());
+    const produced: string[] = [
+      ...Object.values(LABEL_SOURCE),
+      ...Array.from({ length: TOP_K }, (_, rank) => candidatePicked(rank)),
+    ];
+    for (const value of produced) {
+      expect(allowed.has(value)).toBe(true);
+    }
+    expect(produced).toHaveLength(allowed.size); // spec에만 있는 값도 없어야 한다
+  });
+});
 
 describe("candidatePicked", () => {
   it("0-based rank를 값에 담는다(0은 top1 재선택)", () => {

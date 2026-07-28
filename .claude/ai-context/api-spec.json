@@ -490,6 +490,8 @@
       "OcrJobCreate": ["POST /api/ocr/jobs"],
       "OcrJobAck": ["POST /api/ocr/jobs"],
       "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
+      "OcrResult": ["GET /api/ocr/jobs/{id}"],
+      "OcrResultRow": ["GET /api/ocr/jobs/{id}"],
       "OcrConfirmRequest": ["POST /api/ocr/jobs/{id}/confirm"],
       "OcrConfirmAck": ["POST /api/ocr/jobs/{id}/confirm"],
       "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"],
@@ -511,7 +513,7 @@
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
       "route-ordering": "API 라우터는 SPA catch-all(GET /{full_path}, app/main.py:_mount_static)보다 먼저 등록되어야 우선 매칭. invoices 내부에서도 /export 가 /{id} 보다 먼저 선언돼 충돌 회피.",
-      "validation": "core/validators.Validator (fluent). 라우터에서 검증 후 service 호출. body 는 dict=Body(...) free-form (Pydantic 모델 아님 — 검증 메시지·details 형태를 contract 테스트로 고정).",
+      "validation": "슬라이스별 이원화(점진 전환 중). 미전환(invoices/companies/items/settings/salespeople/sales_records): core/validators.Validator (fluent) + body 는 dict=Body(...) free-form. 전환 완료(curation → app/schemas/curation.py, ocr → app/schemas/ocr.py): Pydantic request 모델 + field_validator. 어느 쪽이든 검증 실패는 400 VALIDATION_ERROR + details {필드: 메시지}(Pydantic 기본 422는 RequestValidationError 핸들러가 400으로 변환) — 메시지·details 형태를 contract 테스트로 고정.",
       "version-sync": "info.version == 루트 VERSION == backend app/config.py:APP_VERSION (test_version_sync.py 검증)."
     }
   },
@@ -3311,14 +3313,79 @@
             "enum": ["pending", "running", "done", "failed"]
           },
           "result": {
-            "type": "object",
-            "nullable": true,
-            "description": "status=done 일 때 포함"
+            "$ref": "#/components/schemas/OcrResult"
           },
           "error": {
             "type": "string",
             "nullable": true,
             "description": "status=failed 일 때 포함"
+          }
+        }
+      },
+      "OcrResult": {
+        "type": "object",
+        "description": "status=done 일 때만 포함되는 ML 워커 추론 결과(ml/handwriting/infer_job.py:assemble_result_json 이 생산). DB ocr_jobs.result_json 원본을 가공 없이 그대로 싣는다.",
+        "properties": {
+          "rows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/OcrResultRow"
+            }
+          },
+          "supply_sum": {
+            "type": "integer",
+            "description": "rows[].supply 합계(천원곱 적용 후)."
+          },
+          "warp_ok": {
+            "type": "boolean",
+            "description": "전표 워프·격자 정합 게이트 통과 여부. false 면 rows 는 빈 배열."
+          },
+          "item_conf_threshold": {
+            "type": "number",
+            "description": "rows[].item_uncertain 판정에 쓰인 top1 유사도 임계값. 플래그 도입(Issue #22) 이전 잡에는 없다."
+          }
+        }
+      },
+      "OcrResultRow": {
+        "type": "object",
+        "description": "추론된 명세서 한 행. 등록 UI 프리필과 큐레이션 조인(row_index 키)의 원천.",
+        "properties": {
+          "row_index": {
+            "type": "integer",
+            "description": "0-based 행 번호. GET /api/ocr/jobs/{id}/crop/{row} 의 row 이자 큐레이션 pairs 조인 키."
+          },
+          "crop_ref": {
+            "type": "string",
+            "description": "\"job-{job_id}/row-{row_index}\" 형태의 논리 참조. 서버는 이 문자열을 파일 경로로 신뢰하지 않는다."
+          },
+          "item_top5": {
+            "type": "array",
+            "description": "품목 retrieval 후보 상위 K개(K=5, ml handwriting/infer_photo.py:TOPK). 후보가 없으면 빈 배열.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "sim": {
+                  "type": "number"
+                }
+              }
+            }
+          },
+          "supply": {
+            "type": "integer",
+            "nullable": true,
+            "description": "금액 OCR 결과(천원곱 적용). 인식 실패 시 null."
+          },
+          "amount_raw": {
+            "type": "string",
+            "nullable": true,
+            "description": "금액 OCR 원문(천원곱 이전)."
+          },
+          "item_uncertain": {
+            "type": "boolean",
+            "description": "top1 유사도가 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡에는 없다(부재 = 확신)."
           }
         }
       },
@@ -3333,7 +3400,9 @@
             "description": "YYYY-MM-DD"
           },
           "recipient": {
-            "type": "string"
+            "type": "string",
+            "maxLength": 100,
+            "description": "공백만 있는 값 불가. 상한은 invoices.recipient 컬럼 폭(VARCHAR(100))이자 invoices 라우터와 동일 — 초과분은 400이지 500이 아니다."
           },
           "recipient2": {
             "type": "string",
@@ -3368,9 +3437,11 @@
             "description": "1개 이상 필수(min_length=1). crop_ref·label_source 는 서버가 제거 후 invoice_items 저장.",
             "items": {
               "type": "object",
+              "required": ["name"],
               "properties": {
                 "name": {
-                  "type": "string"
+                  "type": "string",
+                  "description": "필수(빈 문자열은 허용). 누락 시 400 — repository가 기본값 없이 인덱싱해 500이 되는 유일한 item 필드."
                 },
                 "quantity": {
                   "type": "integer"

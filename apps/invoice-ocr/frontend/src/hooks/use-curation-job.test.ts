@@ -149,6 +149,42 @@ describe("useCurationJob", () => {
     expect(mockToastError).not.toHaveBeenCalled();
   });
 
+  // 롤백 기준선이 '요청 시작 시점의 로컬 값'이면 앞 요청의 옵티미스틱 값(서버에 저장된 적
+  // 없는 값)으로 되돌아가 화면과 서버가 발산한다 — 서버 확정 스냅샷으로 되돌려야 한다.
+  it("겹친 두 요청이 모두 실패하면 서버 확정값까지 되돌린다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // 두 요청 사이에 렌더를 끼운다 — 실제 연속 클릭처럼 두 번째 요청이 시작될 때
+    // 로컬 값은 이미 첫 요청의 옵티미스틱 값("A")이다.
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dA.reject(new Error("network")); // stale 실패 — 조용히 버려진다
+      dB.reject(new Error("network")); // 최신 실패 — 롤백 담당
+      await pA;
+      await pB;
+    });
+
+    // 서버는 아직 "무"(초기 확정값)다. "A"로 남으면 저장된 적 없는 값이 화면에 남는 것.
+    expect(result.current.job!.pairs[0].canonical_label).toBe("무");
+    expect(mockToastError).toHaveBeenCalledTimes(1);
+  });
+
   it("성공 PATCH는 응답을 merge하되 top5를 보존한다", async () => {
     mockGetJob.mockResolvedValue({ data: jobDetail() });
     mockPatchPair.mockResolvedValue({ data: patchResult() });

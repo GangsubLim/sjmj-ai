@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { rowsToItems, rowsToOcrMeta } from "./ocr-prefill";
 import type { OcrResult } from "@/types/ocr";
+import { TOP_K } from "@/utils/label-source";
 
 describe("rowsToItems", () => {
   it("maps top-1 label to name and supply to unit_price, carrying crop_ref", () => {
@@ -83,6 +84,29 @@ describe("rowsToOcrMeta", () => {
   it("플래그가 없는 과거 잡은 확신으로 본다", () => {
     expect(rowsToOcrMeta(result([ROW]), 7).get("job-7/row-2")!.uncertain).toBe(
       false,
+    );
+  });
+
+  // 후보가 0개인 행은 생산자(ml infer_job._is_item_uncertain)가 항상 미확신으로 판정하는
+  // 구간이다 — 플래그 없는 레거시 잡에서도 이 구간만은 안전하게 닫을 수 있다.
+  it("플래그가 없고 후보도 없는 과거 잡은 미확신으로 닫는다", () => {
+    expect(
+      rowsToOcrMeta(result([{ ...ROW, item_top5: [] }]), 7).get("job-7/row-2")!
+        .uncertain,
+    ).toBe(true);
+  });
+
+  // 서버가 TOP_K를 넘는 후보를 주면 그 위 rank의 칩은 candidate_picked:{TOP_K 이상}을
+  // 만들어 confirm 전체를 400으로 만든다 — 경계에서 잘라 애초에 만들어지지 않게 한다.
+  it("서버가 TOP_K를 넘겨 보내도 후보를 TOP_K개로 자른다", () => {
+    const many = Array.from({ length: TOP_K + 3 }, (_, i) => ({
+      label: `후보${i}`,
+      sim: 0.9 - i * 0.05,
+    }));
+    const meta = rowsToOcrMeta(result([{ ...ROW, item_top5: many }]), 7);
+    expect(meta.get("job-7/row-2")!.candidates).toHaveLength(TOP_K);
+    expect(meta.get("job-7/row-2")!.candidates[TOP_K - 1].label).toBe(
+      `후보${TOP_K - 1}`,
     );
   });
 

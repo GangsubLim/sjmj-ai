@@ -249,6 +249,36 @@ describe("InvoiceForm label_source 추적", () => {
     expect(items[2]).not.toHaveProperty("label_source");
   });
 
+  // 재촬영이 실패하면 ocr.jobId만 새 잡으로 바뀌고 화면의 초안은 이전 잡 그대로다.
+  // 그 상태로 confirm(새 잡, 이전 잡의 행)이 나가면 crop_ref가 매칭되지 않아 label_source가
+  // 통째로 유실되고, 무관한 잡이 invoice에 link돼 재확정도 불가능해진다.
+  it("재촬영이 실패해도 confirm 대상은 화면의 초안을 만든 잡으로 남는다", async () => {
+    const { rerender } = setup({
+      status: "done",
+      result: OCR_RESULT,
+      jobId: 7,
+    });
+
+    // 새 사진 업로드 → 잡 8 생성 후 인식 실패(초안은 잡 7 그대로).
+    mockUseOcrInfer.mockReturnValue({
+      status: "failed",
+      result: OCR_RESULT,
+      error: "인식 실패",
+      jobId: 8,
+      upload: vi.fn(),
+    });
+    rerender(
+      <MemoryRouter>
+        <InvoiceForm mode="create" />
+      </MemoryRouter>,
+    );
+
+    await saveAsConfirm();
+
+    expect(mockConfirm.mock.calls[0][0]).toBe(7);
+    expect(confirmedItems()[0]).toMatchObject({ label_source: "top1_kept" });
+  });
+
   it("칩을 누른 뒤 직접 타이핑하면 마지막 조작인 manual_typed가 실린다", async () => {
     setup({ status: "done", result: OCR_RESULT, jobId: 7 });
 
