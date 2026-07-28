@@ -30,3 +30,9 @@ apps/invoice-ocr/ml/data/
 db/*backup*.sql
 db/*-dump.sql
 .gstack/
+
+# docs (default-deny: 아래 화이트리스트만 tracked. 산출물은 docs/work/에 로컬 보관, 커밋 안 함)
+docs/*
+!docs/adr
+!docs/agents
+!docs/runbooks

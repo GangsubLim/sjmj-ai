@@ -44,6 +44,12 @@ jobs:
           chmod +x scripts/backup-db.sh
           SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/backup-db.sh
 
+      - name: Apply DB migrations
+        run: |
+          set -euo pipefail
+          chmod +x scripts/migrate-db.sh
+          SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/migrate-db.sh
+
       - name: Backend deps + import smoke
         run: |
           set -euo pipefail

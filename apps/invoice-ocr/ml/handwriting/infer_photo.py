@@ -4,7 +4,7 @@ infer_demo.py는 뱅크 내부 crop만 채점(leave-one-invoice-out). 이 스크
 '진짜 신규 사진'을 추론 시점과 동일 공정으로 처리한다:
   사진 → form_quad 워프+deskew → φ그리드 행 → 이중신호 분류(new/cont/empty)
        → new 행 품목 crop → ft_prod 임베딩(projection) → bank.npz retrieval top-5
-       + 같은 행의 금액칸(공급대가)을 Qwen3-VL-8B(MLX)로 숫자 전사.
+       + 같은 블록(new+cont)의 금액칸(공급대가)을 Qwen3-VL-8B(MLX)로 숫자 전사·병합.
 
 품목명은 작성자-특화 retrieval(뱅크 어휘 한정), 금액은 손글씨 VLM(Qwen3-VL)로 푼다.
 금액 인식기 선택 근거: SP1 stock PP-OCRv5는 손글씨 금액 ~10%(단일 병목)이라 폐기,
@@ -16,7 +16,6 @@ usage:
 """
 
 import base64
-import re
 import sys
 from pathlib import Path
 
@@ -28,11 +27,12 @@ from torchvision.transforms import v2 as T
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
+from amount_read import attempt_png_name, read_amount_with_retry  # noqa: E402
 from canon import global_pitch  # noqa: E402
 from dataset_build import load_bgr_path  # noqa: E402
 from fewshot import square  # noqa: E402
 from grid_v4 import AMOUNT_X, DATA_Y, hline_ys, warp  # noqa: E402
-from group import build_proposal  # noqa: E402
+from group import block_amounts, build_proposal  # noqa: E402
 from grouping import AMT_MIN, ITEM_MIN, PAD  # noqa: E402
 from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 from rows import ITEM_X, band_features, detect_grid_rows  # noqa: E402
@@ -90,20 +90,33 @@ def load_ocr():
 def read_amount(qwen, cell_bgr, tmp_dir, idx):
     """금액칸 BGR을 Qwen3-VL로 전사해 (정수|None, 원문)을 반환한다(bench.py와 동일 호출).
 
-    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력 — 칸마다 '고유' 임시
-    PNG를 써야 한다(같은 경로 재사용 시 MLX-VLM이 degenerate 출력 '!!!').
+    천원곱 미적용(전표 내 액면 합으로 검증). MLX generate는 파일경로 입력이라 칸마다, 그리고
+    시도마다 '고유' 임시 PNG를 쓴다 — 재시도가 직전 시도의 파일을 덮어쓰지 않게 하는 방어다.
+    숫자가 0개면 새 임시파일로 1회 재시도하고, 그래도 없으면 None을 유지한다(0 기록 금지).
+    재시도의 실효(다른 출력을 낼지)는 라이브 미검증 — 정책의 정확성만 단위테스트가 보장한다.
     """
     from mlx_vlm import generate
     from mlx_vlm.prompt_utils import apply_chat_template
 
     model, proc, cfg = qwen
-    png = tmp_dir / f"amt_{idx}.png"
-    cv2.imwrite(str(png), cell_bgr)
-    fp = apply_chat_template(proc, cfg, AMT_PROMPT, num_images=1)
-    out = generate(model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False)
-    txt = out if isinstance(out, str) else getattr(out, "text", str(out))
-    digits = "".join(re.findall(r"\d+", txt))
-    return (int(digits) if digits else None), txt.strip()
+    fp = apply_chat_template(proc, cfg, AMT_PROMPT, num_images=1)  # attempt 무관 — 1회만
+
+    def read_once(attempt):
+        png = tmp_dir / attempt_png_name(idx, attempt)
+        cv2.imwrite(str(png), cell_bgr)
+        try:
+            out = generate(
+                model, proc, fp, [str(png)], max_tokens=32, temperature=0.0, verbose=False
+            )
+        finally:
+            # generate() 반환 후 이 PNG를 읽는 소비자는 없다(큐레이션 포렌식은 raw 텍스트와
+            # crop_out_dir/row-*.png를 쓴다 — 여기 tmp_dir이 아니다). 즉시 지워 mkdtemp 잔존
+            # 디렉터리에 쌓이는 파일을 없앤다(디렉터리 자체 정리는 호출자 infer_job.py 몫,
+            # 동결 대상이라 이 PR 범위 밖).
+            png.unlink(missing_ok=True)
+        return out if isinstance(out, str) else getattr(out, "text", str(out))
+
+    return read_amount_with_retry(read_once)
 
 
 @torch.no_grad()
@@ -136,9 +149,10 @@ def topk(sims, lab, k):
 def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     """워프된 양식 w → 추론 산출. process_one(데모)과 infer_job(운영)이 공유하는 단일 경로.
 
-    행검출 → new 행 품목 crop → ft 임베딩(queries) → 같은 행 금액칸 Qwen3-VL 전사.
+    행검출 → 블록별 금액칸 Qwen3-VL 전사·병합(cont행 합산) → new 행 품목 crop → ft 임베딩(queries).
     반환: (news, crops, queries, amounts, prop, ys, P, bands).
       · 앞 4개(news/crops/queries/amounts) = infer_job result_json 입력
+        (amounts 원문은 2행 이상 블록에서 '+'로 join하며 미인식 행은 '?'로 표기, group.merge_amounts)
       · 뒤 4개(prop/ys/P/bands) = process_one 데모 HTML 오버레이/요약 컨텍스트
     HTML 조립은 process_one에만 남긴다(추론은 여기서 한 번만 한다 — DRY).
     """
@@ -151,18 +165,20 @@ def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     prop = build_proposal(
         bands, item_inks, amt_inks, stroke_rows, [], item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD
     )
-    news = [r for r in prop.rows if r.rtype == "new" and r.box]
+    # 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리). new행 선별·cont행 합산은
+    # block_amounts가 소유한다 — 약식 분해로 품목칸이 빈 행(cont)의 금액도 여기서 읽힌다.
+    ax0, ax1 = AMOUNT_X
+
+    def read_fn(r):
+        return read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter))
+
+    news, amounts = block_amounts(prop.rows, read_fn)
 
     # new 행 품목 crop → 임베딩 → 뱅크 retrieval 쿼리
     x1, x2 = ITEM_X
-    ax0, ax1 = AMOUNT_X
     crops = [w[r.box[0] : r.box[1], x1 - 4 : x2 + 4] for r in news]
     queries = embed_crops(model, crops, device) if crops else np.zeros((0, 0))
 
-    # 같은 행 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리)
-    amounts = [
-        read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter)) for r in news
-    ]
     return news, crops, queries, amounts, prop, ys, P, bands
 
 

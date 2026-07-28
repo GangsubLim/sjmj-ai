@@ -341,7 +341,7 @@
       {
         "method": "POST",
         "path": "/api/ocr/jobs",
-        "summary": "Upload photo + enqueue OCR job (201; multipart photo field; saves to $SJMJ_DATA_DIR/ocr_uploads)",
+        "summary": "Upload photo + enqueue OCR job (201; multipart photo field; filename suffix must be .jpg/.jpeg/.png else 400 VALIDATION_ERROR; saves to $SJMJ_DATA_DIR/ocr_uploads as uuid4().hex + lowercased suffix)",
         "auth": "public",
         "req": "OcrJobCreate",
         "res": "OcrJobAck",
@@ -2059,6 +2059,16 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Invalid filename — suffix not in .jpg/.jpeg/.png, missing suffix, or control character in filename",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         }
       }
@@ -3252,7 +3262,7 @@
       },
       "OcrJobCreate": {
         "type": "object",
-        "description": "OCR 잡 생성 요청 — 수기 거래명세서 이미지 업로드 (multipart/form-data).",
+        "description": "OCR 잡 생성 요청 — 수기 거래명세서 이미지 업로드 (multipart/form-data). 파일명 확장자는 .jpg/.jpeg/.png만 허용(대문자는 소문자로 정규화되어 저장). 무확장자·제어문자(U+0000-U+001F, U+007F) 파일명은 400 VALIDATION_ERROR(details 키 photo).",
         "required": ["photo"],
         "properties": {
           "photo": {

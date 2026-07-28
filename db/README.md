@@ -26,6 +26,26 @@ migration_008_curation_training_pairs.sql  ← 큐레이션 게이트(ocr_jobs.c
   이전** 스크립트. `kslim_tmp` 임시 DB 적재를 전제하므로 빈 DB 빌드 순서에 포함하지 않는다.
   정본 보존 목적으로만 둔다(상단 주석에 당시 사용법 기록).
 
+## 운영 마이그레이션 적용 (CD 자동)
+
+배포(`deploy.yml`)는 DB 백업 직후 `scripts/migrate-db.sh`로 미적용 마이그레이션을
+자동 적용한다. `schema_migrations` 원장 테이블(파일명 PK)로 적용 이력을 추적하며,
+`migration_[0-9][0-9][0-9]_*.sql`(순번 빌드-오더)만 대상으로 순번순 적용한다 —
+legacy `migration_add_*.sql`·1회성 `migration_poc_to_production.sql`은 제외(이미 적용).
+
+- **신규 마이그레이션**은 반드시 `migration_0NN_*.sql` 순번 규약을 따르고 **재실행
+  안전(idempotent)** 하게 쓴다: `CREATE TABLE IF NOT EXISTS`, 컬럼 추가는
+  information_schema 가드(예: 008). DDL은 auto-commit이라 파일 단위 트랜잭션이 없어
+  멱등성이 원장의 안전망을 보완한다.
+- **최초 도입/원장 부재 시 fail-fast.** normal 모드는 원장이 비어 있으면 배포를
+  중단한다 — 미초기화 DB에서 001부터 재적용하면 가드 없는 비멱등 ALTER가
+  duplicate-column으로 배포를 반복 실패시키기 때문. 기존 DB는 적용 상태를 확인한 뒤
+  `migrate-db.sh --baseline`로 현재 적용분을 실행 없이 원장에만 1회 기록한다
+  (운영은 001~008로 베이스라인 완료). DB를 옛 백업에서 복구하면 원장이 사라지므로
+  배포 전 재-baseline이 필요하다.
+- 빈 DB의 최초 빌드는 위 "빈 DB 빌드 순서"대로 `schema.sql`부터 수동 적용한다
+  (러너는 증분 전용 — `schema.sql`은 대상 아님).
+
 ## ML 이음새 (Phase 1A가 남기고 Phase 2가 채움)
 
 `migration_007_ml_seam.sql`이 자리만 만든다:

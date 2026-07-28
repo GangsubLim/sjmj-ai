@@ -10,7 +10,7 @@
 | **배포 추론 (손글씨)** | `worker/` + `handwriting/` | git-tracked · **production (macmini ml-worker)** | `worker.main`(launchd 상시 실행)이 `handwriting.infer_photo`/`infer_job`로 추론. CD `deploy.yml`이 재시작. `handwriting/`는 실험이 아니라 **배포된 추론 경로** |
 | **SP2 스파이크**       | `report/sp2_spike/`        | **gitignore · 로컬 전용 · 실험**                 | 손글씨 VLM 인식(Qwen3-VL) + 작성자-특화 품목 인식(few-shot). 현재 브랜치 작업                                                                                  |
 
-- SP2 결과·방향 spec: `docs/superpowers/specs/2026-06-25-sp2-handwriting-recognizer-findings.md` (레포 내 단일 정본).
+- SP2 결과·방향 spec: `docs/work/2026-06/2026-06-25-sp2-handwriting-recognizer-findings/spec.md` (로컬 전용 — git 비추적, fresh clone에는 없을 수 있음).
 - **SP2 코드는 본 파이프라인이 아니다.** 스파이크 스크립트(`report/sp2_spike/**`)는 gitignore된 실험물이라 `ocr_poc/`의 production 규약(테스트·불변성)을 따르지 않는다. SP2 산출을 본선에 올릴 땐 `RecognizerAdapter` 뒤로 통합한다(spec §8-8).
 
 ## 디렉터리 지도
@@ -21,6 +21,9 @@ handwriting/    손글씨 인식 추론 (git-tracked, production). worker가 imp
 worker/         배포된 ml-worker (worker.main — macmini launchd 상시 실행, git-tracked)
 tests/          pytest. test_*.py — ocr_poc/* 1:1 대응 (+ handwriting 추론 테스트)
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
+                remote.py — 원격(macmini) ssh/mysql 글루 공통화 (curation_report·warp_gate_report 공유)
+                curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
+                warp_gate_report.py — warp 정합 게이트 캘리브레이션 (전 잡 warped.png 지표·판정 전수, cv2 필요)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore
@@ -35,6 +38,13 @@ git-tracked는 `ocr_poc/ handwriting/ worker/ tests/ tools/ pyproject.toml READM
 ```bash
 uv sync                    # 코어(경량): pillow + pytest 만
 uv sync --extra ml         # paddle 계열 (실모델 실행 시)
+uv sync --extra worker --extra cv   # 테스트 전량(worker DB + warp_gate cv2 글루) — CI와 동일 조합
+# ⚠️ --extra ml과 --extra cv 동시 설치는 pyproject.toml [tool.uv].conflicts로 도구가 강제
+#    차단한다(hard fail) — opencv-contrib-python(paddlex 경유)과 opencv-python-headless가
+#    같은 cv2/ 경로에 겹쳐 설치되는 것(OpenCV 공식 비권장)을 막기 위함.
+#    실제 함정은 조합 축소 쪽: 가지치기 주체는 `uv sync`다(`uv run --extra`는 추가만 하고
+#    가지치기하지 않는다). 즉 worker+cv로 동기화된 .venv에서 `uv sync --extra ml`을 돌리면
+#    worker+cv가 제거된다(다시 --extra worker --extra cv로 sync해야 복구, paddle 재설치 수 분).
 uv run pytest              # 테스트 (실데이터 비의존, 합성만)
 cp .env.example .env       # 데이터/DB 경로 주입
 

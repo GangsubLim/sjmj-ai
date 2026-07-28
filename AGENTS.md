@@ -4,7 +4,7 @@ This file provides guidance to AI Agents when working with code in this reposito
 
 ## 개요
 
-`sjmj-ai`는 SJMJ 업무 AI 자동화 플랫폼 모노레포다. 현재 유일한 모듈은 수기 거래명세서 OCR 자동입력(`apps/invoice-ocr`). 빌드 순서는 SP0(스캐폴딩)→SP1(OCR PoC)→SP2(백엔드)→SP3(프론트엔드)→SP4(검수 UI)→SP5(운영 굳히기)이며, 설계·근거 정본은 `docs/superpowers/specs/`에 있다.
+`sjmj-ai`는 SJMJ 업무 AI 자동화 플랫폼 모노레포다. 현재 유일한 모듈은 수기 거래명세서 OCR 자동입력(`apps/invoice-ocr`). 빌드 순서는 SP0(스캐폴딩)→SP1(OCR PoC)→SP2(백엔드)→SP3(프론트엔드)→SP4(검수 UI)→SP5(운영 굳히기)이며, 확정된 아키텍처 결정은 `docs/adr/`(ADR, tracked)에 있다. 개별 작업의 spec/plan/review는 로컬 전용 `docs/work/{yyyy-mm}/{yyyy-mm-dd}-{job-slug}/`에 보관되며 git에는 커밋되지 않는다(fresh clone에는 없음).
 
 ## 디렉터리 지도
 
@@ -16,7 +16,10 @@ apps/invoice-ocr/
 db/           운영 MySQL 스키마 + migration_*.sql (Phase 1A 이전 + ML 이음새)
 deploy/       launchd plist 템플릿 + backend.env.example
 scripts/      release / sync-version / run-backend / backup-db / install-launchagent(-ml-worker) / run-ml-worker / db-verify
-docs/superpowers/  specs(설계 정본) · plans · runbooks · research
+docs/adr/     아키텍처 결정 기록(ADR, tracked)
+docs/agents/  에이전트 운영 가이드(issue-tracker/triage-labels/domain, tracked)
+docs/runbooks/  운영 런북(tracked)
+docs/work/    작업 산출물 spec/plan/review(로컬 전용, git 비추적)
 .github/workflows/  ci.yml(PR 게이트) · deploy.yml(태그→macmini 배포)
 VERSION       버전 진실원(single source of truth)
 ```
@@ -80,7 +83,7 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vit
 
 신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records/ocr — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
 
-**목표 컨벤션(점진 전환 중).** 슬라이스를 신규 추가·수정할 때 그 범위를 실용적 FastAPI 관용구로 끌어올린다(빅뱅 아님). 유지: `sync def`+threadpool·SQLAlchemy Core raw `text()`·응답 envelope shape. 전환: free-form `dict = Body(...)` → Pydantic request 모델, fluent `Validator` → Pydantic 검증, 검증 메시지 문자열 자유화. **외부 계약 불변식**(아래)을 지키는 한 내부 구현은 자유다. 근거·전환 절차는 `docs/superpowers/specs/2026-06-30-fastapi-convention-modernization-design.md`.
+**목표 컨벤션(점진 전환 중).** 슬라이스를 신규 추가·수정할 때 그 범위를 실용적 FastAPI 관용구로 끌어올린다(빅뱅 아님). 유지: `sync def`+threadpool·SQLAlchemy Core raw `text()`·응답 envelope shape. 전환: free-form `dict = Body(...)` → Pydantic request 모델, fluent `Validator` → Pydantic 검증, 검증 메시지 문자열 자유화. **외부 계약 불변식**(아래)을 지키는 한 내부 구현은 자유다. 근거·전환 절차는 `docs/work/2026-06/2026-06-30-fastapi-convention-modernization/spec.md`(로컬 전용 — fresh clone에는 없을 수 있음, 없으면 이 절만 따른다).
 
 **외부 계약 불변식(절대 보존):** 성공 envelope `{success, data, pagination?}` · 에러 envelope `{success, error: {code, message, details?}}` · 에러 코드 체계(`VALIDATION_ERROR`/`NOT_FOUND`/`DUPLICATE_NAME`/`CONFLICT`/`SERVER_ERROR`) · 검증 실패 HTTP status **400** · `details` 형태 `{필드: 메시지}` 문자열 맵. Pydantic 전환 슬라이스는 `RequestValidationError` 핸들러로 422를 이 400 envelope로 변환해야 한다(첫 Pydantic 슬라이스가 선결로 도입).
 
@@ -98,7 +101,7 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vit
 ## 작업 시 주의
 
 - DB 접속·백업 대상 DB명은 항상 env(`DB_*`)에서 읽는다 — 하드코딩 금지(런타임/백업 DB 발산 방지).
-- `docs/superpowers/specs/`가 설계 정본이다. 아키텍처 결정의 "왜"는 코드가 아니라 여기에 있다.
+- `docs/adr/`가 확정된 아키텍처 결정의 정본이다. 진행 중 작업의 spec/plan/review는 로컬 전용 `docs/work/`에 있다(git 비추적, fresh clone에는 없음).
 
 ## Agent skills
 

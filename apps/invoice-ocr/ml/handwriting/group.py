@@ -185,3 +185,50 @@ def proposal_to_dict(proposal):
             for r in proposal.rows
         ],
     }
+
+
+def merge_amounts(entries):
+    """블록 내 행별 (금액|None, 원문)을 병합해 (병합금액|None, 병합원문)을 반환한다.
+
+    entries는 밴드 순서(new 먼저, cont 순차). 금액은 None을 제외한 부분 합산이며 전부 None이면
+    None. 원문은 1행이면 그대로 보존하고, 2행 이상이면 '+'로 join하되 None 항목은 '?'로 적는다.
+
+    Args:
+        entries: 블록 내 행별 (금액|None, OCR 원문) 시퀀스.
+
+    Returns:
+        (병합금액|None, 병합원문) 한 쌍.
+    """
+    vals = [v for v, _ in entries if v is not None]
+    total = sum(vals) if vals else None
+    if len(entries) == 1:
+        return total, entries[0][1]
+    return total, "+".join(txt if v is not None else "?" for v, txt in entries)
+
+
+def block_amounts(rows, read_fn):
+    """new행마다 자신 + 같은 블록 cont행을 read_fn으로 읽어 금액을 병합한다(약식 분해 합산).
+
+    new행 선별 술어(new + box 보유)를 이 함수가 단독 소유해 호출부와 발산하지 않게 한다.
+
+    Args:
+        rows: build_proposal이 만든 Row 시퀀스(밴드 순서).
+        read_fn: Row → (금액|None, 원문). 금액칸 OCR 주입점(테스트는 Fake로 대체).
+            멤버 cont행은 box=None이므로(_assemble은 new/total에만 box 부여) crop 좌표는
+            r.box가 아니라 r.band를 써야 한다.
+
+    Returns:
+        (news, amounts) — news는 출력 대상 new행 리스트, amounts는 같은 순서의 병합 결과.
+        orphan cont 블록(new 없이 cont로 시작)은 read_fn을 호출하지 않고 제외한다.
+    """
+    members = {}
+    for r in rows:
+        if r.block is not None:
+            members.setdefault(r.block, []).append(r)
+    news, amounts = [], []
+    for r in rows:
+        if r.rtype != ROW_NEW or not r.box:
+            continue
+        news.append(r)
+        amounts.append(merge_amounts([read_fn(m) for m in members[r.block]]))
+    return news, amounts
