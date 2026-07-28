@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   LABEL_SOURCE,
+  TOP_K,
   applyLabelSource,
   attachLabelSource,
   candidatePicked,
@@ -12,6 +13,21 @@ describe("candidatePicked", () => {
   it("0-based rank를 값에 담는다(0은 top1 재선택)", () => {
     expect(candidatePicked(0)).toBe("candidate_picked:0");
     expect(candidatePicked(3)).toBe("candidate_picked:3");
+  });
+
+  // 서버 화이트리스트(candidate_picked:0..TOP_K-1)를 벗어난 rank가 confirm까지
+  // 도달하면 400으로 전체 저장이 실패한다 — 여기서 즉시 throw해 그 손실을 이 한 번의
+  // 선택으로만 국한한다.
+  it("rank가 TOP_K 이상이면 throw한다", () => {
+    expect(() => candidatePicked(TOP_K)).toThrow(RangeError);
+  });
+
+  it("rank가 음수면 throw한다", () => {
+    expect(() => candidatePicked(-1)).toThrow(RangeError);
+  });
+
+  it("rank가 정수가 아니면 throw한다", () => {
+    expect(() => candidatePicked(1.5)).toThrow(RangeError);
   });
 });
 
@@ -87,19 +103,21 @@ describe("attachLabelSource", () => {
     expect(Object.keys(row)).toEqual(["crop_ref", "name", "label_source"]);
   });
 
-  // 서버 화이트리스트(LABEL_SOURCES = 고정 4종 + candidate_picked:0..4)를 프론트가 넘지
-  // 않는지 고정한다 — 벗어나면 confirm 전체가 400이 된다.
+  // 서버 화이트리스트(LABEL_SOURCES = 고정 4종 + candidate_picked:0..TOP_K-1)를 프론트가
+  // 넘지 않는지 고정한다 — 벗어나면 confirm 전체가 400이 된다. allowed 집합을 TOP_K에서
+  // 파생시켜, 하드코딩된 숫자가 candidatePicked의 실제 가드 범위와 따로 노는(회귀 감지
+  // 0인) 상태를 막는다.
   it("생성 가능한 값은 서버 허용 어휘를 벗어나지 않는다", () => {
     const allowed = new Set([
       "top1_kept",
       "manual_picked",
       "manual_typed",
       "new_item_created",
-      ...Array.from({ length: 5 }, (_, rank) => `candidate_picked:${rank}`),
+      ...Array.from({ length: TOP_K }, (_, rank) => `candidate_picked:${rank}`),
     ]);
     const produced = [
       ...Object.values(LABEL_SOURCE),
-      ...Array.from({ length: 5 }, (_, rank) => candidatePicked(rank)),
+      ...Array.from({ length: TOP_K }, (_, rank) => candidatePicked(rank)),
     ];
     for (const value of produced) {
       expect(allowed.has(value)).toBe(true);
