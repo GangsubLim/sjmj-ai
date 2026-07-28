@@ -75,7 +75,9 @@ describe("CurationPairRow", () => {
     render(
       <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={vi.fn()} />,
     );
-    expect(screen.getByRole("button", { name: /배추/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "후보 배추, 유사도 0.42" }),
+    ).toBeInTheDocument();
   });
 
   it("칩 클릭 시 canonical_label PATCH를 요청한다", () => {
@@ -83,8 +85,21 @@ describe("CurationPairRow", () => {
     render(
       <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={onPatch} />,
     );
-    fireEvent.click(screen.getByRole("button", { name: /배추/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "후보 배추, 유사도 0.42" }),
+    );
     expect(onPatch).toHaveBeenCalledWith(9001, { canonical_label: "배추" });
+  });
+
+  it("이미 선택된 라벨의 칩을 클릭해도 PATCH를 요청하지 않는다", () => {
+    const onPatch = vi.fn();
+    render(
+      <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={onPatch} />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "후보 무, 유사도 0.77" }),
+    );
+    expect(onPatch).not.toHaveBeenCalled();
   });
 
   it("미확신 행에 배지를 표시한다", () => {

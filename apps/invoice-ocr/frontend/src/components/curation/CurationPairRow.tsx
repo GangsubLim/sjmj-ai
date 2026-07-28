@@ -75,27 +75,26 @@ export function CurationPairRow({
           {pair.top5.length === 0 ? (
             <span>후보 없음</span>
           ) : (
-            pair.top5.map((t, rank) => (
+            pair.top5.map((pred, rank) => (
               <button
-                key={`${t.label}-${rank}`}
+                key={`${pred.label}-${rank}`}
                 type="button"
                 onClick={() => {
                   // commitLabel(:44)과 동일 가드 — 이미 선택된 라벨에는 PATCH를 쏘지 않는다.
-                  if (t.label === (pair.canonical_label ?? "")) return;
-                  // 표시값 SSoT는 pair.canonical_label — 옵티미스틱 갱신이 입력창을 재동기한다.
-                  // searchQuery는 제안 조회용 로컬 state라 함께 맞춰 둔다.
-                  setSearchQuery(t.label);
-                  onPatch(pair.id, { canonical_label: t.label });
+                  if (pred.label === (pair.canonical_label ?? "")) return;
+                  // 표시값 SSoT는 pair.canonical_label — 옵티미스틱 갱신이 입력창을 재동기하므로
+                  // searchQuery(Autocomplete 제안 조회 전용)는 여기서 맞출 필요가 없다.
+                  onPatch(pair.id, { canonical_label: pred.label });
                 }}
-                aria-label={`후보 ${t.label}, 유사도 ${t.sim.toFixed(2)}`}
+                aria-label={`후보 ${pred.label}, 유사도 ${pred.sim.toFixed(2)}`}
                 className={cn(
                   "hover:bg-accent rounded-full border px-2 py-0.5",
                   rank === 0 && "border-primary",
                 )}
               >
-                {t.label}{" "}
+                {pred.label}{" "}
                 <span className="text-muted-foreground">
-                  {t.sim.toFixed(2)}
+                  {pred.sim.toFixed(2)}
                 </span>
               </button>
             ))
