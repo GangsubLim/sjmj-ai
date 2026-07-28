@@ -21,7 +21,8 @@ import { useSettings } from "@/hooks/use-settings";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useOcrInfer } from "@/hooks/use-ocr-infer";
 import { invoiceAPI, ocrAPI } from "@/services/api";
-import { rowsToItems } from "./ocr-prefill";
+import { rowsToItems, rowsToOcrMeta } from "./ocr-prefill";
+import type { OcrItemMeta } from "./ocr-prefill";
 
 import { PageHeader, PageContainer, SectionHeader } from "@/components/layout";
 import { Input } from "@/components/ui/input";
@@ -98,6 +99,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   const [items, setItems] = React.useState<ItemWithKey[]>(
     buildInitialItems(initialData),
   );
+  const [ocrMetaByRef, setOcrMetaByRef] = React.useState<
+    Map<string, OcrItemMeta>
+  >(new Map());
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
   const isInitialMount = React.useRef(true);
@@ -193,7 +197,10 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         _tempId: crypto.randomUUID(),
       })),
     );
-  }, [ocr.status, ocr.result, ocr.error]);
+    setOcrMetaByRef(
+      ocr.jobId != null ? rowsToOcrMeta(ocr.result, ocr.jobId) : new Map(),
+    );
+  }, [ocr.status, ocr.result, ocr.error, ocr.jobId]);
 
   // Autocomplete data
   const [companyQuery, setCompanyQuery] = React.useState("");
@@ -343,6 +350,7 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     setItems([
       { ...DEFAULT_ITEM, item_order: 0, _tempId: crypto.randomUUID() },
     ]);
+    setOcrMetaByRef(new Map());
   };
 
   // PC 미리보기용 deferred state
@@ -555,6 +563,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               itemSuggestions={itemAutoSuggestions}
               onUpdate={handleItemUpdate}
               onDelete={handleItemDelete}
+              ocrMeta={
+                item.crop_ref ? ocrMetaByRef.get(item.crop_ref) : undefined
+              }
             />
           ))}
           <button

@@ -11,6 +11,8 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { formatPrice } from "@/utils/formatters";
+import { ItemOcrCandidates } from "./item-ocr-candidates";
+import type { OcrItemMeta } from "./ocr-prefill";
 
 interface InvoiceItemRowProps {
   item: InvoiceItem;
@@ -19,6 +21,8 @@ interface InvoiceItemRowProps {
   onUpdate: (index: number, item: InvoiceItem) => void;
   onDelete: (index: number) => void;
   onAddNewItem?: (name: string) => void;
+  ocrMeta?: OcrItemMeta;
+  onPickCandidate?: (label: string, rank: number) => void;
 }
 
 function InvoiceItemRow({
@@ -28,6 +32,8 @@ function InvoiceItemRow({
   onUpdate,
   onDelete,
   onAddNewItem,
+  ocrMeta,
+  onPickCandidate,
 }: InvoiceItemRowProps) {
   const isDeduction = item.deduction;
 
@@ -79,6 +85,15 @@ function InvoiceItemRow({
 
       {/* Body */}
       <div className="space-y-3 px-3 py-3">
+        {ocrMeta && (
+          <ItemOcrCandidates
+            meta={ocrMeta}
+            onPick={(label, rank) => {
+              handleField("name", label);
+              onPickCandidate?.(label, rank);
+            }}
+          />
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label
