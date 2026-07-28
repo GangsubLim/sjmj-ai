@@ -5,6 +5,26 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.4.0] — 2026-07-28
+
+수기 명세서 인식 정확도를 끌어올린다 — 잘못 펴진 사진을 걸러내고, 금액 유실을 메우고, 검수 결과를 품목 인식에 되먹인다 ([#35](https://github.com/GangsubLim/sjmj-ai/pull/35), [#34](https://github.com/GangsubLim/sjmj-ai/pull/34), [#25](https://github.com/GangsubLim/sjmj-ai/pull/25), [#24](https://github.com/GangsubLim/sjmj-ai/pull/24)).
+
+### Added
+
+- 사진의 표 정합이 깨진 경우를 자동으로 판정해, 잘못 읽은 행을 저장하지 않고 재촬영을 안내 ([#35](https://github.com/GangsubLim/sjmj-ai/pull/35))
+- 검수 완료된 큐레이션 결과를 품목 인식 뱅크에 반영하는 증분 갱신 도구 — 검수할수록 품목 인식이 정확해진다 ([#34](https://github.com/GangsubLim/sjmj-ai/pull/34))
+- 인식 정확도를 수치로 확인하는 큐레이션 분석 리포트와 품목 크롭·행검출 시각 진단 도구 (b8055a2, 86413d7)
+- 배포 시 DB 마이그레이션을 자동·멱등 적용 — 스키마 변경이 배포에 함께 반영된다 (c5ae2bf)
+
+### Fixed
+
+- 여러 줄에 걸쳐 적힌 품목의 금액이 누락되던 문제 해소 ([#25](https://github.com/GangsubLim/sjmj-ai/pull/25))
+- 금액칸 판독이 비정상 출력으로 무너질 때 한 번 더 시도해 인식률 회복 ([#24](https://github.com/GangsubLim/sjmj-ai/pull/24))
+
+### Security
+
+- 업로드 파일 확장자를 허용 목록으로 제한 (b7be85c)
+
 ## [v0.3.0] — 2026-07-01
 
 수기 명세서 OCR 학습 데이터를 사람이 검수·정리하는 큐레이션 파이프라인을 추가한다 ([#12](https://github.com/GangsubLim/sjmj-ai/pull/12), [#13](https://github.com/GangsubLim/sjmj-ai/pull/13)).
