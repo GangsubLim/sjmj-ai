@@ -121,6 +121,51 @@ def test_job_detail_includes_pairs_with_top5(client, db_conn):
     assert pair["top5"][0]["label"] == "삼겹살"
 
 
+def test_job_detail_pair_uncertain_reflects_item_uncertain_flag(client, db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, result_json) "
+                "VALUES ('done', '/x.jpg', :rj)"
+            ),
+            {
+                "rj": (
+                    '{"rows": ['
+                    '{"row_index": 0, "crop_ref": "job-1/row-0", "item_top5": [], '
+                    '"item_uncertain": true, "supply": 100000}, '
+                    '{"row_index": 1, "crop_ref": "job-1/row-1", "item_top5": [], '
+                    '"supply": 100000}], '
+                    '"supply_sum": 200000, "warp_ok": true}'
+                )
+            },
+        )
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs "
+                "(crop_ref, job_id, row_index, draft_label, final_label, canonical_label, "
+                "supply, status) "
+                "VALUES (:r, :j, 0, '삼겹살', '목살', '목살', 100000, 'included')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id},
+        )
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs "
+                "(crop_ref, job_id, row_index, draft_label, final_label, canonical_label, "
+                "supply, status) "
+                "VALUES (:r, :j, 1, '삼겹살', '목살', '목살', 100000, 'included')"
+            ),
+            {"r": f"job-{job_id}/row-1", "j": job_id},
+        )
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    pairs = {p["row_index"]: p for p in res.json()["data"]["pairs"]}
+    # item_uncertain: true인 행 → uncertain True
+    assert pairs[0]["uncertain"] is True
+    # 플래그가 없는 과거 잡 행 → uncertain False(하위호환)
+    assert pairs[1]["uncertain"] is False
+
+
 def test_job_detail_404_when_missing(client, db_conn):
     res = client.get("/api/curation/jobs/999999")
     assert res.status_code == 404

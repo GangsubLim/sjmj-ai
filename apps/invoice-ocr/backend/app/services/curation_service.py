@@ -41,24 +41,27 @@ class CurationService:
             not_found("OCR 잡을 찾을 수 없습니다.")
         job = detail["job"]
         result = job.get("result_json") or {}
-        top5_by_row = {
-            r.get("row_index"): (r.get("item_top5") or []) for r in result.get("rows", [])
-        }
-        pairs = [
-            {
-                "id": int(p["id"]),
-                "crop_ref": p["crop_ref"],
-                "row_index": int(p["row_index"]),
-                "draft_label": p["draft_label"],
-                "final_label": p["final_label"],
-                "canonical_label": p["canonical_label"],
-                "supply": p["supply"],
-                "status": p["status"],
-                "reviewed_at": p["reviewed_at"],
-                "top5": top5_by_row.get(int(p["row_index"]), []),
-            }
-            for p in detail["pairs"]
-        ]
+        rows_by_index = {r.get("row_index"): r for r in result.get("rows", [])}
+        pairs = []
+        for p in detail["pairs"]:
+            # 조인 실패(재처리 등으로 row_index 부재)는 빈 행으로 본다 — 배지를 잘못 띄우지 않는다.
+            row = rows_by_index.get(int(p["row_index"])) or {}
+            pairs.append(
+                {
+                    "id": int(p["id"]),
+                    "crop_ref": p["crop_ref"],
+                    "row_index": int(p["row_index"]),
+                    "draft_label": p["draft_label"],
+                    "final_label": p["final_label"],
+                    "canonical_label": p["canonical_label"],
+                    "supply": p["supply"],
+                    "status": p["status"],
+                    "reviewed_at": p["reviewed_at"],
+                    "top5": row.get("item_top5") or [],
+                    # item_conf_threshold 도입 이전 잡은 플래그가 없다 → 확신(하위호환).
+                    "uncertain": bool(row.get("item_uncertain", False)),
+                }
+            )
         return {
             "job_id": int(job["id"]),
             "invoice_id": job["invoice_id"],

@@ -3509,6 +3509,10 @@
                 }
               }
             }
+          },
+          "uncertain": {
+            "type": "boolean",
+            "description": "품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡은 false. GET /jobs/{id} 전용 — PATCH /pairs/{id} 응답에는 없다(top5와 같은 계약 비대칭)."
           }
         }
       },
