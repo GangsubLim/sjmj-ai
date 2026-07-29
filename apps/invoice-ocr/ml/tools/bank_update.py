@@ -304,51 +304,39 @@ def topk_dedup(
     return out
 
 
-def topk_excluding_self(
-    sims: list[float], labs: list[str], keys: list[str], self_ref: str, k: int = TOPK
-) -> list[tuple[str, float]]:
-    """쿼리 자신(동일 crop_ref)만 제외하고 라벨 중복 제거 top-k를 고른다.
+def has_peer_sample(label: str, labs: list[str], excluded: set[int]) -> bool:
+    """제외 집합 밖에 같은 라벨의 다른 크롭이 있는지 — 단일 샘플 라벨의 분모 분리 신호.
 
-    중복 제거 규칙은 handwriting/infer_photo.py의 topk와 동일 — 운영 retrieval과 같은
-    기준으로 채점한다. 같은 작성자의 다른 전표 크롭은 남긴다(작성자 특화 retrieval이 취지).
-    단, 정렬은 여기서 `sorted`(안정 정렬)를 쓰므로 동점 시 항상 같은 순서가 나온다 — 운영
-    argsort(불안정 정렬, 동점 순서가 구현/버전에 따라 달라짐)와 다르며 채점 결정론을 위한 선택이다.
+    채점(topk_dedup)과 같은 excluded를 받는다. 제외 축을 바꿔도 두 지표가 함께 움직인다.
+
+    Raises:
+        ValueError: excluded가 labs 범위를 벗어날 때(다른 뱅크에서 만든 집합을 적용하는 사고).
+            score_one 안에서는 topk_dedup이 먼저 이를 걸러주지만, 이 함수를 단독으로 부르는
+            소비자는 그 방어를 못 받으므로 여기서도 별도로 검증한다.
     """
-    if len(sims) != len(labs) or len(sims) != len(keys):
-        raise ValueError(f"sims/labs/keys 길이 불일치: {len(sims)}/{len(labs)}/{len(keys)}")
-    out: list[tuple[str, float]] = []
-    seen: set[str] = set()
-    for j in sorted(range(len(sims)), key=lambda i: -sims[i]):
-        if keys[j] == self_ref or labs[j] in seen:
-            continue
-        seen.add(labs[j])
-        out.append((labs[j], float(sims[j])))
-        if len(out) >= k:
-            break
-    return out
-
-
-def has_peer_sample(self_ref: str, label: str, labs: list[str], keys: list[str]) -> bool:
-    """같은 라벨의 '다른' 크롭이 뱅크에 있는지 — 단일 샘플 라벨의 분모를 분리하기 위한 신호."""
-    return any(lb == label and k != self_ref for lb, k in zip(labs, keys, strict=True))
+    if excluded and max(excluded) >= len(labs):
+        raise ValueError(f"제외 인덱스가 뱅크 범위를 벗어남: max={max(excluded)} >= {len(labs)}")
+    return any(lb == label for i, lb in enumerate(labs) if i not in excluded)
 
 
 def score_one(
     sims: list[float],
     labs: list[str],
-    keys: list[str],
+    excluded: set[int],
     self_ref: str,
     label: str,
 ) -> dict:
-    """쌍 1건을 채점한다 — 커버리지(self 포함)와 leave-self-out top-1/top-5를 분리 산출.
+    """쌍 1건을 채점한다 — 커버리지(제외 무관)와 제외 후 top-1/top-5를 분리 산출.
+
+    제외 축은 호출자가 excluded_indices로 정해서 넘긴다 — 이 함수는 축을 모른다.
 
     Returns:
-        다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 crop_ref), ``label``(정답 라벨),
-        ``in_bank``(뱅크 커버리지, self 포함), ``top1``/``top5``(leave-self-out 적중
-        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록),
-        ``top1_sim``(leave-self-out top-1 유사도. 후보가 없으면 ``None``).
+        다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 key), ``label``(정답 라벨),
+        ``in_bank``(뱅크 커버리지, 제외 항목 포함), ``top1``/``top5``(제외 후 적중 여부),
+        ``has_peer``(제외 집합 밖에 동일 라벨 존재 여부), ``preds``(topk 예측 라벨 목록),
+        ``top1_sim``(제외 후 top-1 유사도. 후보가 없으면 ``None``).
     """
-    ranked = topk_excluding_self(sims, labs, keys, self_ref, TOPK)
+    ranked = topk_dedup(sims, labs, excluded, TOPK)
     preds = [lb for lb, _ in ranked]
     return {
         "crop_ref": self_ref,
@@ -356,7 +344,7 @@ def score_one(
         "in_bank": label in labs,
         "top1": bool(preds) and preds[0] == label,
         "top5": label in preds,
-        "has_peer": has_peer_sample(self_ref, label, labs, keys),
+        "has_peer": has_peer_sample(label, labs, excluded),
         "preds": preds,
         "top1_sim": ranked[0][1] if ranked else None,
     }
@@ -442,11 +430,13 @@ def load_bank(path: str | Path):
 
 
 def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str]) -> None:
-    """저장 직전 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
+    """뱅크 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
 
-    워커(worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다.
+    저장 직전(save_bank_atomic)과 채점 적재 직후(cmd_score) 양쪽에서 부른다. 워커
+    (worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다 —
     쓰기 전에 차단한다. crop_ref 형식 key의 중복은 sync 멱등성(keys=UNIQUE 가정)을 깨므로
-    함께 막는다.
+    함께 막는다. 길이 정합뿐 아니라 emb 차원·유한값·crop_ref key 중복까지 강제하므로,
+    호출부가 "길이 정합"만 기대하고 불러도 그보다 넓게 검증된다.
     """
     import numpy as np
 
@@ -456,7 +446,7 @@ def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str])
     if emb.ndim != 2 or emb.shape[1] != EMB_DIM:
         raise RuntimeError(f"임베딩 차원 이상: shape={emb.shape} (기대 (n, {EMB_DIM}))")
     if not np.isfinite(emb).all():
-        raise RuntimeError("임베딩에 NaN/inf가 있습니다 — 저장을 중단합니다.")
+        raise RuntimeError("임베딩에 NaN/inf가 있습니다 — 중단합니다.")
     crop_ref_counts = Counter(k for k in keys if is_crop_ref(k))
     duplicates = sorted(k for k, count in crop_ref_counts.items() if count > 1)
     if duplicates:
@@ -781,9 +771,19 @@ def cmd_score(args) -> None:
     per_pair: dict[str, list[dict]] = {}
     meta: dict[str, int] = {}
     for side, path in (("before", args.before), ("after", args.after)):
-        emb, labs, _, keys = load_bank(path)
+        emb, labs, invs, keys = load_bank(path)
+        # 4배열 길이 정합 — 분리 전 topk_excluding_self(커밋 cb9b1c7)가 sims/labs/keys를
+        # 한자리에서 검증하던 것을 여기서 잇는다. excluded_indices는 keys↔invs, topk_dedup은
+        # sims↔labs만 보므로 emb/lab만 n이고 inv/keys가 n-1인 뱅크는 두 검사를 모두 통과한다.
+        validate_bank_arrays(emb, labs, invs, keys)
         recs = [
-            score_one((emb @ queries[i]).tolist(), labs, keys, p["crop_ref"], p["canonical_label"])
+            score_one(
+                (emb @ queries[i]).tolist(),
+                labs,
+                excluded_indices(keys, invs, self_ref=p["crop_ref"]),
+                p["crop_ref"],
+                p["canonical_label"],
+            )
             for i, p in enumerate(valid)
         ]
         summaries[side] = score_summary(recs)

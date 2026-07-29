@@ -43,7 +43,6 @@ from tools.bank_update import (
     score_summary,
     select_desired,
     topk_dedup,
-    topk_excluding_self,
     validate_bank_arrays,
 )
 
@@ -746,7 +745,6 @@ def test_require_removal_confirmation_validates_records_before_counting():
 # --- score: leave-self-out retrieval (§3 score) ---
 
 _LABS = ["안가방", "공임", "안가방"]
-_KEYS = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
 
 # 부트스트랩(구세대) 네임스페이스 — key에 슬래시가 없고 inv는 .jpg가 붙는다(spec §2 실측).
 _BOOT_KEYS = ["2025-08-18_inv011_0", "2025-08-18_inv011_1", "2025-08-20_inv012_0"]
@@ -858,78 +856,98 @@ def test_topk_dedup_rejects_excluded_index_out_of_range():
         topk_dedup([0.9, 0.8], ["안가방", "공임"], {2})
 
 
-def test_topk_excluding_self_skips_the_query_crop_itself():
-    preds = topk_excluding_self([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", 5)
-    assert [lb for lb, _ in preds] == ["안가방", "공임"]
-    assert preds[0][1] == 0.8
+def test_has_peer_sample_false_when_the_only_carrier_is_excluded():
+    assert has_peer_sample("안가방", ["안가방"], {0}) is False
 
 
-def test_topk_excluding_self_dedups_labels_like_infer_photo():
-    labs = ["안가방", "안가방", "공임"]
-    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
-    preds = topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 5)
-    assert [lb for lb, _ in preds] == ["안가방", "공임"]
+def test_has_peer_sample_true_when_another_crop_shares_label():
+    assert has_peer_sample("안가방", _LABS, {0}) is True
 
 
-def test_topk_excluding_self_respects_k():
-    labs = ["a", "b", "c"]
-    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
-    assert len(topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 2)) == 2
+def test_has_peer_sample_rejects_excluded_index_out_of_range():
+    """M3 — topk_dedup과 같은 경계값(max(excluded) == len(labs))을 has_peer_sample도 막아야 한다.
 
-
-def test_topk_excluding_self_is_empty_when_only_self_in_bank():
-    assert topk_excluding_self([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5) == []
-
-
-def test_topk_excluding_self_rejects_mismatched_lengths():
-    with pytest.raises(ValueError, match="길이 불일치"):
-        topk_excluding_self([0.9, 0.8], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5)
-
-
-def test_has_peer_sample_false_for_single_sample_label():
-    assert has_peer_sample("job-1/row-0", "안가방", ["안가방"], ["job-1/row-0"]) is False
-
-
-def test_has_peer_sample_true_when_other_crop_shares_label():
-    assert has_peer_sample("job-1/row-0", "안가방", _LABS, _KEYS) is True
+    score_one 안에서는 topk_dedup이 먼저 호출돼 이 케이스를 가려주지만, has_peer_sample을
+    단독으로 부르는 소비자(excluded_indices docstring이 명시적으로 예상)는 이 방어가 없으면
+    조용히 틀린 peer 분모를 받는다(spec §3-D3).
+    """
+    with pytest.raises(ValueError, match="범위"):
+        has_peer_sample("안가방", ["안가방", "공임"], {2})
 
 
 def test_score_one_counts_coverage_even_when_only_self_carries_label():
-    """단일 샘플 라벨 — 커버리지는 hit, leave-self-out retrieval은 구조적 miss."""
-    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    """단일 샘플 라벨 — 커버리지는 hit, 제외 후 retrieval은 구조적 miss."""
+    rec = score_one([0.99], ["안가방"], {0}, "job-1/row-0", "안가방")
     assert rec["in_bank"] is True
     assert rec["top1"] is False and rec["top5"] is False
     assert rec["has_peer"] is False
 
 
 def test_score_one_marks_out_of_bank_when_label_absent():
-    rec = score_one([0.5], ["공임"], ["job-2/row-0"], "job-1/row-0", "안가방")
+    rec = score_one([0.5], ["공임"], set(), "job-1/row-0", "안가방")
     assert rec["in_bank"] is False and rec["top1"] is False
+    assert rec["has_peer"] is False
 
 
 def test_score_one_hits_top1_with_peer_sample():
-    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+    rec = score_one([0.99, 0.5, 0.8], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1"] is True and rec["top5"] is True and rec["has_peer"] is True
 
 
-def test_score_one_reports_leave_self_out_top1_sim():
-    # self(job-1/row-0, 0.99)를 뺀 top1은 job-3/row-0의 '안가방'(0.8)
-    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+def test_score_one_reports_top1_sim_of_the_surviving_candidate():
+    # self(index 0, 0.99)를 뺀 top1은 index 2의 '안가방'(0.8)
+    rec = score_one([0.99, 0.5, 0.8], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1_sim"] == pytest.approx(0.8)
 
 
 def test_score_one_top1_sim_is_none_when_no_candidate_remains():
-    # 단일 샘플 라벨 — self를 빼면 후보가 0이라 유사도를 말할 수 없다
-    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    # 단일 샘플 라벨 — 자기를 빼면 후보가 0이라 유사도를 말할 수 없다
+    rec = score_one([0.99], ["안가방"], {0}, "job-1/row-0", "안가방")
     assert rec["top1_sim"] is None
 
 
-def test_score_one_top1_sim_follows_self_exclusion_not_raw_max():
-    # raw max는 self의 0.99지만, self 제외 후 top1은 '공임'(0.9)으로 바뀐다.
-    # top1_sim은 예측(top1)과 같은 후보를 가리켜야 한다.
-    rec = score_one([0.99, 0.9, 0.3], _LABS, _KEYS, "job-1/row-0", "안가방")
+def test_score_one_top1_sim_follows_exclusion_not_raw_max():
+    # raw max는 제외된 index 0의 0.99지만, 제외 후 top1은 '공임'(0.9)으로 바뀐다.
+    rec = score_one([0.99, 0.9, 0.3], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1"] is False
     assert rec["top1_sim"] == pytest.approx(0.9)
+
+
+def test_peer_denominator_and_topk_share_the_same_excluded_set():
+    """§5-5 — 같은 excluded를 준 두 함수가 일관되게 움직인다.
+
+    invoice 축이 동일 전표 peer까지 빼면 topk 후보와 peer 분모가 동시에 사라져야 한다.
+    """
+    labs = ["안가방", "안가방", "공임"]
+    keys = ["2025-09-01_inv047_0", "2025-09-01_inv047_1", "2025-11-07_inv203_0"]
+    invs = ["2025-09-01_inv047.jpg", "2025-09-01_inv047.jpg", "2025-11-07_inv203.jpg"]
+    sims = [1.0, 0.9, 0.1]
+
+    ex = excluded_indices(keys, invs, self_ref=keys[0], self_inv=invs[0])
+    assert [lb for lb, _ in topk_dedup(sims, labs, ex)] == ["공임"]
+    assert has_peer_sample("안가방", labs, ex) is False
+
+
+def test_score_one_diverges_between_crop_ref_and_invoice_axis():
+    """§5-4 — 같은 전표에 같은 라벨이 중복된 실측 케이스(2025-09-01_inv047 '공임' x3).
+
+    crop_ref 축은 같은 전표의 다른 crop이 답을 알려줘 적중하고, invoice 축은 미스가 된다.
+    """
+    labs = ["공임", "공임", "원터치"]
+    keys = ["2025-09-01_inv047_0", "2025-09-01_inv047_1", "2025-11-03_inv187_0"]
+    invs = ["2025-09-01_inv047.jpg", "2025-09-01_inv047.jpg", "2025-11-03_inv187.jpg"]
+    sims = [1.0, 0.95, 0.2]
+
+    by_crop = score_one(sims, labs, excluded_indices(keys, invs, self_ref=keys[0]), keys[0], "공임")
+    by_inv = score_one(
+        sims,
+        labs,
+        excluded_indices(keys, invs, self_ref=keys[0], self_inv=invs[0]),
+        keys[0],
+        "공임",
+    )
+    assert by_crop["top1"] is True and by_crop["has_peer"] is True
+    assert by_inv["top1"] is False and by_inv["has_peer"] is False
 
 
 def test_score_summary_splits_peer_denominator():
@@ -1291,3 +1309,39 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     assert (
         "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
     )
+
+
+def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monkeypatch):
+    """4배열 중 하나만 짧은 뱅크 — 분리 전 topk_excluding_self가 한자리에서 잡던 회귀다.
+
+    excluded_indices는 keys/invs만, topk_dedup은 sims/labs만 보므로 둘 다 통과한다.
+    load_bank 직후 정합 검증이 없으면 엉뚱한 인덱스를 제외한 점수가 조용히 산출된다.
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _touch_crop(crops_root, "job-1/row-0")
+
+    bad = models_dir / "bad.npz"
+    np.savez(
+        bad,
+        emb=_emb(2),
+        lab=np.array(["안가방", "공임"], object),
+        inv=np.array(["job-1"], object),
+        keys=np.array(["job-1/row-0"], object),
+    )
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="안가방")],
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    with pytest.raises(RuntimeError, match="뱅크 배열 길이 불일치"):
+        cmd_score(
+            SimpleNamespace(backend_env="dummy.env", out=tmp_path / "out", before=bad, after=bad)
+        )
