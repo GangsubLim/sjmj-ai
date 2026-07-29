@@ -23,6 +23,7 @@ from tools.bank_update import (
     cmd_score,
     diff_bank,
     diff_from_records,
+    excluded_indices,
     has_peer_sample,
     inv_of,
     is_crop_ref,
@@ -745,6 +746,70 @@ def test_require_removal_confirmation_validates_records_before_counting():
 
 _LABS = ["안가방", "공임", "안가방"]
 _KEYS = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
+
+# 부트스트랩(구세대) 네임스페이스 — key에 슬래시가 없고 inv는 .jpg가 붙는다(spec §2 실측).
+_BOOT_KEYS = ["2025-08-18_inv011_0", "2025-08-18_inv011_1", "2025-08-20_inv012_0"]
+_BOOT_INVS = ["2025-08-18_inv011.jpg", "2025-08-18_inv011.jpg", "2025-08-20_inv012.jpg"]
+
+
+def test_excluded_indices_reads_the_bank_inv_column_not_the_key():
+    """전표 판정 근거는 뱅크 inv 열이다 — key 파싱 구현이면 여기서 죽는다(spec §2·§5-1).
+
+    부트스트랩 key에는 슬래시가 없어 inv_of(key) 방식은 key 자신을 돌려주고, 그 값은
+    inv 열('...jpg')과 절대 일치하지 않아 제외가 조용히 0건이 된다.
+    """
+    got = excluded_indices(
+        _BOOT_KEYS,
+        _BOOT_INVS,
+        self_ref="2025-08-18_inv011_0",
+        self_inv="2025-08-18_inv011.jpg",
+    )
+    assert got == {0, 1}
+
+
+def test_excluded_indices_crop_ref_axis_excludes_only_the_query_itself():
+    assert excluded_indices(_BOOT_KEYS, _BOOT_INVS, self_ref="2025-08-18_inv011_0") == {0}
+
+
+def test_excluded_indices_returns_empty_set_for_a_holdout_query():
+    """뱅크에 자기도 동일 전표도 없는 hold-out 표본 — 빈 집합은 정상이다(D3)."""
+    assert excluded_indices(_BOOT_KEYS, _BOOT_INVS, self_ref="job-9/row-0") == set()
+
+
+def test_excluded_indices_rejects_invoice_axis_without_the_inv_column():
+    """전표 축을 요청했는데 판단 재료가 없다 — §2의 무성 실패 재발 방지(D3)."""
+    with pytest.raises(ValueError, match="invs가 None"):
+        excluded_indices(
+            _BOOT_KEYS, None, self_ref="2025-08-18_inv011_0", self_inv="2025-08-18_inv011.jpg"
+        )
+
+
+def test_excluded_indices_unions_both_axes_when_they_point_elsewhere():
+    """self_ref·self_inv 두 축이 서로소일 때 합집합이어야 한다(덮어쓰기 뮤테이션 방지).
+
+    self_ref는 인덱스 2만, self_inv는 인덱스 0,1만 가리켜 두 축이 겹치지 않는다 — 기존
+    테스트는 두 축 결과가 포함관계({0} ⊂ {0,1})라 `out |= {...}`를 `out = {...}`로 바꿔도
+    (= self_inv가 주어지면 self_ref 축을 버림) 통과해버려 이 뮤테이션을 잡지 못했다.
+    """
+    got = excluded_indices(
+        _BOOT_KEYS,
+        _BOOT_INVS,
+        self_ref="2025-08-20_inv012_0",  # 인덱스 2
+        self_inv="2025-08-18_inv011.jpg",  # 인덱스 0,1
+    )
+    assert got == {0, 1, 2}
+
+
+def test_excluded_indices_rejects_scoring_with_nothing_excluded():
+    """제외 없이 채점하면 자기 자신이 항상 1등이라 조용한 오답이 된다(D3)."""
+    with pytest.raises(ValueError, match="self_ref/self_inv"):
+        excluded_indices(_BOOT_KEYS, _BOOT_INVS)
+
+
+def test_excluded_indices_rejects_mismatched_keys_and_invs_lengths():
+    """판단 재료 두 열이 어긋나면 엉뚱한 인덱스를 제외한다(D3)."""
+    with pytest.raises(ValueError, match="길이 불일치"):
+        excluded_indices(_BOOT_KEYS, _BOOT_INVS[:2], self_ref="2025-08-18_inv011_0")
 
 
 def test_topk_excluding_self_skips_the_query_crop_itself():

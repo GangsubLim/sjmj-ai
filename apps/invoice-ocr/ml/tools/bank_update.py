@@ -222,6 +222,51 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
     )
 
 
+def excluded_indices(
+    keys: list[str],
+    invs: list[str] | None,
+    *,
+    self_ref: str | None = None,
+    self_inv: str | None = None,
+) -> set[int]:
+    """채점에서 뺄 뱅크 항목의 인덱스 — '무엇을 뺄지' 판단의 유일한 지점.
+
+    축은 모드 스위치가 아니라 데이터(인덱스 집합)로 표현된다. 채점(topk_dedup)과 peer
+    분모(has_peer_sample)가 같은 집합을 공유하므로 두 곳이 각자 판단해 어긋나는 일이
+    구조적으로 불가능해진다.
+
+    전표 판정은 key 파싱이 아니라 뱅크 inv 열로 한다 — 부트스트랩 key에는 슬래시가 없어
+    파싱이 조용히 실패한다(spec §2). 회귀 평가셋 러너처럼 crop_ref가 아예 없는 소비자는
+    self_inv를 직접 준다.
+
+    Args:
+        keys: 뱅크 key 열(self_ref 대조용).
+        invs: 뱅크 inv 열(self_inv 대조용). 전표 축을 쓰지 않으면 None이어도 된다.
+        self_ref: 제외할 쿼리 자신의 key.
+        self_inv: 제외할 전표 식별자. 같은 전표의 모든 항목이 빠진다.
+
+    Returns:
+        제외할 인덱스 집합. 뱅크에 자기도 동일 전표도 없으면 빈 집합(hold-out 정상 경로).
+
+    Raises:
+        ValueError: self_ref·self_inv가 둘 다 None이거나, self_inv를 줬는데 invs가 None
+            이거나, keys와 invs의 길이가 다를 때.
+    """
+    if self_ref is None and self_inv is None:
+        raise ValueError(
+            "self_ref/self_inv가 모두 None — 제외 없이 채점하면 자기 자신이 항상 1등이다"
+        )
+    if self_inv is not None and invs is None:
+        raise ValueError(f"self_inv={self_inv!r}를 줬는데 invs가 None — 전표 축 판단 재료가 없다")
+    if invs is not None and len(keys) != len(invs):
+        raise ValueError(f"keys/invs 길이 불일치: {len(keys)}/{len(invs)}")
+
+    out = {i for i, k in enumerate(keys) if k == self_ref} if self_ref is not None else set()
+    if self_inv is not None:
+        out |= {i for i, v in enumerate(invs) if v == self_inv}
+    return out
+
+
 # 직접 미러링 대상은 운영 retrieval인 handwriting/infer_photo.py의 TOPK다 — '운영과 같은
 # 기준으로 채점한다'(topk_excluding_self)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
 # 기준으로 산출된 유사도가 임계 캘리브레이션 근거가 된다. 그 TOPK는 다시 backend/app/
