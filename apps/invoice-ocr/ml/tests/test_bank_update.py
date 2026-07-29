@@ -42,6 +42,7 @@ from tools.bank_update import (
     score_one,
     score_summary,
     select_desired,
+    topk_dedup,
     topk_excluding_self,
     validate_bank_arrays,
 )
@@ -810,6 +811,51 @@ def test_excluded_indices_rejects_mismatched_keys_and_invs_lengths():
     """판단 재료 두 열이 어긋나면 엉뚱한 인덱스를 제외한다(D3)."""
     with pytest.raises(ValueError, match="길이 불일치"):
         excluded_indices(_BOOT_KEYS, _BOOT_INVS[:2], self_ref="2025-08-18_inv011_0")
+
+
+def test_topk_dedup_skips_excluded_indices():
+    """§5-7 이관 — 자기 제외가 '축 판단'이 아니라 '집합 소비'로 바뀐다."""
+    preds = topk_dedup([0.99, 0.5, 0.8], _LABS, {0})
+    assert [lb for lb, _ in preds] == ["안가방", "공임"]
+    assert preds[0][1] == 0.8
+
+
+def test_topk_dedup_dedups_labels_like_infer_photo():
+    """§5-7 이관 — 중복 제거 규칙은 운영 retrieval(handwriting/infer_photo.py)과 동일하다."""
+    labs = ["안가방", "안가방", "공임"]
+    preds = topk_dedup([0.9, 0.8, 0.7], labs, set())
+    assert [lb for lb, _ in preds] == ["안가방", "공임"]
+
+
+def test_topk_dedup_respects_k():
+    """§5-7 이관."""
+    assert len(topk_dedup([0.9, 0.8, 0.7], ["a", "b", "c"], set(), 2)) == 2
+
+
+def test_topk_dedup_is_empty_when_everything_is_excluded():
+    """§5-7 이관 — 자기만 뱅크에 있을 때 빈 결과."""
+    assert topk_dedup([0.99], ["안가방"], {0}) == []
+
+
+def test_topk_dedup_rejects_labs_shorter_than_sims():
+    """§5-7 이관(분할) — 길이 검증이 excluded_indices와 topk_dedup 둘에 나뉘어 남는다."""
+    with pytest.raises(ValueError, match="길이 불일치"):
+        topk_dedup([0.9, 0.8], ["안가방"], set())
+
+
+def test_topk_dedup_rejects_labs_longer_than_sims_instead_of_dropping_the_tail():
+    """D3 — 짧은 labs는 IndexError로 티가 나지만 긴 labs는 아무 신호 없이 꼬리가 버려진다.
+
+    정렬 범위가 len(sims)이기 때문이다. 그래서 별도 케이스로 둔다(spec §5-2).
+    """
+    with pytest.raises(ValueError, match="길이 불일치"):
+        topk_dedup([0.9], ["안가방", "공임"], set())
+
+
+def test_topk_dedup_rejects_excluded_index_out_of_range():
+    """D3 부분 방어 — 항목 1개만큼 줄어든 스테일 제외 집합(경계값 max(excluded) == len(sims))을 잡는다."""
+    with pytest.raises(ValueError, match="범위"):
+        topk_dedup([0.9, 0.8], ["안가방", "공임"], {2})
 
 
 def test_topk_excluding_self_skips_the_query_crop_itself():

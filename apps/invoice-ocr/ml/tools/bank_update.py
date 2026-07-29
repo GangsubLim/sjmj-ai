@@ -268,11 +268,40 @@ def excluded_indices(
 
 
 # 직접 미러링 대상은 운영 retrieval인 handwriting/infer_photo.py의 TOPK다 — '운영과 같은
-# 기준으로 채점한다'(topk_excluding_self)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
+# 기준으로 채점한다'(topk_dedup)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
 # 기준으로 산출된 유사도가 임계 캘리브레이션 근거가 된다. 그 TOPK는 다시 backend/app/
 # schemas/ocr.py의 TOP_K/LABEL_SOURCES와 frontend/src/utils/label-source.ts의 TOP_K에
 # 물려 있다. ml 쪽 2곳은 tests/test_topk_sync.py(ml/tests)가 api-spec.json enum과 대조한다.
 TOPK = 5
+
+
+def topk_dedup(
+    sims: list[float], labs: list[str], excluded: set[int], k: int = TOPK
+) -> list[tuple[str, float]]:
+    """제외 집합 밖에서 라벨 중복 제거 top-k를 고른다 — '무엇을 뺄지'는 판단하지 않는다.
+
+    중복 제거 규칙은 handwriting/infer_photo.py의 topk와 동일 — 운영 retrieval과 같은
+    기준으로 채점한다. 단, 정렬은 여기서 `sorted`(안정 정렬)를 쓰므로 동점 시 항상 같은
+    순서가 나온다 — 운영 argsort(불안정 정렬)와 다르며 채점 결정론을 위한 선택이다.
+
+    Raises:
+        ValueError: sims/labs 길이가 다르거나(긴 labs는 조용히 꼬리가 버려진다), excluded가
+            sims 범위를 벗어날 때(다른 뱅크에서 만든 집합을 적용하는 사고).
+    """
+    if len(sims) != len(labs):
+        raise ValueError(f"sims/labs 길이 불일치: {len(sims)}/{len(labs)}")
+    if excluded and max(excluded) >= len(sims):
+        raise ValueError(f"제외 인덱스가 뱅크 범위를 벗어남: max={max(excluded)} >= {len(sims)}")
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
+    for j in sorted(range(len(sims)), key=lambda i: -sims[i]):
+        if j in excluded or labs[j] in seen:
+            continue
+        seen.add(labs[j])
+        out.append((labs[j], float(sims[j])))
+        if len(out) >= k:
+            break
+    return out
 
 
 def topk_excluding_self(
