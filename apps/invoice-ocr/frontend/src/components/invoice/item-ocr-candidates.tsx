@@ -6,7 +6,7 @@ import { CandidateChip } from "@/components/ocr/candidate-chip";
 import { ocrCropUrl } from "@/services/api";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 
-const PLACEHOLDER = placeholderSvg(64, 40);
+const PLACEHOLDER = placeholderSvg(148, 40);
 const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
 interface ItemOcrCandidatesProps {
@@ -38,7 +38,7 @@ export function ItemOcrCandidates({
         src={ocrCropUrl(meta.jobId, meta.rowIndex)}
         alt={`행 ${meta.rowIndex} 손글씨 크롭`}
         loading="lazy"
-        className="h-10 w-16 shrink-0 rounded border object-cover"
+        className="h-10 w-37 shrink-0 rounded border object-contain"
         onError={handleImageError}
       />
       {meta.uncertain && (

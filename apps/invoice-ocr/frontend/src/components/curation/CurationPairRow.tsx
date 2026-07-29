@@ -12,7 +12,7 @@ import { CandidateChip } from "@/components/ocr/candidate-chip";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import { cn } from "@/lib/utils";
 
-const PLACEHOLDER = placeholderSvg(64, 40);
+const PLACEHOLDER = placeholderSvg(148, 40);
 const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
 interface CurationPairRowProps {
@@ -63,7 +63,7 @@ export function CurationPairRow({
         src={ocrCropUrl(jobId, pair.row_index)}
         alt={`행 ${pair.row_index} crop`}
         loading="lazy"
-        className="h-10 w-16 rounded border object-cover"
+        className="h-10 w-37 shrink-0 rounded border object-contain"
         onError={handleImageError}
       />
       <div className="flex-1">
