@@ -79,7 +79,16 @@ def diff_bank(current: dict[str, str], desired: dict[str, str]) -> BankDiff:
 
 
 def inv_of(crop_ref: str) -> str:
-    """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열."""
+    """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열.
+
+    crop_ref 형식이 아닌 key(부트스트랩 '2025-08-18_inv011_0' 등)는 거부한다. 그런 key는
+    슬래시가 없어 split이 key 자신을 돌려주고, 그 값으로 만든 전표 제외 집합은 어떤 뱅크
+    항목과도 일치하지 않아 조용히 비어버린다. 그 경우의 정답은 언제나 뱅크 inv 열이다.
+    """
+    if not is_crop_ref(crop_ref):
+        raise ValueError(
+            f"crop_ref 형식이 아님 {crop_ref!r} — 부트스트랩 key의 전표는 뱅크 inv 열에서 읽는다"
+        )
     return crop_ref.split("/", 1)[0]
 
 

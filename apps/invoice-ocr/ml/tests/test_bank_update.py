@@ -346,6 +346,16 @@ def test_inv_of_extracts_job_prefix():
     assert inv_of("job-42/row-3") == "job-42"
 
 
+def test_inv_of_rejects_bootstrap_key_instead_of_silently_returning_it():
+    """부트스트랩 key('2025-08-18_inv011_0')는 슬래시가 없어 split이 key 자신을 돌려준다.
+
+    조용히 성공하면 어떤 뱅크 항목과도 일치하지 않는 제외 집합이 무성으로 비어버린다
+    (spec §2 — 이번 이슈의 초안이 실제로 그 함정에 빠졌다).
+    """
+    with pytest.raises(ValueError, match="crop_ref 형식이 아님"):
+        inv_of("2025-08-18_inv011_0")
+
+
 # --- npz IO 헬퍼 ---
 
 
