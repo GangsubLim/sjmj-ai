@@ -14,6 +14,7 @@
 
 - `canonical_label`(학습용 정규화 라벨)은 `invoice_items.name`(청구 사실)과 **의도적으로 갈라질 수 있다**. invoice는 confirm 후 불변이며, 큐레이션은 학습 데이터에만 영향을 준다.
 - 큐레이션 페이지가 기존 `grouping_corrections.json` 손편집을 **계승**한다 — 라벨 병합/정규화를 JSON 파일이 아니라 잡 드릴다운의 행 인라인에서 수행한다. 라벨 그룹 단위 일괄 병합 뷰는 파편화가 실제 문제가 될 때 2차 렌즈로 추가한다(YAGNI).
+- `excluded`는 두 가지를 함께 담는다 — 크롭 불량(파이프라인 개선 신호)과 **원본에 정답이 없는 행**. 후자는 타이어처럼 관례상 품목명을 생략하고 `단가 × 수량`만 적는 전표에서 나오며, 크롭·인식이 정상이어도 학습쌍이 성립하지 않는다. 판별은 사람이 한다(오크롭된 숫자에도 유사도가 높게 나와 미확신 신호로는 구분되지 않는다). 기준은 `docs/runbooks/ocr-curation-analysis.md`.
 - 재학습 진입점은 하나로 유지한다(라이브 교정용 평행 학습 경로를 만들지 않는다). 단 그 진입점의 실제 입력은 디렉터리가 아니라 `train_contrastive`가 import하는 `build_rows()` 동일-walk + 교정 JSON이다 — `training_pairs` crop을 이 walk에 합류시킨다. 현재 그 학습 의존 체인은 gitignore된 `report/sp2_spike/item/`에 있고 하드코딩 절대경로를 쓰므로, 브리지에 앞서 production(git-track·env 주입)으로 끌어올린다(spec §7).
 - ADR 0003대로 재학습 *실행*은 지금은 macmini 수동 CLI다. 페이지는 큐레이션 결정만 영속화하며, 향후 페이지-주도 학습 실행·모니터링이 이 read-model 위에 얹힌다.
 - 금액(`Qwen3-VL`)은 학습 대상이 아니므로(ADR 0002·CONTEXT) 학습 후보를 이루지 않는다. 큐레이션 화면에서 금액은 행 식별용 읽기전용 맥락으로만 보인다.
