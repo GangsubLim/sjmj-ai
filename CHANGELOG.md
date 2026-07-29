@@ -5,6 +5,27 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.5.0] — 2026-07-29
+
+품목 인식이 헷갈릴 때 이를 숨기지 않고 알려주고, 후보 중에서 바로 고를 수 있게 한다 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42)).
+
+### Added
+
+- 품목 인식이 불확실한 행에 미확신 배지를 표시하고, 상위 5개 후보를 칩으로 제시해 클릭 한 번으로 확정 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+- 등록 화면에 손글씨 크롭 썸네일과 OCR 후보 칩을 함께 표시해, 원본을 다시 열지 않고 확인 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+- 라벨을 무엇으로 확정했는지(후보 선택·직접 입력·신규 등록) 검수 결과에 기록 — 이후 인식 개선의 근거로 쓰인다 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+
+### Changed
+
+- 크롭 이미지 조회 경로를 `/ocr` 네임스페이스로 정리 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+
+### Fixed
+
+- 손글씨 크롭 썸네일이 가로 폭의 절반 이상을 잘라먹어 글씨가 안 보이던 문제 (bb873bf)
+- 신규 품목 등록 버튼이 동작하지 않던 문제와, 등록 시 기존 품목 단가를 덮어쓰던 문제 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+- 검수 중 빠르게 연속 수정하면 이전 응답이 나중에 도착해 화면이 되돌아가던 문제 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+- 후보 목록 펼치기가 키보드·스크린리더에서 인식되지 않던 접근성 문제 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42))
+
 ## [v0.4.0] — 2026-07-28
 
 수기 명세서 인식 정확도를 끌어올린다 — 잘못 펴진 사진을 걸러내고, 금액 유실을 메우고, 검수 결과를 품목 인식에 되먹인다 ([#35](https://github.com/GangsubLim/sjmj-ai/pull/35), [#34](https://github.com/GangsubLim/sjmj-ai/pull/34), [#25](https://github.com/GangsubLim/sjmj-ai/pull/25), [#24](https://github.com/GangsubLim/sjmj-ai/pull/24)).
