@@ -14,14 +14,23 @@ import { toast } from "sonner";
 import type { Invoice, InvoiceItem } from "@/types/invoice";
 import type { AutocompleteSuggestion } from "@/components/ui/autocomplete";
 import { calculateItem, calculateTotals } from "@/utils/calculations";
+import {
+  LABEL_SOURCE,
+  applyLabelSource,
+  attachLabelSource,
+  candidatePicked,
+  type LabelSource,
+} from "@/utils/label-source";
 import { useCompanies } from "@/hooks/use-companies";
 import { useItems } from "@/hooks/use-items";
+import { useAddNewItem } from "@/hooks/use-add-new-item";
 import { useDebounce } from "@/hooks/use-debounce";
 import { useSettings } from "@/hooks/use-settings";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { useOcrInfer } from "@/hooks/use-ocr-infer";
 import { invoiceAPI, ocrAPI } from "@/services/api";
-import { rowsToItems } from "./ocr-prefill";
+import { rowsToItems, rowsToOcrMeta } from "./ocr-prefill";
+import type { OcrItemMeta } from "./ocr-prefill";
 
 import { PageHeader, PageContainer, SectionHeader } from "@/components/layout";
 import { Input } from "@/components/ui/input";
@@ -98,6 +107,18 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   const [items, setItems] = React.useState<ItemWithKey[]>(
     buildInitialItems(initialData),
   );
+  const [ocrMetaByRef, setOcrMetaByRef] = React.useState<
+    ReadonlyMap<string, OcrItemMeta>
+  >(new Map());
+  // crop_ref → 마지막 조작 출처. OCR 초안 행에만 쌓이며 confirm payload에 실린다.
+  const [labelSources, setLabelSources] = React.useState<
+    ReadonlyMap<string, LabelSource>
+  >(new Map());
+  // 지금 화면의 초안을 만든 잡. ocr.jobId는 업로드 즉시 새 잡으로 바뀌지만 초안은 그
+  // 잡이 성공했을 때만 교체되므로, 재촬영이 실패·warp 실패하거나 아직 추론 중일 때
+  // ocr.jobId로 confirm하면 "잡 B에 잡 A의 행"이 실려 crop_ref가 매칭되지 않는다
+  // (label_source 유실 + 무관한 invoice에 link돼 재확정 불가). 확정 대상은 여기서 고정한다.
+  const [draftJobId, setDraftJobId] = React.useState<number | null>(null);
   const [saving, setSaving] = React.useState(false);
   const [isDirty, setIsDirty] = React.useState(false);
   const isInitialMount = React.useRef(true);
@@ -193,7 +214,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         _tempId: crypto.randomUUID(),
       })),
     );
-  }, [ocr.status, ocr.result, ocr.error]);
+    setOcrMetaByRef(
+      ocr.jobId != null ? rowsToOcrMeta(ocr.result, ocr.jobId) : new Map(),
+    );
+    setLabelSources(new Map()); // 새 초안 = 조작 이력 없음(전 잡의 출처가 새지 않도록)
+    setDraftJobId(ocr.jobId); // 확정 대상 = 이 초안을 만든 잡
+  }, [ocr.status, ocr.result, ocr.error, ocr.jobId]);
 
   // Autocomplete data
   const [companyQuery, setCompanyQuery] = React.useState("");
@@ -202,7 +228,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
   const [itemQuery] = React.useState("");
   const debouncedItemQuery = useDebounce(itemQuery, 300);
-  const { data: itemSuggestions } = useItems(debouncedItemQuery);
+  const { data: itemSuggestions, refetch: refetchItems } =
+    useItems(debouncedItemQuery);
+  const addNewItem = useAddNewItem();
 
   const companySuggestions: AutocompleteSuggestion[] = (companies ?? []).map(
     (c) => ({
@@ -240,6 +268,16 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
   );
 
   // Handlers
+  // 마지막 조작이 이긴다 — 같은 crop_ref의 이전 출처를 덮어쓴다.
+  // OCR 초안에서 오지 않은 행(crop_ref 없음)은 추적하지 않는다.
+  const recordLabelSource = (
+    cropRef: string | undefined,
+    source: LabelSource,
+  ) => {
+    if (!cropRef) return;
+    setLabelSources((prev) => applyLabelSource(prev, cropRef, source));
+  };
+
   const handleItemUpdate = (index: number, updated: InvoiceItem) => {
     setItems((prev) => {
       const next = [...prev];
@@ -266,6 +304,31 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     ]);
   };
 
+  const handleAddNewItem = async (tempId: string, name: string) => {
+    // await 이전의 행 목록에서 읽는다 — crop_ref는 행 생성 시 고정이라 나중에 바뀌지 않는다.
+    // 대기 중 행이 삭제됐다면 남는 항목은 무해하다(저장 시 실재 행의 crop_ref만 조회한다).
+    const cropRef = items.find((row) => row._tempId === tempId)?.crop_ref;
+    const created = await addNewItem(name);
+    if (!created) return; // 실패 — 입력값을 건드리지 않는다(사용자가 타이핑한 이름 보존)
+    recordLabelSource(cropRef, LABEL_SOURCE.newItemCreated);
+    setItems((prev) =>
+      // tempId로 대상 행을 찾는다(index가 아님) — await 도중 사용자가 다른 행을
+      // 삭제해도 엉뚱한 행이 갱신되지 않는다. 대상 행이 이미 삭제됐으면 조용히 무시.
+      prev.map((row) =>
+        row._tempId === tempId
+          ? {
+              ...row,
+              name: created.item_name,
+              // 백엔드가 default_unit_price를 항상 0으로 채워 반환하므로(값 없음과
+              // 구분 불가) 0은 "값 없음"으로 취급해 기존 단가를 보존한다.
+              unit_price: created.default_unit_price || row.unit_price,
+            }
+          : row,
+      ),
+    );
+    refetchItems(); // 방금 만든 품목이 자동완성 목록에 뜨도록
+  };
+
   const handleCompanySelect = (
     value: string,
     suggestion?: AutocompleteSuggestion,
@@ -290,6 +353,12 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
 
     setSaving(true);
     try {
+      // label_source는 OCR 확정 경로에서만 의미가 있다(초안 대비 조작 출처).
+      const payloadItems =
+        draftJobId != null
+          ? attachLabelSource(validItems, labelSources)
+          : validItems;
+
       const payload = {
         document_title: documentTitle,
         issue_date: issueDate,
@@ -298,8 +367,11 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
         vehicle_no: vehicleNo,
         show_stamp: showStamp,
         memo,
-        items: validItems.map((item, i) => {
-          const { _tempId, ...rest } = item as InvoiceItem & {
+        items: payloadItems.map((item, i) => {
+          // 캐스트 대상을 `typeof item`으로 잡는다 — InvoiceItem으로 좁히면 rest의 정적
+          // 타입에서 label_source가 사라져(런타임엔 스프레드로 살아남는다) attachLabelSource가
+          // 반환 타입에 세워둔 컴파일 타임 가드가 무력화된다.
+          const { _tempId, ...rest } = item as typeof item & {
             _tempId?: string;
           };
           return { ...rest, item_order: i };
@@ -312,8 +384,8 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
       if (mode === "edit" && initialData?.id) {
         await invoiceAPI.update(initialData.id, payload);
         toast.success("거래명세서가 수정되었습니다");
-      } else if (ocr.jobId != null) {
-        await ocrAPI.confirm(ocr.jobId, payload);
+      } else if (draftJobId != null) {
+        await ocrAPI.confirm(draftJobId, payload);
         toast.success("거래명세서가 저장되었습니다");
       } else {
         await invoiceAPI.create(payload);
@@ -343,6 +415,9 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
     setItems([
       { ...DEFAULT_ITEM, item_order: 0, _tempId: crypto.randomUUID() },
     ]);
+    setOcrMetaByRef(new Map());
+    setLabelSources(new Map());
+    setDraftJobId(null);
   };
 
   // PC 미리보기용 deferred state
@@ -555,6 +630,18 @@ function InvoiceForm({ initialData, mode }: InvoiceFormProps) {
               itemSuggestions={itemAutoSuggestions}
               onUpdate={handleItemUpdate}
               onDelete={handleItemDelete}
+              onAddNewItem={(name) =>
+                handleAddNewItem(items[index]._tempId, name)
+              }
+              ocrMeta={
+                item.crop_ref ? ocrMetaByRef.get(item.crop_ref) : undefined
+              }
+              onPickCandidate={(_label, rank) =>
+                recordLabelSource(item.crop_ref, candidatePicked(rank))
+              }
+              onLabelSource={(source) =>
+                recordLabelSource(item.crop_ref, source)
+              }
             />
           ))}
           <button

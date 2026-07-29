@@ -11,6 +11,9 @@ import { Switch } from "@/components/ui/switch";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { formatPrice } from "@/utils/formatters";
+import { LABEL_SOURCE, type LabelSource } from "@/utils/label-source";
+import { ItemOcrCandidates } from "./item-ocr-candidates";
+import type { OcrItemMeta } from "./ocr-prefill";
 
 interface InvoiceItemRowProps {
   item: InvoiceItem;
@@ -19,6 +22,10 @@ interface InvoiceItemRowProps {
   onUpdate: (index: number, item: InvoiceItem) => void;
   onDelete: (index: number) => void;
   onAddNewItem?: (name: string) => void;
+  ocrMeta?: OcrItemMeta;
+  onPickCandidate?: (label: string, rank: number) => void;
+  // 품목명 확정 출처를 알린다(칩 외 경로 — 자동완성 선택/자유 입력).
+  onLabelSource?: (source: LabelSource) => void;
 }
 
 function InvoiceItemRow({
@@ -28,6 +35,9 @@ function InvoiceItemRow({
   onUpdate,
   onDelete,
   onAddNewItem,
+  ocrMeta,
+  onPickCandidate,
+  onLabelSource,
 }: InvoiceItemRowProps) {
   const isDeduction = item.deduction;
 
@@ -49,6 +59,13 @@ function InvoiceItemRow({
           <Autocomplete
             value={item.name}
             onChange={(val, suggestion) => {
+              // suggestion 존재 = 팝오버 항목 선택. meta(단가) 유무와는 별개다 —
+              // meta 없는 제안을 골라도 '자동완성을 거쳤다'는 사실은 같다.
+              onLabelSource?.(
+                suggestion
+                  ? LABEL_SOURCE.manualPicked
+                  : LABEL_SOURCE.manualTyped,
+              );
               if (suggestion?.meta) {
                 onUpdate(index, {
                   ...item,
@@ -79,6 +96,19 @@ function InvoiceItemRow({
 
       {/* Body */}
       <div className="space-y-3 px-3 py-3">
+        {ocrMeta && (
+          <ItemOcrCandidates
+            meta={ocrMeta}
+            selectedLabel={item.name}
+            onPick={(label, rank) => {
+              // 출처 보고를 먼저 한다 — 소비자(invoice-form)가 rank를 검증하다 throw하면
+              // 이름 변경도 일어나지 않아 클릭이 통째로 무산된다. 반대 순서면 "이름은
+              // 후보 N인데 label_source는 기본값(top1_kept)"인 오염된 감사 기록이 남는다.
+              onPickCandidate?.(label, rank);
+              handleField("name", label);
+            }}
+          />
+        )}
         <div className="grid grid-cols-2 gap-2">
           <div className="space-y-1">
             <Label

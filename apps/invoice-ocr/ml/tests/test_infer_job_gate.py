@@ -63,7 +63,14 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
 
     out = infer_job("ignored.jpg", _models(), tmp_path, 7)
 
-    assert out == {"rows": [], "supply_sum": 0, "warp_ok": False}
+    from handwriting.infer_job import ITEM_CONF_THRESHOLD
+
+    assert out == {
+        "rows": [],
+        "supply_sum": 0,
+        "warp_ok": False,
+        "item_conf_threshold": ITEM_CONF_THRESHOLD,
+    }
     assert calls == []  # 오검출 워프 기반 행 추론·크롭을 아예 하지 않는다
     assert (tmp_path / "warped.png").exists()  # 진단용 워프는 남긴다
     assert not (tmp_path / "row-0.png").exists()
@@ -88,7 +95,14 @@ def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
 
     out = infer_job("ignored.jpg", _models(), tmp_path, 99)
 
-    assert out == {"rows": [], "supply_sum": 0, "warp_ok": False}
+    from handwriting.infer_job import ITEM_CONF_THRESHOLD
+
+    assert out == {
+        "rows": [],
+        "supply_sum": 0,
+        "warp_ok": False,
+        "item_conf_threshold": ITEM_CONF_THRESHOLD,
+    }
     assert "[warp-gate] job=99 quad_missing" in capsys.readouterr().out
 
 

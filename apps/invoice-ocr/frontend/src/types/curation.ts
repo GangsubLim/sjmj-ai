@@ -28,9 +28,12 @@ export interface CurationPairBase {
   reviewed_at: string | null;
 }
 
-// GET /jobs/{id} 의 pair — top5 포함, job_id 없음.
+// GET /jobs/{id} 의 pair — top5 + uncertain 포함, job_id 없음.
 export interface CurationJobPair extends CurationPairBase {
   top5: CurationTop5Item[];
+  // 품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true.
+  // PATCH 응답에는 없다(top5와 같은 계약 비대칭) — patchPair merge가 기존 값을 보존한다.
+  uncertain: boolean;
 }
 
 // PATCH /pairs/{id} 응답 — job_id 포함, top5 없음(계약 비대칭).

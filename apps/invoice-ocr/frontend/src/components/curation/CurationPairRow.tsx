@@ -6,12 +6,13 @@ import { Autocomplete } from "@/components/ui/autocomplete";
 import { Button } from "@/components/ui/button";
 import { useItems } from "@/hooks/use-items";
 import { useDebounce } from "@/hooks/use-debounce";
-import { curationCropUrl } from "@/services/api";
+import { ocrCropUrl } from "@/services/api";
 import { isPairChanged } from "@/utils/curation";
+import { CandidateChip } from "@/components/ocr/candidate-chip";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import { cn } from "@/lib/utils";
 
-const PLACEHOLDER = placeholderSvg(64, 40);
+const PLACEHOLDER = placeholderSvg(148, 40);
 const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
 interface CurationPairRowProps {
@@ -59,17 +60,42 @@ export function CurationPairRow({
       data-testid={`pair-${pair.id}`}
     >
       <img
-        src={curationCropUrl(jobId, pair.row_index)}
+        src={ocrCropUrl(jobId, pair.row_index)}
         alt={`행 ${pair.row_index} crop`}
-        className="h-10 w-16 rounded border object-cover"
+        loading="lazy"
+        className="h-10 w-37 shrink-0 rounded border object-contain"
         onError={handleImageError}
       />
       <div className="flex-1">
-        <div className="text-muted-foreground mb-1 text-xs">
-          #{pair.row_index} · top5:{" "}
-          {pair.top5.map((t) => t.label).join("·") || "—"}
+        <div className="text-muted-foreground mb-1 flex flex-wrap items-center gap-1 text-xs">
+          <span>#{pair.row_index}</span>
+          {pair.uncertain && (
+            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
+              <span aria-hidden="true">⚠</span> 미확신
+            </span>
+          )}
+          {pair.top5.length === 0 ? (
+            <span>후보 없음</span>
+          ) : (
+            pair.top5.map((pred, rank) => (
+              <CandidateChip
+                key={`${pred.label}-${rank}`}
+                label={pred.label}
+                sim={pred.sim}
+                rank={rank}
+                selected={pred.label === (pair.canonical_label ?? "")}
+                onSelect={(label) => {
+                  // commitLabel(:44)과 동일 가드 — 이미 선택된 라벨에는 PATCH를 쏘지 않는다.
+                  if (label === (pair.canonical_label ?? "")) return;
+                  // 표시값 SSoT는 pair.canonical_label — 옵티미스틱 갱신이 입력창을 재동기하므로
+                  // searchQuery(Autocomplete 제안 조회 전용)는 여기서 맞출 필요가 없다.
+                  onPatch(pair.id, { canonical_label: label });
+                }}
+              />
+            ))
+          )}
           {isPairChanged(pair) && (
-            <span className="ml-1 text-amber-600">✎ 변경</span>
+            <span className="text-amber-600">✎ 변경</span>
           )}
         </div>
         <Autocomplete

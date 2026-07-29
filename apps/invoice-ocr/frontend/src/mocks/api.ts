@@ -496,8 +496,8 @@ export const mockCurationAPI = {
           ...patch,
           reviewed_at: p.reviewed_at ?? new Date().toISOString(),
         };
-        // PATCH 응답 형태: job_id 포함, top5 제외(계약 비대칭).
-        const { top5: _top5, ...base } = updated;
+        // PATCH 응답 형태: job_id 포함, top5·uncertain 제외(계약 비대칭 — curation_service.py의 patch_pair 참조).
+        const { top5: _top5, uncertain: _uncertain, ...base } = updated;
         result = { ...base, job_id: job.job_id };
         return updated;
       }),

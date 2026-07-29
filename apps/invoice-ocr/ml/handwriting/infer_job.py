@@ -22,6 +22,32 @@ from handwriting.warp_gate import (
 # 수기 거래명세서는 천 단위를 생략해 적는다(spec: 단가·금액 100% 천원 배수) → 액면값에 ×1000.
 THOUSAND_MULT = 1000
 
+# ── 품목 retrieval 미확신 판정 임계 ──────────────────────────────────────
+# top1 유사도가 이 값 미만이면 행에 item_uncertain=True를 붙인다. 검수 UI가 후보 칩을
+# 기본 펼침으로 보여주는 신호일 뿐, 자동 기각·재추론에는 쓰지 않는다 — 적중군과 미스군의
+# 유사도 분포가 겹치기 때문이다.
+# 2026-07-28 #17 갱신 뱅크(271→306) leave-self-out 재채점(bank_update score, 35쌍)으로
+# 확정: hit 10건(평균 0.853, 최소 0.7595) · miss 25건(평균 0.770). 0.75는 hit 오염 0%를
+# 유지하는 최댓값이며, 0.76은 miss recall이 동일(36%)한데 hit 오염만 10%p 늘어 0.75에
+# 강지배된다. 이 임계에서도 miss의 64%(16/25)는 여전히 확신으로 표시된다 — 신호는
+# 완전하지 않다. 표본이 35쌍뿐이라 릴리스 후 out-of-sample 재검증이 필요하다.
+# 산정 근거·재조정 절차: docs/work/2026-07/2026-07-28-ocr-candidate-selection/threshold.md
+# (docs/work는 git 비추적 — fresh clone에는 없다. 없으면 Issue #22를 본다.)
+ITEM_CONF_THRESHOLD = 0.75
+
+
+def _is_item_uncertain(top5: list[dict]) -> bool:
+    """품목 top1이 임계 미만이거나 후보가 아예 없으면 미확신으로 본다.
+
+    top5[0]["sim"]은 유일 생산자 infer_job()의 topk() 조립(ip.topk가 항상 float로
+    캐스팅)이 보장하는 계약이다 — 존재하지 않으면 KeyError로 fail-fast, 방어하지 않는다.
+    """
+    if not top5:
+        return True
+    # NaN 입력에도 미확신(True)으로 닫히도록 `<` 대신 `not (>=)`를 쓴다 — NaN 비교는
+    # 항상 False이므로 `<`였다면 NaN이 "확신"으로 fail-open했다(warp_gate.py와 동일 관용구).
+    return not (float(top5[0]["sim"]) >= ITEM_CONF_THRESHOLD)
+
 
 def assemble_result_json(job_id: int, rows: list[dict], warp_ok: bool) -> dict:
     """추론 행들을 천원곱 적용한 구조화 result_json으로 조립한다."""
@@ -31,18 +57,25 @@ def assemble_result_json(job_id: int, rows: list[dict], warp_ok: bool) -> dict:
         supply = r.get("supply")
         if supply is not None:
             supply = supply * THOUSAND_MULT
+        top5 = r.get("item_top5") or []
         out_rows.append(
             {
                 "row_index": r["row_index"],
                 "crop_ref": f"job-{job_id}/row-{r['row_index']}",
-                "item_top5": r.get("item_top5") or [],
+                "item_top5": top5,
                 "supply": supply,
                 "amount_raw": r.get("amount_raw", ""),
+                "item_uncertain": _is_item_uncertain(top5),
             }
         )
         if supply is not None:
             supply_sum += supply
-    return {"rows": out_rows, "supply_sum": supply_sum, "warp_ok": warp_ok}
+    return {
+        "rows": out_rows,
+        "supply_sum": supply_sum,
+        "warp_ok": warp_ok,
+        "item_conf_threshold": ITEM_CONF_THRESHOLD,
+    }
 
 
 def _warp_gate_passes(w, job_id: int) -> bool:
