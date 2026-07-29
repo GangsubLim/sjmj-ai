@@ -369,13 +369,26 @@ def _pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
 
 
-def render_score_md(before: dict, after: dict, meta: dict) -> str:
-    """before/after 요약을 비교 마크다운으로 렌더한다(지표 2종 분리)."""
+# 제외 축 — cmd_score는 항상 둘을 병기한다(CLI 플래그를 두지 않는다, spec D4).
+# 이름이 축을 다 말하지 못하므로(무엇을 제외하는 축인지) 표 제목에서 풀어 쓴다.
+AXES = ("crop_ref", "invoice")
+AXIS_TITLES = {
+    "crop_ref": "crop_ref (쿼리 자신만 제외)",
+    "invoice": "invoice (같은 전표 전체 제외)",
+}
+
+
+def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
+    """(side, axis) → 요약 맵을 제외 축별 표로 렌더한다(표마다 before/after 2열 유지).
+
+    4열(crop_ref before/after · invoice before/after) 한 표로 만들지 않는다 — 읽는 사람이
+    비교해야 할 축은 before↔after이지 crop_ref↔invoice가 아니다(spec §4).
+    """
     rows = [
         ("커버리지 in-bank(self 포함)", "in_bank", "n"),
         ("커버리지 out_of_bank", "out_of_bank", "n"),
-        ("leave-self-out top-1", "top1", "n"),
-        ("leave-self-out top-5", "top5", "n"),
+        ("제외 후 top-1", "top1", "n"),
+        ("제외 후 top-5", "top5", "n"),
         ("peer 존재 한정 top-1", "peer_top1", "peer_n"),
         ("peer 존재 한정 top-5", "peer_top5", "peer_n"),
     ]
@@ -383,18 +396,27 @@ def render_score_md(before: dict, after: dict, meta: dict) -> str:
         "# 뱅크 증분 갱신 전/후 비교",
         "",
         f"- 뱅크 크기: {meta.get('bank_before', '?')} → {meta.get('bank_after', '?')}",
-        f"- 채점 대상(desired 쌍): {after['n']}건 · 동일 채점기로 before/after 산출",
-        "",
-        "| 지표 | before | after |",
-        "| --- | --- | --- |",
+        f"- 채점 대상(desired 쌍): {summaries[('after', AXES[0])]['n']}건 · "
+        "동일 채점기로 before/after 산출",
+        "- 표본 수는 두 축이 같다(같은 쿼리 쌍을 제외 축만 바꿔 채점). 축마다 달라지는 것은",
+        "  후보에서 빠지는 뱅크 항목이며, 그 여파가 peer 분모에 드러난다.",
     ]
-    lines += [
-        f"| {name} | {_pct(before[num], before[den])} | {_pct(after[num], after[den])} |"
-        for name, num, den in rows
-    ]
+    for axis in AXES:
+        before, after = summaries[("before", axis)], summaries[("after", axis)]
+        lines += [
+            "",
+            f"## 제외 축: {AXIS_TITLES[axis]}",
+            "",
+            "| 지표 | before | after |",
+            "| --- | --- | --- |",
+        ]
+        lines += [
+            f"| {name} | {_pct(before[num], before[den])} | {_pct(after[num], after[den])} |"
+            for name, num, den in rows
+        ]
     lines += [
         "",
-        "단일 샘플 라벨은 leave-self-out에서 구조적으로 미스이므로, out_of_bank 해소는",
+        "단일 샘플 라벨은 제외 후 후보가 0이라 구조적으로 미스이므로, out_of_bank 해소는",
         "커버리지 행으로 판단하고 retrieval 개선은 peer 존재 한정 행으로 판단한다.",
     ]
     return "\n".join(lines) + "\n"
@@ -758,6 +780,20 @@ def cmd_apply(args) -> None:
         print(RESTART_HINT)
 
 
+def _axis_excluded(axis: str, keys: list[str], invs: list[str], self_ref: str) -> set[int]:
+    """축 이름 → 제외 집합. invoice 축에도 self_ref를 함께 넘겨 자기 제외를 보장한다(D4).
+
+    Raises:
+        ValueError: axis가 AXES에 없을 때. 검사가 없으면 미지의 축이 crop_ref로 조용히
+            채점돼(spec §3-D3) 세 번째 축을 추가하고 레코드 수만 맞추면 통과해버린다.
+    """
+    if axis not in AXES:
+        raise ValueError(f"미지의 제외 축 {axis!r} — AXES에 없음: {AXES}")
+    if axis == "invoice":
+        return excluded_indices(keys, invs, self_ref=self_ref, self_inv=inv_of(self_ref))
+    return excluded_indices(keys, invs, self_ref=self_ref)
+
+
 def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
@@ -767,8 +803,8 @@ def cmd_score(args) -> None:
     valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
     queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
 
-    summaries: dict[str, dict] = {}
-    per_pair: dict[str, list[dict]] = {}
+    summaries: dict[tuple[str, str], dict] = {}
+    per_pair: dict[tuple[str, str], list[dict]] = {}
     meta: dict[str, int] = {}
     for side, path in (("before", args.before), ("after", args.after)):
         emb, labs, invs, keys = load_bank(path)
@@ -776,26 +812,35 @@ def cmd_score(args) -> None:
         # 한자리에서 검증하던 것을 여기서 잇는다. excluded_indices는 keys↔invs, topk_dedup은
         # sims↔labs만 보므로 emb/lab만 n이고 inv/keys가 n-1인 뱅크는 두 검사를 모두 통과한다.
         validate_bank_arrays(emb, labs, invs, keys)
-        recs = [
-            score_one(
-                (emb @ queries[i]).tolist(),
-                labs,
-                excluded_indices(keys, invs, self_ref=p["crop_ref"]),
-                p["crop_ref"],
-                p["canonical_label"],
-            )
-            for i, p in enumerate(valid)
-        ]
-        summaries[side] = score_summary(recs)
-        per_pair[side] = recs
+        # 유사도는 축과 무관하므로 한 번만 계산해 두 축이 공유한다(임베딩도 여전히 1회).
+        sims = [(emb @ queries[i]).tolist() for i in range(len(valid))]
+        for axis in AXES:
+            recs = [
+                score_one(
+                    sims[i],
+                    labs,
+                    _axis_excluded(axis, keys, invs, p["crop_ref"]),
+                    p["crop_ref"],
+                    p["canonical_label"],
+                )
+                for i, p in enumerate(valid)
+            ]
+            summaries[(side, axis)] = score_summary(recs)
+            per_pair[(side, axis)] = recs
         meta[f"bank_{side}"] = len(keys)
 
-    md = render_score_md(summaries["before"], summaries["after"], meta)
+    md = render_score_md(summaries, meta)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "score.md").write_text(md)
+    # §4 산출물 계약 — 유일키는 (side, axis, crop_ref). 세 키가 모든 레코드에 있어야 한다.
     _write_jsonl(
         args.out / "score.jsonl",
-        [{"side": side, **r} for side in ("before", "after") for r in per_pair[side]],
+        [
+            {"side": side, "axis": axis, **r}
+            for side in ("before", "after")
+            for axis in AXES
+            for r in per_pair[(side, axis)]
+        ],
     )
     print(md)
     print(f"저장: {args.out / 'score.md'}\n저장: {args.out / 'score.jsonl'}")
