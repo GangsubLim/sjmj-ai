@@ -143,7 +143,7 @@ launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
 
 ## 참고
 
-- 설계 근거: 이슈 [#17](https://github.com/nxnsystems/sjmj-ai/issues/17)
+- 설계 근거: 이슈 [#17](https://github.com/GangsubLim/sjmj-ai/issues/17)
 - 선행 분석 절차: `docs/runbooks/ocr-curation-analysis.md`
 - 관련 ADR: `docs/adr/0001-ml-model-artifacts-live-and-train-on-macmini.md`,
   `docs/adr/0004-curation-gate-and-training-pairs-read-model.md`
