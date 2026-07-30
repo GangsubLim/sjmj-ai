@@ -63,7 +63,7 @@ class CurationRepository:
                 conn.execute(
                     text(
                         "SELECT id, crop_ref, row_index, draft_label, final_label, canonical_label, "
-                        "supply, status, reviewed_at FROM training_pairs "
+                        "supply, status, exclusion_reason, reviewed_at FROM training_pairs "
                         "WHERE job_id = :id ORDER BY row_index ASC, id ASC"
                     ),
                     {"id": job_id},
@@ -84,8 +84,8 @@ class CurationRepository:
                 conn.execute(
                     text(
                         "SELECT id, crop_ref, job_id, invoice_id, row_index, draft_label, "
-                        "final_label, canonical_label, supply, status, reviewed_at, created_at "
-                        "FROM training_pairs WHERE id = :id"
+                        "final_label, canonical_label, supply, status, exclusion_reason, "
+                        "reviewed_at, created_at FROM training_pairs WHERE id = :id"
                     ),
                     {"id": pair_id},
                 )

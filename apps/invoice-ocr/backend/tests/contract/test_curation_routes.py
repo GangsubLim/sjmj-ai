@@ -187,6 +187,40 @@ def _first_pair_id(engine, job_id):
         ).scalar()
 
 
+def _set_exclusion(engine, pair_id, *, status, reason):
+    """기계 판정 상태를 직접 심는다(API로는 사유를 쓸 수 없으므로 SQL로 시드)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE training_pairs SET status = :s, exclusion_reason = :r WHERE id = :id"),
+            {"s": status, "r": reason, "id": pair_id},
+        )
+
+
+def test_job_detail_pairs_include_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["pairs"][0]["exclusion_reason"] == "blank_crop"
+
+
+def test_job_detail_pair_exclusion_reason_is_null_by_default(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.json()["data"]["pairs"][0]["exclusion_reason"] is None
+
+
+def test_patch_pair_response_includes_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명"})
+    assert res.status_code == 200
+    # 라벨만 고치는 PATCH는 사유를 건드리지 않는다.
+    assert res.json()["data"]["exclusion_reason"] == "blank_crop"
+
+
 def test_patch_pair_updates_canonical_label(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
