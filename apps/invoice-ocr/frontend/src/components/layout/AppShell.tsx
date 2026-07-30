@@ -2,6 +2,7 @@ import { Component, type ReactNode } from "react";
 import { Outlet } from "react-router-dom";
 import { Toaster } from "@/components/ui/sonner";
 import { useMediaQuery } from "@/hooks/use-media-query";
+import { useVersionReload } from "@/hooks/use-version-reload";
 import { BottomNav } from "./BottomNav";
 import { TopNav } from "./TopNav";
 import { ErrorFallback } from "./ErrorFallback";
@@ -40,6 +41,7 @@ class ErrorBoundary extends Component<
 
 export function AppShell() {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
+  useVersionReload();
 
   return (
     <div className="bg-background min-h-dvh">
