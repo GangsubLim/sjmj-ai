@@ -5,6 +5,24 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.6.0] — 2026-07-30
+
+배포하면 열려 있던 화면이 저절로 새 버전으로 바뀌고, 인식 정확도 수치가 실제 실력을 반영하도록 바로잡았다 ([#55](https://github.com/GangsubLim/sjmj-ai/pull/55), [#54](https://github.com/GangsubLim/sjmj-ai/pull/54)).
+
+### Added
+
+- 메뉴를 옮길 때 서버 버전을 확인해, 새 버전이 배포됐으면 화면을 자동으로 새로 불러온다 ([#55](https://github.com/GangsubLim/sjmj-ai/pull/55))
+- 인식 정확도 리포트가 "같은 전표 제외" 기준을 함께 보여줘, 같은 전표의 다른 칸이 답을 알려주는 과대평가를 걸러낸다 ([#54](https://github.com/GangsubLim/sjmj-ai/pull/54))
+
+### Fixed
+
+- 배포 직후 열려 있던 탭에서 아직 안 눌러본 메뉴나 PDF 저장이 실패하던 문제 해소 — 이전 버전 파일을 서버에 남긴다 ([#55](https://github.com/GangsubLim/sjmj-ai/pull/55))
+- 화면 파일이 오래된 상태로 캐시되던 문제 수정 — 화면 틀은 매번 새로 받고, 내용이 고정된 파일만 길게 캐시한다 ([#55](https://github.com/GangsubLim/sjmj-ai/pull/55))
+
+### Changed
+
+- 학습쌍 제외 기준·부트스트랩 세트·회귀 평가셋 용어를 문서에 명문화 (f48db94, ef677fb)
+
 ## [v0.5.0] — 2026-07-29
 
 품목 인식이 헷갈릴 때 이를 숨기지 않고 알려주고, 후보 중에서 바로 고를 수 있게 한다 ([#42](https://github.com/GangsubLim/sjmj-ai/pull/42)).
