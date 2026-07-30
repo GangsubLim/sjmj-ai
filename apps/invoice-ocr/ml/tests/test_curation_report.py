@@ -3,8 +3,14 @@
 import pytest
 
 from tools.curation_report import (
+    COHORTS,
+    DATA_INTEGRITY_FAILURE_BUCKETS,
+    TEMPORAL_UNEVALUABLE_BUCKETS,
+    UNEVALUABLE_BUCKETS,
     amount_bucket,
     enrich_pairs,
+    is_item_evaluable,
+    is_item_failure,
     job_flags,
     label_bucket,
     oob_label_counts,
@@ -12,6 +18,7 @@ from tools.curation_report import (
     parse_pairs_tsv,
     pull_images,
     render_report,
+    sample_cohort,
     summarize,
 )
 
@@ -140,6 +147,142 @@ def test_amount_bucket_misread():
 
 def test_amount_bucket_ok_when_both_zero():
     assert amount_bucket(0, 0) == "ok"
+
+
+# --- 코호트 판정 (시점 정합의 핵심 — spec §3-C) ---
+
+
+def test_cohort_is_reevaluated_when_a_valid_reeval_record_exists():
+    # has_reeval은 "유효성 게이트를 통과한 재평가에 그 쌍이 있다"는 뜻이다(§3-C).
+    assert (
+        sample_cohort(job_retrieval_version="old", current_retrieval_version="cur", has_reeval=True)
+        == "reevaluated"
+    )
+    assert (
+        sample_cohort(job_retrieval_version=None, current_retrieval_version="cur", has_reeval=True)
+        == "reevaluated"
+    )
+
+
+def test_cohort_is_unknown_when_the_job_has_no_stamp():
+    assert (
+        sample_cohort(job_retrieval_version=None, current_retrieval_version="cur", has_reeval=False)
+        == "unknown"
+    )
+    assert (
+        sample_cohort(job_retrieval_version="", current_retrieval_version="cur", has_reeval=False)
+        == "unknown"
+    )
+
+
+def test_cohort_is_current_bank_when_the_stamp_matches_now():
+    assert (
+        sample_cohort(
+            job_retrieval_version="cur", current_retrieval_version="cur", has_reeval=False
+        )
+        == "current_bank"
+    )
+
+
+def test_cohort_is_stale_bank_when_the_stamp_differs():
+    assert (
+        sample_cohort(
+            job_retrieval_version="old", current_retrieval_version="cur", has_reeval=False
+        )
+        == "stale_bank"
+    )
+
+
+def test_cohort_is_stale_bank_when_the_current_fingerprint_is_unknown():
+    # 현재 지문을 못 얻은 상태에서 "같다"고 볼 근거가 없다 — fail-closed.
+    assert (
+        sample_cohort(job_retrieval_version="old", current_retrieval_version=None, has_reeval=False)
+        == "stale_bank"
+    )
+
+
+def test_sample_cohort_range_matches_cohorts_bijectively():
+    """H2 — sample_cohort의 실제 반환값 집합이 COHORTS와 양방향으로 일치하는지 전수로 잡는다.
+
+    COHORTS는 이제 Cohort literal에서 get_args로 도출돼 진실원이 하나지만, 그 타입 힌트는
+    런타임에 강제되지 않는다. 5번째 분기를 추가하고 COHORTS를 잊으면(반환값이 COHORTS 밖으로
+    새는 경우) 또는 반대로 COHORTS에 넣고 분기를 잊으면(어떤 코호트가 영영 반환되지 않는 경우)
+    이 테스트가 잡는다 — 항등식 하나만 보는 예전 테스트는 sample_cohort를 호출조차 하지
+    않아 이 두 가지 회귀 모두 놓쳤다.
+    """
+    stamps = (None, "", "old", "cur")
+    currents = (None, "cur")
+    reevals = (True, False)
+    outputs = {
+        sample_cohort(
+            job_retrieval_version=stamp,
+            current_retrieval_version=current,
+            has_reeval=has_reeval,
+        )
+        for stamp in stamps
+        for current in currents
+        for has_reeval in reevals
+    }
+    assert outputs == set(COHORTS)
+
+
+def test_sample_cohort_rejects_positional_arguments():
+    """M7 — 동종 타입(str|None, str|None) 2인자 + bool 위치 시그니처는 두 지문을 뒤바꿔
+    넘겨도 예외 없이 unknown/stale_bank만 어긋난다. 키워드 전용으로 막는다.
+    """
+    with pytest.raises(TypeError):
+        sample_cohort("old", "cur", False)
+
+
+def test_unevaluable_buckets_is_the_union_of_the_two_concern_axes():
+    """M3 — 데이터 정합 축과 시점 판정 축이 합쳐진 상수라는 계약을 고정한다."""
+    assert set(UNEVALUABLE_BUCKETS) == set(TEMPORAL_UNEVALUABLE_BUCKETS) | set(
+        DATA_INTEGRITY_FAILURE_BUCKETS
+    )
+
+
+# --- 판정 술어 (판정 불가는 실패가 아니다 — spec §3-C) ---
+
+
+def _row_for_predicates(label_bucket="ok", amount_bucket="ok"):
+    return {"label_bucket": label_bucket, "amount_bucket": amount_bucket}
+
+
+def test_is_item_evaluable_excludes_unevaluable_and_row_missing():
+    assert is_item_evaluable(_row_for_predicates("ok")) is True
+    assert is_item_evaluable(_row_for_predicates("out_of_bank")) is True
+    assert is_item_evaluable(_row_for_predicates("unevaluable")) is False
+    assert is_item_evaluable(_row_for_predicates("row_missing")) is False
+
+
+def test_is_item_failure_is_false_for_unevaluable_items_with_healthy_amounts():
+    assert is_item_failure(_row_for_predicates("unevaluable", "ok")) is False
+
+
+def test_row_missing_is_excluded_from_performance_but_stays_an_operational_failure():
+    """데이터 정합 장애는 성능 분모에서 빠지지만 실패 목록에서 사라지면 안 된다(신호 상실)."""
+    row = _row_for_predicates("row_missing", None)
+    assert is_item_evaluable(row) is False
+    assert is_item_failure(row) is True
+
+
+def test_is_item_failure_keeps_amount_failures_even_when_the_item_is_unevaluable():
+    # 두 축은 독립이고(금액 버킷은 뱅크와 무관), 재평가 전 유일하게 살아 있는 검수 루프다.
+    assert is_item_failure(_row_for_predicates("unevaluable", "zero_drift")) is True
+    assert is_item_failure(_row_for_predicates("row_missing", "degenerate")) is True
+
+
+def test_is_item_failure_is_true_for_an_evaluable_item_miss():
+    assert is_item_failure(_row_for_predicates("in_bank_miss", "ok")) is True
+    assert is_item_failure(_row_for_predicates("ok", "ok")) is False
+
+
+def test_is_item_failure_is_false_for_an_ok_item_with_no_amount_recorded():
+    """M6 — enrich_pairs는 금액 미기재(supply is None)에 label_bucket과 무관하게
+    amount_bucket=None을 낸다(실데이터 경로). `(None, "ok")`에서 None을 지우는 뮤턴트가
+    이 테스트 없이는 통과했다 — 회귀하면 금액 미기재 쌍 전부가 실패로 계상된다.
+    """
+    assert is_item_failure(_row_for_predicates("ok", None)) is False
 
 
 # --- enrich (pairs × result_json × bank 조인) ---

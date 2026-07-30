@@ -22,6 +22,7 @@ import tarfile
 from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, get_args
 
 from tools.remote import (
     ENV_BACKEND_ENV,
@@ -125,6 +126,100 @@ def amount_bucket(draft: int | None, final: int) -> str:
     if draft == -final:
         return "sign_mismatch"
     return "misread"
+
+
+# 코호트 — 그 쌍의 품목 지표를 지금 해석할 수 있는지의 판정(spec §3-C).
+# Cohort literal이 진실원이고 COHORTS는 get_args로 거기서 도출한다(bank_update.py의
+# Scope/SCOPES 관용구와 동일) — sample_cohort의 반환 타입과 COHORTS가 구조적으로
+# 드리프트할 수 없다. 다만 타입 힌트는 런타임에 강제되지 않으므로, sample_cohort의
+# *실제 반환값 집합*이 이 치역과 일치하는지는
+# test_sample_cohort_range_matches_cohorts_bijectively가 전수 입력 조합으로 별도 검증한다.
+# 후속 task(Task 11)의 pair_cohort가 여기에 no_label을 더하고, Task 12의 COHORT_TABLE이
+# 둘을 합친 표현 계층을 만든다 — 이 커밋에는 아직 없다.
+Cohort = Literal["reevaluated", "current_bank", "stale_bank", "unknown"]
+COHORTS = get_args(Cohort)
+
+# 품목 판정이 성립하지 않는 버킷 — 관심사가 다른 두 축의 합이다.
+# unevaluable: 시점 판정 불가(재평가 없음 + 뱅크 스탬프 불일치/부재).
+# row_missing: 데이터 정합 장애(재처리로 result_json과 training_pairs 조인이 어긋난 상태).
+# is_item_failure는 DATA_INTEGRITY_FAILURE_BUCKETS만 따로 참조한다(아래) — 그래서 셋째
+# 판정 불가 버킷이 TEMPORAL_UNEVALUABLE_BUCKETS에 추가돼도 is_item_failure의 기본값이
+# 조용히 "실패 아님"으로 기울지 않는다.
+TEMPORAL_UNEVALUABLE_BUCKETS = ("unevaluable",)
+DATA_INTEGRITY_FAILURE_BUCKETS = ("row_missing",)
+UNEVALUABLE_BUCKETS = TEMPORAL_UNEVALUABLE_BUCKETS + DATA_INTEGRITY_FAILURE_BUCKETS
+
+
+def sample_cohort(
+    *,
+    job_retrieval_version: str | None,
+    current_retrieval_version: str | None,
+    has_reeval: bool,
+) -> Cohort:
+    """쌍 1건이 어느 코호트인지 판정한다 — 지표 산출 대상은 reevaluated·current_bank뿐이다.
+
+    판정 근거는 파일 타임스탬프가 아니라 retrieval 지문이다(워커는 기동 시 뱅크를 1회만
+    적재하므로 파일 mtime은 추론 시점을 말해주지 않는다, spec §1.1).
+
+    인자를 키워드 전용으로 강제한다 — job_retrieval_version과 current_retrieval_version은
+    동종 타입(str | None)이라 위치 인자로 넘기면 두 지문을 뒤바꿔도 예외 없이 unknown/
+    stale_bank만 조용히 어긋난다.
+
+    Args:
+        job_retrieval_version: 그 잡 result_json의 retrieval_version. 스탬프 이전 잡은 None.
+        current_retrieval_version: 현재 서버의 retrieval 지문. 못 얻었으면 None.
+        has_reeval: 유효성 게이트를 통과한 재평가에 그 쌍이 있는지. stale 재평가는 이 인자가
+            만들어지기 전에 걸러지므로, 여기서 강등되는 것이 아니라 애초에 False로 들어온다.
+
+    Returns:
+        "reevaluated"(재평가 있음) · "unknown"(스탬프 없음) · "current_bank"(스탬프 == 현재) ·
+        "stale_bank"(그 외). 현재 지문을 못 얻은 경우도 stale_bank다 — "같다"고 볼 근거가 없다.
+    """
+    if has_reeval:
+        return "reevaluated"
+    if not job_retrieval_version:
+        return "unknown"
+    if job_retrieval_version == current_retrieval_version:
+        return "current_bank"
+    return "stale_bank"
+
+
+def is_item_evaluable(row: dict) -> bool:
+    """그 쌍의 품목 판정이 성능 수치로 해석 가능한지 판정한다 — `label_bucket` 한 키만 본다.
+
+    **전제**: 코호트 판정이 이미 `label_bucket`에 반영돼 있다고 가정한다 — `reevaluated`·
+    `current_bank` 외 코호트(`stale_bank`·`unknown`)는 `label_bucket == "unevaluable"`로
+    귀속된 뒤에야 이 함수의 반환값이 의미를 갖는다. 그 배선(코호트 판정 → label_bucket 대입)은
+    아직 없다(Task 11의 `enrich_pairs`가 만든다) — 이 함수 자체는 코호트를 보지 않는다.
+
+    소비자를 하나씩 고치면 빠뜨리는 자리가 생긴다(spec §3-C). 특히 `_failure_job_ids`가
+    판정 불가를 실패로 세면 `pull-images`가 전 잡 크롭을 당긴다.
+    """
+    return row["label_bucket"] not in UNEVALUABLE_BUCKETS
+
+
+def is_item_failure(row: dict) -> bool:
+    """검수 대상 실패인지 판정한다 — 품목축·금액축·row_missing 세 조건의 **합집합**이다.
+
+    ⚠️ 품목축 전용 판정에는 쓰면 안 된다. 리트리벌 미스 목록·잡별 top-1 분모 같은 품목축
+    전용 자리에 이 술어를 그대로 끼우면 금액 실패·row_missing까지 품목 실패로 오집계돼
+    분석 결론이 뒤집힌다. 품목축만 필요하면
+    `is_item_evaluable(row) and row["label_bucket"] != "ok"`로 직접 조합해야 한다.
+
+    row_missing은 시점 판정 불가가 아니라 **실재하는 데이터 정합 장애**(재처리로 result_json과
+    training_pairs가 어긋난 상태)이므로 성능 분모에서만 빼고 운영 실패로는 남긴다 — 현행
+    리포트도 이를 `_failure_job_ids`와 `main`의 report 분기가 만드는 `failures.jsonl`·
+    `pull-images` 목록에 넣는다. 금액 버킷은 뱅크와 무관하므로(spec §8) 재평가 전에도
+    유효한 검수 루프다.
+
+    `status == "excluded"`(검수자가 학습 제외한 쌍)는 이 술어에 포함되지 않는다 —
+    `_failure_job_ids`가 별도로 OR한다(spec §3-C의 소비자 표는 "`is_item_failure` 또는
+    `excluded`"로 규정한다).
+    """
+    if row["label_bucket"] in DATA_INTEGRITY_FAILURE_BUCKETS:
+        return True
+    item_failed = is_item_evaluable(row) and row["label_bucket"] != "ok"
+    return item_failed or row["amount_bucket"] not in (None, "ok")
 
 
 def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[dict]:
