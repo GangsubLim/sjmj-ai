@@ -11,9 +11,11 @@ import numpy as np
 import pytest
 
 from tools.bank_update import (
+    AXES,
     EMB_DIM,
     BankDiff,
     MergePlan,
+    _axis_excluded,
     _mysql,
     apply_sync,
     backup_bank,
@@ -23,6 +25,7 @@ from tools.bank_update import (
     cmd_score,
     diff_bank,
     diff_from_records,
+    excluded_indices,
     has_peer_sample,
     inv_of,
     is_crop_ref,
@@ -41,7 +44,7 @@ from tools.bank_update import (
     score_one,
     score_summary,
     select_desired,
-    topk_excluding_self,
+    topk_dedup,
     validate_bank_arrays,
 )
 
@@ -344,6 +347,16 @@ def test_merge_plan_is_frozen_dataclass():
 
 def test_inv_of_extracts_job_prefix():
     assert inv_of("job-42/row-3") == "job-42"
+
+
+def test_inv_of_rejects_bootstrap_key_instead_of_silently_returning_it():
+    """부트스트랩 key('2025-08-18_inv011_0')는 슬래시가 없어 split이 key 자신을 돌려준다.
+
+    조용히 성공하면 어떤 뱅크 항목과도 일치하지 않는 제외 집합이 무성으로 비어버린다
+    (spec §2 — 이번 이슈의 초안이 실제로 그 함정에 빠졌다).
+    """
+    with pytest.raises(ValueError, match="crop_ref 형식이 아님"):
+        inv_of("2025-08-18_inv011_0")
 
 
 # --- npz IO 헬퍼 ---
@@ -734,81 +747,237 @@ def test_require_removal_confirmation_validates_records_before_counting():
 # --- score: leave-self-out retrieval (§3 score) ---
 
 _LABS = ["안가방", "공임", "안가방"]
-_KEYS = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
+
+# 부트스트랩(구세대) 네임스페이스 — key에 슬래시가 없고 inv는 .jpg가 붙는다(spec §2 실측).
+_BOOT_KEYS = ["2025-08-18_inv011_0", "2025-08-18_inv011_1", "2025-08-20_inv012_0"]
+_BOOT_INVS = ["2025-08-18_inv011.jpg", "2025-08-18_inv011.jpg", "2025-08-20_inv012.jpg"]
 
 
-def test_topk_excluding_self_skips_the_query_crop_itself():
-    preds = topk_excluding_self([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", 5)
+def test_excluded_indices_reads_the_bank_inv_column_not_the_key():
+    """전표 판정 근거는 뱅크 inv 열이다 — key 파싱 구현이면 여기서 죽는다(spec §2·§5-1).
+
+    부트스트랩 key에는 슬래시가 없어 inv_of(key) 방식은 key 자신을 돌려주고, 그 값은
+    inv 열('...jpg')과 절대 일치하지 않아 제외가 조용히 0건이 된다.
+    """
+    got = excluded_indices(
+        _BOOT_KEYS,
+        _BOOT_INVS,
+        self_ref="2025-08-18_inv011_0",
+        self_inv="2025-08-18_inv011.jpg",
+    )
+    assert got == {0, 1}
+
+
+def test_excluded_indices_crop_ref_axis_excludes_only_the_query_itself():
+    assert excluded_indices(_BOOT_KEYS, _BOOT_INVS, self_ref="2025-08-18_inv011_0") == {0}
+
+
+def test_excluded_indices_returns_empty_set_for_a_holdout_query():
+    """뱅크에 자기도 동일 전표도 없는 hold-out 표본 — 빈 집합은 정상이다(D3)."""
+    assert excluded_indices(_BOOT_KEYS, _BOOT_INVS, self_ref="job-9/row-0") == set()
+
+
+def test_excluded_indices_rejects_invoice_axis_without_the_inv_column():
+    """전표 축을 요청했는데 판단 재료가 없다 — §2의 무성 실패 재발 방지(D3)."""
+    with pytest.raises(ValueError, match="invs가 None"):
+        excluded_indices(
+            _BOOT_KEYS, None, self_ref="2025-08-18_inv011_0", self_inv="2025-08-18_inv011.jpg"
+        )
+
+
+def test_excluded_indices_unions_both_axes_when_they_point_elsewhere():
+    """self_ref·self_inv 두 축이 서로소일 때 합집합이어야 한다(덮어쓰기 뮤테이션 방지).
+
+    self_ref는 인덱스 2만, self_inv는 인덱스 0,1만 가리켜 두 축이 겹치지 않는다 — 기존
+    테스트는 두 축 결과가 포함관계({0} ⊂ {0,1})라 `out |= {...}`를 `out = {...}`로 바꿔도
+    (= self_inv가 주어지면 self_ref 축을 버림) 통과해버려 이 뮤테이션을 잡지 못했다.
+    """
+    got = excluded_indices(
+        _BOOT_KEYS,
+        _BOOT_INVS,
+        self_ref="2025-08-20_inv012_0",  # 인덱스 2
+        self_inv="2025-08-18_inv011.jpg",  # 인덱스 0,1
+    )
+    assert got == {0, 1, 2}
+
+
+def test_excluded_indices_rejects_scoring_with_nothing_excluded():
+    """제외 없이 채점하면 자기 자신이 항상 1등이라 조용한 오답이 된다(D3)."""
+    with pytest.raises(ValueError, match="self_ref/self_inv"):
+        excluded_indices(_BOOT_KEYS, _BOOT_INVS)
+
+
+def test_excluded_indices_rejects_mismatched_keys_and_invs_lengths():
+    """판단 재료 두 열이 어긋나면 엉뚱한 인덱스를 제외한다(D3)."""
+    with pytest.raises(ValueError, match="길이 불일치"):
+        excluded_indices(_BOOT_KEYS, _BOOT_INVS[:2], self_ref="2025-08-18_inv011_0")
+
+
+def test_axis_excluded_rejects_an_axis_with_no_branch_wired(monkeypatch):
+    """§3-D3 — 분기가 없는 축을 crop_ref로 조용히 채점하지 않는다(fail-fast).
+
+    AXES 화이트리스트만 검사하면 **AXES에 추가했지만 분기를 빠뜨린** 축이 통과해 crop_ref
+    숫자를 다른 이름표로 달고 산출된다. 레코드 수(side×axis×쌍)는 그대로 맞아 §4 유일키·개수
+    단언도 못 잡으므로, 여기서 AXES에 있는 미배선 축까지 거부하는지 본다.
+    """
+    with pytest.raises(ValueError, match="미지의 제외 축"):
+        _axis_excluded("bogus", _BOOT_KEYS, _BOOT_INVS, "2025-08-18_inv011_0")
+
+    monkeypatch.setattr("tools.bank_update.AXES", ("crop_ref", "invoice", "writer"))
+    with pytest.raises(ValueError, match="미지의 제외 축"):
+        _axis_excluded("writer", _BOOT_KEYS, _BOOT_INVS, "2025-08-18_inv011_0")
+
+
+def test_axis_excluded_on_invoice_axis_excludes_self_even_when_its_inv_disagrees():
+    """D4 — invoice 축에도 self_ref를 넘겨 뱅크 `inv` 값이 어떻든 자기 제외를 보장한다.
+
+    두 cmd_score 픽스처는 `inv`가 `key`와 정렬돼 inv 제외가 self 제외의 상위집합이므로,
+    invoice 분기에서 `self_ref=self_ref`를 지워도 전부 통과한다. 자기 행의 `inv`만 어긋난
+    뱅크를 세워 그 뮤테이션을 잡는다.
+    """
+    keys = ["job-1/row-0", "job-1/row-1"]
+    invs = ["job-9", "job-1"]  # 인덱스 0(자기 행)의 inv가 job-1을 가리키지 않는다
+
+    assert _axis_excluded("invoice", keys, invs, "job-1/row-0") == {0, 1}
+
+
+def test_topk_dedup_skips_excluded_indices():
+    """§5-7 이관 — 자기 제외가 '축 판단'이 아니라 '집합 소비'로 바뀐다."""
+    preds = topk_dedup([0.99, 0.5, 0.8], _LABS, {0})
     assert [lb for lb, _ in preds] == ["안가방", "공임"]
     assert preds[0][1] == 0.8
 
 
-def test_topk_excluding_self_dedups_labels_like_infer_photo():
+def test_topk_dedup_dedups_labels_like_infer_photo():
+    """§5-7 이관 — 중복 제거 규칙은 운영 retrieval(handwriting/infer_photo.py)과 동일하다."""
     labs = ["안가방", "안가방", "공임"]
-    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
-    preds = topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 5)
+    preds = topk_dedup([0.9, 0.8, 0.7], labs, set())
     assert [lb for lb, _ in preds] == ["안가방", "공임"]
 
 
-def test_topk_excluding_self_respects_k():
-    labs = ["a", "b", "c"]
-    keys = ["job-1/row-0", "job-2/row-0", "job-3/row-0"]
-    assert len(topk_excluding_self([0.9, 0.8, 0.7], labs, keys, "job-9/row-0", 2)) == 2
+def test_topk_dedup_respects_k():
+    """§5-7 이관."""
+    assert len(topk_dedup([0.9, 0.8, 0.7], ["a", "b", "c"], set(), 2)) == 2
 
 
-def test_topk_excluding_self_is_empty_when_only_self_in_bank():
-    assert topk_excluding_self([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5) == []
+def test_topk_dedup_is_empty_when_everything_is_excluded():
+    """§5-7 이관 — 자기만 뱅크에 있을 때 빈 결과."""
+    assert topk_dedup([0.99], ["안가방"], {0}) == []
 
 
-def test_topk_excluding_self_rejects_mismatched_lengths():
+def test_topk_dedup_rejects_labs_shorter_than_sims():
+    """§5-7 이관(분할) — 길이 검증이 excluded_indices와 topk_dedup 둘에 나뉘어 남는다."""
     with pytest.raises(ValueError, match="길이 불일치"):
-        topk_excluding_self([0.9, 0.8], ["안가방"], ["job-1/row-0"], "job-1/row-0", 5)
+        topk_dedup([0.9, 0.8], ["안가방"], set())
 
 
-def test_has_peer_sample_false_for_single_sample_label():
-    assert has_peer_sample("job-1/row-0", "안가방", ["안가방"], ["job-1/row-0"]) is False
+def test_topk_dedup_rejects_labs_longer_than_sims_instead_of_dropping_the_tail():
+    """D3 — 짧은 labs는 IndexError로 티가 나지만 긴 labs는 아무 신호 없이 꼬리가 버려진다.
+
+    정렬 범위가 len(sims)이기 때문이다. 그래서 별도 케이스로 둔다(spec §5-2).
+    """
+    with pytest.raises(ValueError, match="길이 불일치"):
+        topk_dedup([0.9], ["안가방", "공임"], set())
 
 
-def test_has_peer_sample_true_when_other_crop_shares_label():
-    assert has_peer_sample("job-1/row-0", "안가방", _LABS, _KEYS) is True
+def test_topk_dedup_rejects_excluded_index_out_of_range():
+    """D3 부분 방어 — 항목 1개만큼 줄어든 스테일 제외 집합(경계값 max(excluded) == len(sims))을 잡는다."""
+    with pytest.raises(ValueError, match="범위"):
+        topk_dedup([0.9, 0.8], ["안가방", "공임"], {2})
+
+
+def test_has_peer_sample_false_when_the_only_carrier_is_excluded():
+    assert has_peer_sample("안가방", ["안가방"], {0}) is False
+
+
+def test_has_peer_sample_true_when_another_crop_shares_label():
+    assert has_peer_sample("안가방", _LABS, {0}) is True
+
+
+def test_has_peer_sample_rejects_excluded_index_out_of_range():
+    """M3 — topk_dedup과 같은 경계값(max(excluded) == len(labs))을 has_peer_sample도 막아야 한다.
+
+    score_one 안에서는 topk_dedup이 먼저 호출돼 이 케이스를 가려주지만, has_peer_sample을
+    단독으로 부르는 소비자(excluded_indices docstring이 명시적으로 예상)는 이 방어가 없으면
+    조용히 틀린 peer 분모를 받는다(spec §3-D3).
+    """
+    with pytest.raises(ValueError, match="범위"):
+        has_peer_sample("안가방", ["안가방", "공임"], {2})
 
 
 def test_score_one_counts_coverage_even_when_only_self_carries_label():
-    """단일 샘플 라벨 — 커버리지는 hit, leave-self-out retrieval은 구조적 miss."""
-    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    """단일 샘플 라벨 — 커버리지는 hit, 제외 후 retrieval은 구조적 miss."""
+    rec = score_one([0.99], ["안가방"], {0}, "job-1/row-0", "안가방")
     assert rec["in_bank"] is True
     assert rec["top1"] is False and rec["top5"] is False
     assert rec["has_peer"] is False
 
 
 def test_score_one_marks_out_of_bank_when_label_absent():
-    rec = score_one([0.5], ["공임"], ["job-2/row-0"], "job-1/row-0", "안가방")
+    rec = score_one([0.5], ["공임"], set(), "job-1/row-0", "안가방")
     assert rec["in_bank"] is False and rec["top1"] is False
+    assert rec["has_peer"] is False
 
 
 def test_score_one_hits_top1_with_peer_sample():
-    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+    rec = score_one([0.99, 0.5, 0.8], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1"] is True and rec["top5"] is True and rec["has_peer"] is True
 
 
-def test_score_one_reports_leave_self_out_top1_sim():
-    # self(job-1/row-0, 0.99)를 뺀 top1은 job-3/row-0의 '안가방'(0.8)
-    rec = score_one([0.99, 0.5, 0.8], _LABS, _KEYS, "job-1/row-0", "안가방")
+def test_score_one_reports_top1_sim_of_the_surviving_candidate():
+    # self(index 0, 0.99)를 뺀 top1은 index 2의 '안가방'(0.8)
+    rec = score_one([0.99, 0.5, 0.8], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1_sim"] == pytest.approx(0.8)
 
 
 def test_score_one_top1_sim_is_none_when_no_candidate_remains():
-    # 단일 샘플 라벨 — self를 빼면 후보가 0이라 유사도를 말할 수 없다
-    rec = score_one([0.99], ["안가방"], ["job-1/row-0"], "job-1/row-0", "안가방")
+    # 단일 샘플 라벨 — 자기를 빼면 후보가 0이라 유사도를 말할 수 없다
+    rec = score_one([0.99], ["안가방"], {0}, "job-1/row-0", "안가방")
     assert rec["top1_sim"] is None
 
 
-def test_score_one_top1_sim_follows_self_exclusion_not_raw_max():
-    # raw max는 self의 0.99지만, self 제외 후 top1은 '공임'(0.9)으로 바뀐다.
-    # top1_sim은 예측(top1)과 같은 후보를 가리켜야 한다.
-    rec = score_one([0.99, 0.9, 0.3], _LABS, _KEYS, "job-1/row-0", "안가방")
+def test_score_one_top1_sim_follows_exclusion_not_raw_max():
+    # raw max는 제외된 index 0의 0.99지만, 제외 후 top1은 '공임'(0.9)으로 바뀐다.
+    rec = score_one([0.99, 0.9, 0.3], _LABS, {0}, "job-1/row-0", "안가방")
     assert rec["top1"] is False
     assert rec["top1_sim"] == pytest.approx(0.9)
+
+
+def test_peer_denominator_and_topk_share_the_same_excluded_set():
+    """§5-5 — 같은 excluded를 준 두 함수가 일관되게 움직인다.
+
+    invoice 축이 동일 전표 peer까지 빼면 topk 후보와 peer 분모가 동시에 사라져야 한다.
+    """
+    labs = ["안가방", "안가방", "공임"]
+    keys = ["2025-09-01_inv047_0", "2025-09-01_inv047_1", "2025-11-07_inv203_0"]
+    invs = ["2025-09-01_inv047.jpg", "2025-09-01_inv047.jpg", "2025-11-07_inv203.jpg"]
+    sims = [1.0, 0.9, 0.1]
+
+    ex = excluded_indices(keys, invs, self_ref=keys[0], self_inv=invs[0])
+    assert [lb for lb, _ in topk_dedup(sims, labs, ex)] == ["공임"]
+    assert has_peer_sample("안가방", labs, ex) is False
+
+
+def test_score_one_diverges_between_crop_ref_and_invoice_axis():
+    """§5-4 — 같은 전표에 같은 라벨이 중복된 실측 케이스(2025-09-01_inv047 '공임' x3).
+
+    crop_ref 축은 같은 전표의 다른 crop이 답을 알려줘 적중하고, invoice 축은 미스가 된다.
+    """
+    labs = ["공임", "공임", "원터치"]
+    keys = ["2025-09-01_inv047_0", "2025-09-01_inv047_1", "2025-11-03_inv187_0"]
+    invs = ["2025-09-01_inv047.jpg", "2025-09-01_inv047.jpg", "2025-11-03_inv187.jpg"]
+    sims = [1.0, 0.95, 0.2]
+
+    by_crop = score_one(sims, labs, excluded_indices(keys, invs, self_ref=keys[0]), keys[0], "공임")
+    by_inv = score_one(
+        sims,
+        labs,
+        excluded_indices(keys, invs, self_ref=keys[0], self_inv=invs[0]),
+        keys[0],
+        "공임",
+    )
+    assert by_crop["top1"] is True and by_crop["has_peer"] is True
+    assert by_inv["top1"] is False and by_inv["has_peer"] is False
 
 
 def test_score_summary_splits_peer_denominator():
@@ -826,38 +995,66 @@ def _score_rec(*, in_bank=False, top1=False, top5=False, has_peer=False):
     return {"in_bank": in_bank, "top1": top1, "top5": top5, "has_peer": has_peer}
 
 
+def _axis_summaries(before_recs, after_recs):
+    """두 축이 같은 요약을 갖는 단순 맵 — 축 분리 자체를 검증하지 않는 테스트용."""
+    return {
+        (side, axis): score_summary(recs)
+        for side, recs in (("before", before_recs), ("after", after_recs))
+        for axis in AXES
+    }
+
+
 def test_render_score_md_renders_every_cell_with_before_after_percentages():
     """헤더 문자열만 보면 before 열 누락·before/after 뒤바뀜·퍼센트 오산을 못 잡는다."""
-    before = score_summary(
-        [_score_rec(in_bank=True, top1=True, top5=True, has_peer=True)] + [_score_rec()] * 3
+    before_recs = [_score_rec(in_bank=True, top1=True, top5=True, has_peer=True)] + [
+        _score_rec()
+    ] * 3
+    after_recs = [
+        _score_rec(in_bank=True, top1=True, top5=True, has_peer=True),
+        _score_rec(in_bank=True, top5=True, has_peer=True),
+        _score_rec(in_bank=True),
+        _score_rec(in_bank=True),
+    ]
+    md = render_score_md(
+        _axis_summaries(before_recs, after_recs), {"bank_before": 100, "bank_after": 120}
     )
-    after = score_summary(
-        [
-            _score_rec(in_bank=True, top1=True, top5=True, has_peer=True),
-            _score_rec(in_bank=True, top5=True, has_peer=True),
-            _score_rec(in_bank=True),
-            _score_rec(in_bank=True),
-        ]
-    )
-    md = render_score_md(before, after, {"bank_before": 100, "bank_after": 120})
 
     assert "- 뱅크 크기: 100 → 120" in md
     assert "- 채점 대상(desired 쌍): 4건" in md
-    assert "| 커버리지 in-bank(self 포함) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
+    assert "| 커버리지 in-bank(제외 무관) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
     assert "| 커버리지 out_of_bank | 3/4 (75.0%) | 0/4 (0.0%) |" in md
-    assert "| leave-self-out top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
-    assert "| leave-self-out top-5 | 1/4 (25.0%) | 2/4 (50.0%) |" in md
+    assert "| 제외 후 top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
+    assert "| 제외 후 top-5 | 1/4 (25.0%) | 2/4 (50.0%) |" in md
     assert "| peer 존재 한정 top-1 | 1/1 (100.0%) | 1/2 (50.0%) |" in md
     assert "| peer 존재 한정 top-5 | 1/1 (100.0%) | 2/2 (100.0%) |" in md
 
 
 def test_render_score_md_renders_dash_when_denominator_is_zero():
     """채점 대상 0건에서도 ZeroDivisionError 없이 '0/0 (—)'로 렌더돼야 한다."""
-    empty = score_summary([])
-    md = render_score_md(empty, empty, {})
+    md = render_score_md(_axis_summaries([], []), {})
     assert "- 뱅크 크기: ? → ?" in md
-    assert "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in md
+    assert "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in md
     assert "| peer 존재 한정 top-1 | 0/0 (—) | 0/0 (—) |" in md
+
+
+def test_render_score_md_splits_one_table_per_axis():
+    """§4 — 축별 표 2개. before/after 2열 구조를 유지하고 4열로 만들지 않는다."""
+    hit = _score_rec(in_bank=True, top1=True, top5=True, has_peer=True)
+    miss = _score_rec(in_bank=True)
+    summaries = {
+        ("before", "crop_ref"): score_summary([hit]),
+        ("after", "crop_ref"): score_summary([hit]),
+        ("before", "invoice"): score_summary([miss]),
+        ("after", "invoice"): score_summary([miss]),
+    }
+    md = render_score_md(summaries, {"bank_before": 100, "bank_after": 120})
+
+    assert md.count("| 지표 | before | after |") == 2
+    assert md.index("## 제외 축: crop_ref") < md.index("## 제외 축: invoice")
+
+    crop_part, inv_part = md.split("## 제외 축: invoice")
+    assert "| 제외 후 top-1 | 1/1 (100.0%) | 1/1 (100.0%) |" in crop_part
+    assert "| 제외 후 top-1 | 0/1 (0.0%) | 0/1 (0.0%) |" in inv_part
 
 
 # --- DB TSV 파싱 / env 경계 / CLI (mysql 호출 자체는 단위테스트 범위 밖) ---
@@ -1107,9 +1304,15 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
         _pair(crop_ref="job-1/row-0", canonical_label="안가방"),
         _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="공임"),
     ]
+    embed_calls = []
+
+    def _counting_embed(paths):
+        embed_calls.append(paths)
+        return _onehot_embed(paths)
+
     monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
     monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1, 2})
-    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _counting_embed)
     monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
@@ -1118,33 +1321,86 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
         SimpleNamespace(backend_env="dummy.env", out=out_dir, before=before_bank, after=after_bank)
     )
 
+    # spec D4 전제 — 축(crop_ref/invoice)이 늘어도 임베딩은 side당이 아니라 통틀어 1회다
+    # (sims를 두 축이 공유하므로). 축 루프 안에서 재호출되는 회귀를 여기서 잡는다.
+    assert len(embed_calls) == 1
+
     rows = [
         json.loads(ln) for ln in (out_dir / "score.jsonl").read_text().splitlines() if ln.strip()
     ]
-    by_ref = {(r["side"], r["crop_ref"]): r for r in rows}
-    assert len(rows) == 4
+    # §4 — 모든 레코드에 세 키가 있고 (side, axis, crop_ref)가 유일하다.
+    assert all({"side", "axis", "crop_ref"} <= set(r) for r in rows)
+    by_key = {(r["side"], r["axis"], r["crop_ref"]): r for r in rows}
+    assert len(rows) == 8 and len(by_key) == 8  # side 2 × axis 2 × 쌍 2
 
-    # before: 안가방은 뱅크에 없고(out_of_bank), 공임은 peer(job-3/row-0)로 맞춘다.
-    assert by_ref[("before", "job-1/row-0")]["in_bank"] is False
-    assert by_ref[("before", "job-2/row-0")]["top1"] is True
+    # 이 fixture는 전표마다 행이 1개뿐이라 두 축의 결과가 같아야 한다.
+    for axis in ("crop_ref", "invoice"):
+        # before: 안가방은 뱅크에 없고(out_of_bank), 공임은 peer(job-3/row-0)로 맞춘다.
+        assert by_key[("before", axis, "job-1/row-0")]["in_bank"] is False
+        assert by_key[("before", axis, "job-2/row-0")]["top1"] is True
 
-    # after: 안가방이 들어와 커버리지는 hit이지만 자기 자신뿐이라 leave-self-out은 구조적 miss.
-    after_1 = by_ref[("after", "job-1/row-0")]
-    assert after_1["in_bank"] is True and after_1["has_peer"] is False and after_1["top1"] is False
-    after_2 = by_ref[("after", "job-2/row-0")]
-    assert after_2["top1"] is True and after_2["preds"][0] == "공임"
+        # after: 안가방이 들어와 커버리지는 hit이지만 자기 자신뿐이라 제외 후는 구조적 miss.
+        after_1 = by_key[("after", axis, "job-1/row-0")]
+        assert after_1["in_bank"] is True
+        assert after_1["has_peer"] is False and after_1["top1"] is False
+        after_2 = by_key[("after", axis, "job-2/row-0")]
+        assert after_2["top1"] is True and after_2["preds"][0] == "공임"
 
-    # score.jsonl에 유사도가 남아야 임계 산정이 가능하다(이 도구 확장의 존재 이유).
-    # after_2: self(job-2, sim 1.0)를 빼야 top1이 job-3/row-0의 '공임'(_PEER_SIM)이 된다 —
-    # self 제외가 없으면 여기서 1.0이 나온다. 즉 이 단언이 leave-self-out의 판별자다.
-    assert after_2["top1_sim"] == pytest.approx(_PEER_SIM)
-    # after_1: self(job-1) 제외해도 job-2/job-3('공임', 다른 슬롯이라 sim 0.0)가 후보로 남는다
-    # — has_peer(동일 라벨 '안가방' 존재)는 False지만 top1_sim은 후보 유무만 본다.
-    assert after_1["top1_sim"] == pytest.approx(0.0)
+        # score.jsonl에 유사도가 남아야 임계 산정이 가능하다(이 도구 확장의 존재 이유).
+        # after_2: self(job-2, sim 1.0)를 빼야 top1이 job-3/row-0의 '공임'(_PEER_SIM)이 된다 —
+        # self 제외가 없으면 여기서 1.0이 나온다. 즉 이 단언이 자기 제외의 판별자다.
+        assert after_2["top1_sim"] == pytest.approx(_PEER_SIM)
+        # after_1: self(job-1) 제외해도 job-2/job-3('공임', 다른 슬롯이라 sim 0.0)가 후보로 남는다
+        # — has_peer(동일 라벨 '안가방' 존재)는 False지만 top1_sim은 후보 유무만 본다.
+        assert after_1["top1_sim"] == pytest.approx(0.0)
 
     md = (out_dir / "score.md").read_text()
     assert "- 뱅크 크기: 1 → 3" in md
-    assert "| 커버리지 in-bank(self 포함) | 1/2 (50.0%) | 2/2 (100.0%) |" in md
+    assert md.count("| 커버리지 in-bank(제외 무관) | 1/2 (50.0%) | 2/2 (100.0%) |") == 2
+
+
+def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_path, monkeypatch):
+    """§1 — 같은 전표(job-1)의 다른 행이 답을 알려주는 낙관 편향을 invoice 축이 제거한다.
+
+    두 축을 같은 excluded로 만들어 버리는 배선 실수는 유일키 검사로는 안 잡힌다 —
+    값이 갈리는지를 봐야 잡힌다.
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _touch_crop(crops_root, "job-1/row-0")
+
+    bank = _write_bank(
+        models_dir / "bank.npz",
+        ["job-1/row-0", "job-1/row-1"],
+        ["안가방", "안가방"],
+        emb=[_onehot(0), _onehot(0)],
+    )
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="안가방")],
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+
+    rows = [
+        json.loads(ln) for ln in (out_dir / "score.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    by_key = {(r["side"], r["axis"], r["crop_ref"]): r for r in rows}
+    assert len(rows) == 4 and len(by_key) == 4  # side 2 × axis 2 × 쌍 1
+
+    by_crop = by_key[("after", "crop_ref", "job-1/row-0")]
+    by_inv = by_key[("after", "invoice", "job-1/row-0")]
+    assert by_crop["top1"] is True and by_crop["has_peer"] is True
+    assert by_inv["top1"] is False and by_inv["has_peer"] is False
+    assert by_inv["top1_sim"] is None
 
 
 def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
@@ -1168,5 +1424,41 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
 
     assert (out_dir / "score.jsonl").read_text().strip() == ""
     assert (
-        "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
+        "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
     )
+
+
+def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monkeypatch):
+    """4배열 중 하나만 짧은 뱅크 — 분리 전 topk_excluding_self가 한자리에서 잡던 회귀다.
+
+    excluded_indices는 keys/invs만, topk_dedup은 sims/labs만 보므로 둘 다 통과한다.
+    load_bank 직후 정합 검증이 없으면 엉뚱한 인덱스를 제외한 점수가 조용히 산출된다.
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _touch_crop(crops_root, "job-1/row-0")
+
+    bad = models_dir / "bad.npz"
+    np.savez(
+        bad,
+        emb=_emb(2),
+        lab=np.array(["안가방", "공임"], object),
+        inv=np.array(["job-1"], object),
+        keys=np.array(["job-1/row-0"], object),
+    )
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="안가방")],
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    with pytest.raises(RuntimeError, match="뱅크 배열 길이 불일치"):
+        cmd_score(
+            SimpleNamespace(backend_env="dummy.env", out=tmp_path / "out", before=bad, after=bad)
+        )
