@@ -7,6 +7,7 @@ import pytest
 
 from tools.remote import (
     ENV_BACKEND_ENV,
+    ENV_ML_ROOT,
     ENV_SSH_HOST,
     RemoteError,
     env_or,
@@ -19,6 +20,17 @@ from tools.remote import (
 def test_env_or_returns_default_when_unset(monkeypatch):
     monkeypatch.delenv(ENV_SSH_HOST.name, raising=False)
     assert env_or(ENV_SSH_HOST) == "macmini"
+
+
+def test_env_ml_root_defaults_to_the_deployed_ml_directory(monkeypatch):
+    # 지문 스크립트의 cwd와 재평가 산출물 회수 양쪽에 필요하다 — 경로 하드코딩 금지 규약.
+    monkeypatch.delenv(ENV_ML_ROOT.name, raising=False)
+    assert env_or(ENV_ML_ROOT) == "$HOME/sjmj-ai/apps/invoice-ocr/ml"
+
+
+def test_env_ml_root_is_overridable(monkeypatch):
+    monkeypatch.setenv(ENV_ML_ROOT.name, "/srv/other/ml")
+    assert env_or(ENV_ML_ROOT) == "/srv/other/ml"
 
 
 def test_env_or_prefers_environment(monkeypatch):

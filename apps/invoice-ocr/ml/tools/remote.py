@@ -21,6 +21,10 @@ class EnvVar(NamedTuple):
 ENV_SSH_HOST = EnvVar("SJMJ_SSH_HOST", "macmini")
 ENV_BACKEND_ENV = EnvVar("SJMJ_REMOTE_BACKEND_ENV", "$HOME/.sjmj-ai/backend.env")
 ENV_WORKER_ENV = EnvVar("SJMJ_REMOTE_WORKER_ENV", "$HOME/.sjmj-ai/ml-worker.env")
+# 배포 서버의 ml 디렉터리 — 원격 python이 handwriting 패키지를 import할 cwd이자
+# 재평가 산출물(results/bank_update/)의 부모. 원격 홈은 로컬 홈과 다르므로 $HOME 확장은
+# 원격 셸에 맡긴다(source_env와 동일 관례).
+ENV_ML_ROOT = EnvVar("SJMJ_REMOTE_ML_ROOT", "$HOME/sjmj-ai/apps/invoice-ocr/ml")
 
 
 class RemoteError(RuntimeError):
