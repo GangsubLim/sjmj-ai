@@ -15,6 +15,46 @@ ADR 0004 게이트에 따라 **`ocr_jobs.curation_reviewed=TRUE`인 잡의 `stat
 미검수 쌍이 전부 통과해 버린다. 반영 전에 큐레이션 페이지에서 대상 잡을 "검수 완료"로 표시한다
 (API: `POST /api/curation/jobs/{job_id}/review`).
 
+> [!IMPORTANT]
+> **이 절은 `BLANK_INK_MAX`가 확정되기 전까지 비활성이다.** 미확정 상태에서 `apply`는
+> DB를 건드리기 전에 `RuntimeError`로 즉시 멈춘다(의도된 fail-fast). 임계 확정 전에는
+> 이 절을 건너뛰고 기존 절차대로 진행한다 — 빈 크롭은 그때까지 **사람이 큐레이션에서
+> 직접 제외**한다. 확정 절차는 Issue #38의 캘리브레이션 PR에 있다.
+
+### 0-1. 빈 크롭 자동 배제 반영 (bank_update 앞 단계)
+
+빈 크롭(품목 크롭에 손글씨 획이 사실상 없는 행)이 학습쌍에 섞이면 그대로 뱅크 오염원이 된다.
+뱅크 갱신 **전에** 자동 배제를 반영한다(ADR 0006 · Issue #38).
+
+```bash
+# 로컬 개발 머신에서 (apps/invoice-ocr/ml)
+uv run python -m tools.blank_crop_report fetch             # training_pairs + 품목 크롭 동기화
+uv run python -m tools.blank_crop_report report             # 잉크율 분포·판정 확인 (눈으로 본다)
+uv run python -m tools.blank_crop_report apply --dry-run    # 계획만 확인 (ssh 없이 종료) — 첫 실전 회차 전 필수
+uv run python -m tools.blank_crop_report apply              # 운영 DB 반영 (미검수 잡만)
+```
+
+- **첫 실전 회차 전에는 반드시 `apply --dry-run`으로 계획(대상·보호·불변·변경 예정·보류
+  건수)을 먼저 확인한다.** `--dry-run`은 ssh로 아무것도 쏘지 않고 계획 요약만 출력하고 끝낸다.
+- `apply`는 **캐시를 만든 호스트와 쓰기 대상(`--host`) 호스트가 다르면 즉시 거부**한다 —
+  조건부 UPDATE의 WHERE에 실리는 seen 상태는 fetch한 DB에서 본 값이라, 다른 DB에서 본 근거로
+  운영 행을 뒤집을 수 있기 때문이다. `--host`를 바꿨다면 `fetch`부터 다시 실행한다.
+- `apply`는 **보류가 1건이라도 있으면 비-0으로 종료**한다. 보류(`crop_missing`/`crop_unreadable`)를
+  해소(크롭 재생성 또는 사람이 배제)하지 않으면 이 단계를 넘어갈 수 없다. 의도적으로 무시하려면
+  `--allow-holds`.
+- 로직이 개선돼 과거 잡을 전수 재판정하려면 `apply --recheck-reviewed`(검수 완료 잡까지
+  대상에 포함해 재판정). 사람 판정은 §불변식(사유가 비어 있으면 사람 소유)이 보호한다.
+- `apply`로 판정이 바뀐 쌍은 `reviewed_at`이 지워지고 그 잡의 검수 표식이 풀린다 —
+  **큐레이션 화면에서 재검수한 뒤** 이 런북의 나머지 단계로 넘어간다.
+- `--cache`가 기존 디렉터리인데 이 도구의 산출물(`pairs.json`/`meta.json`/`crops`/
+  `blank_crop_report.md`)이 하나도 없으면 거부된다 — 남의 디렉터리를 캐시로 잘못 지정하는
+  사고를 막는다.
+- `fetch`는 시작하자마자 캐시 매니페스트를 무효화한다 — 중단되면 `report`/`apply`가 그 캐시로
+  돌 수 없다. 재-`fetch`로 복구한다.
+- 쌍 수가 많을 때(약 1,200쌍 초과) `apply`는 ssh argv 상한(macOS `ARG_MAX`)에 걸려
+  fail-fast하며, 청크 분할 대신 stdin 경유 전환이 필요하다는 안내 메시지가 나온다.
+- 선행: 운영 DB에 `db/migration_009_training_pairs_exclusion_reason.sql`이 적용돼 있어야 한다.
+
 > [!WARNING]
 > **macmini에서 `uv run` / `uv sync`를 절대 실행하지 않는다.**
 > `~/sjmj-ai/apps/invoice-ocr/ml/.venv`는 **운영 ml-worker가 쓰는 바로 그 venv**다
