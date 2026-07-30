@@ -96,8 +96,37 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
 ```bash
 "$PYTHON_BIN" -m tools.bank_update score \
   --before "$SJMJ_ML_MODELS_DIR/bank.<stamp>.npz.bak" \
-  --after  "$SJMJ_ML_MODELS_DIR/bank.npz"
+  --after  "$SJMJ_ML_MODELS_DIR/bank.npz" \
+  --scope all      # 생략 시 reviewed(검수 완료만)
 ```
+
+`--scope`는 **채점 모집단**이다(위 제외 축 `AXES`와 다른 축이다).
+
+- `reviewed`(기본) — 검수 완료 잡의 `included` 쌍만. 뱅크 갱신 판단용 기존 기준이다.
+- `all` — 검수 여부와 무관하게 크롭이 있고 `canonical_label`이 있는 `included` 쌍 전부.
+  큐레이션 리포트의 era-aware 재평가(Issue #49)가 소비하는 산출물을 만들 때 쓴다. 검수 전
+  잡이 쌓일수록 증분이 커진다(2026-07-30 실측 증분 5쌍).
+
+**`--scope`는 `score`에만 있다.** `plan`의 모집단은 `reviewed` 고정이며 이는 ADR 0004 검수
+게이트다 — `plan`이 미검수 쌍을 뱅크 갱신 대상으로 삼으면 되돌릴 수 없는 뱅크 오염이 된다.
+
+산출물에 `score_meta.json`이 추가된다 — before/after retrieval 지문 · 산출 시각 · scope ·
+`axes` · 표본 수 · `score.jsonl`의 sha256. **큐레이션 리포트는 이 파일을 재평가 유효성의 단일
+게이트로 쓴다**(없으면 `score.jsonl`이 있어도 재평가 없음으로 취급). 쓰기 순서는 jsonl →
+meta이고 둘 다 원자 교체이므로, 중단된 재실행이 남긴 반쪽 산출물은 다이제스트·레코드 수
+불일치로 걸러진다. 또한 **릴리스 배포 후에는 이 단계를 다시 돌린다** — 지문에 배포 코드
+SHA가 들어가므로 배포가 기존 재평가를 stale로 만든다.
+
+> [!WARNING]
+> **머지만으로는 이 단계를 macmini에서 돌릴 수 없다** — 이 기능(era-aware 재평가, Issue #49)의
+> **최초 배포 전에만 해당하는 한정 경고**다. 배포가 끝나면 이 경고는 소거 대상이다. 서버
+> 레포는 `v*` 태그로 checkout된 detached HEAD다 — `--scope all`을 쓰려면 이 기능이 포함된
+> 릴리스가 먼저 배포돼야 하고, 원격 지문 스크립트도 `handwriting.bank_id`를 import할 수
+> 있어야 한다(배포 전에는 로컬 `curation_report fetch`도 같은 이유로 `ModuleNotFoundError`로
+> 실패한다). 배포 순서는 **머지 → 릴리스 태그 → 배포 → macmini 재평가(`score --scope all`) →
+> 로컬 `fetch`/`report`**다. 러너 워크스페이스를 수동 checkout해 앞당기지 않는다(다음 배포와
+> 충돌한다). 이 배포 순서 상세는 `docs/runbooks/ocr-curation-analysis.md`에도 중복 서술하지
+> 않는다 — 이 WARNING이 정본이다.
 
 `score.md`는 **제외 축별로 표 2개**를 낸다. 축은 "채점할 때 뱅크에서 무엇을 빼는가"다.
 같은 쿼리 쌍을 축만 바꿔 채점하므로 표본 수(`n`)는 두 축이 같다 — 축마다 달라지는 것은
@@ -130,7 +159,7 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
   안에서 그 행의 before↔after로 판단한다(peer 행은 축간 비교에 쓰지 않는다, 위 참조). 이
   분모(`peer_n`)는 축마다 달라진다(`invoice` 축이 더 작거나 같다).
 
-산출물: `results/bank_update/score.md`, `score.jsonl`.
+산출물: `results/bank_update/score.md`, `score.jsonl`, `score_meta.json`.
 `score.jsonl` 레코드의 유일키는 `(side, axis, crop_ref)`다 — `crop_ref`만으로 map을 만들면
 축·전후 4벌 중 하나가 조용히 이긴다.
 

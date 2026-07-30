@@ -114,6 +114,33 @@ def test_get_job_returns_done_with_result(client):
     assert b["data"]["result"]["warp_ok"] is True
 
 
+def test_get_job_passes_retrieval_version_through_untouched(client):
+    """result_json은 가공 없이 실린다 — ML 워커가 더한 필드가 API 표면에 그대로 나타난다."""
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(
+        job_id,
+        "done",
+        {"rows": [], "supply_sum": 0, "warp_ok": True, "retrieval_version": "a1b2c3d4e5f6"},
+    )
+    r = client.get(f"/api/ocr/jobs/{job_id}")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["data"]["result"]["retrieval_version"] == "a1b2c3d4e5f6"
+
+
+def test_get_job_works_for_jobs_without_a_retrieval_version(client):
+    """하위호환 — 스탬프 이전 잡은 키가 없고 그대로 동작한다."""
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(job_id, "done", {"rows": [], "supply_sum": 0, "warp_ok": True})
+    r = client.get(f"/api/ocr/jobs/{job_id}")
+    assert r.status_code == 200
+    b = r.json()
+    assert b["data"]["status"] == "done"
+    assert "retrieval_version" not in b["data"]["result"]
+
+
 def test_get_job_404(client):
     r = client.get("/api/ocr/jobs/999999")
     assert r.status_code == 404
