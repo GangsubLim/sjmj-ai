@@ -49,8 +49,10 @@ def _install_fake_infer_photo(monkeypatch, warped, calls):
 
 
 def _models():
-    # (item_model, E, lab, qwen, device) — E @ queries[i]만 실제로 쓰인다.
-    return (None, np.ones((1, 2), np.float32), ["삼겹살"], None, "cpu")
+    # E @ queries[i]만 실제로 쓰인다. retrieval_version은 스탬프 배선 검증용.
+    from worker.main import ModelBundle
+
+    return ModelBundle(None, np.ones((1, 2), np.float32), ["삼겹살"], None, "cpu", "a1b2c3d4e5f6")
 
 
 def test_gate_failure_returns_empty_rows_and_skips_extraction(
@@ -70,6 +72,7 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
         "supply_sum": 0,
         "warp_ok": False,
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
+        "retrieval_version": "a1b2c3d4e5f6",
     }
     assert calls == []  # 오검출 워프 기반 행 추론·크롭을 아예 하지 않는다
     assert (tmp_path / "warped.png").exists()  # 진단용 워프는 남긴다
@@ -102,6 +105,7 @@ def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
         "supply_sum": 0,
         "warp_ok": False,
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
+        "retrieval_version": "a1b2c3d4e5f6",
     }
     assert "[warp-gate] job=99 quad_missing" in capsys.readouterr().out
 
@@ -132,4 +136,5 @@ def test_gate_pass_keeps_existing_row_extraction(monkeypatch, tmp_path, make_war
     assert calls == ["extract_rows_for_job"]
     assert out["rows"][0]["crop_ref"] == "job-42/row-0"
     assert out["supply_sum"] == 364000
+    assert out["retrieval_version"] == "a1b2c3d4e5f6"
     assert (tmp_path / "row-0.png").exists()
