@@ -25,6 +25,8 @@ export interface CurationPairBase {
   canonical_label: string | null;
   supply: number | null;
   status: "included" | "excluded";
+  // 기계 판정 배제 사유. null = 사람 판정(사유 미분류). 서버 전용 쓰기 — PATCH로 못 보낸다.
+  exclusion_reason: "blank_crop" | null;
   reviewed_at: string | null;
 }
 

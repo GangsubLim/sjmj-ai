@@ -33,6 +33,7 @@ function pairWith(
     canonical_label: canonical,
     supply: 8000,
     status: "included",
+    exclusion_reason: null,
     reviewed_at: null,
     uncertain: false,
     top5: [

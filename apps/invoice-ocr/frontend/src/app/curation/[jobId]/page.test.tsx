@@ -27,6 +27,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
         canonical_label: "무",
         supply: 8000,
         status: "included",
+        exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
         top5: [{ label: "무", sim: 0.77 }],

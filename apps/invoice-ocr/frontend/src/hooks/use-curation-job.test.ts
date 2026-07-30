@@ -35,6 +35,7 @@ function jobDetail(): CurationJobDetail {
         canonical_label: "무",
         supply: 8000,
         status: "included",
+        exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
         top5: [
@@ -62,6 +63,7 @@ function jobDetailMulti(): CurationJobDetail {
         canonical_label: "배추",
         supply: 5000,
         status: "included",
+        exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
         top5: [{ label: "배추", sim: 0.91 }],
@@ -82,6 +84,7 @@ function patchResult(
     canonical_label: "배추",
     supply: 8000,
     status: "included",
+    exclusion_reason: null,
     reviewed_at: "2026-06-30T10:00:00",
     job_id: 128,
     ...over,

@@ -19,6 +19,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         canonical_label: "배추",
         supply: 12000,
         status: "included",
+        exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
         top5: [
@@ -35,7 +36,11 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         final_label: "무",
         canonical_label: "무",
         supply: 8000,
+        // status를 바꾸지 않는다. e2e(curation.spec.ts:26-30)가 이 잡에서 "제외"→"포함"
+        // 토글을 단언하는데, 시드가 이미 excluded면 그 단언이 클릭 전부터 참이 되어
+        // 조용히 무력화된다(e2e는 playwright.config.ts webServer가 VITE_USE_MOCK=true로 띄운다).
         status: "included",
+        exclusion_reason: null,
         reviewed_at: null,
         // mock 모드에서도 미확신 배지가 한 번은 재현되도록 이 pair만 미확신으로 둔다.
         // 서버 값은 ITEM_CONF_THRESHOLD(0.75) 기준 top1 sim 파생이므로 sim도 함께
@@ -63,10 +68,29 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         final_label: "당근",
         canonical_label: "당근",
         supply: 5000,
+        // job 127은 e2e가 워프 placeholder만 확인하므로 상호작용 단언에 영향이 없다.
+        // §6 세 번째 칸(기계가 배제했으나 사람이 되돌림)을 mock 모드에서 재현하는 자리.
         status: "included",
+        exclusion_reason: "blank_crop",
         reviewed_at: "2026-06-30T08:30:00",
         uncertain: false,
         top5: [{ label: "당근", sim: 0.88 }],
+      },
+      {
+        id: 8002,
+        crop_ref: "127/1",
+        row_index: 1,
+        draft_label: null,
+        final_label: null,
+        canonical_label: null,
+        supply: null,
+        // §6 두 번째 칸(기계 배제, 사람 미검토) — 운영 다수·배지 기본 표시 상태를 mock에도 재현.
+        // job 127은 e2e가 워프 placeholder만 확인하므로(curation.spec.ts) 추가해도 안전.
+        status: "excluded",
+        exclusion_reason: "blank_crop",
+        reviewed_at: null,
+        uncertain: false,
+        top5: [],
       },
     ],
   },

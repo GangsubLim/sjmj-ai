@@ -62,14 +62,14 @@ def test_status_wire_values_appear_in_backend_curation_schema():
 def test_status_wire_values_appear_in_frontend_curation_types():
     """STATUS_INCLUDED/EXCLUDED가 frontend `curation.ts`의 status 유니언과 같은지 고정한다.
 
-    `blank_crop`은 frontend 타입에 아직 등장하지 않는다 — Task 6에서 이 union에 추가될
-    예정이라(이 커밋 시점 기준) 여기서는 미리 있다고 단정하지 않는다. Task 6이 추가한
-    뒤 이 테스트에 그 항목을 보강하는 것은 그 task의 몫이다.
+    `blank_crop`도 Task 6에서 `CurationPairBase.exclusion_reason`에 추가됐으므로 함께
+    고정한다 — 문자열이 갈라지면 자동 배제 배지(Task 7)가 서버 값을 인식하지 못한다.
     """
     types_file = _REPO_ROOT / "apps" / "invoice-ocr" / "frontend" / "src" / "types" / "curation.ts"
     text = types_file.read_text()
     assert f'"{STATUS_INCLUDED}"' in text
     assert f'"{STATUS_EXCLUDED}"' in text
+    assert f'"{BLANK_CROP}"' in text
 
 
 # --- is_machine_writable: §6 2×2 전수 (불변식의 고정점) ---
