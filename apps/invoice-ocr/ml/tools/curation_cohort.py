@@ -218,6 +218,16 @@ ReevalReason = Literal[
 ]
 REEVAL_REJECT_REASONS = get_args(ReevalReason)
 
+# 재평가 산출물 **회수** 상태 — fetch 글루가 meta["reeval_state"]에 적고 리포트가 읽는다.
+# 게이트 사유(ReevalReason)와 다른 축이다: 이쪽은 "서버에서 무엇을 가져왔나", 저쪽은 "가져온
+# 것을 왜 채택하지 않았나"다. 다만 score_meta.json 부재는 두 축이 같은 조건을 가리키므로
+# 철자를 하나(`no_meta`)로 공유한다 — 두 철자로 부르면 소비자 분기가 하나 늘고, 생산자가
+# 철자를 흘리는 순간 리포트가 "재평가 산출물이 없다"는 거짓 단정으로 샌다(M2).
+# 어휘가 원시 문자열로만 존재하면 그 드리프트를 잡는 장치가 0이라 Literal로 결속한다
+# (Cohort/COHORTS·ReevalReason/REEVAL_REJECT_REASONS와 같은 관용구).
+ReevalState = Literal["absent", "no_meta", "present"]
+REEVAL_STATES = get_args(ReevalState)
+
 # 레코드가 반드시 문자열로 갖는 키 — 유일키 구성 요소이자 축 선택의 근거다.
 REEVAL_RECORD_KEYS = ("side", "axis", "crop_ref")
 

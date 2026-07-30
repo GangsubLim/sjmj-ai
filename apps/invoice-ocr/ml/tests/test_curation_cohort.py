@@ -11,6 +11,7 @@ from tools.curation_cohort import (
     ITEM_EVALUABLE_COHORTS,
     PAIR_COHORTS,
     REEVAL_REJECT_REASONS,
+    REEVAL_STATES,
     TEMPORAL_UNEVALUABLE_BUCKETS,
     UNEVALUABLE_BUCKETS,
     is_amount_failure,
@@ -611,3 +612,13 @@ def test_reeval_gate_reject_reasons_match_the_literal_bijectively():
         for records, meta, current, digest in cases
     }
     assert reasons == set(REEVAL_REJECT_REASONS)
+
+
+def test_reeval_states_are_bound_to_a_literal_and_share_the_no_meta_spelling():
+    """M2 — 회수 상태 어휘를 런타임 상수로 결속한다(생산자 fetch와 소비자 리포트의 계약).
+
+    같은 조건(score_meta.json 부재)을 state와 reason이 서로 다른 철자로 부르면 리포트 분기가
+    하나 늘고, 생산자가 철자를 흘리면 그 오타가 "재평가 산출물이 없다"는 거짓 단정으로 샌다.
+    """
+    assert set(REEVAL_STATES) == {"absent", "no_meta", "present"}
+    assert "no_meta" in REEVAL_REJECT_REASONS  # 같은 조건은 한 철자만 쓴다
