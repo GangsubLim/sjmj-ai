@@ -1,13 +1,13 @@
 """큐레이션 리포트의 분석 계층 — 원격 산출물 파싱·버킷 귀속·진실원 조인·집계.
 
 tools/curation_report.py에서 **순수함수만** 떼어낸 모듈이다(동작 변경 0의 기계적 분리).
-리포트 본체는 fetch 글루·CLI·렌더까지 담아 파일 상한(800줄)에 닿는데, 이 계층은 IO 0·
+리포트 본체는 fetch 글루·CLI에 렌더까지 담아 파일 상한(800줄)에 닿았는데, 이 계층은 IO 0·
 부수효과 0이라 합성 데이터 단위테스트로 전량 닫히므로 경계가 자연스럽다
-(tools/curation_cohort.py를 뗀 것과 같은 관용구).
+(tools/curation_cohort.py를 뗀 것과 같은 관용구. 이후 렌더 계층도 tools/curation_render.py로
+같은 이유로 갈렸다 — Issue #38).
 
-의존 방향은 단방향이다: curation_report(fetch·CLI·렌더) → curation_enrich(분석) →
-curation_cohort(판정). 반대로 렌더 계층을 떼면 render_report가 summarize·job_flags·
-oob_label_counts를 쓰므로 순환이 생긴다.
+의존 방향은 단방향이다: curation_report(fetch·CLI) → curation_render(렌더) →
+curation_enrich(분석, 이 모듈) → curation_cohort(판정).
 
 코어 규약 준수: stdlib 전용(paddle/numpy/pillow 불필요), 전부 순수함수(+ 파서가 푸는 조회
 SQL 상수 — 컬럼 계약이 파서와 한 벌이라 여기 산다).
