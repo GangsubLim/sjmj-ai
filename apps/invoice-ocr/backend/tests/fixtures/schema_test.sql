@@ -183,6 +183,7 @@ CREATE TABLE training_pairs (
     canonical_label VARCHAR(200),
     supply INT,
     status VARCHAR(16) NOT NULL DEFAULT 'included',
+    exclusion_reason VARCHAR(32) NULL DEFAULT NULL,  -- migration_009: 기계 판정 사유(blank_crop) 전용
     reviewed_at TIMESTAMP NULL DEFAULT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_training_pairs_job (job_id),

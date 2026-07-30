@@ -1,15 +1,76 @@
 """빈 크롭 판정 순수 술어 단위테스트(cv2/numpy 무의존 — 코어 venv에서도 돈다)."""
 
 import math
+from pathlib import Path
 
 import pytest
 
 from handwriting.blank_crop import (
     BLANK_CROP,
+    STATUS_EXCLUDED,
+    STATUS_INCLUDED,
     is_blank,
     is_machine_writable,
     require_blank_ink_max,
 )
+
+# tests/test_blank_crop.py → ml → invoice-ocr → apps → repo root(선례: test_version_sync.py).
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+
+# --- wire 상수 pin: DB 컬럼 값·백엔드 스키마·프론트 타입과 문자 그대로 같아야 한다 ---
+
+
+def test_wire_constants_match_db_migration_and_schemas():
+    """이 세 상수는 이 모듈 내부 값이 아니라 DB·backend·frontend가 공유하는 wire 값이다.
+
+    문자열이 바뀌어도 이 파일 안 테스트는 상수만 참조하므로 전부 초록으로 남는다 — 그
+    사이 `is_machine_writable`은 운영에 이미 쌓인 기존 행(예: status='excluded',
+    exclusion_reason='blank_crop')을 전부 거부하게 되어, 예외 없이 기능만 조용히
+    정지한다. 값이 아래 세 곳과 문자 단위로 같은지 여기서 고정한다:
+      - db/migration_009_training_pairs_exclusion_reason.sql
+        (exclusion_reason에 저장되는 값 'blank_crop')
+      - apps/invoice-ocr/backend/app/schemas/curation.py
+        (status 화이트리스트 'included'/'excluded')
+      - apps/invoice-ocr/frontend/src/types/curation.ts
+        (CurationPairBase.status 유니언 타입)
+    """
+    assert BLANK_CROP == "blank_crop"
+    assert STATUS_INCLUDED == "included"
+    assert STATUS_EXCLUDED == "excluded"
+
+
+def test_blank_crop_wire_value_appears_in_db_migration():
+    """BLANK_CROP 상수가 실제 migration_009 파일의 리터럴과 문자 단위로 일치해야 한다.
+
+    이전 버전은 이 모듈 내부 상수만 비교해 자기 자신과만 같은지 확인했다(항상 참) —
+    migration 파일 쪽 문자열이 바뀌어도 이 테스트는 초록으로 남았다. 이제 대상 파일을
+    직접 읽어 상수 값이 그 안에 존재하는지 확인한다.
+    """
+    migration = _REPO_ROOT / "db" / "migration_009_training_pairs_exclusion_reason.sql"
+    text = migration.read_text()
+    assert f"'{BLANK_CROP}'" in text
+
+
+def test_status_wire_values_appear_in_backend_curation_schema():
+    """STATUS_INCLUDED/EXCLUDED가 backend `curation.py`의 Literal 화이트리스트와 같은지 고정한다."""
+    schema = _REPO_ROOT / "apps" / "invoice-ocr" / "backend" / "app" / "schemas" / "curation.py"
+    text = schema.read_text()
+    assert f'"{STATUS_INCLUDED}"' in text
+    assert f'"{STATUS_EXCLUDED}"' in text
+
+
+def test_status_wire_values_appear_in_frontend_curation_types():
+    """STATUS_INCLUDED/EXCLUDED가 frontend `curation.ts`의 status 유니언과 같은지 고정한다.
+
+    `blank_crop`은 frontend 타입에 아직 등장하지 않는다 — Task 6에서 이 union에 추가될
+    예정이라(이 커밋 시점 기준) 여기서는 미리 있다고 단정하지 않는다. Task 6이 추가한
+    뒤 이 테스트에 그 항목을 보강하는 것은 그 task의 몫이다.
+    """
+    types_file = _REPO_ROOT / "apps" / "invoice-ocr" / "frontend" / "src" / "types" / "curation.ts"
+    text = types_file.read_text()
+    assert f'"{STATUS_INCLUDED}"' in text
+    assert f'"{STATUS_EXCLUDED}"' in text
+
 
 # --- is_machine_writable: §6 2×2 전수 (불변식의 고정점) ---
 
