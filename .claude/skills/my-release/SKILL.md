@@ -41,6 +41,7 @@ gh pr list --base main --state merged --limit 3
 ```
 
 - **devel → main 작업이 아직 main에 없으면**: 먼저 commit-push-pr로 devel→main PR을 merge한다.
+  PR 본문에 그간 종결된 이슈를 `Closes #N`으로 모두 나열한다(아래).
 - **이미 merge됨**: 그대로 진행. release 브랜치는 main에서 생성된다.
 
 ```bash
@@ -49,6 +50,18 @@ git log main..devel --oneline   # 빈 결과 = devel이 main보다 앞서지 않
 ```
 
 `git log main..devel`에 결과가 있으면 devel→main PR을 먼저 처리한다.
+
+> [!IMPORTANT]
+> devel→main PR 본문에 그간 종결된 이슈를 빠짐없이 `Closes #N`으로 나열한다.
+> 이슈가 여러 개면 키워드를 각각 반복한다 — `Closes #17`, `Closes #20`.
+
+```bash
+# 종결 대상 후보 — devel에 머지된 PR의 본문 closing 키워드([...])와 제목의 이슈 언급을 함께 훑는다
+gh pr list --base devel --state merged --limit 30 --json number,title,body \
+  --jq '.[] | "#\(.number) [\((.body // "") | [scan("(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) +#[0-9]+")] | join(", "))] \(.title)"'
+```
+
+`[...]`가 빈 PR도 제목에 이슈가 언급될 수 있다(`(#22)`, `(Issue #18)`). 둘 다 확인한 뒤 `gh issue view <N>`으로 아직 열려 있는 것만 나열한다.
 
 ## Step 2: 버전 결정
 
@@ -210,7 +223,7 @@ gh run list --workflow=deploy.yml --limit 1
 gh run watch <run-id>
 ```
 
-`deploy.yml`이 수행하는 단계: 이전 커밋 SHA 기록 → 태그 checkout → **mysqldump 백업**(`scripts/backup-db.sh`, `sjmj` DB → `~/sjmj-backups/`) → backend `uv sync --frozen` + import smoke → frontend `npm ci && npm run build` → LaunchAgent(`ai.sjmj.backend`, :8400) 재시작 → health check(`http://127.0.0.1:8400/health`, 30회 retry) → **실패 시 이전 SHA로 자동 rollback**.
+`deploy.yml`이 수행하는 단계: 이전 커밋 SHA 기록 → 태그 checkout → **mysqldump 백업**(`scripts/backup-db.sh`, `sjmj` DB → `~/sjmj-backups/`) → backend `uv sync --frozen` + import smoke → frontend `npm ci && npm run build -- --no-emptyOutDir`(옛 콘텐츠 해시 청크 보존) → LaunchAgent(`ai.sjmj.backend`, :8400) 재시작 → health check(`http://127.0.0.1:8400/health`, 30회 retry) → **실패 시 이전 SHA로 자동 rollback**.
 
 > **health 재확인은 보통 불필요하다 — run 결과로 충분하다.** `deploy.yml`의 Health check 스텝이 `:8400/health`를 macmini runner에서 `curl -fsS`로 30회 retry 검증하고, 통과 못 하면 자동 rollback + run failure로 끝난다. 즉 **run이 `success`면 endpoint는 이미 통과한 것**.
 >
@@ -220,7 +233,7 @@ gh run watch <run-id>
 > curl -fsS http://127.0.0.1:8400/health && echo
 > ```
 >
-> **첫 배포 전제** — macmini에 다음이 준비돼 있어야 성공한다: self-hosted runner(`[self-hosted, macmini]`) 온라인, 운영 repo 경로 `/Users/submini/sjmj-ai`, env 파일 `/Users/submini/.sjmj-ai/backend.env`(DB_* 포함), LaunchAgent plist 등록. 미비 시 backup/sync/build/health 단계에서 실패한다.
+> **첫 배포 전제** — macmini에 다음이 준비돼 있어야 성공한다: self-hosted runner(`[self-hosted, macmini]`) 온라인, 운영 repo 경로 `/Users/submini/sjmj-ai`, env 파일 `/Users/submini/.sjmj-ai/backend.env`(DB\_\* 포함), LaunchAgent plist 등록. 미비 시 backup/sync/build/health 단계에서 실패한다.
 
 ## gh auth 주의
 
@@ -240,14 +253,14 @@ gh auth switch --user GangsubLim   # 다른 계정이 활성이면
 
 ## 트러블슈팅
 
-| 문제                        | 해결                                                                                              |
-| --------------------------- | ------------------------------------------------------------------------------------------------- |
-| `태그 vX.Y.Z 이미 존재`     | `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` 후 재실행                               |
-| release.sh 검증 실패        | 메시지의 도구(ruff/eslint) 출력대로 수정 후 재실행                                               |
-| 로컬 `uv run pytest` 깨짐   | conda base env 간섭. `cd apps/invoice-ocr/backend && .venv/bin/python -m pytest -q` 사용         |
-| PR conflict                 | release 브랜치에서 `git merge main` 후 resolve                                                   |
-| gh auth 계정 불일치         | `gh auth switch --user GangsubLim`                                                                |
-| CI가 계속 "no checks"       | CI 워크플로우의 `on.pull_request.branches`(main, devel) 확인                                     |
-| deploy.yml 실패             | `gh run view <run-id> --log-failed`로 원인 확인. 첫 배포면 macmini 경로/env/runner 준비 점검     |
-| 백업 실패(`backup-db.sh`)   | `/Users/submini/.sjmj-ai/backend.env`에 `DB_NAME=sjmj` 및 `DB_*` 항목 확인                      |
-| release/\* 브랜치 누적      | 자동 삭제 안 됨. `git push origin :release/vX.Y.Z` + `git branch -d release/vX.Y.Z`             |
+| 문제                      | 해결                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------- |
+| `태그 vX.Y.Z 이미 존재`   | `git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` 후 재실행                           |
+| release.sh 검증 실패      | 메시지의 도구(ruff/eslint) 출력대로 수정 후 재실행                                           |
+| 로컬 `uv run pytest` 깨짐 | conda base env 간섭. `cd apps/invoice-ocr/backend && .venv/bin/python -m pytest -q` 사용     |
+| PR conflict               | release 브랜치에서 `git merge main` 후 resolve                                               |
+| gh auth 계정 불일치       | `gh auth switch --user GangsubLim`                                                           |
+| CI가 계속 "no checks"     | CI 워크플로우의 `on.pull_request.branches`(main, devel) 확인                                 |
+| deploy.yml 실패           | `gh run view <run-id> --log-failed`로 원인 확인. 첫 배포면 macmini 경로/env/runner 준비 점검 |
+| 백업 실패(`backup-db.sh`) | `/Users/submini/.sjmj-ai/backend.env`에 `DB_NAME=sjmj` 및 `DB_*` 항목 확인                   |
+| release/\* 브랜치 누적    | 자동 삭제 안 됨. `git push origin :release/vX.Y.Z` + `git branch -d release/vX.Y.Z`          |

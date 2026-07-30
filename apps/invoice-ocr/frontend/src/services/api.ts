@@ -360,6 +360,35 @@ export const curationImageUrl = (
 export const ocrCropUrl = (jobId: number, row: number): string =>
   `${getApiBaseUrl()}/ocr/jobs/${jobId}/crop/${row}`;
 
+// 서버가 TCP 연결만 받고 응답을 주지 않으면 fetch가 영구히 settle되지 않아 그 회차 버전
+// 확인이 조용히 사라진다. 라우트 전환마다 이런 hung 요청이 쌓이면 오리진당 커넥션 한도를
+// 잠식하므로 타임아웃으로 강제 종료한다.
+const HEALTH_CHECK_TIMEOUT_MS = 5000;
+
+// 서버(=dist를 서빙한 오리진)의 배포 버전. envelope 미적용 raw {status, version}을 준다.
+// 예외적으로 getApiBaseUrl()을 경유하지 않고 상대 경로를 쓴다 — base URL은 VITE_API_URL이
+// 없을 때 레거시 PHP(kslim.dothome.co.kr) 또는 localhost:8000으로 폴백할 수 있어, 엉뚱한
+// 서버의 버전을 읽으면 자동 리로드가 무력화된다. 캐시된 옛 응답도 무의미하므로 no-store.
+// mock 프록시에 태우지 않는 real-only 함수다(mock 모드에는 응답할 서버가 없다).
+export const fetchServerVersion = async (): Promise<string> => {
+  const response = await fetch("/api/health", {
+    cache: "no-store",
+    signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+  });
+  if (!response.ok) {
+    throw new Error(`health 응답 실패: ${response.status}`);
+  }
+  const body: unknown = await response.json();
+  const version =
+    typeof body === "object" && body !== null && "version" in body
+      ? body.version
+      : undefined;
+  if (typeof version !== "string") {
+    throw new Error("health 응답에 version 문자열이 없다");
+  }
+  return version;
+};
+
 // --- Conditional exports: mock or real API ---
 
 async function loadMockAPIs() {

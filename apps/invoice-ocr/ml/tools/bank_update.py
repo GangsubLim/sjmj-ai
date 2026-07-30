@@ -79,7 +79,16 @@ def diff_bank(current: dict[str, str], desired: dict[str, str]) -> BankDiff:
 
 
 def inv_of(crop_ref: str) -> str:
-    """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열."""
+    """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열.
+
+    crop_ref 형식이 아닌 key(부트스트랩 '2025-08-18_inv011_0' 등)는 거부한다. 그런 key는
+    슬래시가 없어 split이 key 자신을 돌려주고, 그 값으로 만든 전표 제외 집합은 어떤 뱅크
+    항목과도 일치하지 않아 조용히 비어버린다. 그 경우의 정답은 언제나 뱅크 inv 열이다.
+    """
+    if not is_crop_ref(crop_ref):
+        raise ValueError(
+            f"crop_ref 형식이 아님 {crop_ref!r} — 부트스트랩 key의 전표는 뱅크 inv 열에서 읽는다"
+        )
     return crop_ref.split("/", 1)[0]
 
 
@@ -213,30 +222,80 @@ def merge_plan(keys: list[str], diff: BankDiff) -> MergePlan:
     )
 
 
+def excluded_indices(
+    keys: list[str],
+    invs: list[str] | None,
+    *,
+    self_ref: str | None = None,
+    self_inv: str | None = None,
+) -> set[int]:
+    """채점에서 뺄 뱅크 항목의 인덱스 — '무엇을 뺄지' 판단의 유일한 지점.
+
+    축은 모드 스위치가 아니라 데이터(인덱스 집합)로 표현된다. 채점(topk_dedup)과 peer
+    분모(has_peer_sample)가 같은 집합을 공유하므로 두 곳이 각자 판단해 어긋나는 일이
+    구조적으로 불가능해진다.
+
+    전표 판정은 key 파싱이 아니라 뱅크 inv 열로 한다 — 부트스트랩 key에는 슬래시가 없어
+    파싱이 조용히 실패한다(spec §2). 회귀 평가셋 러너처럼 crop_ref가 아예 없는 소비자는
+    self_inv를 직접 준다.
+
+    Args:
+        keys: 뱅크 key 열(self_ref 대조용).
+        invs: 뱅크 inv 열(self_inv 대조용). 전표 축을 쓰지 않으면 None이어도 된다.
+        self_ref: 제외할 쿼리 자신의 key.
+        self_inv: 제외할 전표 식별자. 같은 전표의 모든 항목이 빠진다.
+
+    Returns:
+        제외할 인덱스 집합. 뱅크에 자기도 동일 전표도 없으면 빈 집합(hold-out 정상 경로).
+
+    Raises:
+        ValueError: self_ref·self_inv가 둘 다 None이거나, self_inv를 줬는데 invs가 None
+            이거나, keys와 invs의 길이가 다를 때.
+    """
+    if self_ref is None and self_inv is None:
+        raise ValueError(
+            "self_ref/self_inv가 모두 None — 제외 없이 채점하면 자기 자신이 항상 1등이다"
+        )
+    if self_inv is not None and invs is None:
+        raise ValueError(f"self_inv={self_inv!r}를 줬는데 invs가 None — 전표 축 판단 재료가 없다")
+    if invs is not None and len(keys) != len(invs):
+        raise ValueError(f"keys/invs 길이 불일치: {len(keys)}/{len(invs)}")
+
+    out = {i for i, k in enumerate(keys) if k == self_ref} if self_ref is not None else set()
+    if self_inv is not None:
+        out |= {i for i, v in enumerate(invs) if v == self_inv}
+    return out
+
+
 # 직접 미러링 대상은 운영 retrieval인 handwriting/infer_photo.py의 TOPK다 — '운영과 같은
-# 기준으로 채점한다'(topk_excluding_self)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
+# 기준으로 채점한다'(topk_dedup)는 전제가 여기 걸려 있어, 어긋나면 운영과 다른
 # 기준으로 산출된 유사도가 임계 캘리브레이션 근거가 된다. 그 TOPK는 다시 backend/app/
 # schemas/ocr.py의 TOP_K/LABEL_SOURCES와 frontend/src/utils/label-source.ts의 TOP_K에
 # 물려 있다. ml 쪽 2곳은 tests/test_topk_sync.py(ml/tests)가 api-spec.json enum과 대조한다.
 TOPK = 5
 
 
-def topk_excluding_self(
-    sims: list[float], labs: list[str], keys: list[str], self_ref: str, k: int = TOPK
+def topk_dedup(
+    sims: list[float], labs: list[str], excluded: set[int], k: int = TOPK
 ) -> list[tuple[str, float]]:
-    """쿼리 자신(동일 crop_ref)만 제외하고 라벨 중복 제거 top-k를 고른다.
+    """제외 집합 밖에서 라벨 중복 제거 top-k를 고른다 — '무엇을 뺄지'는 판단하지 않는다.
 
     중복 제거 규칙은 handwriting/infer_photo.py의 topk와 동일 — 운영 retrieval과 같은
-    기준으로 채점한다. 같은 작성자의 다른 전표 크롭은 남긴다(작성자 특화 retrieval이 취지).
-    단, 정렬은 여기서 `sorted`(안정 정렬)를 쓰므로 동점 시 항상 같은 순서가 나온다 — 운영
-    argsort(불안정 정렬, 동점 순서가 구현/버전에 따라 달라짐)와 다르며 채점 결정론을 위한 선택이다.
+    기준으로 채점한다. 단, 정렬은 여기서 `sorted`(안정 정렬)를 쓰므로 동점 시 항상 같은
+    순서가 나온다 — 운영 argsort(불안정 정렬)와 다르며 채점 결정론을 위한 선택이다.
+
+    Raises:
+        ValueError: sims/labs 길이가 다르거나(긴 labs는 조용히 꼬리가 버려진다), excluded가
+            sims 범위를 벗어날 때(다른 뱅크에서 만든 집합을 적용하는 사고).
     """
-    if len(sims) != len(labs) or len(sims) != len(keys):
-        raise ValueError(f"sims/labs/keys 길이 불일치: {len(sims)}/{len(labs)}/{len(keys)}")
+    if len(sims) != len(labs):
+        raise ValueError(f"sims/labs 길이 불일치: {len(sims)}/{len(labs)}")
+    if excluded and max(excluded) >= len(sims):
+        raise ValueError(f"제외 인덱스가 뱅크 범위를 벗어남: max={max(excluded)} >= {len(sims)}")
     out: list[tuple[str, float]] = []
     seen: set[str] = set()
     for j in sorted(range(len(sims)), key=lambda i: -sims[i]):
-        if keys[j] == self_ref or labs[j] in seen:
+        if j in excluded or labs[j] in seen:
             continue
         seen.add(labs[j])
         out.append((labs[j], float(sims[j])))
@@ -245,27 +304,39 @@ def topk_excluding_self(
     return out
 
 
-def has_peer_sample(self_ref: str, label: str, labs: list[str], keys: list[str]) -> bool:
-    """같은 라벨의 '다른' 크롭이 뱅크에 있는지 — 단일 샘플 라벨의 분모를 분리하기 위한 신호."""
-    return any(lb == label and k != self_ref for lb, k in zip(labs, keys, strict=True))
+def has_peer_sample(label: str, labs: list[str], excluded: set[int]) -> bool:
+    """제외 집합 밖에 같은 라벨의 다른 크롭이 있는지 — 단일 샘플 라벨의 분모 분리 신호.
+
+    채점(topk_dedup)과 같은 excluded를 받는다. 제외 축을 바꿔도 두 지표가 함께 움직인다.
+
+    Raises:
+        ValueError: excluded가 labs 범위를 벗어날 때(다른 뱅크에서 만든 집합을 적용하는 사고).
+            score_one 안에서는 topk_dedup이 먼저 이를 걸러주지만, 이 함수를 단독으로 부르는
+            소비자는 그 방어를 못 받으므로 여기서도 별도로 검증한다.
+    """
+    if excluded and max(excluded) >= len(labs):
+        raise ValueError(f"제외 인덱스가 뱅크 범위를 벗어남: max={max(excluded)} >= {len(labs)}")
+    return any(lb == label for i, lb in enumerate(labs) if i not in excluded)
 
 
 def score_one(
     sims: list[float],
     labs: list[str],
-    keys: list[str],
+    excluded: set[int],
     self_ref: str,
     label: str,
 ) -> dict:
-    """쌍 1건을 채점한다 — 커버리지(self 포함)와 leave-self-out top-1/top-5를 분리 산출.
+    """쌍 1건을 채점한다 — 커버리지(제외 무관)와 제외 후 top-1/top-5를 분리 산출.
+
+    제외 축은 호출자가 excluded_indices로 정해서 넘긴다 — 이 함수는 축을 모른다.
 
     Returns:
-        다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 crop_ref), ``label``(정답 라벨),
-        ``in_bank``(뱅크 커버리지, self 포함), ``top1``/``top5``(leave-self-out 적중
-        여부), ``has_peer``(동일 라벨의 다른 크롭 존재 여부), ``preds``(topk 예측 라벨 목록),
-        ``top1_sim``(leave-self-out top-1 유사도. 후보가 없으면 ``None``).
+        다음 키를 가진 dict — ``crop_ref``(쿼리 자신의 key), ``label``(정답 라벨),
+        ``in_bank``(뱅크 커버리지, 제외 항목 포함), ``top1``/``top5``(제외 후 적중 여부),
+        ``has_peer``(제외 집합 밖에 동일 라벨 존재 여부), ``preds``(topk 예측 라벨 목록),
+        ``top1_sim``(제외 후 top-1 유사도. 후보가 없으면 ``None``).
     """
-    ranked = topk_excluding_self(sims, labs, keys, self_ref, TOPK)
+    ranked = topk_dedup(sims, labs, excluded, TOPK)
     preds = [lb for lb, _ in ranked]
     return {
         "crop_ref": self_ref,
@@ -273,7 +344,7 @@ def score_one(
         "in_bank": label in labs,
         "top1": bool(preds) and preds[0] == label,
         "top5": label in preds,
-        "has_peer": has_peer_sample(self_ref, label, labs, keys),
+        "has_peer": has_peer_sample(label, labs, excluded),
         "preds": preds,
         "top1_sim": ranked[0][1] if ranked else None,
     }
@@ -298,13 +369,31 @@ def _pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
 
 
-def render_score_md(before: dict, after: dict, meta: dict) -> str:
-    """before/after 요약을 비교 마크다운으로 렌더한다(지표 2종 분리)."""
+# 제외 축 — cmd_score는 항상 둘을 병기한다(CLI 플래그를 두지 않는다, spec D4).
+# 이름이 축을 다 말하지 못하므로(무엇을 제외하는 축인지) 표 제목에서 풀어 쓴다.
+AXES = ("crop_ref", "invoice")
+AXIS_TITLES = {
+    "crop_ref": "crop_ref (쿼리 자신만 제외)",
+    # 전표 판정은 뱅크 inv 열이며 key와 inv는 네임스페이스가 둘이다(부트스트랩
+    # '2025-08-18_inv011.jpg' vs 큐레이션 'job-42'). 큐레이션 쿼리의 inv는 부트스트랩 항목과
+    # 절대 일치하지 않으므로 "전표 전체"로 읽히면 과대 약속이다 — 제목은 기준을 그대로 적는다.
+    "invoice": "invoice (뱅크 inv 열이 같은 항목 전체 제외)",
+}
+
+
+def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
+    """(side, axis) → 요약 맵을 제외 축별 표로 렌더한다(표마다 before/after 2열 유지).
+
+    4열(crop_ref before/after · invoice before/after) 한 표로 만들지 않는다 — 읽는 사람이
+    비교해야 할 축은 before↔after이지 crop_ref↔invoice가 아니다(spec §4).
+    """
     rows = [
-        ("커버리지 in-bank(self 포함)", "in_bank", "n"),
+        # 두 축이 같은 값이다(in_bank은 제외와 무관하게 label in labs). "self 포함"은 축이
+        # crop_ref뿐이던 시절의 표현이라 invoice 표에서 실제보다 좁게 읽힌다.
+        ("커버리지 in-bank(제외 무관)", "in_bank", "n"),
         ("커버리지 out_of_bank", "out_of_bank", "n"),
-        ("leave-self-out top-1", "top1", "n"),
-        ("leave-self-out top-5", "top5", "n"),
+        ("제외 후 top-1", "top1", "n"),
+        ("제외 후 top-5", "top5", "n"),
         ("peer 존재 한정 top-1", "peer_top1", "peer_n"),
         ("peer 존재 한정 top-5", "peer_top5", "peer_n"),
     ]
@@ -312,18 +401,27 @@ def render_score_md(before: dict, after: dict, meta: dict) -> str:
         "# 뱅크 증분 갱신 전/후 비교",
         "",
         f"- 뱅크 크기: {meta.get('bank_before', '?')} → {meta.get('bank_after', '?')}",
-        f"- 채점 대상(desired 쌍): {after['n']}건 · 동일 채점기로 before/after 산출",
-        "",
-        "| 지표 | before | after |",
-        "| --- | --- | --- |",
+        f"- 채점 대상(desired 쌍): {summaries[('after', AXES[0])]['n']}건 · "
+        "동일 채점기로 before/after 산출",
+        "- 표본 수는 두 축이 같다(같은 쿼리 쌍을 제외 축만 바꿔 채점). 축마다 달라지는 것은",
+        "  후보에서 빠지는 뱅크 항목이며, 그 여파가 peer 분모에 드러난다.",
     ]
-    lines += [
-        f"| {name} | {_pct(before[num], before[den])} | {_pct(after[num], after[den])} |"
-        for name, num, den in rows
-    ]
+    for axis in AXES:
+        before, after = summaries[("before", axis)], summaries[("after", axis)]
+        lines += [
+            "",
+            f"## 제외 축: {AXIS_TITLES[axis]}",
+            "",
+            "| 지표 | before | after |",
+            "| --- | --- | --- |",
+        ]
+        lines += [
+            f"| {name} | {_pct(before[num], before[den])} | {_pct(after[num], after[den])} |"
+            for name, num, den in rows
+        ]
     lines += [
         "",
-        "단일 샘플 라벨은 leave-self-out에서 구조적으로 미스이므로, out_of_bank 해소는",
+        "단일 샘플 라벨은 제외 후 후보가 0이라 구조적으로 미스이므로, out_of_bank 해소는",
         "커버리지 행으로 판단하고 retrieval 개선은 peer 존재 한정 행으로 판단한다.",
     ]
     return "\n".join(lines) + "\n"
@@ -359,11 +457,13 @@ def load_bank(path: str | Path):
 
 
 def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str]) -> None:
-    """저장 직전 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
+    """뱅크 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
 
-    워커(worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다.
+    적재 직후(apply_sync·cmd_score)와 저장 직전(save_bank_atomic) 3곳에서 부른다. 워커
+    (worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다 —
     쓰기 전에 차단한다. crop_ref 형식 key의 중복은 sync 멱등성(keys=UNIQUE 가정)을 깨므로
-    함께 막는다.
+    함께 막는다. 길이 정합뿐 아니라 emb 차원·유한값·crop_ref key 중복까지 강제하므로,
+    호출부가 "길이 정합"만 기대하고 불러도 그보다 넓게 검증된다.
     """
     import numpy as np
 
@@ -373,7 +473,7 @@ def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str])
     if emb.ndim != 2 or emb.shape[1] != EMB_DIM:
         raise RuntimeError(f"임베딩 차원 이상: shape={emb.shape} (기대 (n, {EMB_DIM}))")
     if not np.isfinite(emb).all():
-        raise RuntimeError("임베딩에 NaN/inf가 있습니다 — 저장을 중단합니다.")
+        raise RuntimeError("임베딩에 NaN/inf가 있습니다 — 중단합니다.")
     crop_ref_counts = Counter(k for k in keys if is_crop_ref(k))
     duplicates = sorted(k for k, count in crop_ref_counts.items() if count > 1)
     if duplicates:
@@ -685,6 +785,24 @@ def cmd_apply(args) -> None:
         print(RESTART_HINT)
 
 
+def _axis_excluded(axis: str, keys: list[str], invs: list[str], self_ref: str) -> set[int]:
+    """축 이름 → 제외 집합. invoice 축에도 self_ref를 함께 넘겨 자기 제외를 보장한다(D4).
+
+    분기를 축마다 명시하고 끝에서 던진다 — `axis not in AXES`만 걸러 crop_ref로 흘려보내면
+    AXES에 세 번째 축을 추가하고 여기 분기를 빠뜨린 경우를 못 막는다(그 축은 crop_ref 숫자를
+    다른 이름표로 달고 조용히 산출되며, 레코드 수 side×axis×쌍은 그대로 맞아 §4 유일키·개수
+    단언도 통과한다).
+
+    Raises:
+        ValueError: 분기가 배선되지 않은 축 이름(미지의 축 · AXES에만 추가된 축 모두).
+    """
+    if axis == "crop_ref":
+        return excluded_indices(keys, invs, self_ref=self_ref)
+    if axis == "invoice":
+        return excluded_indices(keys, invs, self_ref=self_ref, self_inv=inv_of(self_ref))
+    raise ValueError(f"미지의 제외 축 {axis!r} — 분기가 배선되지 않았다(AXES={AXES})")
+
+
 def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
@@ -694,25 +812,44 @@ def cmd_score(args) -> None:
     valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
     queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
 
-    summaries: dict[str, dict] = {}
-    per_pair: dict[str, list[dict]] = {}
+    summaries: dict[tuple[str, str], dict] = {}
+    per_pair: dict[tuple[str, str], list[dict]] = {}
     meta: dict[str, int] = {}
     for side, path in (("before", args.before), ("after", args.after)):
-        emb, labs, _, keys = load_bank(path)
-        recs = [
-            score_one((emb @ queries[i]).tolist(), labs, keys, p["crop_ref"], p["canonical_label"])
-            for i, p in enumerate(valid)
-        ]
-        summaries[side] = score_summary(recs)
-        per_pair[side] = recs
+        emb, labs, invs, keys = load_bank(path)
+        # 4배열 길이 정합 — 분리 전 topk_excluding_self(커밋 cb9b1c7)가 sims/labs/keys를
+        # 한자리에서 검증하던 것을 여기서 잇는다. excluded_indices는 keys↔invs, topk_dedup은
+        # sims↔labs만 보므로 emb/lab만 n이고 inv/keys가 n-1인 뱅크는 두 검사를 모두 통과한다.
+        validate_bank_arrays(emb, labs, invs, keys)
+        # 유사도는 축과 무관하므로 한 번만 계산해 두 축이 공유한다(임베딩도 여전히 1회).
+        sims = [(emb @ queries[i]).tolist() for i in range(len(valid))]
+        for axis in AXES:
+            recs = [
+                score_one(
+                    sims[i],
+                    labs,
+                    _axis_excluded(axis, keys, invs, p["crop_ref"]),
+                    p["crop_ref"],
+                    p["canonical_label"],
+                )
+                for i, p in enumerate(valid)
+            ]
+            summaries[(side, axis)] = score_summary(recs)
+            per_pair[(side, axis)] = recs
         meta[f"bank_{side}"] = len(keys)
 
-    md = render_score_md(summaries["before"], summaries["after"], meta)
+    md = render_score_md(summaries, meta)
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "score.md").write_text(md)
+    # §4 산출물 계약 — 유일키는 (side, axis, crop_ref). 세 키가 모든 레코드에 있어야 한다.
     _write_jsonl(
         args.out / "score.jsonl",
-        [{"side": side, **r} for side in ("before", "after") for r in per_pair[side]],
+        [
+            {"side": side, "axis": axis, **r}
+            for side in ("before", "after")
+            for axis in AXES
+            for r in per_pair[(side, axis)]
+        ],
     )
     print(md)
     print(f"저장: {args.out / 'score.md'}\n저장: {args.out / 'score.jsonl'}")

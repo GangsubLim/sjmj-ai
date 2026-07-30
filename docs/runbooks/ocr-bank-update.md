@@ -99,15 +99,47 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
   --after  "$SJMJ_ML_MODELS_DIR/bank.npz"
 ```
 
-지표는 2종으로 분리해 읽는다.
+`score.md`는 **제외 축별로 표 2개**를 낸다. 축은 "채점할 때 뱅크에서 무엇을 빼는가"다.
+같은 쿼리 쌍을 축만 바꿔 채점하므로 표본 수(`n`)는 두 축이 같다 — 축마다 달라지는 것은
+제외 후 후보로 남는 뱅크 항목이며, 그 여파가 아래 `peer_n` 분모에 드러난다.
 
-- **커버리지(self 포함)** — 정답 라벨이 뱅크에 존재하는가. `out_of_bank` 해소는 **이 지표로**
-  판단한다.
-- **leave-self-out top-1/top-5** — 쿼리 자신(동일 `crop_ref`)만 제외한 retrieval 정확도.
-  단일 샘플 라벨은 자기 제외 시 후보가 0이라 구조적으로 미스다. 그래서 리포트는 "동일 라벨의
-  다른 크롭이 존재하는 쌍 한정" 수치를 함께 낸다 — retrieval 개선은 **그 행으로** 판단한다.
+- **`crop_ref` 축** — 쿼리 자신(동일 `crop_ref`)만 뺀다. 이전 릴리스까지의 기준이라 과거
+  리포트와 직접 비교할 수 있다. 같은 전표(같은 사진·같은 필기 세션)의 다른 크롭이 뱅크에
+  남으므로, 그 크롭이 답을 알려주는 만큼 수치가 낙관적이다.
+- **`invoice` 축** — 뱅크 `inv` 열이 쿼리와 같은 항목 전체를 뺀다. 학습 쪽 평가 기준
+  (`apps/invoice-ocr/ml/handwriting/train_contrastive.py`의 전표 단위 hold-out)과 같은 축이며,
+  새 전표를 처음 볼 때의 실제 성능에 가깝다. 단 `inv` 값은 네임스페이스가 둘이다 —
+  부트스트랩은 `2025-08-18_inv011.jpg`, 큐레이션은 `job-42`. 큐레이션 쿼리의 `inv`는
+  부트스트랩 항목과 절대 일치하지 않으므로 **같은 종이 전표를 다시 촬영해 잡으로 올린
+  경우의 누수는 이 축으로도 남는다**(받아들이는 전제). 즉 이 축은 누수 0의 보장이 아니라
+  동일 잡 누수를 제거한 값이다.
+
+두 축의 차이가 곧 **동일 전표 누수의 크기**다. 차이가 크면 뱅크가 전표 중복에 기대고 있다는
+신호이므로 개선 판단은 `invoice` 축으로 한다. 이 축간 비교는 분모가 `n`으로 두 축이 동일한
+아래 **제외 후 top-1/top-5** 행에서 읽는다 — peer 존재 한정 행은 분모(`peer_n`)가 축마다
+달라지므로, 그 행의 두 축 값을 그대로 빼면 누수 크기가 아니라 "누수 + 분모 표본 변화"가
+섞인 값이 된다. peer 행은 같은 축 안에서 before↔after를 비교하는 용도로만 쓴다.
+
+각 표 안의 지표는 2종으로 분리해 읽는다.
+
+- **커버리지(제외 무관)** — 정답 라벨이 뱅크에 존재하는가. 제외 축과 무관하게(제외 대상
+  항목까지 포함해) 같은 값이며, `out_of_bank` 해소는 **이 지표로** 판단한다.
+- **제외 후 top-1/top-5** — 위 축대로 뺀 뒤의 retrieval 정확도. 단일 샘플 라벨은 제외 후
+  후보가 0이라 구조적으로 미스다. 그래서 리포트는 "동일 라벨의 다른 크롭이 (제외 후에도)
+  존재하는 쌍 한정" 수치(peer 존재 한정 top-1/top-5)를 함께 낸다 — retrieval 개선은 같은 축
+  안에서 그 행의 before↔after로 판단한다(peer 행은 축간 비교에 쓰지 않는다, 위 참조). 이
+  분모(`peer_n`)는 축마다 달라진다(`invoice` 축이 더 작거나 같다).
 
 산출물: `results/bank_update/score.md`, `score.jsonl`.
+`score.jsonl` 레코드의 유일키는 `(side, axis, crop_ref)`다 — `crop_ref`만으로 map을 만들면
+축·전후 4벌 중 하나가 조용히 이긴다.
+
+**임계 캘리브레이션(`ITEM_CONF_THRESHOLD`)은 `crop_ref` 축으로 한다.** 현행 0.75가 그 축에서
+산정됐고(2026-07-28, 35쌍), 축을 바꾸면 과거 분포와 비교가 끊긴다. 과거 리포트·주석의
+**`leave-self-out`은 이 `crop_ref` 축의 `제외 후`와 같은 것**이다(#53에서 표현만 중립화). `invoice`
+축은 더 엄격한 수치이므로 임계를 다시 산정할 때만 근거를 명시하고 바꾼다.
+`score.jsonl`을 직접 소비하는 스니펫을 작성할 때는 `side`뿐 아니라 **`axis`도 반드시 필터**해야
+한다 — 안 하면 표본이 2배가 되고 서로 다른 채점규칙이 한 분포에 섞인다.
 
 ## 5. ml-worker 재시작 (반영 시점)
 
@@ -143,7 +175,7 @@ launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
 
 ## 참고
 
-- 설계 근거: 이슈 [#17](https://github.com/nxnsystems/sjmj-ai/issues/17)
+- 설계 근거: 이슈 [#17](https://github.com/GangsubLim/sjmj-ai/issues/17)
 - 선행 분석 절차: `docs/runbooks/ocr-curation-analysis.md`
 - 관련 ADR: `docs/adr/0001-ml-model-artifacts-live-and-train-on-macmini.md`,
   `docs/adr/0004-curation-gate-and-training-pairs-read-model.md`
