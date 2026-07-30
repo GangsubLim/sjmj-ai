@@ -10,13 +10,18 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from handwriting.bank_id import MODEL_FILENAME, compute_retrieval_version
 from tools.bank_update import (
     AXES,
     EMB_DIM,
+    PLAN_SCOPE,
+    SCOPE_LABELS,
+    SCOPES,
     BankDiff,
     MergePlan,
     _axis_excluded,
     _mysql,
+    _write_jsonl,
     apply_sync,
     backup_bank,
     bank_current_map,
@@ -41,9 +46,11 @@ from tools.bank_update import (
     require_env,
     require_removal_confirmation,
     save_bank_atomic,
+    score_meta,
     score_one,
     score_summary,
     select_desired,
+    select_scoped,
     topk_dedup,
     validate_bank_arrays,
 )
@@ -1016,11 +1023,13 @@ def test_render_score_md_renders_every_cell_with_before_after_percentages():
         _score_rec(in_bank=True),
     ]
     md = render_score_md(
-        _axis_summaries(before_recs, after_recs), {"bank_before": 100, "bank_after": 120}
+        _axis_summaries(before_recs, after_recs),
+        {"bank_before": 100, "bank_after": 120},
+        scope="reviewed",
     )
 
     assert "- 뱅크 크기: 100 → 120" in md
-    assert "- 채점 대상(desired 쌍): 4건" in md
+    assert "- 채점 대상: 4건" in md
     assert "| 커버리지 in-bank(제외 무관) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
     assert "| 커버리지 out_of_bank | 3/4 (75.0%) | 0/4 (0.0%) |" in md
     assert "| 제외 후 top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
@@ -1031,7 +1040,7 @@ def test_render_score_md_renders_every_cell_with_before_after_percentages():
 
 def test_render_score_md_renders_dash_when_denominator_is_zero():
     """채점 대상 0건에서도 ZeroDivisionError 없이 '0/0 (—)'로 렌더돼야 한다."""
-    md = render_score_md(_axis_summaries([], []), {})
+    md = render_score_md(_axis_summaries([], []), {}, scope="reviewed")
     assert "- 뱅크 크기: ? → ?" in md
     assert "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in md
     assert "| peer 존재 한정 top-1 | 0/0 (—) | 0/0 (—) |" in md
@@ -1047,7 +1056,7 @@ def test_render_score_md_splits_one_table_per_axis():
         ("before", "invoice"): score_summary([miss]),
         ("after", "invoice"): score_summary([miss]),
     }
-    md = render_score_md(summaries, {"bank_before": 100, "bank_after": 120})
+    md = render_score_md(summaries, {"bank_before": 100, "bank_after": 120}, scope="reviewed")
 
     assert md.count("| 지표 | before | after |") == 2
     assert md.index("## 제외 축: crop_ref") < md.index("## 제외 축: invoice")
@@ -1055,6 +1064,25 @@ def test_render_score_md_splits_one_table_per_axis():
     crop_part, inv_part = md.split("## 제외 축: invoice")
     assert "| 제외 후 top-1 | 1/1 (100.0%) | 1/1 (100.0%) |" in crop_part
     assert "| 제외 후 top-1 | 0/1 (0.0%) | 0/1 (0.0%) |" in inv_part
+
+
+def test_render_score_md_states_the_population_scope_in_the_body():
+    """파일명·표 형식이 scope와 무관하게 같으므로 본문이 유일한 구분 근거다."""
+    summaries = _axis_summaries([_score_rec()], [_score_rec()])
+    reviewed_md = render_score_md(summaries, {}, scope="reviewed")
+    all_md = render_score_md(summaries, {}, scope="all")
+
+    assert f"- 모집단 scope: reviewed — {SCOPE_LABELS['reviewed']}" in reviewed_md
+    assert f"- 모집단 scope: all — {SCOPE_LABELS['all']}" in all_md
+    # 'desired'는 ADR 0004 게이트 모집단을 뜻하는 도구 용어라 all 결과를 좁게 읽히게 한다.
+    assert "desired" not in all_md
+
+
+def test_render_score_md_rejects_a_scope_without_a_label():
+    # SCOPES에 이름만 늘고 설명이 없으면 조용히 오독되는 리포트가 나온다.
+    assert set(SCOPE_LABELS) == set(SCOPES)
+    with pytest.raises(KeyError):
+        render_score_md(_axis_summaries([], []), {}, scope="everything")
 
 
 # --- DB TSV 파싱 / env 경계 / CLI (mysql 호출 자체는 단위테스트 범위 밖) ---
@@ -1285,6 +1313,7 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
     """queries[i]는 valid[i]의 임베딩이어야 한다 — 어긋나면 after top-1이 조용히 무너진다."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1318,7 +1347,13 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
 
     out_dir = tmp_path / "out"
     cmd_score(
-        SimpleNamespace(backend_env="dummy.env", out=out_dir, before=before_bank, after=after_bank)
+        SimpleNamespace(
+            backend_env="dummy.env",
+            out=out_dir,
+            before=before_bank,
+            after=after_bank,
+            scope="reviewed",
+        )
     )
 
     # spec D4 전제 — 축(crop_ref/invoice)이 늘어도 임베딩은 side당이 아니라 통틀어 1회다
@@ -1367,6 +1402,7 @@ def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_pa
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1388,7 +1424,11 @@ def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_pa
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
     out_dir = tmp_path / "out"
-    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
 
     rows = [
         json.loads(ln) for ln in (out_dir / "score.jsonl").read_text().splitlines() if ln.strip()
@@ -1407,6 +1447,7 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     """크롭이 없는 쌍은 임베딩할 수 없어 채점 대상에서 빠진다(0건이어도 리포트는 렌더된다)."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     (data_dir / "ocr_crops").mkdir(parents=True)
     bank = _write_bank(models_dir / "bank.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
@@ -1420,12 +1461,19 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
     out_dir = tmp_path / "out"
-    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
 
     assert (out_dir / "score.jsonl").read_text().strip() == ""
     assert (
         "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
     )
+    # n_pairs는 크롭 필터 '이후' 수다 — 필터 이전 값(1)으로 회귀하면 리포트의 재평가 게이트
+    # (레코드 수 == n_pairs × 2 × len(axes))가 정상 산출물을 손상으로 기각한다.
+    assert json.loads((out_dir / "score_meta.json").read_text(encoding="utf-8"))["n_pairs"] == 0
 
 
 def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monkeypatch):
@@ -1436,6 +1484,7 @@ def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monk
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1460,5 +1509,383 @@ def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monk
 
     with pytest.raises(RuntimeError, match="뱅크 배열 길이 불일치"):
         cmd_score(
-            SimpleNamespace(backend_env="dummy.env", out=tmp_path / "out", before=bad, after=bad)
+            SimpleNamespace(
+                backend_env="dummy.env",
+                out=tmp_path / "out",
+                before=bad,
+                after=bad,
+                scope="reviewed",
+            )
         )
+
+
+# --- 모집단 scope (ADR 0004 게이트가 score 확장으로 새지 않는지) ---
+
+
+def test_select_scoped_reviewed_keeps_only_reviewed_jobs():
+    pairs = [_pair(job_id=1), _pair(id=2, job_id=2, crop_ref="job-2/row-0")]
+    assert select_scoped(pairs, {1}, "reviewed") == [_pair(job_id=1)]
+
+
+def test_select_scoped_all_ignores_the_review_gate_but_not_status():
+    pairs = [
+        _pair(job_id=1),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0"),
+        _pair(id=3, job_id=2, crop_ref="job-2/row-1", status="excluded"),
+    ]
+    scoped = select_scoped(pairs, {1}, "all")
+    assert [p["crop_ref"] for p in scoped] == ["job-1/row-0", "job-2/row-0"]
+
+
+def test_select_scoped_rejects_an_unwired_scope():
+    # _axis_excluded와 같은 관용구 — 이름만 늘고 분기가 없으면 조용히 reviewed 숫자가 나온다.
+    with pytest.raises(ValueError, match="scope"):
+        select_scoped([], set(), "everything")
+
+
+def test_plan_scope_is_pinned_to_reviewed():
+    assert PLAN_SCOPE == "reviewed" and set(SCOPES) == {"reviewed", "all"}
+
+
+def test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs(tmp_path, monkeypatch):
+    """ADR 0004 회귀 — plan에 scope가 새면 미검수 쌍이 뱅크 갱신 대상이 되고 되돌릴 수 없다."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    for ref in ("job-1/row-0", "job-2/row-0"):
+        _touch_crop(crops_root, ref)
+    _write_bank(models_dir / "bank.npz", ["job-9/row-0"], ["공임"])
+
+    pairs = [
+        _pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방"),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="미검수"),
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    # args에 scope="all"이 실려 있어도 plan은 그것을 읽지 않는다.
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, scope="all"))
+
+    records = [
+        json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    refs = {r["crop_ref"] for r in records}
+    assert "job-1/row-0" in refs
+    assert "job-2/row-0" not in refs  # 미검수 잡은 어떤 경우에도 뱅크 대상이 아니다
+
+
+def test_cmd_score_all_scope_adds_unreviewed_pairs(tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    for ref in ("job-1/row-0", "job-2/row-0"):
+        _touch_crop(crops_root, ref)
+    bank = _write_bank(
+        models_dir / "bank.npz",
+        ["job-1/row-0", "job-2/row-0"],
+        ["안가방", "공임"],
+        emb=[_onehot(0), _onehot(1)],
+    )
+    pairs = [
+        _pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방"),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="공임"),
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="all")
+    )
+    refs = {
+        json.loads(ln)["crop_ref"]
+        for ln in (out_dir / "score.jsonl").read_text().splitlines()
+        if ln.strip()
+    }
+    assert refs == {"job-1/row-0", "job-2/row-0"}  # 미검수 job-2도 채점 대상
+    # 산출물에도 all이 표기돼야 한다 — 리터럴 "reviewed"로 회귀하면 조용한 오표기가 된다.
+    assert json.loads((out_dir / "score_meta.json").read_text(encoding="utf-8"))["scope"] == "all"
+    assert "- 모집단 scope: all" in (out_dir / "score.md").read_text(encoding="utf-8")
+
+
+def test_main_score_defaults_to_reviewed_scope(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("tools.bank_update.cmd_score", lambda args: captured.update(vars(args)))
+    main(["score", "--before", "b.npz", "--after", "a.npz"])
+    assert captured["scope"] == "reviewed"
+
+
+def _sentinel(name):
+    """서브커맨드 본체를 막는 감시자 — 파서가 거부해야 할 인자가 통과하면 여기서 드러난다."""
+
+    def _blocked(args):
+        raise AssertionError(f"{name}이 실행되면 안 된다(파서가 거부해야 한다): {vars(args)}")
+
+    return _blocked
+
+
+ARGPARSE_USAGE_EXIT = 2  # argparse가 사용법 위반에 쓰는 종료코드
+
+
+def test_main_score_rejects_an_unknown_scope(monkeypatch):
+    monkeypatch.setattr("tools.bank_update.cmd_score", _sentinel("cmd_score"))
+    with pytest.raises(SystemExit) as exc:
+        main(["score", "--before", "b.npz", "--after", "a.npz", "--scope", "everything"])
+    assert exc.value.code == ARGPARSE_USAGE_EXIT
+
+
+def test_main_plan_rejects_scope_flag_at_the_cli_surface(monkeypatch):
+    """ADR 0004 회귀 — --scope가 common 파서로 옮겨지면 plan도 이 플래그를 받아버린다.
+
+    함수 레벨 테스트(test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs)는
+    cmd_plan이 args.scope를 무시하는지만 본다. 이 테스트는 그보다 바깥 층 —
+    "plan 서브커맨드가 애초에 --scope를 파싱 가능한 옵션으로 아는가"를 argparse
+    수준에서 못 박는다.
+
+    cmd_plan을 감시자로 막고 종료코드까지 단언한다 — 막지 않으면 회귀 시 main이 실제
+    cmd_plan을 불러 모킹되지 않은 경계(운영 DB env·DEFAULT_OUT)로 나간다. env가 세팅된
+    머신(macmini)에서는 그 실패가 운영 DB 질의를 거친 RuntimeError라 원인을 가린다.
+    """
+    monkeypatch.setattr("tools.bank_update.cmd_plan", _sentinel("cmd_plan"))
+    with pytest.raises(SystemExit) as exc:
+        main(["plan", "--scope", "all"])
+    assert exc.value.code == ARGPARSE_USAGE_EXIT
+
+
+# --- score 산출 계약(score_meta.json · 원자 쓰기) ---
+
+
+def test_score_meta_records_the_reeval_validity_gate_inputs():
+    meta = score_meta(
+        generated_at="2026-07-30T05:12:00+09:00",
+        scope="all",
+        n_pairs=44,
+        fingerprints={"before": "aaa", "after": "bbb"},
+        score_jsonl_sha256="deadbeef",
+    )
+    assert meta == {
+        "generated_at": "2026-07-30T05:12:00+09:00",
+        "scope": "all",
+        "axes": ["crop_ref", "invoice"],
+        "n_pairs": 44,
+        "retrieval_version": {"before": "aaa", "after": "bbb"},
+        "score_jsonl_sha256": "deadbeef",
+    }
+
+
+def test_score_meta_axes_is_a_list_not_a_single_axis():
+    # 단수로 적으면 나머지 한 축이 없는 것처럼 읽힌다(#53 산출물은 항상 두 축을 담는다).
+    assert score_meta(
+        generated_at="t", scope="reviewed", n_pairs=1, fingerprints={}, score_jsonl_sha256="x"
+    )["axes"] == list(AXES)
+
+
+def test_write_jsonl_leaves_no_tmp_file_and_replaces_atomically(tmp_path):
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+    assert out.read_text() == '{"a": 1}\n'
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_jsonl_keeps_the_previous_file_intact_when_the_replace_fails(tmp_path, monkeypatch):
+    """원자 교체 불변식 — 대상 경로에 직접 쓰면 이 테스트가 RED가 된다.
+
+    tmp 잔여물·직렬화 실패만 보는 테스트는 `path.write_text(text)` 비원자 구현에서도 GREEN이다
+    (비원자 구현은 tmp를 아예 만들지 않고, 직렬화 실패는 파일 접근보다 먼저 터진다). 교체
+    단계에서 터뜨려야 "이전 산출물이 온전히 남는가"가 실제로 고정된다.
+    """
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+
+    def _boom(src, dst):
+        raise OSError("교체 실패")
+
+    monkeypatch.setattr("tools.bank_update.os.replace", _boom)
+    with pytest.raises(OSError, match="교체 실패"):
+        _write_jsonl(out, [{"a": 2}])
+    assert out.read_text(encoding="utf-8") == '{"a": 1}\n'
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_jsonl_keeps_the_previous_file_when_serialization_fails(tmp_path):
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+    with pytest.raises(TypeError):
+        _write_jsonl(out, [{"a": object()}])
+    assert out.read_text() == '{"a": 1}\n'  # 부분 기록으로 이전 산출물이 깨지지 않는다
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def _score_workspace(tmp_path, monkeypatch):
+    """cmd_score를 돌릴 최소 작업공간(합성 뱅크 + 더미 모델 파일 + 크롭 + Fake 임베딩)."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _touch_crop(crops_root, "job-1/row-0")
+    bank = _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"], emb=[_onehot(0)])
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="안가방")],
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: "sha-fixed")
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+    return models_dir, bank
+
+
+def test_cmd_score_writes_score_meta_matching_the_jsonl_digest(tmp_path, monkeypatch):
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    meta = json.loads((out_dir / "score_meta.json").read_text())
+    body = (out_dir / "score.jsonl").read_bytes()
+    assert meta["score_jsonl_sha256"] == hashlib.sha256(body).hexdigest()
+    assert meta["scope"] == "reviewed"
+    assert meta["axes"] == list(AXES)
+    assert meta["n_pairs"] == 1
+    # 같은 뱅크를 before/after로 줬으므로 두 지문이 같다.
+    assert meta["retrieval_version"]["before"] == meta["retrieval_version"]["after"]
+    assert len(meta["retrieval_version"]["after"]) == 12
+    # 레코드 수 == n_pairs × 2 × len(axes) — 리포트가 대조하는 불변식이 산출 시점에 성립한다.
+    n_records = len([ln for ln in body.decode().splitlines() if ln.strip()])
+    assert n_records == meta["n_pairs"] * 2 * len(meta["axes"])
+
+
+def test_cmd_score_fingerprints_differ_when_the_two_banks_differ(tmp_path, monkeypatch):
+    models_dir, after_bank = _score_workspace(tmp_path, monkeypatch)
+    before_bank = _write_bank(tmp_path / "before.npz", ["job-9/row-0"], ["공임"], emb=[_onehot(1)])
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env",
+            out=out_dir,
+            before=before_bank,
+            after=after_bank,
+            scope="reviewed",
+        )
+    )
+    fps = json.loads((out_dir / "score_meta.json").read_text())["retrieval_version"]
+    assert fps["before"] != fps["after"]
+
+
+def test_cmd_score_records_null_fingerprints_when_the_code_sha_is_unavailable(
+    tmp_path, monkeypatch
+):
+    # 자리표시자를 쓰지 않는다 — null이면 리포트의 stale 방어가 재평가를 채택하지 않는다.
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: None)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    assert json.loads((out_dir / "score_meta.json").read_text())["retrieval_version"] == {
+        "before": None,
+        "after": None,
+    }
+
+
+def test_cmd_score_writes_meta_last_so_a_crash_leaves_no_valid_reeval(tmp_path, monkeypatch):
+    """중단된 재실행이 새 score.jsonl과 이전 meta를 짝지으면 stale 방어도 이를 못 잡는다."""
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+
+    def _boom(path, obj):
+        raise RuntimeError("디스크 가득")
+
+    monkeypatch.setattr("tools.bank_update._write_json", _boom)
+    with pytest.raises(RuntimeError, match="디스크"):
+        cmd_score(
+            SimpleNamespace(
+                backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+            )
+        )
+    assert (out_dir / "score.jsonl").exists()
+    assert not (out_dir / "score_meta.json").exists()  # meta가 마지막이므로 유효성 게이트가 닫힌다
+    assert list(out_dir.glob("*.tmp")) == []
+
+
+def test_cmd_score_stale_meta_survives_a_failed_rerun_but_no_longer_matches_the_new_jsonl(
+    tmp_path, monkeypatch
+):
+    """1회 성공 후 2회차 meta 쓰기가 터지면, 살아남은 이전 meta가 새 score.jsonl과
+    짝지어져도 다이제스트가 어긋나야 한다.
+
+    같은 뱅크로 재채점하면 retrieval_version 지문은 두 실행에서 동일하므로(spec §3-B가
+    경고한 흔한 경우), 리포트의 stale 방어가 실제로 의지하는 신호는 jsonl 다이제스트다.
+    이 테스트가 "meta 부재"만 보던 기존 테스트의 공백을 메운다 — 두 실패 모드는 다르다.
+    """
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    old_meta = json.loads((out_dir / "score_meta.json").read_text())
+
+    # 2회차는 채점 내용을 바꿔 새 score.jsonl이 실제로 달라지게 한다(뱅크는 그대로라 지문은 불변).
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="공임")],
+    )
+
+    def _boom(path, obj):
+        raise RuntimeError("디스크 가득")
+
+    monkeypatch.setattr("tools.bank_update._write_json", _boom)
+    with pytest.raises(RuntimeError, match="디스크"):
+        cmd_score(
+            SimpleNamespace(
+                backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+            )
+        )
+
+    survived_meta = json.loads((out_dir / "score_meta.json").read_text())
+    assert survived_meta == old_meta  # meta 쓰기 실패는 이전 meta를 무손상으로 남긴다
+    new_body = (out_dir / "score.jsonl").read_bytes()
+    assert survived_meta["score_jsonl_sha256"] != hashlib.sha256(new_body).hexdigest()
+
+
+def test_cmd_score_inline_fingerprint_matches_compute_retrieval_version(tmp_path, monkeypatch):
+    """cmd_score가 인라인으로 다시 쓰는 지문 레시피와 handwriting.bank_id.compute_retrieval_version
+    의 결과가 같은 입력에 대해 같은 지문이어야 한다.
+
+    워커는 compute_retrieval_version을, cmd_score는 인라인 조합을 쓴다(347MB sha256과 git
+    조회를 side마다 반복하지 않으려는 정당한 성능 hoist). 두 레시피가 갈리면 리포트가
+    대조하는 두 값이 서로 다른 코드 경로에서 나온 것이 되고, 산출물 형식은 여전히 정상이라
+    어떤 단언도 그 발산을 못 잡는다 — 그래서 등가성 자체를 테스트로 못박는다.
+    """
+    models_dir, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    meta = json.loads((out_dir / "score_meta.json").read_text())
+    emb, labs, _invs, keys = load_bank(bank)
+    expected = compute_retrieval_version(models_dir / MODEL_FILENAME, keys, labs, emb)
+    assert meta["retrieval_version"]["before"] == expected
+    assert meta["retrieval_version"]["after"] == expected

@@ -48,9 +48,20 @@ def _install_fake_infer_photo(monkeypatch, warped, calls):
     monkeypatch.setitem(sys.modules, "handwriting.infer_photo", m)
 
 
-def _models():
-    # (item_model, E, lab, qwen, device) — E @ queries[i]만 실제로 쓰인다.
-    return (None, np.ones((1, 2), np.float32), ["삼겹살"], None, "cpu")
+def _models(retrieval_version="a1b2c3d4e5f6"):
+    # E @ queries[i]만 실제로 쓰인다. retrieval_version은 스탬프 배선 검증용.
+    # ModelBundle은 속성으로 읽는 계약이라 생성도 키워드로 한다(위치 인자 6개는 순서 실수가
+    # 조용히 통과하는 바로 그 형태다).
+    from worker.main import ModelBundle
+
+    return ModelBundle(
+        item_model=None,
+        emb=np.ones((1, 2), np.float32),
+        labs=["삼겹살"],
+        qwen=None,
+        device="cpu",
+        retrieval_version=retrieval_version,
+    )
 
 
 def test_gate_failure_returns_empty_rows_and_skips_extraction(
@@ -70,6 +81,7 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
         "supply_sum": 0,
         "warp_ok": False,
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
+        "retrieval_version": "a1b2c3d4e5f6",
     }
     assert calls == []  # 오검출 워프 기반 행 추론·크롭을 아예 하지 않는다
     assert (tmp_path / "warped.png").exists()  # 진단용 워프는 남긴다
@@ -102,6 +114,7 @@ def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
         "supply_sum": 0,
         "warp_ok": False,
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
+        "retrieval_version": "a1b2c3d4e5f6",
     }
     assert "[warp-gate] job=99 quad_missing" in capsys.readouterr().out
 
@@ -132,4 +145,37 @@ def test_gate_pass_keeps_existing_row_extraction(monkeypatch, tmp_path, make_war
     assert calls == ["extract_rows_for_job"]
     assert out["rows"][0]["crop_ref"] == "job-42/row-0"
     assert out["supply_sum"] == 364000
+    assert out["retrieval_version"] == "a1b2c3d4e5f6"
     assert (tmp_path / "row-0.png").exists()
+
+
+def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_pass_path(
+    monkeypatch, tmp_path, make_warped
+):
+    """지문을 못 얻은 워커 세션(code_version 실패 등)은 키 자체를 넣지 않는다.
+
+    자리표시자("unknown")를 넣으면 서로 다른 retrieval 상태가 한 코호트로 합쳐진다(Issue #49).
+    지문 있는 번들만 테스트하면 infer_job 배선이 `stamp or "unknown"`으로 회귀해도 아무
+    테스트가 빨개지지 않는다 — assemble 단위 테스트는 assemble만 검증한다.
+    """
+    from handwriting.infer_job import infer_job
+
+    _install_fake_infer_photo(monkeypatch, make_warped(), [])
+
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 42)
+
+    assert out["warp_ok"] is True
+    assert "retrieval_version" not in out
+
+
+def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_failure_path(
+    monkeypatch, tmp_path, make_warped
+):
+    from handwriting.infer_job import infer_job
+
+    _install_fake_infer_photo(monkeypatch, make_warped(n_lines=0), [])
+
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 7)
+
+    assert out["warp_ok"] is False
+    assert "retrieval_version" not in out

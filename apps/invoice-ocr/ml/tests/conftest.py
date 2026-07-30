@@ -5,6 +5,7 @@ import math
 import pytest
 
 from handwriting.warp_gate import MIN_BLUE_RATIO  # stdlib만 쓰는 모듈이라 코어 venv에서도 안전
+from tools.curation_enrich import enrich_pairs  # 동일 — stdlib 전용 순수 계층
 
 # 정상 합성의 파랑 비율을 임계의 몇 배로 둘지. 3배면 임계가 흔들려도 정상 케이스가 여유를 갖는다.
 HEALTHY_RATIO_FACTOR = 3
@@ -48,6 +49,132 @@ def make_warped():
         return img
 
     return _make
+
+
+def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over):
+    """score.jsonl 레코드 shape의 합성 헬퍼 — reeval_gate/curation_report 테스트가 공유한다.
+
+    private 헬퍼를 다른 테스트 모듈에서 `from tests.test_curation_cohort import _reeval_record`로
+    끌어오면 수집 순서·리팩터 내성이 약하다(L3). conftest.py가 공유 픽스처의 관용적 자리다.
+    """
+    base = {
+        "side": side,
+        "axis": axis,
+        "crop_ref": crop_ref,
+        "label": "안가방",
+        "in_bank": True,
+        "top1": True,
+        "top5": True,
+        "has_peer": True,
+        "preds": ["안가방", "공임"],
+        "top1_sim": 0.91,
+    }
+    return {**base, **over}
+
+
+# --- 큐레이션 리포트 계열 합성 헬퍼 (test_curation_enrich·test_curation_report 공유) ---
+# 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_report.py)이 두 모듈로
+# 갈리며 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
+
+# frozenset — 모듈 전역 공유 픽스처라 한 테스트가 add/discard하면 수집 순서에 따라 다른
+# 테스트의 버킷 판정이 바뀐다(프로젝트 불변성 규약).
+BANK = frozenset({"엔진오일", "드라이", "타이어", "공임"})
+_CUR_VERSION = "cur-fingerprint"
+
+
+def _four_vintages(crop_ref="job-1/row-0"):
+    """score.jsonl은 같은 crop_ref에 (side, axis) 4벌을 담는다(bank_update.py:_write_score_artifacts)."""
+    return [
+        _reeval_record(crop_ref, side=side, axis=axis)
+        for side in ("before", "after")
+        for axis in ("crop_ref", "invoice")
+    ]
+
+
+def _reeval_meta(**over):
+    """bank_update.score_meta가 내는 score_meta.json shape — 지문은 중첩 구조다(before/after)."""
+    base = {
+        "generated_at": "2026-07-30T05:12:00+09:00",
+        "scope": "all",
+        "axes": ["crop_ref", "invoice"],
+        "n_pairs": 1,
+        "retrieval_version": {"before": "old", "after": _CUR_VERSION},
+        "score_jsonl_sha256": "digest-1",
+    }
+    return {**base, **over}
+
+
+def _pair(**over):
+    base = {
+        "id": 1,
+        "crop_ref": "job-1/row-0",
+        "job_id": 1,
+        "row_index": 0,
+        "draft_label": "엔진오일",
+        "final_label": "엔진오일",
+        "canonical_label": "엔진오일",
+        "supply": 100000,
+        "status": "included",
+        "reviewed_at": None,
+    }
+    return {**base, **over}
+
+
+def _job(job_id=1, rows=None, retrieval_version=_CUR_VERSION):
+    """result_json 1건 — rows의 crop_ref가 이 잡에 속하는지 조립 시점에 검증한다.
+
+    `_job(job_id=...)`와 `_row(job=...)`는 기본값이 독립이라 한쪽만 바꾸면 조용히 어긋난다.
+    그러면 pair의 crop_ref가 rows_by_ref에서 안 잡혀 검증하려던 버킷이 아니라 row_missing이
+    나오고, 테스트는 그 사실을 모른 채 통과한다 — 그래서 즉시 실패시킨다(덮어쓰기가 아니라
+    실패로 막는 이유: crop_ref 불일치를 의도적으로 쓰는 테스트의 의도를 지워버리지 않는다).
+    """
+    rows = rows or []
+    strays = [r["crop_ref"] for r in rows if not r["crop_ref"].startswith(f"job-{job_id}/")]
+    if strays:
+        raise AssertionError(f"_job(job_id={job_id})에 다른 잡의 행이 섞였다: {strays}")
+    result = {"rows": rows, "warp_ok": True}
+    if retrieval_version is not None:
+        result["retrieval_version"] = retrieval_version
+    return {"job_id": job_id, "image_path": f"/data/up/{job_id}.jpeg", "result": result}
+
+
+def _row(idx=0, top5=None, supply=100000, raw="100", job=1):
+    return {
+        "row_index": idx,
+        "crop_ref": f"job-{job}/row-{idx}",
+        "item_top5": [{"label": lb, "sim": s} for lb, s in (top5 or [])],
+        "supply": supply,
+        "amount_raw": raw,
+    }
+
+
+def _enrich(pairs, jobs, bank=BANK, **kw):
+    """기본 현재 지문을 물려주는 래퍼 — 스탬프를 명시하지 않은 테스트는 current_bank가 된다."""
+    kw.setdefault("current_retrieval_version", _CUR_VERSION)
+    return enrich_pairs(pairs, jobs, bank, **kw)
+
+
+def _enriched_row(**over):
+    """소비자 술어 테스트용 최소 enriched 행(전 잡 폭주 회귀를 합성으로 재현한다)."""
+    base = {
+        "job_id": 1,
+        "crop_ref": "job-1/row-0",
+        "status": "included",
+        "answer": "안가방",
+        "final_label": "안가방",
+        "draft_label": "안가방",
+        "supply": 100000,
+        "draft_supply": 100000,
+        "amount_raw": "100",
+        "top5_labels": [],
+        "top1_sim": None,
+        "in_bank": True,
+        "label_bucket": "unevaluable",
+        "amount_bucket": "ok",
+        "cohort": "current_bank",
+        "reeval_has_peer": None,
+    }
+    return {**base, **over}
 
 
 @pytest.fixture

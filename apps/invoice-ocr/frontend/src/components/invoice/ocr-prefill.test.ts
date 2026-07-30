@@ -46,7 +46,14 @@ function result(rows: OcrResult["rows"]): OcrResult {
   // 0.75는 확정 임계(T3 산정, docs/work/2026-07/2026-07-28-ocr-candidate-selection/threshold.md
   // — git 비추적, 없으면 Issue #22 참조)와 맞추려는 것이 아니라, rowsToOcrMeta가 이 값을
   // 읽지 않아 테스트 결과에 영향이 없음을 밝히기 위한 임의값이다.
-  return { rows, supply_sum: 0, warp_ok: true, item_conf_threshold: 0.85 };
+  return {
+    rows,
+    supply_sum: 0,
+    warp_ok: true,
+    item_conf_threshold: 0.85,
+    // 스탬프 이전 잡에는 없다 → optional. 계약이 사라지면 tsc가 잡는다.
+    retrieval_version: "a1b2c3d4e5f6",
+  };
 }
 
 const ROW = {
