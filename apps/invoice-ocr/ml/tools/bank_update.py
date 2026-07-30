@@ -23,7 +23,7 @@ import subprocess
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
 
@@ -468,6 +468,31 @@ def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def score_meta(
+    *,
+    generated_at: str,
+    scope: str,
+    n_pairs: int,
+    fingerprints: dict[str, str | None],
+    score_jsonl_sha256: str,
+) -> dict:
+    """재평가 산출물의 유효성 게이트 메타를 만든다(리포트가 §3-C에서 대조한다).
+
+    axes를 단수 axis가 아니라 목록으로 적는 이유: 산출물은 항상 두 축을 함께 담으므로
+    단수로 적으면 나머지 한 축이 없는 것처럼 읽힌다. n_pairs는 축과 무관하다(같은 쿼리 쌍을
+    두 축으로 채점하므로 분모가 같다). 레코드 수는 n_pairs × 2 × len(axes)로 리포트가 직접
+    계산해 대조하므로 여기 중복 기록하지 않는다.
+    """
+    return {
+        "generated_at": generated_at,
+        "scope": scope,
+        "axes": list(AXES),
+        "n_pairs": n_pairs,
+        "retrieval_version": fingerprints,
+        "score_jsonl_sha256": score_jsonl_sha256,
+    }
+
+
 # ---------------------------------------------------------------------------
 # npz IO 글루 (numpy 지연 import — 코어는 paddle-free/pillow-only 유지)
 # ---------------------------------------------------------------------------
@@ -745,9 +770,30 @@ def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dic
     return valid, invalid + bad_crop_ref
 
 
-def _write_jsonl(path: Path, rows: list[dict]) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
+    """tmp에 쓰고 rename한다(save_bank_atomic의 기존 관용구).
+
+    부분 기록된 산출물이 유효한 것처럼 읽히는 것을 막는다 — 중단된 재실행이 새 score.jsonl과
+    이전 meta를 짝지으면, 같은 뱅크로 재채점하는 흔한 경우엔 지문이 일치해 stale 방어도
+    이를 못 잡는다(spec §3-B).
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    # 직렬화를 먼저 끝내므로 실패 시 기존 파일이 그대로 남는다.
+    _atomic_write_text(path, "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+
+
+def _write_json(path: Path, obj: dict) -> None:
+    _atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=1) + "\n")
 
 
 def cmd_plan(args) -> None:
@@ -847,6 +893,76 @@ def _axis_excluded(axis: str, keys: list[str], invs: list[str], self_ref: str) -
     raise ValueError(f"미지의 제외 축 {axis!r} — 분기가 배선되지 않았다(AXES={AXES})")
 
 
+def _side_fingerprints(models_dir: Path, bank_arrays: dict[str, tuple]) -> dict[str, str | None]:
+    """before/after 뱅크의 retrieval 지문을 계산한다.
+
+    모델 다이제스트·코드 SHA는 side와 무관하므로 1회만 계산해 공유한다 — ft_prod.pt는
+    347MB이고 sha256이 수 초다.
+    """
+    from handwriting import bank_id
+
+    model_digest = bank_id.file_digest(models_dir / "ft_prod.pt")
+    code_sha = bank_id.code_version()
+    return {
+        side: (
+            None
+            if code_sha is None
+            else bank_id.retrieval_fingerprint(
+                bank_id.bank_rows(keys, labs, emb), model_digest, code_sha
+            )
+        )
+        for side, (keys, labs, emb) in bank_arrays.items()
+    }
+
+
+def _write_score_artifacts(
+    *,
+    out: Path,
+    summaries: dict[tuple[str, str], dict],
+    meta: dict[str, int],
+    per_pair: dict[tuple[str, str], list[dict]],
+    scope: str,
+    n_pairs: int,
+    fingerprints: dict[str, str | None],
+) -> tuple[str, Path, Path, Path]:
+    """score.md·score.jsonl·score_meta.json을 계약된 순서로 쓴다(meta는 항상 마지막).
+
+    §4 산출물 계약 — score.jsonl의 유일키는 (side, axis, crop_ref). meta를 마지막에 쓰는
+    이유는 _atomic_write_text 문서 참조 — 중단된 재실행이 새 jsonl과 이전 meta를 짝짓는
+    것을 막는다(같은 뱅크 재채점 시 지문이 일치해 stale 방어도 이를 못 잡는 경우의 방어).
+
+    Returns:
+        (md, score_md_path, score_jsonl_path, score_meta_path) — 호출부가 출력에 쓴다.
+    """
+    from handwriting import bank_id
+
+    md = render_score_md(summaries, meta)
+    md_path = out / "score.md"
+    _atomic_write_text(md_path, md)
+    score_path = out / "score.jsonl"
+    _write_jsonl(
+        score_path,
+        [
+            {"side": side, "axis": axis, **r}
+            for side in ("before", "after")
+            for axis in AXES
+            for r in per_pair[(side, axis)]
+        ],
+    )
+    meta_path = out / "score_meta.json"
+    _write_json(
+        meta_path,
+        score_meta(
+            generated_at=datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+            scope=scope,
+            n_pairs=n_pairs,
+            fingerprints=fingerprints,
+            score_jsonl_sha256=bank_id.file_digest(score_path),
+        ),
+    )
+    return md, md_path, score_path, meta_path
+
+
 def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
@@ -859,6 +975,7 @@ def cmd_score(args) -> None:
     summaries: dict[tuple[str, str], dict] = {}
     per_pair: dict[tuple[str, str], list[dict]] = {}
     meta: dict[str, int] = {}
+    bank_arrays: dict[str, tuple] = {}
     for side, path in (("before", args.before), ("after", args.after)):
         emb, labs, invs, keys = load_bank(path)
         # 4배열 길이 정합 — 분리 전 topk_excluding_self(커밋 cb9b1c7)가 sims/labs/keys를
@@ -881,22 +998,19 @@ def cmd_score(args) -> None:
             summaries[(side, axis)] = score_summary(recs)
             per_pair[(side, axis)] = recs
         meta[f"bank_{side}"] = len(keys)
+        bank_arrays[side] = (keys, labs, emb)
 
-    md = render_score_md(summaries, meta)
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "score.md").write_text(md)
-    # §4 산출물 계약 — 유일키는 (side, axis, crop_ref). 세 키가 모든 레코드에 있어야 한다.
-    _write_jsonl(
-        args.out / "score.jsonl",
-        [
-            {"side": side, "axis": axis, **r}
-            for side in ("before", "after")
-            for axis in AXES
-            for r in per_pair[(side, axis)]
-        ],
+    md, md_path, score_path, meta_path = _write_score_artifacts(
+        out=args.out,
+        summaries=summaries,
+        meta=meta,
+        per_pair=per_pair,
+        scope=args.scope,
+        n_pairs=len(valid),
+        fingerprints=_side_fingerprints(models_dir, bank_arrays),
     )
     print(md)
-    print(f"저장: {args.out / 'score.md'}\n저장: {args.out / 'score.jsonl'}")
+    print(f"저장: {md_path}\n저장: {score_path}\n저장: {meta_path}")
 
 
 def main(argv: list[str] | None = None) -> None:

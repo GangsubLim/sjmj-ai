@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
+from handwriting.bank_id import compute_retrieval_version
 from tools.bank_update import (
     AXES,
     EMB_DIM,
@@ -19,6 +20,7 @@ from tools.bank_update import (
     MergePlan,
     _axis_excluded,
     _mysql,
+    _write_jsonl,
     apply_sync,
     backup_bank,
     bank_current_map,
@@ -43,6 +45,7 @@ from tools.bank_update import (
     require_env,
     require_removal_confirmation,
     save_bank_atomic,
+    score_meta,
     score_one,
     score_summary,
     select_desired,
@@ -1610,3 +1613,211 @@ def test_main_plan_rejects_scope_flag_at_the_cli_surface():
     """
     with pytest.raises(SystemExit):
         main(["plan", "--scope", "all"])
+
+
+# --- score 산출 계약(score_meta.json · 원자 쓰기) ---
+
+
+def test_score_meta_records_the_reeval_validity_gate_inputs():
+    meta = score_meta(
+        generated_at="2026-07-30T05:12:00+09:00",
+        scope="all",
+        n_pairs=44,
+        fingerprints={"before": "aaa", "after": "bbb"},
+        score_jsonl_sha256="deadbeef",
+    )
+    assert meta == {
+        "generated_at": "2026-07-30T05:12:00+09:00",
+        "scope": "all",
+        "axes": ["crop_ref", "invoice"],
+        "n_pairs": 44,
+        "retrieval_version": {"before": "aaa", "after": "bbb"},
+        "score_jsonl_sha256": "deadbeef",
+    }
+
+
+def test_score_meta_axes_is_a_list_not_a_single_axis():
+    # 단수로 적으면 나머지 한 축이 없는 것처럼 읽힌다(#53 산출물은 항상 두 축을 담는다).
+    assert score_meta(
+        generated_at="t", scope="reviewed", n_pairs=1, fingerprints={}, score_jsonl_sha256="x"
+    )["axes"] == list(AXES)
+
+
+def test_write_jsonl_leaves_no_tmp_file_and_replaces_atomically(tmp_path):
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+    assert out.read_text() == '{"a": 1}\n'
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def test_write_jsonl_keeps_the_previous_file_when_serialization_fails(tmp_path):
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+    with pytest.raises(TypeError):
+        _write_jsonl(out, [{"a": object()}])
+    assert out.read_text() == '{"a": 1}\n'  # 부분 기록으로 이전 산출물이 깨지지 않는다
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
+def _score_workspace(tmp_path, monkeypatch):
+    """cmd_score를 돌릴 최소 작업공간(합성 뱅크 + 더미 모델 파일 + 크롭 + Fake 임베딩)."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _touch_crop(crops_root, "job-1/row-0")
+    bank = _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"], emb=[_onehot(0)])
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="안가방")],
+    )
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: "sha-fixed")
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+    return models_dir, bank
+
+
+def test_cmd_score_writes_score_meta_matching_the_jsonl_digest(tmp_path, monkeypatch):
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    meta = json.loads((out_dir / "score_meta.json").read_text())
+    body = (out_dir / "score.jsonl").read_bytes()
+    assert meta["score_jsonl_sha256"] == hashlib.sha256(body).hexdigest()
+    assert meta["scope"] == "reviewed"
+    assert meta["axes"] == list(AXES)
+    assert meta["n_pairs"] == 1
+    # 같은 뱅크를 before/after로 줬으므로 두 지문이 같다.
+    assert meta["retrieval_version"]["before"] == meta["retrieval_version"]["after"]
+    assert len(meta["retrieval_version"]["after"]) == 12
+    # 레코드 수 == n_pairs × 2 × len(axes) — 리포트가 대조하는 불변식이 산출 시점에 성립한다.
+    n_records = len([ln for ln in body.decode().splitlines() if ln.strip()])
+    assert n_records == meta["n_pairs"] * 2 * len(meta["axes"])
+
+
+def test_cmd_score_fingerprints_differ_when_the_two_banks_differ(tmp_path, monkeypatch):
+    models_dir, after_bank = _score_workspace(tmp_path, monkeypatch)
+    before_bank = _write_bank(tmp_path / "before.npz", ["job-9/row-0"], ["공임"], emb=[_onehot(1)])
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env",
+            out=out_dir,
+            before=before_bank,
+            after=after_bank,
+            scope="reviewed",
+        )
+    )
+    fps = json.loads((out_dir / "score_meta.json").read_text())["retrieval_version"]
+    assert fps["before"] != fps["after"]
+
+
+def test_cmd_score_records_null_fingerprints_when_the_code_sha_is_unavailable(
+    tmp_path, monkeypatch
+):
+    # 자리표시자를 쓰지 않는다 — null이면 리포트의 stale 방어가 재평가를 채택하지 않는다.
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: None)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    assert json.loads((out_dir / "score_meta.json").read_text())["retrieval_version"] == {
+        "before": None,
+        "after": None,
+    }
+
+
+def test_cmd_score_writes_meta_last_so_a_crash_leaves_no_valid_reeval(tmp_path, monkeypatch):
+    """중단된 재실행이 새 score.jsonl과 이전 meta를 짝지으면 stale 방어도 이를 못 잡는다."""
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+
+    def _boom(path, obj):
+        raise RuntimeError("디스크 가득")
+
+    monkeypatch.setattr("tools.bank_update._write_json", _boom)
+    with pytest.raises(RuntimeError, match="디스크"):
+        cmd_score(
+            SimpleNamespace(
+                backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+            )
+        )
+    assert (out_dir / "score.jsonl").exists()
+    assert not (out_dir / "score_meta.json").exists()  # meta가 마지막이므로 유효성 게이트가 닫힌다
+    assert list(out_dir.glob("*.tmp")) == []
+
+
+def test_cmd_score_stale_meta_survives_a_failed_rerun_but_no_longer_matches_the_new_jsonl(
+    tmp_path, monkeypatch
+):
+    """1회 성공 후 2회차 meta 쓰기가 터지면, 살아남은 이전 meta가 새 score.jsonl과
+    짝지어져도 다이제스트가 어긋나야 한다.
+
+    같은 뱅크로 재채점하면 retrieval_version 지문은 두 실행에서 동일하므로(spec §3-B가
+    경고한 흔한 경우), 리포트의 stale 방어가 실제로 의지하는 신호는 jsonl 다이제스트다.
+    이 테스트가 "meta 부재"만 보던 기존 테스트의 공백을 메운다 — 두 실패 모드는 다르다.
+    """
+    _, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    old_meta = json.loads((out_dir / "score_meta.json").read_text())
+
+    # 2회차는 채점 내용을 바꿔 새 score.jsonl이 실제로 달라지게 한다(뱅크는 그대로라 지문은 불변).
+    monkeypatch.setattr(
+        "tools.bank_update.fetch_pairs",
+        lambda backend_env: [_pair(crop_ref="job-1/row-0", canonical_label="공임")],
+    )
+
+    def _boom(path, obj):
+        raise RuntimeError("디스크 가득")
+
+    monkeypatch.setattr("tools.bank_update._write_json", _boom)
+    with pytest.raises(RuntimeError, match="디스크"):
+        cmd_score(
+            SimpleNamespace(
+                backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+            )
+        )
+
+    survived_meta = json.loads((out_dir / "score_meta.json").read_text())
+    assert survived_meta == old_meta  # meta 쓰기 실패는 이전 meta를 무손상으로 남긴다
+    new_body = (out_dir / "score.jsonl").read_bytes()
+    assert survived_meta["score_jsonl_sha256"] != hashlib.sha256(new_body).hexdigest()
+
+
+def test_cmd_score_inline_fingerprint_matches_compute_retrieval_version(tmp_path, monkeypatch):
+    """cmd_score가 인라인으로 다시 쓰는 지문 레시피와 handwriting.bank_id.compute_retrieval_version
+    의 결과가 같은 입력에 대해 같은 지문이어야 한다.
+
+    워커는 compute_retrieval_version을, cmd_score는 인라인 조합을 쓴다(347MB sha256과 git
+    조회를 side마다 반복하지 않으려는 정당한 성능 hoist). 두 레시피가 갈리면 리포트가
+    대조하는 두 값이 서로 다른 코드 경로에서 나온 것이 되고, 산출물 형식은 여전히 정상이라
+    어떤 단언도 그 발산을 못 잡는다 — 그래서 등가성 자체를 테스트로 못박는다.
+    """
+    models_dir, bank = _score_workspace(tmp_path, monkeypatch)
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
+    meta = json.loads((out_dir / "score_meta.json").read_text())
+    emb, labs, _invs, keys = load_bank(bank)
+    expected = compute_retrieval_version(models_dir / "ft_prod.pt", keys, labs, emb)
+    assert meta["retrieval_version"]["before"] == expected
+    assert meta["retrieval_version"]["after"] == expected
