@@ -49,8 +49,19 @@ def _is_item_uncertain(top5: list[dict]) -> bool:
     return not (float(top5[0]["sim"]) >= ITEM_CONF_THRESHOLD)
 
 
-def assemble_result_json(job_id: int, rows: list[dict], warp_ok: bool) -> dict:
-    """추론 행들을 천원곱 적용한 구조화 result_json으로 조립한다."""
+def assemble_result_json(
+    job_id: int, rows: list[dict], warp_ok: bool, retrieval_version: str | None = None
+) -> dict:
+    """추론 행들을 천원곱 적용한 구조화 result_json으로 조립한다.
+
+    Args:
+        job_id: 잡 id(crop_ref 접두).
+        rows: 추론 행 목록.
+        warp_ok: 워프·격자 정합 게이트 통과 여부.
+        retrieval_version: 추론에 쓰인 retrieval artifact 지문. None이거나 공백만이면
+            키를 넣지 않는다 — 자리표시자를 쓰면 서로 다른 retrieval 상태가 한 코호트로
+            합쳐진다(Issue #49). 빈 문자열도 그 자체로 자리표시자가 되므로 동일하게 막는다.
+    """
     out_rows = []
     supply_sum = 0
     for r in rows:
@@ -70,12 +81,15 @@ def assemble_result_json(job_id: int, rows: list[dict], warp_ok: bool) -> dict:
         )
         if supply is not None:
             supply_sum += supply
-    return {
+    out = {
         "rows": out_rows,
         "supply_sum": supply_sum,
         "warp_ok": warp_ok,
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
     }
+    if retrieval_version is not None and retrieval_version.strip():
+        out["retrieval_version"] = retrieval_version
+    return out
 
 
 def _warp_gate_passes(w, job_id: int) -> bool:
