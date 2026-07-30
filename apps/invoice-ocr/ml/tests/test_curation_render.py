@@ -27,10 +27,15 @@ from tools.curation_render import (
 
 
 def test_render_report_handles_job_with_only_excluded_pairs():
+    # `"excluded" in md`로는 아무것도 확인되지 않는다 — 머리말의 "excluded {n}쌍"과 표본
+    # 구성표의 `| excluded |` 행은 배제 절이 통째로 사라져도, 입력이 비어도 늘 찍힌다.
+    # 이 쌍은 사유가 없으므로 사람 배제 절 **안에** 그 crop_ref가 있는지까지 본다.
     pairs = [_pair(status="excluded")]
     enriched = _enrich(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])])
     md = render_report(enriched, {"fetched_at": "t"})
-    assert "excluded" in md
+    section = "## excluded — 사람 배제"
+    assert section in md
+    assert "job-1/row-0" in md.split(section)[1]
 
 
 def test_render_report_splits_excluded_sections():
@@ -53,6 +58,9 @@ def test_render_report_splits_excluded_sections():
         0
     ]
     human_section = md.split("## excluded — 사람 배제")[1]
+    # 머리말의 기계/사람 분해는 이 파일이 아니면 아무도 보지 않는다(수치 자체는
+    # test_curation_enrich가, 절 분할은 아래가 본다) — 머리말에서 둘이 뒤바뀌어도 GREEN이었다.
+    assert "excluded 3쌍(기계 2 / 사람 1)" in md
     assert "job-1/row-0" in machine_section
     assert "job-1/row-1" in machine_section
     assert "job-1/row-2" not in machine_section
@@ -80,6 +88,10 @@ def test_render_report_hides_reverted_section_when_none_reverted():
 def test_render_report_shows_machine_exclusion_false_positive_rate():
     # 분모(기계 판정 총계 = 기계배제 + 되돌림) 없이 되돌림 절대수만 찍으면
     # 리포트 간 비교로 임계를 조정하려는 사람이 오판할 수 있다(M3).
+    #
+    # 사람 배제를 섞어 분모 후보를 갈라놓는다 — 되돌림 1 · 기계배제 2 · 사람배제 2이므로
+    # 올바른 분모는 3(1/3)이고, 흔한 오답인 "전체 배제"는 4(1/4), "전체 배제 + 되돌림"은
+    # 5(1/5)로 서로 다른 값이 된다(사람 배제가 없으면 셋 중 둘이 1/3으로 겹쳐 구분되지 않는다).
     pairs = [
         _pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason="blank_crop"),
         _pair(
@@ -96,10 +108,12 @@ def test_render_report_shows_machine_exclusion_false_positive_rate():
             status="excluded",
             exclusion_reason="blank_crop",
         ),
+        _pair(id=4, crop_ref="job-1/row-3", row_index=3, status="excluded", exclusion_reason=None),
+        _pair(id=5, crop_ref="job-1/row-4", row_index=4, status="excluded", exclusion_reason=None),
     ]
     md = render_report(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
-    assert "빈 크롭 가드 오탐" in md
-    assert "1/3" in md
+    # 라벨과 비율을 따로 보면 지표 행이 서로 뒤바뀌어도 통과한다 — 한 문자열로 못박는다.
+    assert "| 빈 크롭 가드 오탐(되돌림/기계 판정) | 1/3 (33.3%) |" in md
 
 
 def test_render_report_smoke_contains_key_sections():
@@ -195,6 +209,31 @@ def test_reeval_notice_reports_an_adopted_reevaluation():
     }
     line = reeval_notice(meta)
     assert "a1b2c3d4e5f6" in line and "현재와 일치" in line and "44" in line
+
+
+def test_reeval_notice_never_prints_a_literal_none_for_a_damaged_score_meta():
+    """`.get(key, '?')` 폴백은 발화할 수 없다 — 생산자(`_reeval_info`)가 키를 항상 만들되
+    None으로 시드하므로 `get`은 기본값이 아니라 저장된 None을 돌려준다.
+
+    그래서 손상·구버전 score_meta.json이 리터럴 "None"을 진짜 값처럼 인쇄했다(모르는 것을
+    말하지 않는다는 이 모듈의 원칙 위반). 동시에 n_pairs 0은 유효한 관측치이므로 '?'로
+    뭉개면 안 된다 — truthiness 폴백으로 고치는 것을 막는 반대쪽 경계다.
+    """
+    meta = {
+        "reeval": {
+            "state": "present",
+            "adopted": True,
+            "reason": None,
+            "generated_at": None,
+            "after": None,
+            "scope": None,
+            "n_pairs": 0,
+        }
+    }
+    line = reeval_notice(meta)
+    assert "None" not in line
+    assert line.count("?") == 3  # generated_at·after·scope 셋만 미상이다
+    assert "표본 0쌍" in line
 
 
 def test_reeval_notice_explains_absent_output():

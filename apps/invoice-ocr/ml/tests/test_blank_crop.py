@@ -1,5 +1,6 @@
 """빈 크롭 판정 순수 술어 단위테스트(cv2/numpy 무의존 — 코어 venv에서도 돈다)."""
 
+import json
 import math
 from pathlib import Path
 
@@ -27,8 +28,9 @@ def test_wire_constants_match_db_migration_and_schemas():
     사이 `is_machine_writable`은 운영에 이미 쌓인 기존 행(예: status='excluded',
     exclusion_reason='blank_crop')을 전부 거부하게 되어, 예외 없이 기능만 조용히
     정지한다. 값이 아래 세 곳과 문자 단위로 같은지 여기서 고정한다:
-      - db/migration_009_training_pairs_exclusion_reason.sql
-        (exclusion_reason에 저장되는 값 'blank_crop')
+      - .claude/ai-context/api-spec.json
+        (CurationPair.exclusion_reason enum — 값 집합의 계약 정본. migration_009의 DDL은
+         VARCHAR(32)라 값 집합을 강제하지 않으므로 앵커가 되지 못한다)
       - apps/invoice-ocr/backend/app/schemas/curation.py
         (status 화이트리스트 'included'/'excluded')
       - apps/invoice-ocr/frontend/src/types/curation.ts
@@ -39,16 +41,18 @@ def test_wire_constants_match_db_migration_and_schemas():
     assert STATUS_EXCLUDED == "excluded"
 
 
-def test_blank_crop_wire_value_appears_in_db_migration():
-    """BLANK_CROP 상수가 실제 migration_009 파일의 리터럴과 문자 단위로 일치해야 한다.
+def test_blank_crop_wire_value_appears_in_api_spec_enum():
+    """BLANK_CROP 상수가 API 계약 정본(api-spec.json)의 enum 리터럴과 일치해야 한다.
 
-    이전 버전은 이 모듈 내부 상수만 비교해 자기 자신과만 같은지 확인했다(항상 참) —
-    migration 파일 쪽 문자열이 바뀌어도 이 테스트는 초록으로 남았다. 이제 대상 파일을
-    직접 읽어 상수 값이 그 안에 존재하는지 확인한다.
+    앵커를 migration_009로 두면 안 된다 — 그 파일에서 'blank_crop'이 나오는 자리는
+    **설명 주석 한 줄뿐**이고 DDL은 `VARCHAR(32) NULL DEFAULT NULL`이라 값 집합을 강제하지
+    않는다. 즉 주석 문구만 다듬어도 ml CI가 빨개지고, 정작 값 집합이 갈라지는 진짜 드리프트는
+    못 잡는다. api-spec.json의 `exclusion_reason.enum`은 이 값을 실제로 싣는 계약이다
+    (프론트 타입 쪽 앵커는 test_status_wire_values_appear_in_frontend_curation_types가 맡는다).
     """
-    migration = _REPO_ROOT / "db" / "migration_009_training_pairs_exclusion_reason.sql"
-    text = migration.read_text()
-    assert f"'{BLANK_CROP}'" in text
+    spec = json.loads((_REPO_ROOT / ".claude" / "ai-context" / "api-spec.json").read_text("utf-8"))
+    enum = spec["components"]["schemas"]["CurationPair"]["properties"]["exclusion_reason"]["enum"]
+    assert BLANK_CROP in enum
 
 
 def test_status_wire_values_appear_in_backend_curation_schema():
@@ -118,7 +122,11 @@ def test_is_blank_is_false_for_nan():
 # --- 임계 미확정 fail-fast ---
 
 
-def test_require_blank_ink_max_raises_while_uncalibrated():
+def test_require_blank_ink_max_raises_while_uncalibrated(monkeypatch):
+    # None을 명시 주입한다 — 모듈 전역이 "지금 마침 None"인 것에 기대면, 운영에서 임계가
+    # 확정되는 순간 이 테스트가 빨개져 "삭제하라"는 신호로 읽힌다(고정하려던 건 미확정
+    # 상태의 fail-fast이지 미확정이라는 사실이 아니다). 값 주입 쪽 sibling과 대칭.
+    monkeypatch.setattr("handwriting.blank_crop.BLANK_INK_MAX", None)
     with pytest.raises(RuntimeError, match="BLANK_INK_MAX"):
         require_blank_ink_max()
 
@@ -143,10 +151,12 @@ def _blank_crop():
     return np.full((CROP_H, CROP_W, 3), 255, np.uint8)
 
 
-def test_crop_ink_ratio_is_near_zero_for_white_crop():
+def test_crop_ink_ratio_is_exactly_zero_for_white_crop():
+    # 균일 캔버스는 국소대비가 0이라 잉크 마스크가 통째로 비고 답은 정확히 0.0이다(실측).
+    # `< 0.005`로 두면 300×82 크롭에서 잉크 픽셀 122개까지 통과해 회귀를 놓친다.
     from handwriting.blank_crop import crop_ink_ratio
 
-    assert crop_ink_ratio(_blank_crop()) < 0.005
+    assert crop_ink_ratio(_blank_crop()) == 0.0
 
 
 def test_crop_ink_ratio_is_near_zero_for_printed_borders_only():
@@ -216,4 +226,5 @@ def test_crop_ink_ratio_also_removes_tall_solid_vertical_bars_known_limit():
     img = _blank_crop()
     for gx in (40, 100, 160, 220):
         img[20:60, gx : gx + 5] = 0
-    assert crop_ink_ratio(img) < 0.005
+    # 위 실측대로 답은 정확히 0.0이다 — 느슨한 상한은 "일부만 남았다"까지 통과시킨다.
+    assert crop_ink_ratio(img) == 0.0

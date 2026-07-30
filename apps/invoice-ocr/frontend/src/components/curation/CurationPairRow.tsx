@@ -15,6 +15,12 @@ import { cn } from "@/lib/utils";
 const PLACEHOLDER = placeholderSvg(148, 40);
 const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
+// 배지 표시 여부의 축은 "사유 != null"(= 기계 소유)이고, 문구만 사유별로 갈린다.
+// ADR 0006이 사유 추가를 예고하므로 미지의 사유는 조용히 사라지지 않고 일반 문구로 뜬다.
+const EXCLUSION_REASON_LABELS: Record<string, string | undefined> = {
+  blank_crop: "빈 크롭 자동 배제",
+};
+
 interface CurationPairRowProps {
   jobId: number;
   pair: CurationJobPair;
@@ -74,9 +80,12 @@ export function CurationPairRow({
               <span aria-hidden="true">⚠</span> 미확신
             </span>
           )}
-          {pair.exclusion_reason === "blank_crop" && (
+          {pair.exclusion_reason !== null && (
             <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">
-              <span aria-hidden="true">◻</span> 빈 크롭 자동 배제
+              <span aria-hidden="true">◻</span>{" "}
+              {EXCLUSION_REASON_LABELS[pair.exclusion_reason] ?? "자동 배제"}
+              {/* 사람이 포함으로 되돌린 칸(§6 셋째) — 행의 "제외" 버튼과 문구가 어긋나지 않게 명시. */}
+              {!excluded && " (되돌림)"}
             </span>
           )}
           {pair.top5.length === 0 ? (

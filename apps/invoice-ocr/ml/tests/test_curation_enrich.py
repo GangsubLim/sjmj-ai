@@ -366,6 +366,13 @@ def test_summarize_counts_machine_exclusions_reverted_by_human():
 
 
 def test_summarize_breaks_down_reverted_reasons():
+    """사유 2종 + 아직 배제 상태인 쌍으로 분해의 두 축을 함께 고정한다.
+
+    사유가 한 종뿐이면 `{"blank_crop": n}`을 하드코딩한 구현도 통과하는데, ADR 0006은 사유가
+    늘어난다고 전제한다(그때 이 분해가 곧 가드별 오탐 창구다 — 두 번째 값은 아직 없는 사유를
+    가정한 합성값이다). 그리고 되돌림은 **included**만 세므로, 같은 사유로 아직 배제된 쌍이
+    분해에 새지 않는지(status 필터)도 함께 본다 — 새면 blank_crop이 2가 아니라 3이 된다.
+    """
     pairs = [
         _pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason="blank_crop"),
         _pair(
@@ -375,9 +382,23 @@ def test_summarize_breaks_down_reverted_reasons():
             status="included",
             exclusion_reason="blank_crop",
         ),
+        _pair(
+            id=3,
+            crop_ref="job-1/row-2",
+            row_index=2,
+            status="included",
+            exclusion_reason="tiny_crop",
+        ),
+        _pair(
+            id=4,
+            crop_ref="job-1/row-3",
+            row_index=3,
+            status="excluded",
+            exclusion_reason="blank_crop",
+        ),
     ]
     s = summarize(_enrich(pairs, [_job(rows=[])]))
-    assert s["reverted_reason_counts"] == {"blank_crop": 2}
+    assert s["reverted_reason_counts"] == {"blank_crop": 2, "tiny_crop": 1}
 
 
 def test_summarize_computes_rates():

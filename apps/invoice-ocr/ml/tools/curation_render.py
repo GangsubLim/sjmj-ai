@@ -19,11 +19,29 @@ from tools.curation_cohort import (
     is_item_evaluable,
     partition_misses,
 )
-from tools.curation_enrich import job_flags, oob_label_counts, summarize
+from tools.curation_enrich import (
+    is_human_excluded,
+    is_machine_excluded,
+    is_reverted_machine_exclusion,
+    job_flags,
+    oob_label_counts,
+    summarize,
+)
 
 
 def _pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
+
+
+def _known(value: object) -> str:
+    """값을 인쇄하되 **모를 때만** '?'로 물러선다 — 이 모듈은 모르는 것을 말하지 않는다.
+
+    `dict.get(key, "?")`로는 이 폴백이 발화하지 않는다: 생산자(`curation_report._reeval_info`)가
+    키를 항상 만들되 None으로 시드하므로 `get`은 기본값이 아니라 저장된 None을 돌려주고, 손상된
+    score_meta.json이 리터럴 "None"으로 인쇄돼 진짜 값처럼 읽힌다. truthiness가 아니라
+    `is None`으로 판정한다 — n_pairs 0쌍은 유효한 관측치라 '?'로 뭉개면 안 된다.
+    """
+    return "?" if value is None else str(value)
 
 
 # 표본 구성표 — 분모를 핵심 지표보다 먼저 읽게 한다(spec §3-C). 표에 없는 코호트가 생기면
@@ -104,9 +122,9 @@ def reeval_notice(meta: dict) -> str:
     info = meta.get("reeval") or {}
     if info.get("adopted"):
         return (
-            f"재평가: {info.get('generated_at', '?')} · retrieval 지문 "
-            f"{info.get('after', '?')}(현재와 일치) · scope={info.get('scope', '?')} · "
-            f"표본 {info.get('n_pairs', '?')}쌍"
+            f"재평가: {_known(info.get('generated_at'))} · retrieval 지문 "
+            f"{_known(info.get('after'))}(현재와 일치) · scope={_known(info.get('scope'))} · "
+            f"표본 {_known(info.get('n_pairs'))}쌍"
         )
     state = info.get("state")
     if not info or state == "absent":
@@ -285,15 +303,13 @@ def _render_excluded(enriched: list[dict]) -> list[str]:
     한 목록으로 합치면 크롭 불량 신호(사람)와 가드 동작(기계)이 섞여 검수 대상이 흐려진다.
     included인데 사유가 남아 있는 쌍은 기계 배제를 사람이 되돌린 것 — 가드의 오탐 관측치라
     별도 절로 낸다.
+
+    술어는 `summarize`(머리말 수치)와 공유한다 — 조건을 여기 다시 적으면 한쪽만 고쳤을 때
+    머리말의 수와 아래 나열된 행이 예외 없이 어긋난다(curation_enrich의 술어 절 주석 참조).
     """
-    # 조건은 소유 축(사유 유무)이지 특정 사유값이 아니다 — 사유가 늘어도 판정이 성립한다.
-    machine = [
-        r for r in enriched if r["status"] == "excluded" and r["exclusion_reason"] is not None
-    ]
-    human = [r for r in enriched if r["status"] == "excluded" and r["exclusion_reason"] is None]
-    reverted = [
-        r for r in enriched if r["status"] == "included" and r["exclusion_reason"] is not None
-    ]
+    machine = [r for r in enriched if is_machine_excluded(r)]
+    human = [r for r in enriched if is_human_excluded(r)]
+    reverted = [r for r in enriched if is_reverted_machine_exclusion(r)]
     lines: list[str] = []
     if machine:
         lines += ["", "## excluded — 기계 자동 배제 (사유 기록됨)", ""]

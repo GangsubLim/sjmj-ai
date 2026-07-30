@@ -109,13 +109,30 @@ def sync_remote_files(host: str, worker_env: str, *, pattern: str, dest: Path) -
 
 
 def write_manifest(
-    cache: Path, data_name: str, data: list[dict], *, host: str, counts: dict[str, int]
+    cache: Path,
+    data_name: str,
+    data: list[dict],
+    *,
+    host: str,
+    counts: dict[str, int],
+    extra: dict | None = None,
 ) -> dict:
-    """데이터 매니페스트와 meta.json을 쓰고 meta를 돌려준다."""
+    """데이터 매니페스트와 meta.json을 쓰고 meta를 돌려준다.
+
+    Args:
+        cache: 캐시 디렉터리.
+        data_name: 데이터 매니페스트 파일명(jobs.json·pairs.json).
+        data: 매니페스트에 실을 레코드.
+        host: 이 캐시를 만든 ssh 호스트.
+        counts: meta에 펼쳐 실을 건수 집계.
+        extra: 도구별 추가 meta 키(생략하면 meta 모양이 종전과 같다). 쓰기 커맨드가
+            fetch 시점의 대상 신원을 대조할 때 쓴다(blank_crop_report의 backend_env).
+    """
     meta = {
         "fetched_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
         "host": host,
         **counts,
+        **(extra or {}),
     }
     (cache / data_name).write_text(json.dumps(data, ensure_ascii=False, indent=1))
     (cache / META_NAME).write_text(json.dumps(meta, ensure_ascii=False, indent=1))

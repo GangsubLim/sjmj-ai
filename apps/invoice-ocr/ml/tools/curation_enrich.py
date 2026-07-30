@@ -313,6 +313,28 @@ def oob_label_counts(enriched: list[dict]) -> list[tuple[str, int]]:
     return counts.most_common()
 
 
+# --- 배제 소유 축 술어 (ADR 0006) ---
+# 판정 조건은 소유 축(사유 유무)이지 특정 사유값이 아니다 — 사유가 늘어도 그대로 성립한다.
+# 소비자는 둘이며 같은 술어를 부른다: `summarize`(리포트 머리말 수치)와
+# `curation_render._render_excluded`(본문 나열). 두 곳에 조건을 손으로 적으면 한쪽만 고쳤을 때
+# 머리말의 수와 나열된 행이 예외 없이 어긋나, ADR 0006이 기대는 오탐률 관측치가 조용히 거짓이 된다.
+
+
+def is_machine_excluded(row: dict) -> bool:
+    """기계가 자동 배제한 쌍 — 배제됐고 사유가 기록돼 있다."""
+    return row["status"] == "excluded" and row["exclusion_reason"] is not None
+
+
+def is_human_excluded(row: dict) -> bool:
+    """사람이 배제한 쌍 — 배제됐는데 사유가 없다(크롭 불량 신호)."""
+    return row["status"] == "excluded" and row["exclusion_reason"] is None
+
+
+def is_reverted_machine_exclusion(row: dict) -> bool:
+    """기계 자동 배제를 사람이 되돌린 쌍 — 학습에 포함됐는데 사유가 남아 있다(오탐 관측치)."""
+    return row["status"] == "included" and row["exclusion_reason"] is not None
+
+
 def summarize(enriched: list[dict]) -> dict:
     """included 쌍의 핵심 지표를 집계한다 — 품목 지표는 평가 가능 쌍만 분모로 쓴다.
 
@@ -337,25 +359,17 @@ def summarize(enriched: list[dict]) -> dict:
         "n_excluded": sum(r["status"] == "excluded" for r in enriched),
         # 사람 배제와 기계 자동 배제를 섞어 세면 배제율이 파이프라인 개선 신호로서의
         # 의미를 잃는다(ADR 0006). 사유가 비어 있는 배제가 사람 판정이다.
-        "n_excluded_machine": sum(
-            r["status"] == "excluded" and r["exclusion_reason"] is not None for r in enriched
-        ),
-        "n_excluded_human": sum(
-            r["status"] == "excluded" and r["exclusion_reason"] is None for r in enriched
-        ),
+        "n_excluded_machine": sum(is_machine_excluded(r) for r in enriched),
+        "n_excluded_human": sum(is_human_excluded(r) for r in enriched),
         # 기계가 배제했으나 사람이 되돌린 쌍 — 이 개수가 곧 빈 크롭 가드의 오탐률 관측치다
         # (spec §6 세 번째 칸, ADR 0006 Consequences). 런북이 이 수치를 안내한다.
         # 집계 조건(exclusion_reason is not None)은 소유 축이라 사유가 늘어도 유효하다.
         # 다만 이 수를 "특정 가드"(예: 빈 크롭 가드)의 오탐으로 읽는 것은 사유 값 집합이
         # blank_crop 단일인 동안만 참이다 — 사유가 여러 개로 늘면 여러 가드의 되돌림이
         # 이 수치 하나에 섞인다(가드별 분해는 reverted_reason_counts 참조).
-        "n_reverted_machine": sum(
-            r["status"] == "included" and r["exclusion_reason"] is not None for r in enriched
-        ),
+        "n_reverted_machine": sum(is_reverted_machine_exclusion(r) for r in enriched),
         "reverted_reason_counts": Counter(
-            r["exclusion_reason"]
-            for r in enriched
-            if r["status"] == "included" and r["exclusion_reason"] is not None
+            r["exclusion_reason"] for r in enriched if is_reverted_machine_exclusion(r)
         ),
         "n_jobs": len({r["job_id"] for r in enriched}),
         "top1_hits": sum(r["label_bucket"] == "ok" for r in ev),

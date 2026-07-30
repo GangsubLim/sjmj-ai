@@ -65,7 +65,11 @@ def test_patch_included_preserves_machine_reason(client, db_conn):
 
 def test_patch_canonical_label_only_does_not_touch_reason(client, db_conn):
     pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
-    client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "정식명"})
+    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "정식명"})
+    # PATCH가 실제로 성공하고 라벨을 바꿨는지부터 고정한다 — 이 단언이 없으면
+    # 400/404/500으로 아무 일도 안 일어나도 기대 상태(= 시드 상태)가 그대로라 통과한다.
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "정식명"
     assert _state(db_conn, pair_id) == ("excluded", "blank_crop")
 
 

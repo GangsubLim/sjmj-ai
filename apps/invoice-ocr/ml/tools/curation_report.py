@@ -386,14 +386,6 @@ def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
     jobs = json.loads((cache / "jobs.json").read_text(encoding="utf-8"))
     bank = json.loads((cache / "bank.json").read_text(encoding="utf-8"))
     meta = json.loads((cache / CACHE_META).read_text(encoding="utf-8"))
-    # exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json은 이 키가 없다. 조용히
-    # .get()으로 None 처리하면 사람/기계 배제·되돌림 집계가 모두 0으로 보여 오탐률을
-    # 숨기게 되므로, 구버전 캐시는 즉시 실패시켜 재동기화를 유도한다.
-    if pairs and "exclusion_reason" not in pairs[0]:
-        raise ValueError(
-            "pairs.json 캐시가 구버전입니다(exclusion_reason 키 없음) — "
-            "`uv run python -m tools.curation_report fetch`를 다시 실행하세요."
-        )
     reeval, info = _reeval_info(cache, meta)
     enriched = enrich_pairs(
         pairs,
@@ -403,6 +395,27 @@ def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
         current_retrieval_version=meta.get("retrieval_version"),
     )
     return enriched, {**meta, "reeval": info}
+
+
+def _require_exclusion_reason(enriched: list[dict]) -> None:
+    """배제 집계를 소비하기 직전에 구버전 pairs.json 캐시를 막는다.
+
+    exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json은 이 키가 없다. 조용히 통과시키면
+    사람/기계 배제·되돌림 집계가 모두 0으로 보여 오탐률(ADR 0006)을 숨기게 되므로 즉시 실패시켜
+    재동기화를 유도한다.
+
+    검사를 `_load_enriched`가 아니라 이 소비자 앞에 둔다 — `pull-images`는 status만 읽고
+    exclusion_reason을 한 번도 보지 않는데, 공통 경로에서 막으면 크롭 검수까지 함께 죽는다.
+    하필 그 상황이 `fetch_error_message`가 "배포 전에는 기존 캐시로 검수 루프를 계속하라"고
+    안내하는 바로 그 상황이다.
+
+    Raises:
+        ValueError: pairs.json이 exclusion_reason 키 없는 구버전일 때.
+    """
+    if enriched and "exclusion_reason" not in enriched[0]:
+        raise ValueError(
+            f"pairs.json 캐시가 구버전이다(exclusion_reason 키 없음) — {_CACHE_RECOVERY}"
+        )
 
 
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
@@ -458,6 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     enriched, meta = _load_enriched(args.cache)
 
     if args.cmd == "report":
+        _require_exclusion_reason(enriched)
         report = render_report(enriched, meta)
         report_path = args.cache / "report.md"
         report_path.write_text(report)

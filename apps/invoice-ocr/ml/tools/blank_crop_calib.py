@@ -86,6 +86,20 @@ def crop_status(*, exists: bool, readable: bool) -> str:
     return STATUS_OK
 
 
+def labeled_dropped_refs(records: list[dict], labels: dict[str, str]) -> tuple[str, ...]:
+    """라벨은 있는데 측정에서 빠진(보류) ref — 마진이 계산 불가일 때도 알아야 하는 값이다.
+
+    `label_margin`은 한쪽 라벨군이 비면 None을 돌려주며 이 값을 함께 버린다. 그러면 렌더는
+    "labels.csv를 보강할 것"이라고만 말하는데, 실제 원인이 '라벨한 크롭이 전부 보류'인 경우
+    운영자는 라벨을 더 붙이는 헛수고를 한다(필요한 건 크롭 재-fetch다). 그래서 마진과
+    독립적으로 뽑을 수 있게 뗀다.
+    """
+    scored_refs = {
+        r["crop_ref"] for r in records if r["crop_status"] == STATUS_OK and r["ratio"] is not None
+    }
+    return tuple(sorted(ref for ref in labels if ref not in scored_refs))
+
+
 def label_margin(records: list[dict], labels: dict[str, str]) -> dict | None:
     """라벨된 표본에서 정상최악 / 빈크롭최선 / 분리 마진(%)을 계산한다.
 
@@ -107,11 +121,10 @@ def label_margin(records: list[dict], labels: dict[str, str]) -> dict | None:
         측정에서 빠진 건수·ref).
     """
     scored = [r for r in records if r["crop_status"] == STATUS_OK and r["ratio"] is not None]
-    scored_refs = {r["crop_ref"] for r in scored}
     blank = [r["ratio"] for r in scored if labels.get(r["crop_ref"]) == LABEL_BLANK]
     nonblank = [r["ratio"] for r in scored if labels.get(r["crop_ref"]) == LABEL_NONBLANK]
     n_unlabeled = sum(1 for r in scored if r["crop_ref"] not in labels)
-    dropped_refs = tuple(sorted(ref for ref in labels if ref not in scored_refs))
+    dropped_refs = labeled_dropped_refs(records, labels)
     if not blank or not nonblank:
         return None
     worst_normal, best_blank = min(nonblank), max(blank)
@@ -143,7 +156,9 @@ def count_exact_zero_ink(records: list[dict]) -> int:
     return sum(1 for r in records if r["crop_status"] == STATUS_OK and r["ratio"] == 0.0)
 
 
-def _render_margin_section(margin: dict | None, labels: dict[str, str]) -> list[str]:
+def _render_margin_section(
+    margin: dict | None, labels: dict[str, str], dropped: tuple[str, ...] = ()
+) -> list[str]:
     if margin is None:
         # 라벨 0건과 "한쪽뿐"은 원인이 다르다 — 같은 문구로 붕괴시키면 --labels를 안 준
         # 것을 "반대쪽만 더 라벨하면 된다"로 오독하게 된다.
@@ -153,12 +168,20 @@ def _render_margin_section(margin: dict | None, labels: dict[str, str]) -> list[
                 "",
                 "- 라벨된 표본이 0건이다 — --labels로 labels.csv를 지정할 것.",
             ]
-        return [
+        lines = [
             "## 임계 선정 근거",
             "",
             "- 라벨된 표본이 한쪽(blank 또는 nonblank)뿐이라 마진을 계산할 수 없다 — "
             "labels.csv를 보강할 것.",
         ]
+        if dropped:
+            # 마진 dict가 없어 n_labeled_dropped를 실을 자리가 없다. 그렇다고 침묵하면
+            # "라벨을 더 붙이라"만 남아, 실제 원인이 보류인 경우 헛수고를 시킨다.
+            lines.append(
+                f"- ⚠️ 단, 라벨된 표본 {len(dropped)}건이 측정 보류라 애초에 근거에서 "
+                f"빠졌다: {', '.join(dropped)} — 라벨을 늘리기 전에 크롭 fetch부터 확인할 것."
+            )
+        return lines
     lines = [
         "## 임계 선정 근거",
         "",
@@ -214,7 +237,9 @@ def render_blank_report(
         threshold_line,
         f"- 잉크율 정확히 0.0인 표본 {count_exact_zero_ink(records)}건(참고 — 균일/클리핑 크롭에서 측정 자체가 붕괴했을 수 있다)",
         "",
-        *_render_margin_section(label_margin(records, labels), labels),
+        *_render_margin_section(
+            label_margin(records, labels), labels, labeled_dropped_refs(records, labels)
+        ),
         "",
         "## 잉크율 전수 (오름차순)",
         "",

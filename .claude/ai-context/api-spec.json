@@ -3570,7 +3570,7 @@
             "type": "string",
             "enum": ["blank_crop", null],
             "nullable": true,
-            "description": "기계 판정 배제 사유. 자동 배제만 값을 채우고 NULL 은 '사람 판정, 사유 미분류'를 뜻한다(ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400."
+            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400."
           },
           "reviewed_at": {
             "type": "string",

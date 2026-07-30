@@ -21,9 +21,22 @@ from tools.blank_crop_report import (
     main,
     plan_apply,
 )
-from tools.remote import ENV_SSH_HOST, RemoteError, env_or
+from tools.remote import ENV_BACKEND_ENV, ENV_SSH_HOST, RemoteError
 
 THRESHOLD = 0.01
+
+# 원격 접속값은 리터럴로 고정한다 — env에서 파생하면 ① 개발자 머신의 SJMJ_* 값을 읽어
+# 테스트가 환경에 결합되고 ② "캐시가 기억한 대상"과 "실행이 고른 대상"이 같은 식에서
+# 나와 대상 가드 테스트가 항진명제가 된다.
+TEST_HOST = "testhost"
+TEST_BACKEND_ENV = "/test/backend.env"
+
+
+@pytest.fixture(autouse=True)
+def _pin_remote_env(monkeypatch):
+    """SJMJ_* 원격 접속 env를 테스트 리터럴로 고정한다(환경 격리)."""
+    monkeypatch.setenv(ENV_SSH_HOST.name, TEST_HOST)
+    monkeypatch.setenv(ENV_BACKEND_ENV.name, TEST_BACKEND_ENV)
 
 
 def _rec(
@@ -176,25 +189,36 @@ def _pairs_tsv(refs):
     return "\n".join([header, *rows]) + "\n"
 
 
-def _fetch_stub(monkeypatch, *, refs=(), listed=None, tarred=None, db=None):
+def _fetch_stub(monkeypatch, *, refs=(), listed=None, tarred=None, db=None, host=TEST_HOST):
     """fetch의 원격 3콜(mysql·ls·tar)을 대역으로 갈아끼운다.
 
     refs는 DB의 crop_ref(확장자 없음), listed는 원격 ls가 돌려줄 파일명, tarred는 tar
     스트림에 실제로 담길 파일명 — 뒤 둘을 따로 두면 "원격에는 있는데 로컬엔 안 풀린"
     부분 실패를 재현할 수 있다.
+
+    대역은 인자를 무시하지 않고 단언한다 — 그러지 않으면 ① 엉뚱한 SQL이 나가도, ②
+    `--host`가 원격 호출에 닿지 않아도 전부 초록이다. ②는 특히 중요하다: 그 값이
+    meta.json에 기록돼 apply의 대상 가드(require_same_target) 근거가 되기 때문이다.
     """
     listed = [f"{r}.png" for r in refs] if listed is None else list(listed)
     tarred = listed if tarred is None else list(tarred)
 
-    def fake_db(host, script, **kwargs):
+    def fake_db(ssh_host, script, **kwargs):
+        assert ssh_host == host
+        assert bcr.PAIRS_SQL in script
+        assert TEST_BACKEND_ENV in script  # 질의는 env가 고른 backend env로 나간다
         if isinstance(db, Exception):
             raise db
         return _pairs_tsv(refs).encode()
 
     remote = iter([("\n".join(listed) + "\n").encode(), _tar_bytes(tarred)])
 
+    def fake_files(ssh_host, script, **kwargs):
+        assert ssh_host == host
+        return next(remote)
+
     monkeypatch.setattr(bcr, "run_ssh", fake_db)
-    monkeypatch.setattr(cache_sync, "run_ssh", lambda host, script, **kw: next(remote))
+    monkeypatch.setattr(cache_sync, "run_ssh", fake_files)
 
 
 def test_fetch_replaces_stale_crops_but_leaves_the_rest_of_the_cache_alone(tmp_path, monkeypatch):
@@ -213,6 +237,16 @@ def test_fetch_replaces_stale_crops_but_leaves_the_rest_of_the_cache_alone(tmp_p
     assert keep.read_text(encoding="utf-8") == "crop_ref,label\n"
     assert json.loads((tmp_path / "pairs.json").read_text())[0]["crop_ref"] == "job-1/row-0"
     assert json.loads((tmp_path / "meta.json").read_text())["n_crops"] == 1
+
+
+def test_fetch_records_the_write_target_in_the_manifest(tmp_path, monkeypatch):
+    # apply의 대상 가드(require_same_target)는 이 두 값이 meta에 남아야만 성립한다 —
+    # 특히 backend env는 실제 DB(DB_HOST/DB_NAME)를 정하는 축이라 없으면 대조가 불가능하다.
+    _fetch_stub(monkeypatch, refs=["job-1/row-0"], host="otherhost")
+    main(["--host", "otherhost", "--cache", str(tmp_path), "fetch"])
+    meta = json.loads((tmp_path / "meta.json").read_text())
+    assert meta["host"] == "otherhost"
+    assert meta["backend_env"] == TEST_BACKEND_ENV
 
 
 def test_fetch_prints_empty_result_warnings(tmp_path, monkeypatch, capsys):
@@ -281,9 +315,12 @@ def test_fetch_refuses_a_cache_directory_that_is_not_ours(tmp_path, monkeypatch)
 # --- CLI ---
 
 
-def _cache(tmp_path, pairs=(), host=None):
+def _cache(tmp_path, pairs=(), host=TEST_HOST, backend_env=TEST_BACKEND_ENV):
+    """fetch가 남겼을 캐시를 흉내낸다(backend_env=None이면 기록 전 옛 캐시)."""
     (tmp_path / "pairs.json").write_text(json.dumps(list(pairs)))
-    meta = {"fetched_at": "t", "host": env_or(ENV_SSH_HOST) if host is None else host}
+    meta = {"fetched_at": "t", "host": host}
+    if backend_env is not None:
+        meta["backend_env"] = backend_env
     (tmp_path / "meta.json").write_text(json.dumps(meta))
     return tmp_path
 
@@ -423,7 +460,9 @@ def test_apply_exits_non_zero_when_probe_returns_ids_outside_the_plan(tmp_path, 
         threshold=THRESHOLD,
         ssh=b"pair_id\taffected\n7\t1\npair_id\taffected\n999\t1\n",
     )
-    with pytest.raises(SystemExit):
+    # main()은 resolve_cache·load_cache_meta·require_same_target에서도 SystemExit를 낸다 —
+    # 맨 raises면 엉뚱한 이유로 죽어도 초록이라 의도한 게이트를 문구로 못박는다.
+    with pytest.raises(SystemExit, match="계획 밖"):
         main(["--cache", str(_cache(tmp_path)), "apply", "--allow-holds"])
 
 
@@ -438,6 +477,28 @@ def test_apply_refuses_when_the_cache_was_fetched_from_another_host(tmp_path, mo
     assert calls == []
 
 
+def test_apply_refuses_when_the_backend_env_changed_since_fetch(tmp_path, monkeypatch):
+    # H2: 호스트만 대조하면 fetch~apply 사이에 SJMJ_REMOTE_BACKEND_ENV를 다른 DB로 돌려놓는
+    # 것만으로 가드를 통과한다(같은 macmini의 운영 DB와 테스트 DB가 그 예다). 실제 DB를
+    # 정하는 건 호스트가 아니라 backend env(→ DB_HOST/DB_NAME)다.
+    records = [_rec("job-3/row-0", ratio=0.001, pair_id=7, job_id=3)]
+    calls = _stub(monkeypatch, records=records, threshold=THRESHOLD, ssh=None)
+    cache = _cache(tmp_path, backend_env="/other/backend.env")
+    with pytest.raises(SystemExit, match="backend-env"):
+        main(["--cache", str(cache), "apply"])
+    assert calls == []
+
+
+def test_apply_refuses_a_cache_that_predates_backend_env_recording(tmp_path, monkeypatch):
+    # 옛 캐시엔 어느 DB에서 본 상태인지가 남아 있지 않다 — 근거 없는 통과 대신 재-fetch를 시킨다.
+    records = [_rec("job-3/row-0", ratio=0.001, pair_id=7, job_id=3)]
+    calls = _stub(monkeypatch, records=records, threshold=THRESHOLD, ssh=None)
+    cache = _cache(tmp_path, backend_env=None)
+    with pytest.raises(SystemExit, match="fetch를 다시 실행"):
+        main(["--cache", str(cache), "apply"])
+    assert calls == []
+
+
 def test_apply_dry_run_prints_the_plan_without_touching_the_remote(tmp_path, monkeypatch):
     # M1: --recheck-reviewed는 파괴 범위를 넓히는데, 무엇이 몇 건 늘어나는지 사전에 볼
     # 방법이 없었다(요약 print가 쓰기 *뒤*에 있었다).
@@ -445,6 +506,20 @@ def test_apply_dry_run_prints_the_plan_without_touching_the_remote(tmp_path, mon
     calls = _stub(monkeypatch, records=records, threshold=THRESHOLD, ssh=None)
     main(["--cache", str(_cache(tmp_path)), "apply", "--dry-run"])
     assert calls == []
+
+
+def test_apply_dry_run_exits_zero_even_when_holds_would_block_the_real_run(
+    tmp_path, monkeypatch, capsys
+):
+    # 현재 동작을 고정한다 — --dry-run은 보류·충돌 게이트보다 **앞에서** 돌아오므로,
+    # 실제 apply가 비-0으로 끝날 상황(test_apply_exits_non_zero_when_holds_remain과 같은
+    # 입력)에서도 0으로 끝난다. 의도적이다: dry-run은 아무것도 쓰지 않아 "부분 적용"이라는
+    # 신호를 낼 것이 없고, 보류 건수는 계획 요약에 이미 찍힌다. 다만 dry-run의 종료 코드를
+    # 실제 실행의 프리플라이트로 쓰면 안 된다(0이 '보류 없음'을 뜻하지 않는다).
+    records = [_rec(ratio=None, crop_status=STATUS_CROP_MISSING)]
+    _stub(monkeypatch, records=records, threshold=THRESHOLD, ssh=None)
+    main(["--cache", str(_cache(tmp_path)), "apply", "--dry-run"])
+    assert "보류 1" in capsys.readouterr().out
 
 
 def test_apply_prints_the_plan_summary_before_sending_updates(tmp_path, monkeypatch, capsys):

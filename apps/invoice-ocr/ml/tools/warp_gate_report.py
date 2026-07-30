@@ -19,7 +19,12 @@ from dataclasses import asdict, fields
 from pathlib import Path
 
 from handwriting.warp_gate import WarpGateMetrics, blue_asymmetry
-from tools.cache_sync import load_cache_meta, sync_remote_files, write_manifest
+from tools.cache_sync import (
+    invalidate_manifest,
+    load_cache_meta,
+    sync_remote_files,
+    write_manifest,
+)
 from tools.remote import (
     ENV_BACKEND_ENV,
     ENV_SSH_HOST,
@@ -282,6 +287,10 @@ def render_gate_report(records: list[dict], meta: dict) -> str:
 def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
     """전체 ocr_jobs 목록과 잡별 warped.png를 캐시로 동기화한다."""
     cache.mkdir(parents=True, exist_ok=True)
+    # 중단 시 '빈(또는 반쪽) warped + 옛 meta'라는 하이브리드 캐시가 남지 않도록 먼저
+    # 무효화한다 — 남으면 report가 옛 잡 목록으로 성공하고 옛 fetched_at을 동기화 시각으로
+    # 찍는다. 이 도구의 산출은 게이트 임계의 근거다(blank_crop_report.fetch_all과 동일).
+    invalidate_manifest(cache, JOBS_NAME)
     jobs = parse_job_rows_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
     names = sync_remote_files(host, worker_env, pattern=WARPED_GLOB, dest=cache / "warped")
     meta = write_manifest(

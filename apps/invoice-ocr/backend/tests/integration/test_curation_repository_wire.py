@@ -43,6 +43,13 @@ def test_update_pair_excluded_check_uses_shared_status_excluded_constant(monkeyp
     AttributeError로 실패한다(기본 raising=True) — 즉 이 테스트 자체가 "상수를 공유해서
     참조하라"는 요구를 강제한다.
     """
+    # 양성 대조 — 실제 상수값에서는 같은 호출이 사유를 반드시 지운다.
+    # (이 단언이 없으면 update_pair의 `exclusion_reason = NULL` 분기를 통째로 지워도
+    #  아래 음성 케이스만으로는 GREEN이 유지돼 테스트가 무력해진다.)
+    control_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
+    CurationRepository().update_pair(control_id, {"status": "excluded"})
+    assert _reason(db_conn, control_id) is None
+
     monkeypatch.setattr(curation_repository, "STATUS_EXCLUDED", "다른값")
     pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
 

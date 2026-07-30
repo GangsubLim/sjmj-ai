@@ -38,6 +38,7 @@ from tools.curation_report import (
     bank_script,
     fetch_all,
     fetch_error_message,
+    main,
     pull_images,
     reeval_cat_script,
     reeval_probe_script,
@@ -520,12 +521,41 @@ def _rewrite_reeval_meta(tmp_path, **over):
     )
 
 
-def test_load_enriched_fails_fast_on_stale_pairs_cache(tmp_path):
-    """exclusion_reason 컬럼 이전 캐시(구버전 fetch 산출물)는 조용히 0으로 세지 말고 fail-fast."""
-    stale_pair = {k: v for k, v in _pair().items() if k != "exclusion_reason"}
-    _write_cache(tmp_path, pairs=[stale_pair], jobs=[])
-    with pytest.raises(ValueError, match="구버전"):
-        _load_enriched(tmp_path)
+def _stale_pair():
+    """exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json 행(그 키가 통째로 없다)."""
+    return {k: v for k, v in _pair().items() if k != "exclusion_reason"}
+
+
+def test_report_command_fails_fast_on_a_stale_pairs_cache(tmp_path):
+    """구버전 캐시(exclusion_reason 키 없음)를 조용히 0으로 세지 말고 fail-fast.
+
+    검사 지점이 `_load_enriched`(공통)에서 report 소비자 앞으로 좁혀졌으므로, 좁힌 뒤에도
+    report 경로에서 실제로 발화하는지는 CLI 배선으로 확인해야 한다.
+    """
+    _write_cache(tmp_path, pairs=[_stale_pair()], jobs=[])
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    assert "구버전" in str(err.value)
+    _assert_names_file_and_recovery(err, "pairs.json")
+
+
+def test_pull_images_still_runs_off_a_stale_pairs_cache(tmp_path, monkeypatch):
+    """크롭 검수는 구버전 캐시로도 돌아야 한다 — pull-images는 status만 읽는다.
+
+    가드가 공통 경로(`_load_enriched`)에 있으면 이 경로까지 hard-fail하는데, 하필 그 상황이
+    `fetch_error_message`가 "배포 전에는 기존 캐시로 검수 루프를 계속하라"고 안내하는 상황이다.
+    """
+    _write_cache(tmp_path, pairs=[_stale_pair()], jobs=[])
+    pulled: list[list[int]] = []
+
+    def fake_pull(host, backend_env, cache, job_ids, with_originals):
+        pulled.append(job_ids)
+        return cache / "images"
+
+    monkeypatch.setattr("tools.curation_report.pull_images", fake_pull)
+    main(["--cache", str(tmp_path), "pull-images"])
+    assert pulled == [[1]]  # 조인 결손(row_missing)이 검수 대상으로 남는다
+    assert (tmp_path / "images_index.md").exists()
 
 
 def test_load_enriched_wires_the_current_fingerprint_so_pairs_stay_evaluable(tmp_path):

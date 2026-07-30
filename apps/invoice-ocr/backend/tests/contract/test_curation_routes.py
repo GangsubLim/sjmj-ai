@@ -341,6 +341,21 @@ def test_patch_pair_ignores_client_sent_exclusion_reason(client, db_conn):
     assert res.json()["data"]["exclusion_reason"] is None
 
 
+def test_patch_pair_client_sent_reason_cannot_forge_machine_exclusion(client, db_conn):
+    # Arrange — 사유가 비어 있는 정상 후보 (included, NULL)
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # Act — 배제하면서 기계 사유를 함께 밀어넣으려는 시도(위험 방향)
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "excluded", "exclusion_reason": "blank_crop"},
+    )
+    # Assert — 사유는 NULL로 남아 '사람이 배제'로 기록된다. 여기서 사유가 심어지면
+    # 사람의 배제가 기계 배제로 위조돼 이후 기계가 사람 판정을 되돌린다(ADR 0006 §6).
+    assert res.status_code == 200
+    assert _reason_in_db(db_conn, pid) is None
+
+
 def test_patch_pair_client_sent_reason_does_not_overwrite_machine_reason(client, db_conn):
     # Arrange — 기계가 심은 사유가 있는 상태
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)

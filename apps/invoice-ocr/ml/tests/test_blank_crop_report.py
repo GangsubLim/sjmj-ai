@@ -373,6 +373,22 @@ def test_render_blank_report_margin_message_when_only_one_label_side_present():
     md = render_blank_report(records, labels, {"fetched_at": "t"})
     assert "한쪽" in md
     assert "보강" in md
+    assert "크롭 fetch부터 확인" not in md  # 빠진 라벨이 없으면 그 문장은 나오면 안 된다
+
+
+def test_render_blank_report_names_dropped_labels_when_the_margin_cannot_be_computed():
+    # label_margin은 한쪽이 비면 None을 돌려주며 dropped 정보까지 함께 버린다 — 그때
+    # "labels.csv를 보강할 것"만 남으면, 라벨한 크롭이 전부 보류인 상황에서 운영자가
+    # 라벨을 더 붙이는 헛수고를 한다(필요한 건 크롭 재-fetch다).
+    records = [
+        _rec("job-1/row-0", ratio=0.004),  # blank, 측정됨
+        _rec("job-1/row-1", ratio=None, crop_status=STATUS_CROP_MISSING),  # nonblank, 보류
+    ]
+    labels = {"job-1/row-0": "blank", "job-1/row-1": "nonblank"}
+    md = render_blank_report(records, labels, {"fetched_at": "t"})
+    assert "한쪽" in md  # 마진은 여전히 계산 불가다
+    assert "job-1/row-1" in md
+    assert "크롭 fetch부터 확인" in md
 
 
 def test_render_blank_report_flags_overlapping_distributions():
@@ -611,13 +627,14 @@ def test_build_apply_script_nulls_reviewed_at_on_changed_pair():
     assert "reviewed_at = NULL " in build_apply_script([_u()])
 
 
-def test_build_apply_script_reverts_job_review_flag_only_for_jobs_with_unreviewed_pairs():
-    # 충돌만 있고 변경 0인 잡은 EXISTS가 거짓 → 표식 유지 → '미검수 + 미처리 0'이 안 생긴다.
+def test_build_apply_script_guards_job_flag_revert_with_an_exists_clause():
+    # 조립만 고정한다 — 잡이 여럿이어도 되돌림은 EXISTS(미처리 쌍) 조건이 붙은 단일 문이다.
+    # "판정이 바뀐 잡만 되돌린다"는 **동작**은 MySQL이 실행 시점에 정하는 것이라 문자열로는
+    # 확인할 수 없다(그 검증은 DB 통합 테스트의 몫이며 여기서 흉내내지 않는다).
+    # 트랜잭션 경계·문 순서는 위 전문 고정 테스트가 이미 맡는다.
     sql = build_apply_script([_u(job_id=3), _u(pair_id=8, job_id=5)])
-    assert sql.startswith("START TRANSACTION;")
     assert "UPDATE ocr_jobs SET curation_reviewed = FALSE WHERE id IN (3, 5) AND EXISTS (" in sql
     assert "tp.reviewed_at IS NULL" in sql
-    assert sql.rstrip().endswith("COMMIT;")
 
 
 def test_build_apply_script_dedupes_and_sorts_job_ids():

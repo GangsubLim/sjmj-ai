@@ -88,7 +88,11 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         // job 127은 e2e가 워프 placeholder만 확인하므로(curation.spec.ts) 추가해도 안전.
         status: "excluded",
         exclusion_reason: "blank_crop",
-        reviewed_at: null,
+        // 잡 127은 curation_reviewed=true다. 서버의 mark_reviewed는 같은 트랜잭션에서
+        // 미스탬프 쌍 전부에 reviewed_at을 찍으므로(검수완료 + reviewed_at=null 조합은
+        // 서버가 만들 수 없다) 잡과 같은 시각을 준다 — 안 그러면 mock 큐 화면이
+        // "검수완료인데 미처리 1건"이라는 유령 상태를 보여준다.
+        reviewed_at: "2026-06-30T08:30:00",
         uncertain: false,
         top5: [],
       },

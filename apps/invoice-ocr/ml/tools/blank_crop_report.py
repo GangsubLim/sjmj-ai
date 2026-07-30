@@ -59,6 +59,9 @@ DEFAULT_CACHE = ML_ROOT / "results" / "blank_crop"
 PAIRS_NAME = "pairs.json"
 CROP_GLOB = "job-*/row-*.png"
 
+# meta.json에 fetch가 남기는 쓰기 대상 신원 — apply가 같은 키로 대조한다(H2 확장).
+META_BACKEND_ENV = "backend_env"
+
 PAIRS_SQL = (
     "SELECT tp.id, tp.crop_ref, tp.job_id, tp.status, tp.exclusion_reason, j.curation_reviewed "
     "FROM training_pairs tp JOIN ocr_jobs j ON j.id = tp.job_id "
@@ -427,7 +430,14 @@ def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict
     pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL)).decode())
     names = sync_remote_files(host, worker_env, pattern=CROP_GLOB, dest=cache / "crops")
     meta = write_manifest(
-        cache, PAIRS_NAME, pairs, host=host, counts={"n_pairs": len(pairs), "n_crops": len(names)}
+        cache,
+        PAIRS_NAME,
+        pairs,
+        host=host,
+        counts={"n_pairs": len(pairs), "n_crops": len(names)},
+        # 쓰기 대상은 호스트만이 아니라 backend env(→ DB_HOST/DB_NAME)가 정한다 —
+        # apply가 대조할 수 있도록 fetch 시점의 값을 남긴다(require_same_target).
+        extra={META_BACKEND_ENV: backend_env},
     )
     for line in fetch_warnings(n_pairs=meta["n_pairs"], n_crops=meta["n_crops"]):
         print(line)
@@ -452,7 +462,7 @@ def evaluate_cached(cache: Path, *, imread: Callable[[str], object] | None = Non
 
         imread = cv2.imread
 
-    pairs = json.loads((cache / PAIRS_NAME).read_text())
+    pairs = json.loads((cache / PAIRS_NAME).read_text(encoding="utf-8"))
     records = []
     for p in pairs:
         png = crop_path(cache, p["crop_ref"])
@@ -471,13 +481,15 @@ def _load_manifest(path: Path | None, known_refs: set[str]) -> dict[str, str]:
 
     Raises:
         SystemExit: manifest의 헤더·crop_ref·label 값이 캐시와 맞지 않을 때. 조용히 빠진
-            표본은 마진을 낙관적으로 만든다(spec §7).
+            표본은 마진을 낙관적으로 만든다(spec §7). 경로를 잘못 친 경우(OSError)도 같다 —
+            이 도구의 다른 경계(resolve_cache·load_cache_meta)는 전부 지시문을 주는데
+            여기서만 맨 FileNotFoundError 트레이스백으로 새면 원인을 짚기 어렵다.
     """
     if path is None:
         return {}
     try:
         return load_labels(read_labels_csv(path), known_refs)
-    except ValueError as e:
+    except (OSError, ValueError) as e:
         raise SystemExit(f"labels.csv를 쓸 수 없다({path}): {e}") from e
 
 
@@ -489,20 +501,29 @@ def _run_report(args: argparse.Namespace, meta: dict) -> None:
     labels = _load_manifest(args.labels, {r["crop_ref"] for r in records})
     md = render_blank_report(records, labels, meta, threshold=BLANK_INK_MAX)
     out = args.cache / "blank_crop_report.md"
-    out.write_text(md)
+    # 리포트 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라가
+    # LC_ALL=C(launchd·CI·cron)에서 UnicodeEncodeError로 죽는다(curation_report 관례).
+    out.write_text(md, encoding="utf-8")
     print(md)
     print(f"저장: {out}")
 
 
-def require_same_host(meta: dict, host: str) -> None:
-    """캐시를 만든 호스트와 쓰기 대상 호스트가 같은지 대조한다(H2).
+def require_same_target(meta: dict, host: str, backend_env: str) -> None:
+    """캐시를 만든 쓰기 대상과 지금 쓰려는 대상이 같은지 대조한다(H2).
 
     조건부 UPDATE의 `WHERE ... status = <seen>`에 실리는 seen 상태는 '**fetch한 DB에서**
     본 상태'다. 스키마·id 채번이 같은 스테이징/운영 사이에서는 그 상태가 우연히 일치할 수
     있어, 대조 없이 쏘면 다른 DB에서 본 근거로 운영 행을 뒤집는 일이 가능하다.
 
+    대상을 정하는 축은 **둘**이다 — ssh 호스트와, 실제 DB 접속값(DB_HOST/DB_NAME)을 담은
+    원격 backend env 파일(`SJMJ_REMOTE_BACKEND_ENV`)이다. 호스트만 대조하면 fetch와 apply
+    사이에 env를 다른 DB로 돌려놓는 것만으로 이 가드를 통과한다(같은 macmini의 운영 DB와
+    테스트 DB가 그 예다). 그래서 fetch가 남긴 env 경로를 함께 대조한다. 같은 경로의 **내용**이
+    바뀐 경우까지는 잡지 못한다 — 그건 fetch 시점에 원격 DB 신원을 따로 질의해야 알 수 있다.
+
     Raises:
-        SystemExit: meta의 호스트와 대상 호스트가 다를 때.
+        SystemExit: meta의 호스트·backend env가 대상과 다를 때. backend env 키가 아예 없는
+            옛 캐시도 같다 — 어느 DB에서 본 상태인지 근거가 없으므로 통과시키지 않는다.
     """
     cached_host = meta.get("host")
     if cached_host != host:
@@ -510,6 +531,15 @@ def require_same_host(meta: dict, host: str) -> None:
             f"캐시를 만든 호스트({cached_host})와 쓰기 대상({host})이 다르다 — 조건부 "
             "UPDATE의 seen 상태는 fetch한 DB에서 본 값이라 그대로 쏘면 다른 DB에서 본 "
             f"근거로 운영 행을 뒤집는다. `--host {host}`로 fetch를 다시 실행할 것."
+        )
+    cached_env = meta.get(META_BACKEND_ENV)
+    if cached_env != backend_env:
+        missing = "이 캐시엔 backend-env 기록이 없다(fetch가 남기기 전에 만든 캐시)"
+        differs = f"캐시를 만든 backend-env({cached_env})와 쓰기 대상({backend_env})이 다르다"
+        raise SystemExit(
+            f"{missing if cached_env is None else differs} — backend env가 실제 DB"
+            "(DB_HOST/DB_NAME)를 정하므로 그대로 쏘면 다른 DB에서 본 근거로 운영 행을 "
+            f"뒤집는다. `{ENV_BACKEND_ENV.name}`를 확인하고 fetch를 다시 실행할 것."
         )
 
 
@@ -550,21 +580,23 @@ def _run_apply(args: argparse.Namespace, meta: dict) -> None:
 
     Args:
         args: 파싱된 CLI 인자.
-        meta: 캐시 meta.json — 이 캐시를 만든 호스트를 쓰기 대상과 대조한다(H2).
+        meta: 캐시 meta.json — 이 캐시를 만든 대상(호스트·backend env)을 쓰기 대상과
+            대조한다(H2).
 
     Raises:
         RuntimeError: 임계 미확정(캐시 평가·원격 접근보다 먼저 멈춘다, spec §8).
         RemoteError: 원격 mysql이 비-0으로 끝났을 때. stdout의 ROW_COUNT 프로브는 COMMIT
             앞에서 찍히므로 출력만으로 성공을 판정하면 거짓 안심이 된다(M4) — 성공 판정은
             run_ssh의 비-0 종료 검사를 통과한 뒤에만 한다.
-        SystemExit: 캐시와 쓰기 대상 호스트가 다를 때 · 보류·충돌·계획 밖 id가 남았을 때
+        SystemExit: 캐시와 쓰기 대상(호스트·backend env)이 다를 때 · 보류·충돌·계획 밖
+            id가 남았을 때
             (비-0 종료, spec §8).
     """
     from handwriting.blank_crop import require_blank_ink_max
 
     threshold = require_blank_ink_max()
-    require_same_host(meta, args.host)
     backend_env = env_or(ENV_BACKEND_ENV)
+    require_same_target(meta, args.host, backend_env)
     plan = plan_apply(
         evaluate_cached(args.cache), threshold, recheck_reviewed=args.recheck_reviewed
     )
