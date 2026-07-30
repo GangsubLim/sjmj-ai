@@ -8,6 +8,8 @@ import pytest
 
 from handwriting.bank_id import (
     FINGERPRINT_LEN,
+    MODEL_FILENAME,
+    bank_retrieval_version,
     bank_rows,
     code_version,
     compute_retrieval_version,
@@ -156,6 +158,30 @@ def test_compute_retrieval_version_is_none_when_code_sha_is_missing(tmp_path, mo
     monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: None)
     emb = np.zeros((1, 2), dtype="float32")
     assert compute_retrieval_version(model, ["k0"], ["a"], emb) is None
+
+
+def test_bank_retrieval_version_owns_the_model_filename_and_array_selection(tmp_path, monkeypatch):
+    """M4 — 지문 '입력'(모델 파일명·keys/emb 선택)의 단일 진입점.
+
+    해시 로직만 공유하고 입력을 호출부마다 복붙하면(워커 vs 원격 스크립트) 파일명이나 배열
+    선택이 한쪽만 바뀔 때 지문이 전량 어긋나 모든 잡이 조용히 stale이 된다.
+    """
+    model = tmp_path / MODEL_FILENAME
+    model.write_bytes(b"w")
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: "sha1")
+    emb = np.zeros((1, 2), dtype="float32")
+    npz = {"keys": np.array(["k0"], dtype=object), "emb": emb}
+
+    assert bank_retrieval_version(tmp_path, npz, ["a"]) == compute_retrieval_version(
+        model, ["k0"], ["a"], emb
+    )
+
+
+def test_bank_retrieval_version_propagates_a_bank_without_keys(tmp_path):
+    """실패를 삼키지 않는다 — fail-safe는 호출자(운영 워커·원격 스크립트)의 경계다."""
+    (tmp_path / MODEL_FILENAME).write_bytes(b"w")
+    with pytest.raises(KeyError):
+        bank_retrieval_version(tmp_path, {"emb": np.zeros((1, 2), dtype="float32")}, ["a"])
 
 
 def test_compute_retrieval_version_tracks_the_model_file_bytes(tmp_path, monkeypatch):

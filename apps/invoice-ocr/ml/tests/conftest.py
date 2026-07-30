@@ -74,10 +74,32 @@ def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over)
 
 # --- 큐레이션 리포트 계열 합성 헬퍼 (test_curation_enrich·test_curation_report 공유) ---
 # 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_report.py)이 두 모듈로
-# 갈리면서 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
+# 갈리며 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
 
 BANK = {"엔진오일", "드라이", "타이어", "공임"}
 _CUR_VERSION = "cur-fingerprint"
+
+
+def _four_vintages(crop_ref="job-1/row-0"):
+    """score.jsonl은 같은 crop_ref에 (side, axis) 4벌을 담는다(bank_update.py:845-853)."""
+    return [
+        _reeval_record(crop_ref, side=side, axis=axis)
+        for side in ("before", "after")
+        for axis in ("crop_ref", "invoice")
+    ]
+
+
+def _reeval_meta(**over):
+    """bank_update.score_meta가 내는 score_meta.json shape — 지문은 중첩 구조다(before/after)."""
+    base = {
+        "generated_at": "2026-07-30T05:12:00+09:00",
+        "scope": "all",
+        "axes": ["crop_ref", "invoice"],
+        "n_pairs": 1,
+        "retrieval_version": {"before": "old", "after": _CUR_VERSION},
+        "score_jsonl_sha256": "digest-1",
+    }
+    return {**base, **over}
 
 
 def _pair(**over):

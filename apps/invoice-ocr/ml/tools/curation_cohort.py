@@ -306,6 +306,26 @@ def _validate_reeval_records(records: list[dict]) -> None:
             raise ValueError(f"재평가 레코드 {i}행의 label이 str이 아니다 — 산출물 손상")
 
 
+def reeval_after(meta: dict | None) -> str | None:
+    """score_meta.json의 중첩 지문에서 after 지문을 뽑는다 — 평탄화 지점은 여기 하나다.
+
+    `bank_update.score_meta`는 지문을 `retrieval_version: {before, after}` 중첩으로 쓰는데
+    게이트(시점 판정)와 리포트 문구(표시)가 둘 다 after 하나만 쓴다. 두 곳이 각자 중첩을
+    풀면 한쪽만 평탄 키를 읽는 순간 조용히 갈린다 — 게이트는 stale을 정확히 판정하는데
+    표시는 지문 자리에 '?'를 인쇄하는 식이다(계산 A/표시 B).
+
+    Args:
+        meta: 회수한 score_meta.json(부재면 None).
+
+    Returns:
+        비어있지 않은 문자열 after 지문. 그 형태가 아니면(부재·평탄 구조·빈 문자열) None —
+        "지문을 확정하지 못했다"와 같은 뜻이라 호출자가 fail-closed로 처리한다.
+    """
+    versions = (meta or {}).get("retrieval_version")
+    after = versions.get("after") if isinstance(versions, dict) else None
+    return after if isinstance(after, str) and after else None
+
+
 def reeval_gate(
     *,
     records: list[dict],
@@ -344,9 +364,8 @@ def reeval_gate(
     """
     if not meta:
         return ReevalGate(None, "no_meta")
-    versions = meta.get("retrieval_version")
-    after = versions.get("after") if isinstance(versions, dict) else None
-    if not isinstance(after, str) or not after or not isinstance(current_retrieval_version, str):
+    after = reeval_after(meta)
+    if after is None or not isinstance(current_retrieval_version, str):
         return ReevalGate(None, "no_fingerprint")
     if after != current_retrieval_version:
         return ReevalGate(None, "stale")

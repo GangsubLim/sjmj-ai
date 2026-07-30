@@ -1,5 +1,7 @@
 """tools.curation_enrich 순수 분석 계층 단위테스트 (ssh/DB 비의존, 합성 데이터만)."""
 
+from pathlib import Path
+
 import pytest
 
 from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공유한다
@@ -12,6 +14,8 @@ from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공�
     _row,
 )
 from tools.curation_enrich import (
+    PAIR_COLS,
+    PAIRS_SQL,
     amount_bucket,
     job_flags,
     label_bucket,
@@ -443,3 +447,16 @@ def test_sample_table_rows_sum_to_the_included_count():
     ]
     s = summarize(rows)
     assert sum(s["cohorts"].values()) == s["n_included"]
+
+
+def test_pairs_sql_lives_with_its_parser_so_bank_update_need_not_import_the_report():
+    """L6 — SQL 상수 하나 때문에 bank_update가 리포트 모듈에 의존할 이유가 없다.
+
+    그 모듈은 fetch 글루·CLI에 더해 handwriting.bank_id까지 끌고 온다. SQL은 그 결과를 푸는
+    파서(parse_pairs_tsv) 옆에 두는 것이 컬럼 계약과도 맞는다.
+    """
+    src = (Path(__file__).resolve().parent.parent / "tools" / "bank_update.py").read_text(
+        encoding="utf-8"
+    )
+    assert "curation_report" not in src
+    assert PAIRS_SQL.startswith(f"SELECT {PAIR_COLS} FROM training_pairs")

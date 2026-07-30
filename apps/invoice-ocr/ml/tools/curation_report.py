@@ -19,19 +19,28 @@ Usage:
 import argparse
 import io
 import json
+import os
 import shlex
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
 
+# bank_id는 stdlib 전용이고 handwriting에 __init__.py가 없는 암묵 namespace 패키지라
+# 모듈 레벨 import가 numpy/torch를 끌지 않는다(paddle-free 코어 규약 유지).
+from handwriting.bank_id import file_digest
 from tools.curation_cohort import (
     ITEM_EVALUABLE_COHORTS,
     is_amount_failure,
     is_item_evaluable,
     is_item_failure,
+    parse_reeval_jsonl,
     partition_misses,
+    reeval_after,
+    reeval_gate,
 )
 from tools.curation_enrich import (
+    JOBS_SQL,
+    PAIRS_SQL,
     enrich_pairs,
     job_flags,
     oob_label_counts,
@@ -41,26 +50,19 @@ from tools.curation_enrich import (
 )
 from tools.remote import (
     ENV_BACKEND_ENV,
+    ENV_ML_ROOT,
     ENV_SSH_HOST,
     ENV_WORKER_ENV,
+    RemoteError,
     env_or,
     mysql_script,
+    remote_path,
     run_ssh,
     source_env,
 )
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "curation"
-
-PAIR_COLS = (
-    "id, crop_ref, job_id, row_index, draft_label, final_label, "
-    "canonical_label, supply, status, reviewed_at"
-)
-PAIRS_SQL = f"SELECT {PAIR_COLS} FROM training_pairs ORDER BY job_id, row_index"
-JOBS_SQL = (
-    "SELECT id, image_path, JSON_UNQUOTE(result_json) FROM ocr_jobs "
-    "WHERE id IN (SELECT DISTINCT job_id FROM training_pairs)"
-)
 
 # ---------------------------------------------------------------------------
 # 리포트 렌더 계층 (단위테스트 대상 — IO 없음)
@@ -95,6 +97,13 @@ def _cohort_mark(name: str) -> str:
 _REEVAL_ABSENT = (
     "재평가 없음: 서버에 재평가 산출물이 없다 — macmini에서 "
     "`bank_update score --scope all`을 돌리면 지표가 복원된다."
+)
+# 현재 지문을 모르면 재평가 사유를 말할 자격이 없다(H1) — 그 상태에서는 어떤 재평가도
+# 게이트(no_fingerprint)를 통과하지 못하고 전 잡이 stale_bank/unknown으로 떨어진다.
+_NO_FINGERPRINT_NOTICE = (
+    "현재 retrieval 지문을 확정하지 못했다 — 재평가를 돌려도 게이트가 no_fingerprint로 "
+    "기각해 지표는 그대로 0/0이다. `fetch`를 먼저 다시 실행한다"
+    "(그래도 미확정이면 서버 `git rev-parse HEAD`·모델 파일을 확인한다)."
 )
 # 사유를 읽지 못했을 때의 폴백 — **없다고 단정하지 않는다**(H1). 부재 단정은 사용자를 엉뚱한
 # 조치(재평가 재실행)로 보내는데, 실제 원인이 stale·다이제스트 불일치면 그 조치는 헛수고다.
@@ -156,6 +165,20 @@ def reeval_notice(meta: dict) -> str:
     return f"재평가 없음: {text}" if text else _REEVAL_UNKNOWN_REASON
 
 
+def status_notice(meta: dict) -> str:
+    """리포트가 실을 상태 한 줄 — 현재 지문 부재를 재평가 사유보다 먼저 말한다(H1).
+
+    `reeval_notice`를 그대로 부르면 지문 미확정 상태에서 "재평가 산출물이 없다"를 인쇄하고
+    수십 분짜리 원격 재채점을 권한다. 그 재채점도 같은 이유로 기각되므로 사용자는 시간을 쓰고도
+    같은 0/0을 본다 — 이 모듈의 원칙("부재 단정은 사용자를 엉뚱한 조치로 보낸다")을 지문 축에서
+    다시 밟는 것이다. 두 축을 한 함수에 겹치지 않는 이유: `reeval_notice`의 치역은
+    ReevalState/ReevalReason 전량과 대조되고 있어 지문 유무라는 직교 조건이 곱해지면 안 된다.
+    """
+    if not meta.get("retrieval_version"):
+        return _NO_FINGERPRINT_NOTICE
+    return reeval_notice(meta)
+
+
 def _render_cohort_table(s: dict, meta: dict) -> list[str]:
     """표본 구성표 + 재평가 알림을 렌더한다(핵심 지표 절보다 먼저 — 분모를 먼저 읽는다, §3-C)."""
     return [
@@ -174,7 +197,7 @@ def _render_cohort_table(s: dict, meta: dict) -> list[str]:
         f"품목 지표 분모(평가 가능 쌍) {s['n_item_evaluable']}쌍 — ○ 코호트 합계와 다를 수 있다"
         f"(row_missing {s['label_buckets'].get('row_missing', 0)}건은 분모에서 빠진다).",
         "",
-        reeval_notice(meta),
+        status_notice(meta),
         # 빈 줄이 없으면 별개 알림 2건이 마크다운에서 한 문단으로 병합돼 한 문장처럼 읽힌다.
         "",
         "뱅크 추가 후보는 코호트와 무관하게 현재 뱅크 기준으로 집계된다(성능 측정과 기준이 다르다).",
@@ -331,6 +354,8 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
         f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍",
         f"- 뱅크: 임베딩 {meta.get('bank_size', '?')}개 / 라벨 {meta.get('bank_distinct', '?')}종",
+        # 코호트 판정의 기준값 — 인쇄하지 않으면 stale_bank 표기를 검증할 근거가 리포트에 없다.
+        f"- 현재 retrieval 지문: {meta.get('retrieval_version') or '미확정'}",
         "",
     ]
     lines += _render_cohort_table(s, meta)
@@ -368,32 +393,250 @@ def render_report(enriched: list[dict], meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-_BANK_PY = (
-    "import numpy as np, json, os, collections; "
-    "z = np.load(os.environ['SJMJ_ML_MODELS_DIR'] + '/bank.npz', allow_pickle=True); "
-    "labs = [str(x) for x in z['lab']]; "
-    "print(json.dumps({'size': len(labs), 'counts': collections.Counter(labs)}, "
-    "ensure_ascii=False))"
-)
+# 원격 인라인 스크립트에 지문 로직도 그 **입력**(모델 파일명·뱅크 파일명·배열 선택)도 복붙하지
+# 않는다 — bank_id.bank_retrieval_version 하나를 워커와 공유한다(M4). 두 곳이 다른 입력을 고르면
+# 지문이 전량 어긋나 모든 잡이 조용히 stale이 된다(spec §3-A). 지문은 **원격에서** 계산해야
+# 유효하다: 코드 SHA가 입력이라 로컬에서 계산하면 전 잡이 조용히 stale로 오분류된다.
+#
+# 지문 계산만 try로 감싼다(M3) — keys 없는 뱅크는 실재 가능한 상태이고(운영 워커도 같은 실패를
+# 진단 필드 하나로 격리한다) 그 실패로 pairs/jobs 동기화까지 막을 이유가 없다. `handwriting`
+# import는 try 밖이라 hard-fail을 유지한다 — 그건 배포 누락 신호다.
+# 셸 이중따옴표 안에 그대로 들어가므로 `"`·`$`·백틱·백슬래시를 쓰지 않는다.
+_BANK_PY = """
+import collections, json, os, sys
+import numpy as np
+from handwriting import bank_id
+d = os.environ['SJMJ_ML_MODELS_DIR']
+z = np.load(os.path.join(d, bank_id.BANK_FILENAME), allow_pickle=True)
+labs = [str(x) for x in z['lab']]
+try:
+    version = bank_id.bank_retrieval_version(d, z, labs)
+except Exception as e:
+    print('retrieval_version 계산 실패(%s: %s)' % (type(e).__name__, e), file=sys.stderr)
+    version = None
+print(json.dumps({'size': len(labs), 'counts': collections.Counter(labs),
+                  'retrieval_version': version}, ensure_ascii=False))
+"""
+
+# 이 값들이 없으면 서버가 지문 기능(#49) 이전 릴리스라는 뜻이다 — 다른 모듈 부재는 다른 원인이다.
+_FINGERPRINT_MODULES = ("handwriting.bank_id", "handwriting")
+# 상단 메시지에 실을 원격 stderr 꼬리 줄 수 — traceback 전문은 길고 원인은 끝에 있다.
+_STDERR_EXCERPT_LINES = 3
+
+# 캐시 손상은 원인이 무엇이든 복구 절차가 하나다 — 서버에서 다시 받는다.
+_CACHE_RECOVERY = "로컬 캐시 손상이다. `fetch`를 다시 실행한다."
+
+# 재평가 산출물이 사는 원격 하위 경로(bank_update.DEFAULT_OUT과 같은 자리).
+REEVAL_SUBDIR = "results/bank_update"
+# (원격 파일명, 캐시 파일명). 순서가 곧 쓰기 순서다 — jsonl 먼저, 그 다음 meta.
+REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_meta.json"))
+# 원자 교체 한 벌의 마지막 파일 — 앞의 두 파일을 **해석하는** 쪽이라 가장 나중에 갈아끼운다(M2).
+CACHE_META = "meta.json"
 
 
-def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
-    """서버에서 training_pairs·result_json·뱅크 라벨을 동기화해 캐시 JSON으로 저장한다."""
+def bank_script(worker_env: str, ml_root: str) -> str:
+    """원격 뱅크 라벨 집계 + 현재 retrieval 지문을 한 번에 얻는 셸 스크립트를 만든다.
+
+    ml_root로 cd하는 이유: `python -c`는 cwd를 sys.path에 넣으므로 그래야 handwriting
+    패키지를 import할 수 있다. 서버 레포에 handwriting.bank_id가 없으면(릴리스 배포 전)
+    ModuleNotFoundError로 크게 실패한다 — 지문 없이 조용히 진행하면 전 표본이 stale/unknown
+    으로 떨어져 품목 지표가 0/0이 되므로, 원인을 메시지로 풀어 주는 편이 낫다.
+    """
+    return f'{source_env(worker_env)}cd "{remote_path(ml_root)}"; "$PYTHON_BIN" -c "{_BANK_PY}"'
+
+
+def reeval_probe_script(ml_root: str) -> str:
+    """재평가 산출물 존재를 확인한다 — 부재는 정상 상태이므로 비0으로 죽지 않는다."""
+    return (
+        f'cd "{remote_path(ml_root)}/{REEVAL_SUBDIR}" 2>/dev/null || exit 0; '
+        "ls score.jsonl score_meta.json 2>/dev/null || true"
+    )
+
+
+def reeval_cat_script(ml_root: str, name: str) -> str:
+    """재평가 산출물 1개를 그대로 읽어온다(name은 REEVAL_FILES의 상수다)."""
+    return f'cat "{remote_path(ml_root)}/{REEVAL_SUBDIR}/{name}"'
+
+
+def _replace_atomically(cache: Path, files: list[tuple[str, bytes]]) -> None:
+    """항상 함께 움직여야 하는 파일들을 **전부** tmp로 받은 뒤 순서대로 교체한다.
+
+    한 벌은 셋이다(M2): 재평가 두 파일과 **그 둘을 해석하는** meta.json(retrieval_version·
+    reeval_state). 앞의 둘만 원자적이면 meta.json이 평범한 쓰기로 먼저 굳어, 짝이 어긋난 상태의
+    사유가 stale로 오보된다 — 수치는 fail-closed라 안전하지만 사용자는 잘못된 조치로 간다.
+
+    교체 사이에 죽는 창은 남으므로 순서를 고정한다(호출자가 준 순서 = REEVAL_FILES + meta.json):
+    meta.json 교체 전에 죽으면 이전 meta의 지문·다이제스트가 새 산출물과 어긋나 게이트가
+    "재평가 없음"으로 닫는다(fail-closed).
+    """
+    staged = [(cache / name, cache / f"{name}.tmp", body) for name, body in files]
+    try:
+        for _path, tmp, body in staged:
+            tmp.write_bytes(body)
+        for path, tmp, _body in staged:
+            os.replace(tmp, path)
+    except Exception:
+        for _path, tmp, _body in staged:
+            tmp.unlink(missing_ok=True)
+        raise
+
+
+def _clear_reeval(cache: Path) -> None:
+    """캐시의 재평가 두 파일을 함께 지운다 — 두 파일은 항상 같이 움직인다.
+
+    남겨두면 서버에서 산출물이 사라지거나 옮겨진 뒤에도 로컬 reeval_meta.json이 살아남아
+    재평가가 유효한 것처럼 읽힌다(warp_gate_report.fetch_all이 이전 fetch 산출을 먼저
+    rmtree하는 것과 같은 이유).
+    """
+    for _remote, local in REEVAL_FILES:
+        (cache / local).unlink(missing_ok=True)
+
+
+def _read_reeval_files(jsonl_path: Path, meta_path: Path) -> tuple[list[dict], dict]:
+    """캐시의 재평가 두 파일을 읽는다 — 손상은 파일명·복구 지침과 함께 경계에서 막는다(H2).
+
+    `parse_reeval_jsonl`이 dict 아닌 줄을 막는 것과 같은 이유로 meta도 dict 여부를 본다:
+    게이트 안쪽까지 흘러가면 dict가 아닌 값에 AttributeError가 나 원인이 파싱 경계에서
+    멀어진다(`null`은 게이트가 no_meta로 정상 처리하는데 `_reeval_info`가 먼저 죽었다).
+    읽기 인코딩도 여기서 못박는다(L5) — 쓰기는 UTF-8 bytes다.
+
+    Raises:
+        json.JSONDecodeError: score.jsonl이 파싱되지 않을 때(즉시 실패 계약 유지 — 이 타입은
+            ValueError의 하위형이라 호출자는 ValueError 하나로 잡는다).
+        ValueError: score_meta.json이 파싱되지 않거나 JSON 객체가 아닐 때.
+    """
+    try:
+        records = parse_reeval_jsonl(jsonl_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise json.JSONDecodeError(
+            f"{jsonl_path.name} 손상({e.msg}) — {_CACHE_RECOVERY}", e.doc, e.pos
+        ) from e
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{meta_path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
+    if not isinstance(meta, dict):
+        raise ValueError(
+            f"{meta_path.name}이 JSON 객체가 아니다({type(meta).__name__}) — {_CACHE_RECOVERY}"
+        )
+    return records, meta
+
+
+def _reeval_info(cache: Path, meta: dict) -> tuple[dict | None, dict]:
+    """캐시의 재평가를 유효성 게이트에 통과시키고 리포트용 상태 정보를 만든다.
+
+    `after`는 `reeval_after`로 평탄화한다 — score_meta는 지문을 중첩(`{before, after}`)으로
+    쓰는데 `reeval_notice`는 평탄 키를 읽으므로, 재맵을 빠뜨리면 채택 문구가 지문을 못 찾는다.
+
+    Returns:
+        (게이트를 통과한 {crop_ref: 레코드} 또는 None, meta["reeval"]에 실을 상태 정보).
+    """
+    info = {
+        "state": meta.get("reeval_state", "absent"),
+        "adopted": False,
+        "reason": None,
+        "generated_at": None,
+        "after": None,
+        "scope": None,
+        "n_pairs": None,
+    }
+    jsonl_path, meta_path = cache / "reeval.jsonl", cache / "reeval_meta.json"
+    if info["state"] != "present" or not (jsonl_path.exists() and meta_path.exists()):
+        return None, info
+    records, reeval_meta = _read_reeval_files(jsonl_path, meta_path)
+    gate = reeval_gate(
+        records=records,
+        meta=reeval_meta,
+        current_retrieval_version=meta.get("retrieval_version"),
+        jsonl_sha256=file_digest(jsonl_path),
+    )
+    return gate.pairs, {
+        **info,
+        "adopted": gate.pairs is not None,
+        "reason": gate.reason,
+        "generated_at": reeval_meta.get("generated_at"),
+        "after": reeval_after(reeval_meta),
+        "scope": reeval_meta.get("scope"),
+        "n_pairs": reeval_meta.get("n_pairs"),
+    }
+
+
+def fetch_error_message(stderr: str) -> str | None:
+    """서버가 지문 기능(Issue #49) 이전 릴리스일 때 쓸 행동 지침을 만든다. 아니면 None.
+
+    배포 전에는 서버 레포에 handwriting.bank_id가 없다 — hard-fail은 의도이지만 raw
+    traceback은 행동 지침이 아니다. 문자열 판정만 하는 순수 헬퍼라 ssh 없이 단위테스트로 닫는다.
+
+    판정은 **모듈명까지** 본다(M1). `No module named` 단독 매칭은 서버 venv의 numpy/torch
+    부재까지 "#49 이전 릴리스"로 오진하는데, 그 경우 배포는 이미 됐고 원인은 venv라 지침이
+    엉뚱하다. 원본 stderr 발췌도 싣는다 — 삼키면 어떤 모듈이 없는지 확인할 창구가 사라진다.
+
+    raise가 아니라 메시지를 반환한다 — 조건부로만 던지는 헬퍼는 호출부에서 제어흐름이 보이지
+    않아, 반환 후 다음 줄이 실행되는지를 헬퍼 본문을 열어야 알 수 있다.
+    """
+    if not any(f"No module named '{name}'" in stderr for name in _FINGERPRINT_MODULES):
+        return None
+    excerpt = " / ".join(stderr.strip().splitlines()[-_STDERR_EXCERPT_LINES:])
+    return (
+        "서버 코드가 retrieval 지문 기능(Issue #49) 이전 릴리스다 — "
+        "`v*` 태그 배포 후 다시 실행한다. "
+        "(배포 전에는 기존 캐시로 `report`를 돌려 금액·excluded 검수 루프를 계속할 수 있다.) "
+        f"원격 stderr: {excerpt}"
+    )
+
+
+def _fetch_reeval(host: str, ml_root: str, cache: Path) -> tuple[str, list[tuple[str, bytes]]]:
+    """서버의 재평가 산출물을 회수해 (회수 상태 ReevalState, 캐시에 쓸 (파일명, 내용))을 낸다.
+
+    쓰기는 호출자가 meta.json과 **한 벌로** 교체한다(M2) — 그래야 세 파일이 함께 움직인다.
+    부재 경로에서는 이전 회수분을 즉시 지운다(그 자리에 쓸 새 내용이 없으므로 한 벌에 넣을 수
+    없고, 남겨두면 재평가가 유효한 것처럼 읽힌다).
+    """
+    names = set(run_ssh(host, reeval_probe_script(ml_root)).decode().split())
+    if {remote for remote, _local in REEVAL_FILES} <= names:
+        bodies = [
+            (local, run_ssh(host, reeval_cat_script(ml_root, remote)))
+            for remote, local in REEVAL_FILES
+        ]
+        return "present", bodies
+    _clear_reeval(cache)
+    # score.jsonl만 있는 상태는 정상 경로다(#53 이전 산출물) — 리포트가 한 줄 알린다.
+    return ("no_meta" if "score.jsonl" in names else "absent"), []
+
+
+def _write_json(path: Path, obj) -> None:
+    """캐시 JSON 1개를 UTF-8로 쓴다 — 읽기(`_load_enriched`)와 인코딩을 맞춘다(L5)."""
+    path.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def fetch_all(host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> dict:
+    """서버에서 training_pairs·result_json·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다."""
     cache.mkdir(parents=True, exist_ok=True)
     pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
     jobs = parse_jobs_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
-    bank_script = f'{source_env(worker_env)}"$PYTHON_BIN" -c "{_BANK_PY}"'
-    bank = json.loads(run_ssh(host, bank_script).decode())
+    try:
+        bank = json.loads(run_ssh(host, bank_script(worker_env, ml_root)).decode())
+    except RemoteError as e:
+        message = fetch_error_message(str(e))
+        if message:
+            raise RuntimeError(message) from e
+        raise
+
+    reeval_state, reeval_files = _fetch_reeval(host, ml_root, cache)
     meta = {
         "fetched_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
         "host": host,
         "bank_size": bank["size"],
         "bank_distinct": len(bank["counts"]),
+        "retrieval_version": bank.get("retrieval_version"),
+        "reeval_state": reeval_state,
     }
-    (cache / "pairs.json").write_text(json.dumps(pairs, ensure_ascii=False, indent=1))
-    (cache / "jobs.json").write_text(json.dumps(jobs, ensure_ascii=False, indent=1))
-    (cache / "bank.json").write_text(json.dumps(bank, ensure_ascii=False, indent=1))
-    (cache / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    _write_json(cache / "pairs.json", pairs)
+    _write_json(cache / "jobs.json", jobs)
+    _write_json(cache / "bank.json", bank)
+    # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
+    meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
+    _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
     return meta
 
 
@@ -451,11 +694,24 @@ def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -
 
 
 def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
-    pairs = json.loads((cache / "pairs.json").read_text())
-    jobs = json.loads((cache / "jobs.json").read_text())
-    bank = json.loads((cache / "bank.json").read_text())
-    meta = json.loads((cache / "meta.json").read_text())
-    return enrich_pairs(pairs, jobs, set(bank["counts"])), meta
+    """캐시를 읽어 재평가·현재 지문까지 배선한 enriched 행과 meta를 만든다.
+
+    `reeval`·`current_retrieval_version`을 넘기지 않으면 코호트 판정이 기준값을 잃어 리포트가
+    전량 `unevaluable`로 떨어진다 — 이 배선이 곧 era-aware 재판정의 소비 지점이다.
+    """
+    pairs = json.loads((cache / "pairs.json").read_text(encoding="utf-8"))
+    jobs = json.loads((cache / "jobs.json").read_text(encoding="utf-8"))
+    bank = json.loads((cache / "bank.json").read_text(encoding="utf-8"))
+    meta = json.loads((cache / CACHE_META).read_text(encoding="utf-8"))
+    reeval, info = _reeval_info(cache, meta)
+    enriched = enrich_pairs(
+        pairs,
+        jobs,
+        set(bank["counts"]),
+        reeval=reeval,
+        current_retrieval_version=meta.get("retrieval_version"),
+    )
+    return enriched, {**meta, "reeval": info}
 
 
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
@@ -467,6 +723,21 @@ def _failure_job_ids(enriched: list[dict]) -> list[int]:
     return sorted(
         {r["job_id"] for r in enriched if r["status"] == "excluded" or is_item_failure(r)}
     )
+
+
+def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> None:
+    """fetch 서브커맨드 — 동기화하고 다음 조치를 판단할 요약을 출력한다.
+
+    지문이 미확정이면 그 사실과 조치를 그 자리에서 말한다(M3·H1) — 원격 지문 계산 실패는 fetch를
+    죽이지 않고 null로 통과시키므로, 여기서 안 알리면 리포트가 전량 stale_bank로 나온 뒤에야
+    원인을 찾게 된다.
+    """
+    meta = fetch_all(host, backend_env, worker_env, ml_root, cache)
+    version = meta["retrieval_version"]
+    print(f"동기화 완료 → {cache} ({meta['fetched_at']})")
+    print(f"현재 retrieval 지문: {version or '미확정'} · 재평가: {meta['reeval_state']}")
+    if not version:
+        print(_NO_FINGERPRINT_NOTICE)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -484,10 +755,10 @@ def main(argv: list[str] | None = None) -> None:
 
     backend_env = env_or(ENV_BACKEND_ENV)
     worker_env = env_or(ENV_WORKER_ENV)
+    ml_root = env_or(ENV_ML_ROOT)
 
     if args.cmd == "fetch":
-        meta = fetch_all(args.host, backend_env, worker_env, args.cache)
-        print(f"동기화 완료 → {args.cache} ({meta['fetched_at']})")
+        _cmd_fetch(args.host, backend_env, worker_env, ml_root, args.cache)
         return
 
     enriched, meta = _load_enriched(args.cache)

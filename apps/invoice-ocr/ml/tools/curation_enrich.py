@@ -9,7 +9,8 @@ tools/curation_report.py에서 **순수함수만** 떼어낸 모듈이다(동작
 curation_cohort(판정). 반대로 렌더 계층을 떼면 render_report가 summarize·job_flags·
 oob_label_counts를 쓰므로 순환이 생긴다.
 
-코어 규약 준수: stdlib 전용(paddle/numpy/pillow 불필요), 전부 순수함수.
+코어 규약 준수: stdlib 전용(paddle/numpy/pillow 불필요), 전부 순수함수(+ 파서가 푸는 조회
+SQL 상수 — 컬럼 계약이 파서와 한 벌이라 여기 산다).
 """
 
 import json
@@ -21,6 +22,19 @@ from tools.curation_cohort import (
     PairCohort,
     is_item_evaluable,
     pair_cohort,
+)
+
+# 조회 SQL은 그 결과를 푸는 파서 옆에 둔다 — 컬럼 목록과 parse_pairs_tsv의 키가 한 벌이다.
+# 소비자는 curation_report.fetch_all과 bank_update.fetch_pairs 둘이며, 후자가 SQL 하나 때문에
+# 리포트 모듈(fetch 글루·CLI·bank_id까지 끌어온다)에 의존하지 않게 한다(L6).
+PAIR_COLS = (
+    "id, crop_ref, job_id, row_index, draft_label, final_label, "
+    "canonical_label, supply, status, reviewed_at"
+)
+PAIRS_SQL = f"SELECT {PAIR_COLS} FROM training_pairs ORDER BY job_id, row_index"
+JOBS_SQL = (
+    "SELECT id, image_path, JSON_UNQUOTE(result_json) FROM ocr_jobs "
+    "WHERE id IN (SELECT DISTINCT job_id FROM training_pairs)"
 )
 
 

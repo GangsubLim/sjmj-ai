@@ -27,6 +27,11 @@ from pathlib import Path
 # 디렉터리에서 기동됐을 때 엉뚱한 레포의 SHA를 조용히 집을 수 있다(fail-open).
 ML_ROOT = Path(__file__).resolve().parent.parent
 
+# 지문 입력 파일명 — 모델 디렉터리(SJMJ_ML_MODELS_DIR)의 배포 관례. 소비자(운영 워커·원격
+# 분석 스크립트)가 각자 리터럴을 들고 있으면 한쪽만 바뀔 때 두 지문이 어긋난다(M4).
+MODEL_FILENAME = "ft_prod.pt"
+BANK_FILENAME = "bank.npz"
+
 # 지문 길이 — 리포트 표에 그대로 실리므로 짧게. 12 hex = 48bit로 충돌 위험은 무시 가능.
 FINGERPRINT_LEN = 12
 _CHUNK = 1 << 20
@@ -167,3 +172,36 @@ def compute_retrieval_version(model_path, keys, labs, emb, *, repo_dir=ML_ROOT) 
     if version is None:
         return None
     return retrieval_fingerprint(bank_rows(keys, labs, emb), file_digest(model_path), version)
+
+
+def bank_retrieval_version(models_dir, npz, labs) -> str | None:
+    """모델 디렉터리 + 적재된 bank.npz로 지문을 낸다 — 지문 **입력**의 단일 진입점(M4).
+
+    해시 로직만 공유하고 입력(모델 파일명·배열 선택)을 호출부마다 복붙하면, 파일명이나 배열
+    선택이 한쪽만 바뀔 때 두 소비자(운영 워커 `worker.main`과 분석 도구의 원격 인라인
+    스크립트)가 서로 다른 지문을 내고 모든 잡이 조용히 stale로 오분류된다 — 지문 체계가
+    막으려던 실패 모드가 입력 축에 그대로 남는다.
+
+    `npz`는 이미 적재된 것을 받는다: 워커는 추론용으로, 원격 스크립트는 라벨 집계용으로 각각
+    bank.npz를 이미 열어 둔다(파일명은 BANK_FILENAME으로 공유). `labs`도 두 호출부가 자기
+    목적(추론·집계)으로 이미 만들어 두므로 인자로 받는다 — 여기서 다시 만들면 같은 배열을
+    두 벌 만든다.
+
+    실패를 삼키지 않는다 — fail-safe는 호출자의 경계다(워커는 기동을 지켜야 하고, 분석
+    스크립트는 지문만 null로 내보내고 나머지 동기화를 계속한다).
+
+    Args:
+        models_dir: bank.npz·ft_prod.pt가 사는 디렉터리(SJMJ_ML_MODELS_DIR).
+        npz: 적재된 bank.npz — `keys`·`emb`를 여기서 읽는다.
+        labs: 뱅크 label 열(문자열 리스트).
+
+    Returns:
+        12자 지문. 코드 SHA를 얻지 못하면 None(compute_retrieval_version 참조).
+
+    Raises:
+        KeyError: npz에 `keys`·`emb`가 없을 때.
+        OSError: 모델 파일을 읽을 수 없을 때.
+        ValueError: 열 길이가 다르거나 뱅크 key가 중복될 때.
+    """
+    keys = [str(x) for x in npz["keys"]]
+    return compute_retrieval_version(Path(models_dir) / MODEL_FILENAME, keys, labs, npz["emb"])

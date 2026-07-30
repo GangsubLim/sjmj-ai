@@ -4,7 +4,12 @@ import json
 
 import pytest
 
-from tests.conftest import _reeval_record  # 공유 헬퍼 — score.jsonl 레코드 shape(L3)
+from tests.conftest import (  # 공유 헬퍼 — score.jsonl 레코드·score_meta shape(L3)
+    _CUR_VERSION,
+    _four_vintages,
+    _reeval_meta,
+    _reeval_record,
+)
 from tools.curation_cohort import (
     COHORTS,
     DATA_INTEGRITY_FAILURE_BUCKETS,
@@ -20,6 +25,7 @@ from tools.curation_cohort import (
     pair_cohort,
     parse_reeval_jsonl,
     partition_misses,
+    reeval_after,
     reeval_gate,
     sample_cohort,
 )
@@ -256,28 +262,20 @@ def test_partition_misses_ignores_non_miss_and_unevaluable_rows():
 
 # --- 재평가 유효성 게이트 (spec §3-C — 채택 조건 넷) ---
 
-_CUR = "cur-fingerprint"
+_CUR = _CUR_VERSION
 
 
-def _four_vintages(crop_ref="job-1/row-0"):
-    """score.jsonl은 같은 crop_ref에 (side, axis) 4벌을 담는다(bank_update.py:845-853)."""
-    return [
-        _reeval_record(crop_ref, side=side, axis=axis)
-        for side in ("before", "after")
-        for axis in ("crop_ref", "invoice")
-    ]
+def test_reeval_after_reads_the_nested_score_meta_fingerprint():
+    """score_meta는 지문을 {before, after} 중첩으로 쓴다 — 평탄화 지점은 이 함수 하나다."""
+    assert reeval_after(_reeval_meta()) == _CUR
 
 
-def _reeval_meta(**over):
-    base = {
-        "generated_at": "2026-07-30T05:12:00+09:00",
-        "scope": "all",
-        "axes": ["crop_ref", "invoice"],
-        "n_pairs": 1,
-        "retrieval_version": {"before": "old", "after": _CUR},
-        "score_jsonl_sha256": "digest-1",
-    }
-    return {**base, **over}
+def test_reeval_after_returns_none_for_shapes_that_carry_no_after_fingerprint():
+    # 평탄 구조·문자열·부재를 dict로 가정하면 AttributeError로 리포트가 통째로 죽는다.
+    assert reeval_after(None) is None
+    assert reeval_after({}) is None
+    assert reeval_after({"retrieval_version": "flat"}) is None
+    assert reeval_after(_reeval_meta(retrieval_version={"before": "old", "after": ""})) is None
 
 
 def test_parse_reeval_jsonl_reads_records_and_fails_fast_on_broken_lines():

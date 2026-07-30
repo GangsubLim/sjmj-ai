@@ -10,6 +10,11 @@ from worker.db import WorkerQueue, build_engine
 from worker.poll import process_one_job
 
 POLL_INTERVAL_SEC = 2.0
+# 품목 인코더 파일명. handwriting.bank_id.MODEL_FILENAME과 같은 값이어야 한다(지문이 추론과
+# 같은 파일을 해시한다) — 상수를 import해 공유하지 않는 이유는 bank_id import 자체가
+# retrieval_version_or_none의 fail-safe 안에 있어야 하기 때문이다(그 import 실패가 기동을
+# 깨면 안 된다). 두 리터럴의 일치는 tests/test_worker_models.py가 고정한다.
+MODEL_FILENAME = "ft_prod.pt"
 
 
 class ModelBundle(NamedTuple):
@@ -34,16 +39,20 @@ def _require(name: str) -> str:
     return val
 
 
-def retrieval_version_or_none(model_path, npz, labs) -> str | None:
+def retrieval_version_or_none(models_dir, npz, labs) -> str | None:
     """이 워커 세션이 쓴 retrieval 지문을 계산한다. 어떤 실패도 밖으로 내지 않는다.
 
-    뱅크 key 추출도 이 안에서 한다 — z["keys"]는 지문 전용 입력이고 현행 워커는 emb/lab만
-    있으면 기동한다(load_models 참조). keys 부재·손상은 진단 필드 하나의 실패여야 하고
-    운영 중단이어서는 안 된다(spec §3-A, Global Constraint). validate_bank_arrays의 docstring이
-    "워커는 시작 시 emb/lab만 적재한다"고 명시하므로 keys 없는 뱅크는 실재 가능한 상태다.
+    지문 입력(모델 파일명·뱅크 key 추출)은 `bank_id.bank_retrieval_version` 하나가 고른다 —
+    분석 도구의 원격 스크립트도 같은 함수를 부른다(M4). 그 입력을 양쪽이 각자 복붙하면 한쪽만
+    바뀔 때 두 지문이 어긋나 모든 잡이 조용히 stale로 오분류된다.
+
+    z["keys"]는 지문 전용 입력이고 현행 워커는 emb/lab만 있으면 기동한다(load_models 참조).
+    keys 부재·손상은 진단 필드 하나의 실패여야 하고 운영 중단이어서는 안 된다(spec §3-A,
+    Global Constraint). validate_bank_arrays의 docstring이 "워커는 시작 시 emb/lab만
+    적재한다"고 명시하므로 keys 없는 뱅크는 실재 가능한 상태다.
 
     Args:
-        model_path: 품목 인코더 파일(ft_prod.pt) 경로.
+        models_dir: 품목 인코더(ft_prod.pt)와 bank.npz가 사는 디렉터리.
         npz: 적재된 bank.npz(여기서 `keys`·`emb`를 읽는다).
         labs: 뱅크 label 열.
 
@@ -53,15 +62,14 @@ def retrieval_version_or_none(model_path, npz, labs) -> str | None:
     try:
         from handwriting import bank_id
 
-        keys = [str(x) for x in npz["keys"]]
-        return bank_id.compute_retrieval_version(model_path, keys, labs, npz["emb"])
+        return bank_id.bank_retrieval_version(models_dir, npz, labs)
     except Exception as e:
         # 광범위 포착이 의도다 — KeyError(keys 부재)·ValueError(뱅크 계약 위반)·OSError(파일
         # 부재)·bank_id 자체의 import 실패도 상시 워커를 죽이지 못한다. stderr로 남긴다 —
         # bank_id.code_version도 같은 창구(ml-worker.err.log)를 쓰므로 원인 추적이 한 파일로
-        # 모인다. model_path를 넣어 어떤 파일이 문제인지 알 수 있게 한다.
+        # 모인다. models_dir을 넣어 어떤 뱅크가 문제인지 알 수 있게 한다.
         print(
-            f"[retrieval-version] 지문 계산 실패(model_path={model_path}, "
+            f"[retrieval-version] 지문 계산 실패(models_dir={models_dir}, "
             f"{type(e).__name__}: {e}) — 스탬프 생략",
             file=sys.stderr,
             flush=True,
@@ -82,13 +90,13 @@ def load_models() -> ModelBundle:
 
     models_dir = Path(_require("SJMJ_ML_MODELS_DIR"))
     device = "cpu"  # PyTorch-MPS와 MLX Metal 동시 사용 시 degenerate — CPU 고정
-    model_path = models_dir / "ft_prod.pt"
+    model_path = models_dir / MODEL_FILENAME
     item_model = ip.load_model_from(model_path, device)
     z = np.load(models_dir / "bank.npz", allow_pickle=True)
     emb = z["emb"]
     labs = [str(x) for x in z["lab"]]
     qwen = ip.load_ocr()
-    retrieval_version = retrieval_version_or_none(model_path, z, labs)
+    retrieval_version = retrieval_version_or_none(models_dir, z, labs)
     # 로그↔DB 대조로 스탬프 소실을 즉시 알 수 있도록 부팅 시 지문을 한 줄 남긴다.
     print(
         f"[retrieval-version] 부팅 지문={retrieval_version or '없음'}", file=sys.stderr, flush=True

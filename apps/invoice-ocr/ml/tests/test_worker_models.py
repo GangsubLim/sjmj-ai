@@ -33,7 +33,7 @@ def test_retrieval_version_or_none_returns_the_fingerprint(tmp_path, monkeypatch
         lambda *a, **kw: "a1b2c3d4e5f6",
     )
     npz = {"keys": ["k"], "emb": None}
-    assert retrieval_version_or_none(tmp_path / "ft_prod.pt", npz, ["a"]) == "a1b2c3d4e5f6"
+    assert retrieval_version_or_none(tmp_path, npz, ["a"]) == "a1b2c3d4e5f6"
 
 
 def test_retrieval_version_or_none_swallows_failures_to_keep_the_worker_booting(
@@ -45,7 +45,7 @@ def test_retrieval_version_or_none_swallows_failures_to_keep_the_worker_booting(
 
     monkeypatch.setattr("handwriting.bank_id.compute_retrieval_version", _boom)
     npz = {"keys": ["k"], "emb": None}
-    assert retrieval_version_or_none(tmp_path / "ft_prod.pt", npz, ["a"]) is None
+    assert retrieval_version_or_none(tmp_path, npz, ["a"]) is None
     assert "retrieval-version" in capsys.readouterr().err
 
 
@@ -63,8 +63,34 @@ def test_retrieval_version_or_none_survives_a_bank_without_keys(tmp_path, capsys
                 raise KeyError("keys")
             return dict.__getitem__(self, k)
 
-    assert retrieval_version_or_none(tmp_path / "ft_prod.pt", _NoKeys(npz), ["a"]) is None
+    assert retrieval_version_or_none(tmp_path, _NoKeys(npz), ["a"]) is None
     assert "retrieval-version" in capsys.readouterr().err
+
+
+def test_retrieval_version_or_none_delegates_to_the_shared_entry_point(tmp_path, monkeypatch):
+    """M4 — 워커도 원격 분석 스크립트도 지문 '입력'을 각자 고르지 않고 한 함수를 부른다.
+
+    파일명·배열 선택이 한쪽만 바뀌면 두 지문이 어긋나 모든 잡이 조용히 stale이 된다.
+    """
+    seen = {}
+
+    def fake(models_dir, npz, labs):
+        seen.update(models_dir=models_dir, labs=labs)
+        return "fp123456789a"
+
+    monkeypatch.setattr("handwriting.bank_id.bank_retrieval_version", fake)
+    assert retrieval_version_or_none(tmp_path, {"emb": None}, ["가"]) == "fp123456789a"
+    assert seen == {"models_dir": tmp_path, "labs": ["가"]}
+
+
+def test_worker_loads_the_same_model_file_the_fingerprint_hashes():
+    """M4 — 워커는 bank_id를 fail-safe 밖에서 import할 수 없어(기동을 깨면 안 된다) 파일명을
+    상수 참조로 공유하지 못한다. 두 리터럴이 갈라지면 지문이 추론과 다른 파일을 해시한다.
+    """
+    from handwriting import bank_id
+    from worker.main import MODEL_FILENAME
+
+    assert MODEL_FILENAME == bank_id.MODEL_FILENAME
 
 
 def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version):

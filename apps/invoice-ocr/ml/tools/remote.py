@@ -39,20 +39,30 @@ def env_or(var: EnvVar) -> str:
     return raw
 
 
+def remote_path(path: str) -> str:
+    """이중따옴표 안에서 쓸 원격 경로로 다듬는다 — `~/` prefix를 `$HOME/`으로 치환한다.
+
+    이중따옴표는 `$VAR` 확장은 유지하지만 `~`는 확장하지 않는다. 인용 전에 치환하지 않으면
+    `cd "~/sjmj-ai/..."`가 리터럴 `~` 디렉터리를 찾아 원격에서 즉시 실패한다. 치환을
+    source_env 안에만 두면 다른 원격 경로 소비자(SJMJ_REMOTE_ML_ROOT 등)가 같은 함정을
+    다시 밟으므로 공유 가능한 형태로 뗀다.
+
+    로컬 `os.path.expanduser`는 쓰지 않는다(로컬 홈 ≠ 원격 홈이라 잘못된 절대경로를 굳힐
+    수 있다) — 확장은 원격 셸이 `$HOME`으로 한다. `~user/` 형태는 치환하지 않는다:
+    `$HOME`으로 바꾸면 다른 사용자의 홈을 조용히 우리 홈으로 바꿔치기하게 된다.
+    """
+    return "$HOME/" + path[2:] if path.startswith("~/") else path
+
+
 def source_env(env_file: str) -> str:
     """원격 env 파일의 값들을 export하는 셸 접두 스크립트를 만든다.
 
     `set -eu`로 env 파일 부재 시 즉시 실패시킨다(값이 조용히 비어 이후 명령이 알 수
-    없는 이유로 실패하는 대신 원인을 바로 드러낸다). 경로는 이중따옴표로 감싸 공백에
-    안전하되 `$HOME` 같은 변수 확장은 유지한다(작은따옴표였다면 확장이 막혔을 것).
-
-    이중따옴표는 `$VAR` 확장은 유지하지만 `~`는 확장하지 않는다 — `~/` prefix는 인용
-    전에 `$HOME/`으로 치환한다. 로컬 `os.path.expanduser`는 쓰지 않는다(로컬 홈 ≠
-    원격 홈이라 잘못된 절대경로를 굳힐 수 있다); 확장은 원격 셸이 `$HOME`으로 한다.
+    없는 이유로 실패하는 대신 원인을 바로 드러낸다). 경로는 `remote_path`로 다듬은 뒤
+    이중따옴표로 감싸 공백에 안전하되 `$HOME` 같은 변수 확장은 유지한다(작은따옴표였다면
+    확장이 막혔을 것).
     """
-    if env_file.startswith("~/"):
-        env_file = "$HOME/" + env_file[2:]
-    return f'set -eu; set -a; source "{env_file}"; set +a; '
+    return f'set -eu; set -a; source "{remote_path(env_file)}"; set +a; '
 
 
 def run_ssh(host: str, script: str, *, timeout: float = 600.0) -> bytes:
