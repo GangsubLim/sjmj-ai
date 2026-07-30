@@ -162,4 +162,44 @@ describe("CurationPairRow", () => {
     );
     expect(screen.getByLabelText("행 0 라벨")).toBeInTheDocument();
   });
+
+  it("자동 배제된 행에 배지를 표시한다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          status: "excluded",
+          exclusion_reason: "blank_crop",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/빈 크롭/)).toBeInTheDocument();
+  });
+
+  it("사람이 배제한 행(사유 없음)에는 자동 배제 배지가 없다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", { status: "excluded", exclusion_reason: null })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/빈 크롭/)).not.toBeInTheDocument();
+  });
+
+  it("기계가 배제했으나 사람이 되돌린 행에도 배지가 남는다", () => {
+    // §6 세 번째 칸 — 사유가 남아 있는 included. 사람이 오탐을 식별할 수 있어야 한다.
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          status: "included",
+          exclusion_reason: "blank_crop",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/빈 크롭/)).toBeInTheDocument();
+  });
 });

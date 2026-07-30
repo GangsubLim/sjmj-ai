@@ -74,6 +74,11 @@ export function CurationPairRow({
               <span aria-hidden="true">⚠</span> 미확신
             </span>
           )}
+          {pair.exclusion_reason === "blank_crop" && (
+            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">
+              <span aria-hidden="true">◻</span> 빈 크롭 자동 배제
+            </span>
+          )}
           {pair.top5.length === 0 ? (
             <span>후보 없음</span>
           ) : (
