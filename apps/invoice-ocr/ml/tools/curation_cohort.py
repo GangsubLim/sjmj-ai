@@ -22,7 +22,7 @@ from typing import Literal, NamedTuple, get_args
 Cohort = Literal["reevaluated", "current_bank", "stale_bank", "unknown"]
 COHORTS = get_args(Cohort)
 
-# curation_report._item_bucket이 이 상수를 import해 쓴다 — 코호트 이름이 다른 모듈에서
+# curation_enrich._item_bucket이 이 상수를 import해 쓴다 — 코호트 이름이 다른 모듈에서
 # 원시 문자열 리터럴로 재등장하면 오타·개명이 타입 검사에 걸리지 않는다(M1).
 REEVALUATED_COHORT: Cohort = "reevaluated"
 

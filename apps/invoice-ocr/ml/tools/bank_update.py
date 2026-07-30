@@ -711,8 +711,9 @@ def _mysql(backend_env: str, sql: str) -> str:
 
 
 def fetch_pairs(backend_env: str) -> list[dict]:
-    """training_pairs 전량을 조회한다(파서는 curation_report와 공유 — 컬럼 계약 단일화)."""
-    from tools.curation_report import PAIRS_SQL, parse_pairs_tsv
+    """training_pairs 전량을 조회한다(SQL·파서는 큐레이션 도구와 공유 — 컬럼 계약 단일화)."""
+    from tools.curation_enrich import parse_pairs_tsv
+    from tools.curation_report import PAIRS_SQL
 
     return parse_pairs_tsv(_mysql(backend_env, PAIRS_SQL))
 

@@ -5,6 +5,7 @@ import math
 import pytest
 
 from handwriting.warp_gate import MIN_BLUE_RATIO  # stdlib만 쓰는 모듈이라 코어 venv에서도 안전
+from tools.curation_enrich import enrich_pairs  # 동일 — stdlib 전용 순수 계층
 
 # 정상 합성의 파랑 비율을 임계의 몇 배로 둘지. 3배면 임계가 흔들려도 정상 케이스가 여유를 갖는다.
 HEALTHY_RATIO_FACTOR = 3
@@ -67,6 +68,76 @@ def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over)
         "has_peer": True,
         "preds": ["안가방", "공임"],
         "top1_sim": 0.91,
+    }
+    return {**base, **over}
+
+
+# --- 큐레이션 리포트 계열 합성 헬퍼 (test_curation_enrich·test_curation_report 공유) ---
+# 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_report.py)이 두 모듈로
+# 갈리면서 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
+
+BANK = {"엔진오일", "드라이", "타이어", "공임"}
+_CUR_VERSION = "cur-fingerprint"
+
+
+def _pair(**over):
+    base = {
+        "id": 1,
+        "crop_ref": "job-1/row-0",
+        "job_id": 1,
+        "row_index": 0,
+        "draft_label": "엔진오일",
+        "final_label": "엔진오일",
+        "canonical_label": "엔진오일",
+        "supply": 100000,
+        "status": "included",
+        "reviewed_at": None,
+    }
+    return {**base, **over}
+
+
+def _job(job_id=1, rows=None, retrieval_version=_CUR_VERSION):
+    result = {"rows": rows or [], "warp_ok": True}
+    if retrieval_version is not None:
+        result["retrieval_version"] = retrieval_version
+    return {"job_id": job_id, "image_path": f"/data/up/{job_id}.jpeg", "result": result}
+
+
+def _row(idx=0, top5=None, supply=100000, raw="100", job=1):
+    return {
+        "row_index": idx,
+        "crop_ref": f"job-{job}/row-{idx}",
+        "item_top5": [{"label": lb, "sim": s} for lb, s in (top5 or [])],
+        "supply": supply,
+        "amount_raw": raw,
+    }
+
+
+def _enrich(pairs, jobs, bank=BANK, **kw):
+    """기본 현재 지문을 물려주는 래퍼 — 스탬프를 명시하지 않은 테스트는 current_bank가 된다."""
+    kw.setdefault("current_retrieval_version", _CUR_VERSION)
+    return enrich_pairs(pairs, jobs, bank, **kw)
+
+
+def _enriched_row(**over):
+    """소비자 술어 테스트용 최소 enriched 행(전 잡 폭주 회귀를 합성으로 재현한다)."""
+    base = {
+        "job_id": 1,
+        "crop_ref": "job-1/row-0",
+        "status": "included",
+        "answer": "안가방",
+        "final_label": "안가방",
+        "draft_label": "안가방",
+        "supply": 100000,
+        "draft_supply": 100000,
+        "amount_raw": "100",
+        "top5_labels": [],
+        "top1_sim": None,
+        "in_bank": True,
+        "label_bucket": "unevaluable",
+        "amount_bucket": "ok",
+        "cohort": "current_bank",
+        "reeval_has_peer": None,
     }
     return {**base, **over}
 
