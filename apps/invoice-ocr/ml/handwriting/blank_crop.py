@@ -61,3 +61,32 @@ def is_machine_writable(status: str, reason: str | None) -> bool:
     if reason == BLANK_CROP:
         return status == STATUS_EXCLUDED
     return False
+
+
+def crop_ink_ratio(crop_bgr) -> float:
+    """저장된 품목 크롭의 손글씨 잉크 비율을 잰다(가로·세로 인쇄선 억제 후).
+
+    기존 잉크 공식(rows._ink_mask)에 rows._remove_hlines를 걸고, **같은 함수를 전치해 한 번
+    더** 걸어 세로 인쇄선을 억제한다. 신규 morphology를 도입하지 않으므로 워프 오차로 칸
+    경계가 밀려도 기존 함수와 같은 견고성을 갖는다.
+
+    Args:
+        crop_bgr: cv2가 읽은 BGR 크롭(면적 > 0).
+
+    Returns:
+        잉크 픽셀 비율(0.0~1.0).
+
+    Raises:
+        ValueError: 면적 0 배열. 잉크율의 분모가 없다 — cv2.imread는 이런 배열을 만들지
+            못하고 None을 주므로 호출자 버그다(spec §8).
+    """
+    import numpy as np
+
+    from handwriting.rows import _ink_mask, _remove_hlines
+
+    if crop_bgr.size == 0:
+        raise ValueError("면적 0 크롭에서는 잉크율을 잴 수 없다")
+    mask = _remove_hlines(_ink_mask(crop_bgr))
+    # cv2.morphologyEx는 비연속 배열을 거부할 수 있으므로 전치본을 복사해 넘긴다.
+    mask = _remove_hlines(np.ascontiguousarray(mask.T)).T
+    return float(mask.mean())
