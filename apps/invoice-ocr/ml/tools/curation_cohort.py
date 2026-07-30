@@ -19,10 +19,29 @@ from typing import Literal, NamedTuple, get_args
 # 드리프트할 수 없다. 다만 타입 힌트는 런타임에 강제되지 않으므로, sample_cohort의
 # *실제 반환값 집합*이 이 치역과 일치하는지는
 # test_sample_cohort_range_matches_cohorts_bijectively가 전수 입력 조합으로 별도 검증한다.
-# 후속 task(Task 11)의 pair_cohort가 여기에 no_label을 더하고, Task 12의 COHORT_TABLE이
-# 둘을 합친 표현 계층을 만든다 — 이 커밋에는 아직 없다.
 Cohort = Literal["reevaluated", "current_bank", "stale_bank", "unknown"]
 COHORTS = get_args(Cohort)
+
+# curation_report._item_bucket이 이 상수를 import해 쓴다 — 코호트 이름이 다른 모듈에서
+# 원시 문자열 리터럴로 재등장하면 오타·개명이 타입 검사에 걸리지 않는다(M1).
+REEVALUATED_COHORT: Cohort = "reevaluated"
+
+# 쌍 단위 치역 — 잡의 시점 코호트에 정답 부재(no_label)를 더한 것이다. Cohort를 그대로 품는
+# 관계는 test_pair_cohorts_extend_the_sample_cohorts_by_exactly_no_label이 고정한다.
+PairCohort = Literal["reevaluated", "current_bank", "stale_bank", "unknown", "no_label"]
+PAIR_COHORTS = get_args(PairCohort)
+
+# 지표를 산출할 수 있는 코호트. reevaluated는 leave-invoice-out 수치이고 current_bank는 운영
+# 추론 그대로지만 합산이 성립한다 — 스탬프가 현재 지문과 같다는 것은 그 잡을 처리한 뒤 뱅크가
+# 한 번도 바뀌지 않았다는 뜻이고, 따라서 그 쌍의 자기 크롭도 같은 잡의 다른 행도 뱅크에 없다
+# (들어갔다면 emb·keys가 바뀌어 지문이 달라진다). 이 등가는 지문 입력에서 keys를 빼는 변경으로
+# 깨진다 — 그때는 합산도 함께 깨진다(spec §3-C).
+ITEM_EVALUABLE_COHORTS = ("reevaluated", "current_bank")
+
+# 사람이 크롭을 보고 개선할 여지가 있는 품목 미스 — 정답이 뱅크에 있는데 top-1을 놓친 경우다.
+# out_of_bank(뱅크에 정답 자체가 없음)는 리트리벌 실패가 아니라 커버리지 문제라 뱅크 추가
+# 후보 목록이 따로 낸다. no_candidates는 후보가 0건이라 대조할 것이 없다.
+RETRIEVAL_MISS_BUCKETS = ("top5_only", "in_bank_miss")
 
 # 품목 판정이 성립하지 않는 버킷 — 관심사가 다른 두 축의 합이다.
 # unevaluable: 시점 판정 불가(재평가 없음 + 뱅크 스탬프 불일치/부재).
@@ -67,6 +86,36 @@ def sample_cohort(
     if job_retrieval_version == current_retrieval_version:
         return "current_bank"
     return "stale_bank"
+
+
+def pair_cohort(
+    *,
+    answer: str,
+    job_retrieval_version: str | None,
+    current_retrieval_version: str | None,
+    has_reeval: bool,
+) -> PairCohort:
+    """쌍 1건의 코호트 — 정답 부재(no_label)를 시점 판정보다 먼저 가른다.
+
+    정답이 없으면 어느 시점의 뱅크로도 채점이 성립하지 않으므로, 재평가가 있어도 reevaluated로
+    올리지 않는다. sample_cohort와 같은 이유로 인자는 키워드 전용이다(동종 타입 인접).
+
+    Args:
+        answer: 판정에 쓸 정답 라벨(strip된 canonical_label). 빈 문자열이면 no_label.
+        job_retrieval_version: 그 잡 result_json의 retrieval_version. 스탬프 이전 잡은 None.
+        current_retrieval_version: 현재 서버의 retrieval 지문. 못 얻었으면 None.
+        has_reeval: 유효성 게이트를 통과한 재평가에 그 쌍이 있는지.
+
+    Returns:
+        "no_label" 또는 sample_cohort의 판정값.
+    """
+    if not answer:
+        return "no_label"
+    return sample_cohort(
+        job_retrieval_version=job_retrieval_version,
+        current_retrieval_version=current_retrieval_version,
+        has_reeval=has_reeval,
+    )
 
 
 def is_item_evaluable(row: dict) -> bool:
@@ -115,6 +164,29 @@ def is_item_failure(row: dict) -> bool:
         return True
     item_failed = is_item_evaluable(row) and row["label_bucket"] != "ok"
     return item_failed or is_amount_failure(row)
+
+
+def partition_misses(rows: list[dict]) -> tuple[list[dict], list[dict]]:
+    """품목 미스를 (사람이 볼 미스, 구조적 도달 불가)로 가른다.
+
+    정답 라벨이 현재 뱅크에 **그 잡의 크롭으로만** 존재하면 전표 축이 그 행들을 전부 제외하므로
+    재평가 preds는 정답에 도달할 수 없는데 in_bank는 참이다 → 버킷이 in_bank_miss가 되어
+    구조적 도달 불가가 "리트리벌 실패"로 표기된다. 재평가 레코드의 has_peer가 명시적으로
+    False일 때만 뺀다 — None(재평가 없음·라벨 PATCH로 판정 보류)은 도달 불가를 증명하지
+    못하므로 목록에 남긴다(fail-open은 사람 눈에 더 보여주는 방향이라 안전하다).
+
+    Args:
+        rows: enriched 행들(호출자가 included로 이미 걸러 넘긴다).
+
+    Returns:
+        (misses, unreachable) — 둘의 합이 전체 품목 미스이며, 리포트는 앞을 나열하고
+        뒤의 건수를 공개한다.
+    """
+    all_misses = [
+        r for r in rows if is_item_evaluable(r) and r["label_bucket"] in RETRIEVAL_MISS_BUCKETS
+    ]
+    unreachable = [r for r in all_misses if r["reeval_has_peer"] is False]
+    return [r for r in all_misses if r["reeval_has_peer"] is not False], unreachable
 
 
 # 재평가 map에서 고를 한 벌 — after는 "지금 뱅크에서 어떤가"를 재기 때문이고,
@@ -186,9 +258,20 @@ def _validate_reeval_records(records: list[dict]) -> None:
     원인이 오보된다. 그래서 축 선택·조합 검사보다 앞에서 한 번에 검사하고, 이후 코드는
     `.get()`이 아니라 `[...]`로만 접근한다(접근 문법 이중화 방지).
 
+    유일키(side·axis·crop_ref)뿐 아니라 **판정을 만드는 페이로드**(preds·top1_sim·label)도
+    여기서 함께 검사한다(H1) — 유일키만 보고 통과시키면 `_truth_source`가 이 값들을 `.get()`
+    fail-open으로 읽어 두 조용한 실패를 낸다: `preds` 키가 드리프트하면 재평가 쌍 전량이
+    `top5_labels=[]` → `no_candidates`로 조용히 오분류되고(게이트는 통과하므로 리포트가
+    "리트리벌이 후보를 0건 냈다"는 정반대 결론을 싣는다), `preds`는 있고 `top1_sim`이 없으면
+    `_render_miss_list`의 포맷에서 `TypeError`로 리포트 생성이 통째로 죽는다. `has_peer`는
+    검사 대상이 아니다 — 부재·None 모두 "판정 보류"라는 유효한 의미를 이미 가지므로
+    `_truth_source`가 `.get()`을 유지한다.
+
     Raises:
         ValueError: 필수 키가 없거나 문자열이 아닌 레코드가 있을 때 · (side, axis, crop_ref)
-            유일키가 중복될 때(덮어쓰기는 조용한 오분류다).
+            유일키가 중복될 때(덮어쓰기는 조용한 오분류다) · `preds`가 `list[str]`이 아닐 때 ·
+            `preds`가 비어있지 않은데 `top1_sim`이 수치(bool 제외)가 아닐 때(불변식
+            `preds 비어있음 ⟺ top1_sim is None`을 강제) · `label`이 str이 아닐 때.
     """
     seen: set[tuple[str, str, str]] = set()
     for i, r in enumerate(records, start=1):
@@ -199,6 +282,18 @@ def _validate_reeval_records(records: list[dict]) -> None:
         if key in seen:
             raise ValueError(f"재평가 레코드 유일키 중복: {key} — 덮어쓰기는 조용한 오분류다")
         seen.add(key)
+        preds = r.get("preds")
+        if not isinstance(preds, list) or not all(isinstance(p, str) for p in preds):
+            raise ValueError(f"재평가 레코드 {i}행의 preds가 list[str]이 아니다 — 산출물 손상")
+        top1_sim = r.get("top1_sim")
+        is_numeric = isinstance(top1_sim, (int, float)) and not isinstance(top1_sim, bool)
+        if preds and not is_numeric:
+            raise ValueError(
+                f"재평가 레코드 {i}행: preds가 비어있지 않은데 top1_sim이 수치가 아니다 — "
+                "불변식(preds 비어있음 ⟺ top1_sim is None) 위반, 산출물 손상"
+            )
+        if not isinstance(r.get("label"), str):
+            raise ValueError(f"재평가 레코드 {i}행의 label이 str이 아니다 — 산출물 손상")
 
 
 def reeval_gate(
@@ -282,7 +377,8 @@ def reeval_gate(
         # 다 맞아 통과하므로, 전표 축 레코드가 기대 쌍 수만큼 있는지를 별도로 센다.
         # ⚠️ 여기까지가 이 검사의 범위다: 같은 (side, axis) 조합으로 *낯선 crop_ref*가 치환된
         # 경우는 총수·유일키·조합·이 검사 모두를 통과한다(원래 쌍은 스탬프 분기로 강등되므로
-        # 지표 오염은 없다 — fail-closed). 기대 crop_ref 집합과 대조하는 강화는 그 집합을
-        # 갖는 Task 11로 미룬다.
+        # 지표 오염은 없다 — fail-closed). 의도적 범위 밖이다 — 낯선 crop_ref 치환은 이미
+        # fail-closed로 안전하게 수용되므로, 기대 crop_ref 집합과 대조하는 추가 강화의 이득이
+        # 호출부에 그 집합을 새로 전달해야 하는 비용을 넘지 않는다(M3).
         return ReevalGate(None, "pair_count")
     return ReevalGate(picked, None)

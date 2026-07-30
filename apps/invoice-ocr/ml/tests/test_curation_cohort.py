@@ -4,16 +4,21 @@ import json
 
 import pytest
 
+from tests.conftest import _reeval_record  # 공유 헬퍼 — score.jsonl 레코드 shape(L3)
 from tools.curation_cohort import (
     COHORTS,
     DATA_INTEGRITY_FAILURE_BUCKETS,
+    ITEM_EVALUABLE_COHORTS,
+    PAIR_COHORTS,
     REEVAL_REJECT_REASONS,
     TEMPORAL_UNEVALUABLE_BUCKETS,
     UNEVALUABLE_BUCKETS,
     is_amount_failure,
     is_item_evaluable,
     is_item_failure,
+    pair_cohort,
     parse_reeval_jsonl,
+    partition_misses,
     reeval_gate,
     sample_cohort,
 )
@@ -103,6 +108,50 @@ def test_sample_cohort_rejects_positional_arguments():
         sample_cohort("old", "cur", False)
 
 
+# --- 쌍 단위 코호트 (정답 부재를 시점 판정보다 먼저 가른다 — Task 11) ---
+
+
+def test_pair_cohort_is_no_label_when_the_answer_is_missing():
+    """정답이 없으면 어떤 시점으로도 채점이 성립하지 않는다 — 스탬프보다 먼저 판정한다."""
+    assert (
+        pair_cohort(
+            answer="",
+            job_retrieval_version="cur",
+            current_retrieval_version="cur",
+            has_reeval=True,
+        )
+        == "no_label"
+    )
+
+
+def test_pair_cohort_delegates_to_sample_cohort_when_the_answer_exists():
+    assert (
+        pair_cohort(
+            answer="안가방",
+            job_retrieval_version="old",
+            current_retrieval_version="cur",
+            has_reeval=False,
+        )
+        == "stale_bank"
+    )
+
+
+def test_pair_cohort_rejects_positional_arguments():
+    with pytest.raises(TypeError):
+        pair_cohort("안가방", "old", "cur", False)
+
+
+def test_pair_cohorts_extend_the_sample_cohorts_by_exactly_no_label():
+    """치역 드리프트 방지 — PairCohort literal이 Cohort를 그대로 품고 no_label만 더한다."""
+    assert set(PAIR_COHORTS) - set(COHORTS) == {"no_label"}
+    assert set(COHORTS) < set(PAIR_COHORTS)
+
+
+def test_item_evaluable_cohorts_are_a_subset_of_the_sample_cohorts():
+    """오타 방지 — 지표 산출 코호트 이름이 COHORTS 밖으로 새면 전 표본이 판정 불가가 된다."""
+    assert set(ITEM_EVALUABLE_COHORTS) < set(COHORTS)
+
+
 def test_unevaluable_buckets_is_the_union_of_the_two_concern_axes():
     """M3 — 데이터 정합 축과 시점 판정 축이 합쳐진 상수라는 계약을 고정한다."""
     assert set(UNEVALUABLE_BUCKETS) == set(TEMPORAL_UNEVALUABLE_BUCKETS) | set(
@@ -167,25 +216,46 @@ def test_is_amount_failure_false_for_ok_or_unrecorded():
     assert is_amount_failure({"amount_bucket": None}) is False
 
 
+# --- 미스 목록 분해 (구조적 도달 불가는 리트리벌 실패가 아니다 — Task 11) ---
+
+
+def _miss(crop_ref="job-1/row-0", label_bucket="in_bank_miss", reeval_has_peer=None):
+    return {
+        "crop_ref": crop_ref,
+        "status": "included",
+        "label_bucket": label_bucket,
+        "amount_bucket": "ok",
+        "reeval_has_peer": reeval_has_peer,
+    }
+
+
+def test_partition_misses_splits_reachable_misses_from_unreachable_ones():
+    """전표 축 제외로 정답에 도달할 수 없는 쌍을 '리트리벌 실패'로 사람에게 보내지 않는다."""
+    reachable = _miss("job-1/row-1", reeval_has_peer=True)
+    unreachable = _miss("job-1/row-0", reeval_has_peer=False)
+    assert partition_misses([unreachable, reachable]) == ([reachable], [unreachable])
+
+
+def test_partition_misses_keeps_pairs_whose_reachability_is_unknown():
+    """None은 판정 보류다 — 도달 불가를 증명 못 했으므로 사람 눈에 남긴다(fail-open)."""
+    held = _miss(reeval_has_peer=None)
+    assert partition_misses([held]) == ([held], [])
+
+
+def test_partition_misses_ignores_non_miss_and_unevaluable_rows():
+    rows = [
+        _miss("job-1/row-0", label_bucket="ok"),
+        _miss("job-1/row-1", label_bucket="unevaluable"),
+        _miss("job-1/row-2", label_bucket="row_missing"),
+        _miss("job-1/row-3", label_bucket="out_of_bank"),
+        _miss("job-1/row-4", label_bucket="top5_only"),
+    ]
+    assert partition_misses(rows) == ([rows[4]], [])
+
+
 # --- 재평가 유효성 게이트 (spec §3-C — 채택 조건 넷) ---
 
 _CUR = "cur-fingerprint"
-
-
-def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over):
-    base = {
-        "side": side,
-        "axis": axis,
-        "crop_ref": crop_ref,
-        "label": "안가방",
-        "in_bank": True,
-        "top1": True,
-        "top5": True,
-        "has_peer": True,
-        "preds": ["안가방", "공임"],
-        "top1_sim": 0.91,
-    }
-    return {**base, **over}
 
 
 def _four_vintages(crop_ref="job-1/row-0"):
@@ -447,6 +517,51 @@ def test_reeval_gate_fails_fast_when_a_record_lacks_the_crop_ref_key():
     records = _four_vintages()
     del records[3]["crop_ref"]
     with pytest.raises(ValueError, match="crop_ref"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_fails_fast_when_a_record_lacks_the_preds_key():
+    """H1 — preds 키 부재를 .get()으로 흘리면 top5_labels=[]가 no_candidates로 조용히
+    오분류된다("리트리벌이 후보를 0건 냈다"는 정반대 결론이 리포트에 실린다). 유일키만 보고
+    통과시키던 게이트가 이 손상을 즉시 실패시켜야 한다.
+    """
+    records = _four_vintages()
+    del records[3]["preds"]
+    with pytest.raises(ValueError, match="preds"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_fails_fast_when_top1_sim_is_missing_but_preds_is_not_empty():
+    """H1 — preds가 있고 top1_sim이 없으면 _render_miss_list의 포맷에서 TypeError로 리포트
+    생성이 통째로 죽는다. 불변식(preds 비어있음 ⟺ top1_sim is None) 위반을 게이트가 먼저
+    잡아야 렌더 크래시 대신 명확한 ValueError로 즉시 실패한다.
+    """
+    records = _four_vintages()
+    del records[3]["top1_sim"]
+    with pytest.raises(ValueError, match="top1_sim"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_fails_fast_when_the_label_is_not_a_string():
+    """H1 — label이 str이 아니면 _truth_source의 [...] 접근(H1 정리 후)이 판정을 뒤집는다."""
+    records = _four_vintages()
+    records[3]["label"] = None
+    with pytest.raises(ValueError, match="label"):
         reeval_gate(
             records=records,
             meta=_reeval_meta(),

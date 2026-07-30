@@ -25,9 +25,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from tools.curation_cohort import (
+    ITEM_EVALUABLE_COHORTS,
+    REEVALUATED_COHORT,
+    PairCohort,
     is_amount_failure,
     is_item_evaluable,
     is_item_failure,
+    pair_cohort,
+    partition_misses,
 )
 from tools.remote import (
     ENV_BACKEND_ENV,
@@ -122,20 +127,37 @@ def label_bucket(answer: str, top5_labels: list[str], bank: set[str]) -> str:
     return "in_bank_miss"
 
 
-def _item_bucket(answer: str, row_missing: bool, top5_labels: list[str], bank: set[str]) -> str:
-    """품목 버킷 — 정답이 없으면 채점이 성립하지 않는다(no_label 코호트).
+def _item_bucket(
+    *,
+    cohort: PairCohort,
+    answer: str,
+    row_missing: bool,
+    top5_labels: list[str],
+    bank: set[str],
+) -> str:
+    """품목 버킷 — 판정 불가 코호트는 버킷을 계산하지 않고 unevaluable로 귀속한다.
 
-    row_missing(데이터 정합 장애 — 재처리로 result_json과 training_pairs가 어긋난 상태)을
-    answer 부재보다 먼저 검사한다. curation_cohort.DATA_INTEGRITY_FAILURE_BUCKETS 계약상
-    row_missing은 unevaluable(시점 판정 불가)로 삼켜지면 안 되고 운영 실패로 남아야 한다
-    (failures.jsonl·pull-images가 소비한다) — bank_update의 partition_valid와 같은 기준으로
-    성능 지표에서 제외하되, 그 수는 표본 구성표에 남는다. 실측 결측은 0건이므로 지금은 순수
-    방어다(training_pairs는 confirm 시 canonical_label = final_label로 생성된다 —
-    migration_008).
+    시점 판정 불가(스탬프 없음·뱅크 불일치)와 정답 부재(no_label)를 모두 unevaluable로 보내
+    성능 수치에서 격리한다. row_missing이 데이터 정합 문제를 격리한 것과 같은 관용구다.
+
+    인자를 키워드 전용으로 강제한다 — cohort·answer가 인접 str이라 위치로 뒤바꿔 넘기면
+    예외 없이 조용히 오분류된다(sample_cohort·pair_cohort와 같은 이유, M2).
+
+    검사 순서가 계약이다.
+      - reevaluated가 맨 앞: 재평가는 preds를 직접 주므로 result_json 조인 실패와 무관하게
+        판정이 성립한다.
+      - row_missing이 코호트 판정보다 앞: curation_cohort.DATA_INTEGRITY_FAILURE_BUCKETS
+        계약상 row_missing은 unevaluable로 삼켜지면 안 되고 운영 실패로 남아야 한다
+        (failures.jsonl·pull-images가 소비한다). 지금 데이터는 잡 전량이 스탬프 이전이라
+        코호트를 먼저 보면 조인 결손이 통째로 사라진다. 실측 결측은 0건이므로 순수 방어다
+        (training_pairs는 confirm 시 canonical_label = final_label로 생성된다 —
+        migration_008).
     """
+    if cohort == REEVALUATED_COHORT:
+        return label_bucket(answer, top5_labels, bank)
     if row_missing:
         return "row_missing"
-    if not answer:
+    if cohort not in ITEM_EVALUABLE_COHORTS:
         return "unevaluable"
     return label_bucket(answer, top5_labels, bank)
 
@@ -157,16 +179,76 @@ def amount_bucket(draft: int | None, final: int) -> str:
     return "misread"
 
 
-def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[dict]:
-    """training_pairs에 result_json(top5·초안금액)과 뱅크 존재 여부를 조인해 버킷을 매긴다.
+def _truth_source(
+    *, rec: dict | None, row: dict, answer: str
+) -> tuple[list[str], float | None, bool | None]:
+    """진실원에서 (top5_labels, top1_sim, reeval_has_peer)를 뽑는다.
+
+    재평가 레코드가 있으면 그것이, 없으면 result_json이 진실원이다. **재평가에서 가져오는
+    것은 preds(top5)와 top1_sim 둘뿐이다** — top5만 갈아끼우면 핵심 지표 표 안에서 시점이
+    다시 섞인다(적중/미스 유사도 분포는 top1_sim이 낸다). 이 둘은 쿼리 임베딩과 뱅크만으로
+    정해지므로 정답 라벨과 무관하게 유효하다. 반대로 in_bank·top1·top5는 채점 당시
+    canonical_label 기준이라(bank_update.score_one) 쓰지 않는다 — 호출자가 현재 라벨로
+    다시 계산한다.
+
+    인자를 키워드 전용으로 강제한다 — rec·row가 인접 dict라 위치로 뒤바꿔 넘기면 예외 없이
+    H1과 동일한 오분류가 조용히 난다(M2).
+
+    `preds`·`label`은 `reeval_gate._validate_reeval_records`가 이미 존재·타입(list[str]·str)을
+    강제했으므로 `[...]`로 직접 접근한다(H1 — `.get()` fail-open을 이 자리에서 걷어낸다).
+    `top1_sim`은 `preds`가 비어있지 않을 때만 수치임이 강제되고 비어있을 때는 부재를 허용하는
+    (불변식: preds 비어있음 ⟺ top1_sim is None) 조건부 검증이라 `.get()`을 유지한다 — 비어있는
+    쪽에서 None을 가정해도 안전하다. `has_peer`도 검증 대상이 아니고 부재·None 모두 "판정
+    보류"라는 유효한 의미를 이미 가지므로 `.get()`을 유지한다.
+
+    Args:
+        rec: 그 쌍의 재평가 레코드. None이면 재평가 없음.
+        row: result_json의 그 행(조인 실패 시 빈 dict).
+        answer: 현재 정답 라벨(strip된 canonical_label).
+
+    Returns:
+        (top5_labels, top1_sim, reeval_has_peer). has_peer도 채점 당시 라벨 기준이므로
+        라벨이 그대로일 때만 싣고, 다르면 None = 판정 보류다 — 도달 불가를 증명할 수 없으므로
+        미스 목록에 남긴다(fail-open은 사람 눈에 더 보여주는 방향이라 안전하다).
+    """
+    if rec is None:
+        top5 = row.get("item_top5") or []
+        return [t["label"] for t in top5], (top5[0]["sim"] if top5 else None), None
+    has_peer = rec.get("has_peer") if rec["label"] == answer else None
+    return list(rec["preds"]), rec.get("top1_sim"), has_peer
+
+
+def enrich_pairs(
+    pairs: list[dict],
+    jobs: list[dict],
+    bank: set[str],
+    *,
+    reeval: dict[str, dict] | None = None,
+    current_retrieval_version: str | None = None,
+) -> list[dict]:
+    """training_pairs에 진실원(재평가 또는 result_json)과 코호트를 조인해 버킷을 매긴다.
 
     enriched 행의 키 계약(정답 라벨이 둘로 보일 수 있어 명시한다): `answer`가 판정에 쓰인
     정본(strip된 canonical_label)이다 — `label_bucket`·`in_bank`·`oob_label_counts`가
     전부 이 키를 읽는다. `**p`로 실리는 `canonical_label`은 DB 원본 값(미가공 — 공백·None
     가능)이며 표시·감사용으로만 남고 어떤 판정에도 쓰이지 않는다. 새 소비자는 `answer`만
     읽어야 한다.
+
+    `in_bank`는 재평가 레코드에 있어도 쓰지 않고 **현재 canonical_label × 현재 뱅크**로 다시
+    계산한다 — 채점 후에도 PATCH로 라벨이 바뀔 수 있고, 커버리지·뱅크 후보의 진실원은 현재
+    상태여야 한다(spec §3-C). 금액 축은 항상 result_json에서 온다(재평가는 품목만 다룬다).
+
+    Args:
+        pairs: training_pairs 전량.
+        jobs: ocr_jobs + result_json.
+        bank: 현재 뱅크의 라벨 집합.
+        reeval: 유효성 게이트를 통과한 {crop_ref: 재평가 레코드}. None이면 재평가 없음 —
+            게이트가 기각한 재평가는 통째로 버려지고 각 쌍이 스탬프 기준 분기로 간다.
+        current_retrieval_version: 현재 서버 retrieval 지문. 코호트 판정의 기준값.
     """
     rows_by_ref = {r.get("crop_ref"): r for j in jobs for r in (j["result"].get("rows") or [])}
+    version_by_job = {j["job_id"]: j["result"].get("retrieval_version") for j in jobs}
+    reeval = reeval or {}
     out = []
     for p in pairs:
         row = rows_by_ref.get(p["crop_ref"])
@@ -174,20 +256,34 @@ def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[di
         # 구분해 row_missing으로 귀속한다 — 데이터 정합 문제가 성능 수치를 오염시키지 않도록.
         row_missing = row is None
         row = row or {}
-        top5 = row.get("item_top5") or []
-        top5_labels = [t["label"] for t in top5]
         # 정답원은 canonical_label이다 — final_label은 confirm 시 사용자 입력명(불변 스냅샷)이고
         # canonical_label은 학습용 정규화 라벨이다(migration_008). 뱅크가 저장하는 쪽이 후자다.
         answer = (p.get("canonical_label") or "").strip()
+        rec = reeval.get(p["crop_ref"])
+        cohort = pair_cohort(
+            answer=answer,
+            job_retrieval_version=version_by_job.get(p["job_id"]),
+            current_retrieval_version=current_retrieval_version,
+            has_reeval=rec is not None,
+        )
+        top5_labels, top1_sim, reeval_has_peer = _truth_source(rec=rec, row=row, answer=answer)
         draft_supply = row.get("supply")
         out.append(
             {
                 **p,
+                "cohort": cohort,
                 "top5_labels": top5_labels,
-                "top1_sim": top5[0]["sim"] if top5 else None,
+                "top1_sim": top1_sim,
                 "answer": answer,
                 "in_bank": bool(answer) and answer in bank,
-                "label_bucket": _item_bucket(answer, row_missing, top5_labels, bank),
+                "label_bucket": _item_bucket(
+                    cohort=cohort,
+                    answer=answer,
+                    row_missing=row_missing,
+                    top5_labels=top5_labels,
+                    bank=bank,
+                ),
+                "reeval_has_peer": reeval_has_peer,
                 "draft_supply": draft_supply,
                 "amount_raw": row.get("amount_raw", ""),
                 "amount_bucket": (
@@ -320,6 +416,30 @@ def _render_job_table(
     return lines
 
 
+def _render_miss_list(misses: list[dict], unreachable: list[dict]) -> list[str]:
+    """in-bank 리트리벌 미스 목록을 렌더한다(render_report에서 순수 추출).
+
+    구조적 도달 불가(전표 축 제외로 정답 크롭이 후보에서 전부 빠진 쌍)는 목록에서 빼되 건수는
+    공개한다 — 숨기면 미스 수가 조용히 줄어 개선 여지가 없는 쌍을 사람이 계속 뒤진다.
+    """
+    lines = ["", "## in-bank 리트리벌 미스", ""]
+    for r in misses:
+        lines.append(
+            f"- {r['crop_ref']}: answer={r['answer']!r} (final={r['final_label']!r}) "
+            f"draft={r['draft_label']!r} sim={r['top1_sim']:.3f} [{r['label_bucket']}] "
+            f"top5={r['top5_labels']}"
+        )
+    if not misses:
+        lines.append("- 없음")
+    if unreachable:
+        lines += [
+            "",
+            f"※ 전표 축 제외로 정답에 **도달 불가**한 {len(unreachable)}건은 위 목록에서 뺐다"
+            "(재평가 has_peer=False — 정답 라벨이 그 잡의 크롭으로만 뱅크에 있다).",
+        ]
+    return lines
+
+
 def render_report(enriched: list[dict], meta: dict) -> str:
     """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
     s = summarize(enriched)
@@ -342,20 +462,8 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     else:
         lines.append("- 없음")
 
-    misses = [
-        r
-        for r in inc
-        if is_item_evaluable(r) and r["label_bucket"] in ("top5_only", "in_bank_miss")
-    ]
-    lines += ["", "## in-bank 리트리벌 미스", ""]
-    for r in misses:
-        lines.append(
-            f"- {r['crop_ref']}: answer={r['answer']!r} (final={r['final_label']!r}) "
-            f"draft={r['draft_label']!r} sim={r['top1_sim']:.3f} [{r['label_bucket']}] "
-            f"top5={r['top5_labels']}"
-        )
-    if not misses:
-        lines.append("- 없음")
+    misses, unreachable = partition_misses(inc)
+    lines += _render_miss_list(misses, unreachable)
 
     amt_fail = [r for r in inc if is_amount_failure(r)]
     lines += ["", "## 금액 실패", ""]

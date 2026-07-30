@@ -50,6 +50,27 @@ def make_warped():
     return _make
 
 
+def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over):
+    """score.jsonl 레코드 shape의 합성 헬퍼 — reeval_gate/curation_report 테스트가 공유한다.
+
+    private 헬퍼를 다른 테스트 모듈에서 `from tests.test_curation_cohort import _reeval_record`로
+    끌어오면 수집 순서·리팩터 내성이 약하다(L3). conftest.py가 공유 픽스처의 관용적 자리다.
+    """
+    base = {
+        "side": side,
+        "axis": axis,
+        "crop_ref": crop_ref,
+        "label": "안가방",
+        "in_bank": True,
+        "top1": True,
+        "top5": True,
+        "has_peer": True,
+        "preds": ["안가방", "공임"],
+        "top1_sim": 0.91,
+    }
+    return {**base, **over}
+
+
 @pytest.fixture
 def tiny_invoices_sql() -> str:
     """invoices/invoice_items 최소 INSERT 샘플 (백업 형식 모사)."""
