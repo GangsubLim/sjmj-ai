@@ -83,7 +83,7 @@ _CUR_VERSION = "cur-fingerprint"
 
 
 def _four_vintages(crop_ref="job-1/row-0"):
-    """score.jsonl은 같은 crop_ref에 (side, axis) 4벌을 담는다(bank_update.py:845-853)."""
+    """score.jsonl은 같은 crop_ref에 (side, axis) 4벌을 담는다(bank_update.py:_write_score_artifacts)."""
     return [
         _reeval_record(crop_ref, side=side, axis=axis)
         for side in ("before", "after")
