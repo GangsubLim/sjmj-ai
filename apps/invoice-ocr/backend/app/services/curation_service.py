@@ -61,6 +61,7 @@ class CurationService:
                     "canonical_label": p["canonical_label"],
                     "supply": p["supply"],
                     "status": p["status"],
+                    "exclusion_reason": p["exclusion_reason"],
                     "reviewed_at": p["reviewed_at"],
                     "top5": row.get("item_top5") or [],
                     # item_conf_threshold 도입 이전 잡은 플래그가 없다 → 확신(하위호환).
@@ -92,6 +93,7 @@ class CurationService:
             "canonical_label": updated["canonical_label"],
             "supply": updated["supply"],
             "status": updated["status"],
+            "exclusion_reason": updated["exclusion_reason"],
             "reviewed_at": updated["reviewed_at"],
         }
 

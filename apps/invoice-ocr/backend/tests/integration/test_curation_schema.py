@@ -42,3 +42,37 @@ def test_ocr_jobs_curation_reviewed_defaults_false(db_conn):
             text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
         ).scalar()
     assert reviewed == 0
+
+
+def test_training_pairs_exclusion_reason_defaults_null(db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/z.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs (crop_ref, job_id, row_index, status) "
+                "VALUES (:r, :j, 0, 'included')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id},
+        )
+        reason = conn.execute(
+            text("SELECT exclusion_reason FROM training_pairs WHERE job_id = :j"), {"j": job_id}
+        ).scalar()
+    assert reason is None
+
+
+def test_training_pairs_exclusion_reason_stores_blank_crop(db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/w.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs (crop_ref, job_id, row_index, status, exclusion_reason) "
+                "VALUES (:r, :j, 0, 'excluded', 'blank_crop')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id},
+        )
+        reason = conn.execute(
+            text("SELECT exclusion_reason FROM training_pairs WHERE job_id = :j"), {"j": job_id}
+        ).scalar()
+    assert reason == "blank_crop"

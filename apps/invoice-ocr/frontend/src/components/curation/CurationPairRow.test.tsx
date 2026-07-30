@@ -33,6 +33,7 @@ function pairWith(
     canonical_label: canonical,
     supply: 8000,
     status: "included",
+    exclusion_reason: null,
     reviewed_at: null,
     uncertain: false,
     top5: [
@@ -160,5 +161,94 @@ describe("CurationPairRow", () => {
       <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={vi.fn()} />,
     );
     expect(screen.getByLabelText("행 0 라벨")).toBeInTheDocument();
+  });
+
+  it("자동 배제된 행에 배지를 표시한다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          status: "excluded",
+          exclusion_reason: "blank_crop",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/빈 크롭/)).toBeInTheDocument();
+  });
+
+  it("사람이 배제한 행(사유 없음)에는 자동 배제 배지가 없다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", { status: "excluded", exclusion_reason: null })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.queryByText(/빈 크롭/)).not.toBeInTheDocument();
+  });
+
+  it("기계가 배제했으나 사람이 되돌린 행에도 배지가 남는다", () => {
+    // §6 세 번째 칸 — 사유가 남아 있는 included. 사람이 오탐을 식별할 수 있어야 한다.
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          status: "included",
+          exclusion_reason: "blank_crop",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/빈 크롭/)).toBeInTheDocument();
+  });
+
+  it("프론트가 모르는 사유에도 일반 문구로 배지를 표시한다", () => {
+    // ADR 0006이 사유 축 확장을 예고한다 — 배지 표시 축은 "사유 != null"이므로
+    // 유니온에 아직 없는 값이 와도 조용히 사라지지 않아야 한다.
+    // 미래 사유를 재현하려면 유니온 밖 값이 필요해 필드 타입으로 좁히는 단언을 쓴다.
+    const futureReason = String(
+      "faint_on",
+    ) as CurationJobPair["exclusion_reason"];
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          status: "excluded",
+          exclusion_reason: futureReason,
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/자동 배제/)).toBeInTheDocument();
+  });
+
+  it("되돌린 행과 배제된 행의 배지 문구가 서로 구분된다", () => {
+    // 되돌림 칸은 현재 included인데 "자동 배제"라고만 적히면 행의 "제외" 버튼과 어긋난다.
+    const badgeTextOf = (over: Partial<CurationJobPair>) => {
+      const { unmount } = render(
+        <CurationPairRow
+          jobId={1}
+          pair={pairWith("무", over)}
+          onPatch={vi.fn()}
+        />,
+      );
+      const text = screen.getByText(/자동 배제/).textContent ?? "";
+      unmount();
+      return text;
+    };
+
+    const excludedBadge = badgeTextOf({
+      status: "excluded",
+      exclusion_reason: "blank_crop",
+    });
+    const revertedBadge = badgeTextOf({
+      status: "included",
+      exclusion_reason: "blank_crop",
+    });
+
+    expect(excludedBadge).not.toMatch(/되돌림/);
+    expect(revertedBadge).toMatch(/되돌림/);
+    expect(revertedBadge).not.toBe(excludedBadge);
   });
 });

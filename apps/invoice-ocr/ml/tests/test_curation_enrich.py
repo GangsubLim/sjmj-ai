@@ -31,8 +31,8 @@ from tools.curation_enrich import (
 def test_parse_pairs_tsv_converts_types_and_null():
     text = (
         "id\tcrop_ref\tjob_id\trow_index\tdraft_label\tfinal_label\t"
-        "canonical_label\tsupply\tstatus\treviewed_at\n"
-        "7\tjob-3/row-1\t3\t1\t드라이\t드럼\t드럼\tNULL\tincluded\tNULL"
+        "canonical_label\tsupply\tstatus\texclusion_reason\treviewed_at\n"
+        "7\tjob-3/row-1\t3\t1\t드라이\t드럼\t드럼\tNULL\tincluded\tNULL\tNULL"
     )
     pairs = parse_pairs_tsv(text)
     assert pairs == [
@@ -46,6 +46,7 @@ def test_parse_pairs_tsv_converts_types_and_null():
             "canonical_label": "드럼",
             "supply": None,
             "status": "included",
+            "exclusion_reason": None,
             "reviewed_at": None,
         }
     ]
@@ -309,6 +310,95 @@ def test_oob_label_counts_reads_the_normalized_answer_not_the_raw_canonical_labe
     """
     recs = [{"status": "included", "in_bank": False, "canonical_label": "   ", "answer": ""}]
     assert oob_label_counts(recs) == []
+
+
+def test_summarize_splits_excluded_by_owner():
+    # 기계배제 2 / 사람배제 1로 비대칭을 둔다 — is not None/is None 조건이
+    # 서로 바뀌면 2/1이 아니라 1/2가 나와 즉시 드러나도록.
+    pairs = [
+        _pair(id=1, crop_ref="job-1/row-0", status="excluded", exclusion_reason="blank_crop"),
+        _pair(
+            id=2,
+            crop_ref="job-1/row-1",
+            row_index=1,
+            status="excluded",
+            exclusion_reason="blank_crop",
+        ),
+        _pair(id=3, crop_ref="job-1/row-2", row_index=2, status="excluded", exclusion_reason=None),
+        _pair(id=4, crop_ref="job-1/row-3", row_index=3),
+    ]
+    s = summarize(_enrich(pairs, [_job(rows=[])]))
+    assert s["n_excluded"] == 3
+    assert s["n_excluded_machine"] == 2
+    assert s["n_excluded_human"] == 1
+
+
+def test_summarize_counts_machine_exclusions_reverted_by_human():
+    # 되돌림 3 / 기계배제 1로 비대칭을 둔다 — status/exclusion_reason 조건이 서로
+    # 바뀌면 3/1이 아니라 다른 값이 나와 즉시 드러나도록.
+    pairs = [
+        _pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason="blank_crop"),
+        _pair(
+            id=2,
+            crop_ref="job-1/row-1",
+            row_index=1,
+            status="included",
+            exclusion_reason="blank_crop",
+        ),
+        _pair(
+            id=3,
+            crop_ref="job-1/row-2",
+            row_index=2,
+            status="included",
+            exclusion_reason="blank_crop",
+        ),
+        _pair(
+            id=4,
+            crop_ref="job-1/row-3",
+            row_index=3,
+            status="excluded",
+            exclusion_reason="blank_crop",
+        ),
+    ]
+    s = summarize(_enrich(pairs, [_job(rows=[])]))
+    assert s["n_reverted_machine"] == 3
+    assert s["n_excluded_machine"] == 1
+
+
+def test_summarize_breaks_down_reverted_reasons():
+    """사유 2종 + 아직 배제 상태인 쌍으로 분해의 두 축을 함께 고정한다.
+
+    사유가 한 종뿐이면 `{"blank_crop": n}`을 하드코딩한 구현도 통과하는데, ADR 0006은 사유가
+    늘어난다고 전제한다(그때 이 분해가 곧 가드별 오탐 창구다 — 두 번째 값은 아직 없는 사유를
+    가정한 합성값이다). 그리고 되돌림은 **included**만 세므로, 같은 사유로 아직 배제된 쌍이
+    분해에 새지 않는지(status 필터)도 함께 본다 — 새면 blank_crop이 2가 아니라 3이 된다.
+    """
+    pairs = [
+        _pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason="blank_crop"),
+        _pair(
+            id=2,
+            crop_ref="job-1/row-1",
+            row_index=1,
+            status="included",
+            exclusion_reason="blank_crop",
+        ),
+        _pair(
+            id=3,
+            crop_ref="job-1/row-2",
+            row_index=2,
+            status="included",
+            exclusion_reason="tiny_crop",
+        ),
+        _pair(
+            id=4,
+            crop_ref="job-1/row-3",
+            row_index=3,
+            status="excluded",
+            exclusion_reason="blank_crop",
+        ),
+    ]
+    s = summarize(_enrich(pairs, [_job(rows=[])]))
+    assert s["reverted_reason_counts"] == {"blank_crop": 2, "tiny_crop": 1}
 
 
 def test_summarize_computes_rates():

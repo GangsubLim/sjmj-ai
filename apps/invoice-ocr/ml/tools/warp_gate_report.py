@@ -13,17 +13,18 @@ Usage:
 """
 
 import argparse
-import io
 import json
-import shlex
-import shutil
-import tarfile
 from collections.abc import Callable
 from dataclasses import asdict, fields
-from datetime import UTC, datetime
 from pathlib import Path
 
 from handwriting.warp_gate import WarpGateMetrics, blue_asymmetry
+from tools.cache_sync import (
+    invalidate_manifest,
+    load_cache_meta,
+    sync_remote_files,
+    write_manifest,
+)
 from tools.remote import (
     ENV_BACKEND_ENV,
     ENV_SSH_HOST,
@@ -31,11 +32,13 @@ from tools.remote import (
     env_or,
     mysql_script,
     run_ssh,
-    source_env,
 )
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "warp_gate"
+
+JOBS_NAME = "jobs.json"
+WARPED_GLOB = "job-*/warped.png"
 
 # 전수 조회 — result_json 통째가 아니라 warp_ok 한 값만 서버에서 뽑는다. 값이 true/false/NULL
 # 뿐이라 TSV 컬럼 경계 오염(제어문자·개행) 여지가 원천 소멸하고 전송량도 줄며, 로컬 JSON
@@ -281,46 +284,18 @@ def render_gate_report(records: list[dict], meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _remote_warped_list(host: str, worker_env: str) -> list[str]:
-    """원격 crop 루트에서 warped.png가 있는 잡 디렉터리 목록(job-N/warped.png)."""
-    # `cd X && ls ... || true`는 cd 실패까지 exit 0으로 덮어 '빈 목록'을 정상 반환한다 —
-    # 그러면 fetch는 warped 0으로 성공하고 report는 전 잡을 warp_missing으로 찍는다.
-    # 디렉터리 존재를 먼저 단언해 run_ssh()가 예외를 던지게 한다.
-    script = (
-        f"{source_env(worker_env)}"
-        '[ -d "$SJMJ_DATA_DIR/ocr_crops" ] || '
-        '{ echo "ocr_crops 없음: $SJMJ_DATA_DIR" >&2; exit 3; }; '
-        'cd "$SJMJ_DATA_DIR/ocr_crops"; ls -d job-*/warped.png 2>/dev/null || true'
-    )
-    return [ln for ln in run_ssh(host, script).decode().split("\n") if ln.strip()]
-
-
 def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
     """전체 ocr_jobs 목록과 잡별 warped.png를 캐시로 동기화한다."""
     cache.mkdir(parents=True, exist_ok=True)
+    # 중단 시 '빈(또는 반쪽) warped + 옛 meta'라는 하이브리드 캐시가 남지 않도록 먼저
+    # 무효화한다 — 남으면 report가 옛 잡 목록으로 성공하고 옛 fetched_at을 동기화 시각으로
+    # 찍는다. 이 도구의 산출은 게이트 임계의 근거다(blank_crop_report.fetch_all과 동일).
+    invalidate_manifest(cache, JOBS_NAME)
     jobs = parse_job_rows_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
-    names = _remote_warped_list(host, worker_env)
-    warped_dir = cache / "warped"
-    # 이전 fetch 산출을 통째로 지운다 — 남겨두면 서버에서 사라지거나 재처리된 잡의 옛
-    # warped.png가 그대로 평가돼 리포트가 stale 지표를 싣는다(임계 근거가 조용히 오염).
-    # 지우는 범위는 우리가 만든 "warped" 하위뿐이다 — 사용자 지정 --cache 상위는 건드리지 않는다.
-    shutil.rmtree(warped_dir, ignore_errors=True)
-    warped_dir.mkdir(parents=True, exist_ok=True)
-    if names:
-        # 빈 목록이면 원격 tar가 인자 없이 죽는다 — 정상 상태이므로 no-op.
-        # 파일명은 원격 ls 산출이지만 원격 셸에 다시 들어가므로 방어적으로 quote한다.
-        args = " ".join(shlex.quote(n) for n in names)
-        tar_script = f'{source_env(worker_env)}tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {args}'
-        with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script))) as tf:
-            tf.extractall(warped_dir, filter="data")
-    meta = {
-        "fetched_at": datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
-        "host": host,
-        "n_jobs": len(jobs),
-        "n_warped": len(names),
-    }
-    (cache / "jobs.json").write_text(json.dumps(jobs, ensure_ascii=False, indent=1))
-    (cache / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    names = sync_remote_files(host, worker_env, pattern=WARPED_GLOB, dest=cache / "warped")
+    meta = write_manifest(
+        cache, JOBS_NAME, jobs, host=host, counts={"n_jobs": len(jobs), "n_warped": len(names)}
+    )
     if meta["n_jobs"] > 0 and meta["n_warped"] == 0:
         print(
             f"⚠️  잡 {meta['n_jobs']}건인데 warped.png가 0건이다 — "
@@ -347,7 +322,7 @@ def evaluate_cached(
 
         imread = cv2.imread
 
-    jobs = json.loads((cache / "jobs.json").read_text())
+    jobs = json.loads((cache / JOBS_NAME).read_text())
     records = []
     for j in jobs:
         png = cache / "warped" / f"job-{j['job_id']}" / "warped.png"
@@ -375,22 +350,6 @@ def evaluate_cached(
     return records
 
 
-def load_cache_meta(cache: Path) -> dict:
-    """report에 필요한 캐시 파일을 확인하고 meta.json을 읽는다.
-
-    Raises:
-        SystemExit: 캐시 파일이 없을 때. fetch 미실행이 가장 흔한 원인인데 맨
-            FileNotFoundError는 그 사실도, 다음에 뭘 해야 하는지도 알려주지 않는다.
-    """
-    missing = [name for name in ("jobs.json", "meta.json") if not (cache / name).exists()]
-    if missing:
-        raise SystemExit(
-            f"캐시가 없다({', '.join(missing)}) — 먼저 fetch를 실행할 것: "
-            f"`python -m tools.warp_gate_report --cache {cache} fetch`"
-        )
-    return json.loads((cache / "meta.json").read_text())
-
-
 def main(argv: list[str] | None = None) -> None:
     """서브커맨드(fetch/report)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="warp_gate_report", description=__doc__)
@@ -407,7 +366,7 @@ def main(argv: list[str] | None = None) -> None:
         print(f"동기화 완료 → {args.cache} (잡 {meta['n_jobs']} · warped {meta['n_warped']})")
         return
 
-    meta = load_cache_meta(args.cache)
+    meta = load_cache_meta(args.cache, JOBS_NAME, tool="warp_gate_report")
     records = evaluate_cached(args.cache, set(args.suspect))
     # 요청한 suspect 목록을 meta에 실어 리포트가 "요청 n건 중 평가 m건"과 미지 id를 밝히게 한다.
     md = render_gate_report(records, {**meta, "suspects": sorted(set(args.suspect))})

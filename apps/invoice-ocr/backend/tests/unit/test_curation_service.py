@@ -13,6 +13,7 @@ def _pair(pair_id: int, row_index: int) -> dict:
         "canonical_label": "무",
         "supply": 8000,
         "status": "included",
+        "exclusion_reason": None,
         "reviewed_at": None,
     }
 
@@ -33,6 +34,12 @@ class _Repo:
             },
             "pairs": self._pairs,
         }
+
+
+def test_detail_pair_exposes_exclusion_reason():
+    repo = _Repo({"rows": []}, pairs=[{**_pair(1, 0), "exclusion_reason": "blank_crop"}])
+    detail = CurationService(repo).get_detail(1)
+    assert detail["pairs"][0]["exclusion_reason"] == "blank_crop"
 
 
 def test_pair_carries_uncertain_flag_from_result_json():

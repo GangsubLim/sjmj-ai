@@ -1,6 +1,7 @@
-"""tools.curation_report 렌더·소비자 계층 단위테스트 (ssh/DB 비의존, 합성 데이터만).
+"""tools.curation_report fetch 글루·CLI 계층 단위테스트 (ssh/DB 비의존, 합성 데이터만).
 
-분석 계층(파싱·버킷·조인·집계)의 테스트는 tests/test_curation_enrich.py에 있다.
+분석 계층(파싱·버킷·조인·집계)의 테스트는 tests/test_curation_enrich.py에,
+렌더 계층(render_report·reeval_notice 등)의 테스트는 tests/test_curation_render.py에 있다.
 """
 
 import hashlib
@@ -23,18 +24,11 @@ from tests.conftest import (  # 합성 헬퍼는 분석 계층 테스트와 공�
     _reeval_meta,
     _row,
 )
-from tools.curation_cohort import (
-    ITEM_EVALUABLE_COHORTS,
-    PAIR_COHORTS,
-    REEVAL_REJECT_REASONS,
-    REEVAL_STATES,
-    is_item_failure,
-)
+from tools.curation_cohort import REEVAL_STATES, is_item_failure
+from tools.curation_render import reeval_notice
 from tools.curation_report import (
     _BANK_PY,
     _CACHE_RECOVERY,
-    _REEVAL_REJECT_TEXT,
-    COHORT_TABLE,
     _clear_reeval,
     _cmd_fetch,
     _failure_job_ids,
@@ -44,11 +38,10 @@ from tools.curation_report import (
     bank_script,
     fetch_all,
     fetch_error_message,
+    main,
     pull_images,
     reeval_cat_script,
-    reeval_notice,
     reeval_probe_script,
-    render_report,
 )
 from tools.remote import RemoteError
 
@@ -57,33 +50,6 @@ def test_pull_images_noop_on_empty_job_ids(tmp_path):
     out_dir = pull_images("unused-host", "unused-env", tmp_path, [], with_originals=False)
     assert out_dir == tmp_path / "images"
     assert out_dir.is_dir()
-
-
-def test_render_report_handles_job_with_only_excluded_pairs():
-    pairs = [_pair(status="excluded")]
-    enriched = _enrich(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])])
-    md = render_report(enriched, {"fetched_at": "t"})
-    assert "excluded" in md
-
-
-def test_render_report_smoke_contains_key_sections():
-    pairs = [
-        _pair(),
-        _pair(
-            id=2,
-            crop_ref="job-1/row-1",
-            row_index=1,
-            final_label="안가방",
-            canonical_label="안가방",
-        ),
-    ]
-    rows = [_row(top5=[("엔진오일", 0.9)]), _row(idx=1, top5=[("드라이", 0.7)], supply=0, raw="0")]
-    enriched = _enrich(pairs, [_job(rows=rows)])
-    md = render_report(enriched, {"fetched_at": "2026-07-27T00:00:00", "bank_distinct": 4})
-    assert "핵심 지표" in md
-    assert "뱅크 추가 후보" in md
-    assert "안가방" in md
-    assert "잡별" in md
 
 
 # --- 판정 불가 소비자 회귀 (spec §3-C의 표 — 소비자 6곳) ---
@@ -105,39 +71,6 @@ def test_failure_job_ids_does_not_stampede_on_unevaluable_items():
         _enriched_row(job_id=4, crop_ref="job-4/row-0", label_bucket="in_bank_miss"),
     ]
     assert _failure_job_ids(rows) == [2, 3, 4]  # 1은 판정 불가일 뿐 실패가 아니다
-
-
-def test_render_report_shows_evaluable_denominators_and_no_none_sim_crash():
-    rows = [
-        _enriched_row(label_bucket="unevaluable", top1_sim=None),
-        _enriched_row(
-            crop_ref="job-1/row-1",
-            label_bucket="in_bank_miss",
-            top1_sim=0.7,
-            top5_labels=["공임"],
-        ),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    assert "| 품목 top-1 (평가 가능 쌍 기준) | 0/1 (0.0%) |" in md  # 분모가 2가 아니라 1
-    assert "| 1 | 2 | 0/1 |" in md  # 잡별 top-1은 k/n 표기
-    assert "job-1/row-1" in md  # 미스 목록엔 평가 가능 쌍만
-    assert "job-1/row-0" not in md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
-
-
-def test_misses_list_prints_the_judged_answer_not_just_final_label():
-    """H1 회귀 — 버킷은 answer(canonical_label)로 매겨지므로 판정에 쓴 값을 함께 인쇄해야
-    한다. final만 찍으면 top5에 없는 라벨이 '정답'으로 읽혀 자기모순이 된다.
-    """
-    row = _enriched_row(
-        answer="엔진오일",
-        final_label="안가방",
-        label_bucket="top5_only",
-        top5_labels=["드라이", "엔진오일"],
-        top1_sim=0.7,
-    )
-    md = render_report([row], {"fetched_at": "t"})
-    misses = md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
-    assert "answer='엔진오일'" in misses
 
 
 def test_row_missing_pairs_stay_in_failures_and_pull_images():
@@ -179,241 +112,6 @@ def test_unevaluable_jobs_do_not_stampede_the_failure_list():
     enriched = _enrich(pairs, jobs)
     assert {r["label_bucket"] for r in enriched} == {"unevaluable"}
     assert _failure_job_ids(enriched) == []
-
-
-def test_pairs_without_a_reachable_peer_are_kept_out_of_the_retrieval_miss_list():
-    """구조적 도달 불가를 '리트리벌 실패'로 사람에게 보내지 않는다(전표 축 제외의 귀결)."""
-    rows = [
-        _enriched_row(
-            cohort="reevaluated",
-            label_bucket="in_bank_miss",
-            reeval_has_peer=False,
-            top1_sim=0.4,
-        ),
-        _enriched_row(
-            crop_ref="job-1/row-1",
-            cohort="reevaluated",
-            label_bucket="in_bank_miss",
-            reeval_has_peer=True,
-            top1_sim=0.5,
-        ),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    misses = md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
-    assert "job-1/row-1" in misses and "job-1/row-0" not in misses
-    assert "도달 불가" in md  # 제외 건수를 공개한다
-
-
-# --- 리포트 구조 (표본 구성표를 핵심 지표 위에 — spec §3-C) ---
-
-
-def test_reeval_notice_reports_an_adopted_reevaluation():
-    meta = {
-        "reeval": {
-            "state": "present",
-            "adopted": True,
-            "reason": None,
-            "generated_at": "2026-07-30T05:12:00+09:00",
-            "after": "a1b2c3d4e5f6",
-            "scope": "all",
-            "n_pairs": 44,
-        }
-    }
-    line = reeval_notice(meta)
-    assert "a1b2c3d4e5f6" in line and "현재와 일치" in line and "44" in line
-
-
-def test_reeval_notice_explains_absent_output():
-    assert "재평가 없음" in reeval_notice({"reeval": {"state": "absent", "adopted": False}})
-    assert "score --scope all" in reeval_notice({"reeval": {"state": "absent", "adopted": False}})
-
-
-def test_reeval_notice_explains_a_score_jsonl_without_meta():
-    # 사용자가 재평가를 돌렸다고 착각하지 않도록 정상 경로임을 한 줄로 알린다(§3-C).
-    # state 철자는 게이트 사유와 공유한다(no_meta) — 같은 조건을 두 이름으로 부르지 않는다(M2).
-    line = reeval_notice({"reeval": {"state": "no_meta", "adopted": False}})
-    assert "score_meta.json" in line
-
-
-def test_reeval_notice_explains_a_discarded_stale_reevaluation():
-    line = reeval_notice({"reeval": {"state": "present", "adopted": False, "reason": "stale"}})
-    assert "폐기" in line
-
-
-def test_reeval_notice_uses_the_reason_when_the_state_key_is_missing():
-    """H1 회귀 — state 기본값을 absent로 두면 사유가 손에 있는데도 '산출물이 없다'고 단정한다.
-
-    그 단정은 이 절이 막으려던 오인(사용자가 원인을 모른 채 엉뚱한 조치를 함)을 그대로 만든다.
-    """
-    line = reeval_notice({"reeval": {"adopted": False, "reason": "stale"}})
-    assert "폐기" in line
-    assert "산출물이 없다" not in line
-
-
-def test_reeval_notice_does_not_claim_absence_when_the_reason_is_unknown():
-    """정보가 있는데 사유만 못 읽은 경우 — '없다'고 단정하지 않고 사유 미상으로 물러선다."""
-    line = reeval_notice({"reeval": {"adopted": False, "reason": "낯선사유"}})
-    assert "산출물이 없다" not in line
-    assert "미상" in line
-
-
-def test_reeval_notice_covers_every_reeval_state():
-    """M2 — 생산자(fetch)가 낼 수 있는 state 치역 전량이 사유 미상 폴백으로 새지 않는다."""
-    reason_of = {"present": "stale"}  # present인데 미채택이면 게이트 사유가 반드시 있다
-    for state in REEVAL_STATES:
-        line = reeval_notice(
-            {"reeval": {"state": state, "adopted": False, "reason": reason_of.get(state)}}
-        )
-        assert line.startswith("재평가 없음"), state
-        assert "미상" not in line, state
-
-
-def test_reeval_notice_survives_a_meta_without_reeval_info():
-    assert "재평가 없음" in reeval_notice({"fetched_at": "t"})
-
-
-def test_every_reeval_reject_reason_has_display_text():
-    # 새 사유 코드를 추가하고 문구를 빠뜨리면 reeval_notice가 "사유 미상"을 낸다.
-    assert set(_REEVAL_REJECT_TEXT) == set(REEVAL_REJECT_REASONS)
-
-
-def test_render_report_puts_the_sample_composition_above_the_core_metrics():
-    rows = [
-        _enriched_row(cohort="unknown", label_bucket="unevaluable"),
-        _enriched_row(
-            crop_ref="job-1/row-1", cohort="current_bank", label_bucket="ok", top1_sim=0.9
-        ),
-        _enriched_row(
-            crop_ref="job-1/row-2",
-            cohort="no_label",
-            label_bucket="unevaluable",
-            canonical_label=None,
-            in_bank=False,
-        ),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    assert md.index("## 표본 구성") < md.index("## 핵심 지표")
-    assert "| unknown | 1 |" in md
-    assert "| no_label | 1 |" in md
-    assert "| current_bank | 1 |" in md
-    # 분모는 총 3쌍이 아니라 평가 가능 1쌍(현재 라벨 텍스트 유지 — 기존 지표 표 규약).
-    assert "| 품목 top-1 (평가 가능 쌍 기준) | 1/1 (100.0%) |" in md
-    assert "뱅크 추가 후보는 코호트와 무관하게" in md
-    assert "peer" in md  # score.md 포인터(중복 구현 회피)
-
-
-def test_cohort_table_covers_every_cohort_a_pair_can_get():
-    """표에 없는 코호트가 생기면 그 쌍들은 표에서 조용히 사라지고 합계가 안 맞는다.
-
-    기대집합을 `set(COHORTS) | {"no_label"}`로 손으로 재구성하지 않는다 — `summarize`가 세는
-    값은 `pair_cohort`의 치역(= PairCohort)이므로 그 진실원 상수와 직접 대조해야, 쌍 단위 치역이
-    늘어날 때(예: 새 정답 부재 사유) 표만 옛말을 인쇄하는 드리프트를 잡는다. PairCohort가
-    Cohort를 그대로 품는 관계 자체는 test_curation_cohort가 따로 고정한다.
-    """
-    assert {name for name, _ in COHORT_TABLE} == set(PAIR_COHORTS)
-
-
-def test_cohort_table_marks_are_derived_from_the_evaluable_constant():
-    """M3 — ○/✗를 표에 손으로 적으면 ITEM_EVALUABLE_COHORTS가 바뀔 때 표만 옛말을 인쇄한다."""
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
-    for name, note in COHORT_TABLE:
-        assert "○" not in note and "✗" not in note  # 설명문에는 마크가 없다(상수에서 도출)
-        row = next(ln for ln in md.splitlines() if ln.startswith(f"| {name} |"))
-        expected = "○" if name in ITEM_EVALUABLE_COHORTS else "✗"
-        assert expected in row, name
-        assert ("✗" if expected == "○" else "○") not in row, name
-
-
-def test_sample_table_states_the_item_metric_denominator_and_row_missing():
-    """M4 — ○ 코호트 합계와 품목 지표 분모가 어긋나는 이유(row_missing)를 표가 말해야 한다."""
-    rows = [
-        _enriched_row(cohort="current_bank", label_bucket="ok", top1_sim=0.9),
-        _enriched_row(
-            crop_ref="job-1/row-1",
-            cohort="current_bank",
-            label_bucket="row_missing",
-            amount_bucket=None,
-        ),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    assert "| current_bank | 2 |" in md  # ○ 코호트 합계는 2인데
-    assert "품목 지표 분모(평가 가능 쌍) 1쌍" in md  # 분모는 1이고
-    assert "row_missing 1건" in md  # 그 차이의 출처를 밝힌다
-
-
-def test_reeval_notice_line_is_its_own_paragraph():
-    """L4 — 알림 2건이 빈 줄 없이 붙으면 마크다운에서 한 문단으로 병합돼 한 문장처럼 읽힌다.
-
-    지문이 확정된 meta로 렌더한다 — 미확정이면 그 줄이 지문 알림으로 갈리므로(H1) 이 절이
-    고정하려는 재평가 알림 문단이 나오지 않는다.
-    """
-    meta = {"fetched_at": "t", "retrieval_version": _CUR_VERSION}
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], meta)
-    assert f"{reeval_notice(meta)}\n\n뱅크 추가 후보는 코호트와 무관하게" in md
-
-
-def test_current_bank_coverage_line_has_a_nonzero_denominator_even_when_unevaluable():
-    """뱅크 추가 후보 절 머리의 커버리지 줄은 코호트와 무관하게 라벨 있는 included 전체가 분모다."""
-    rows = [
-        _enriched_row(cohort="unknown", label_bucket="unevaluable", in_bank=True),
-        _enriched_row(
-            crop_ref="job-1/row-1", cohort="unknown", label_bucket="unevaluable", in_bank=False
-        ),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    assert "현재 뱅크 보유: 1/2" in md
-
-
-def test_bank_coverage_line_is_its_own_paragraph_not_a_list_continuation():
-    """H2 — 후보 불릿 바로 뒤에 붙으면 CommonMark lazy continuation으로 마지막 항목에 흡수돼
-    그 라벨의 커버리지인 것처럼 렌더된다(계산은 맞는데 표시가 거짓이 된다).
-    """
-    rows = [
-        _enriched_row(answer="새라벨", label_bucket="unevaluable", in_bank=False),
-        _enriched_row(crop_ref="job-1/row-1", label_bucket="ok", in_bank=True, top1_sim=0.9),
-    ]
-    md = render_report(rows, {"fetched_at": "t"})
-    assert "- 새라벨 ×1\n\n현재 뱅크 보유:" in md
-
-
-def test_bank_coverage_line_keeps_its_blank_line_when_there_are_no_candidates():
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
-    assert "- 없음\n\n현재 뱅크 보유:" in md
-
-
-def test_report_header_prints_the_current_retrieval_fingerprint():
-    """H1 — 판정의 기준값(현재 지문)이 인쇄되지 않으면 코호트 표를 검증할 근거가 없다."""
-    md = render_report(
-        [_enriched_row(label_bucket="ok", top1_sim=0.9)],
-        {"fetched_at": "t", "retrieval_version": "a1b2c3d4e5f6"},
-    )
-    assert "현재 retrieval 지문: a1b2c3d4e5f6" in md
-
-
-def test_report_without_a_current_fingerprint_sends_the_user_to_fetch_not_a_rescore():
-    """H1 — 지문 미확정이면 전 잡이 stale_bank로 떨어지는데 원인은 재평가 부재가 아니다.
-
-    이때 재평가 부재 문구를 인쇄하면 몇십 분짜리 원격 재채점을 권하는데, 그 재채점도 게이트가
-    no_fingerprint로 기각해 지표는 여전히 0/0이다 — 실제 필요한 조치는 fetch 재실행이다.
-    """
-    md = render_report(
-        [_enriched_row(cohort="stale_bank", label_bucket="unevaluable")],
-        {"fetched_at": "t", "reeval": {"state": "absent", "adopted": False}},
-    )
-    assert "현재 retrieval 지문: 미확정" in md
-    assert "fetch" in md
-    assert "score --scope all" not in md
-
-
-def test_next_actions_hints_pull_images_with_explicit_jobs():
-    """Task 8 리뷰 M2 이관 — 재평가 전에는 pull-images 기본 호출이 판정 불가 잡을 당기지
-    않아 "가져올 이미지가 없습니다"만 나온다. 안내 문구는 실행 가능한 대안(--jobs)을
-    가리켜야 한다(pull 대상 자체는 넓히지 않는다 — spec §5).
-    """
-    rows = [_enriched_row(cohort="unknown", label_bucket="unevaluable", in_bank=False)]
-    md = render_report(rows, {"fetched_at": "t"})
-    next_actions = md.split("## 다음 액션")[1]
-    assert "--jobs" in next_actions
 
 
 # --- fetch/report 배선 (ssh는 비대상 — 스크립트 조립과 로컬 캐시 계약만) ---
@@ -539,8 +237,8 @@ def test_replace_atomically_leaves_the_old_group_intact_when_one_write_fails(tmp
 
 _PAIRS_TSV = (
     "id\tcrop_ref\tjob_id\trow_index\tdraft_label\tfinal_label\t"
-    "canonical_label\tsupply\tstatus\treviewed_at\n"
-    "1\tjob-1/row-0\t1\t0\t엔진오일\t엔진오일\t엔진오일\t100000\tincluded\tNULL\n"
+    "canonical_label\tsupply\tstatus\texclusion_reason\treviewed_at\n"
+    "1\tjob-1/row-0\t1\t0\t엔진오일\t엔진오일\t엔진오일\t100000\tincluded\tNULL\tNULL\n"
 )
 _JOBS_TSV = "id\timage_path\tresult\n1\t/data/up/1.jpeg\t" + json.dumps(
     {"rows": [], "warp_ok": True, "retrieval_version": _CUR_VERSION}, ensure_ascii=False
@@ -821,6 +519,43 @@ def _rewrite_reeval_meta(tmp_path, **over):
     (tmp_path / "reeval_meta.json").write_text(
         json.dumps(meta, ensure_ascii=False), encoding="utf-8"
     )
+
+
+def _stale_pair():
+    """exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json 행(그 키가 통째로 없다)."""
+    return {k: v for k, v in _pair().items() if k != "exclusion_reason"}
+
+
+def test_report_command_fails_fast_on_a_stale_pairs_cache(tmp_path):
+    """구버전 캐시(exclusion_reason 키 없음)를 조용히 0으로 세지 말고 fail-fast.
+
+    검사 지점이 `_load_enriched`(공통)에서 report 소비자 앞으로 좁혀졌으므로, 좁힌 뒤에도
+    report 경로에서 실제로 발화하는지는 CLI 배선으로 확인해야 한다.
+    """
+    _write_cache(tmp_path, pairs=[_stale_pair()], jobs=[])
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    assert "구버전" in str(err.value)
+    _assert_names_file_and_recovery(err, "pairs.json")
+
+
+def test_pull_images_still_runs_off_a_stale_pairs_cache(tmp_path, monkeypatch):
+    """크롭 검수는 구버전 캐시로도 돌아야 한다 — pull-images는 status만 읽는다.
+
+    가드가 공통 경로(`_load_enriched`)에 있으면 이 경로까지 hard-fail하는데, 하필 그 상황이
+    `fetch_error_message`가 "배포 전에는 기존 캐시로 검수 루프를 계속하라"고 안내하는 상황이다.
+    """
+    _write_cache(tmp_path, pairs=[_stale_pair()], jobs=[])
+    pulled: list[list[int]] = []
+
+    def fake_pull(host, backend_env, cache, job_ids, with_originals):
+        pulled.append(job_ids)
+        return cache / "images"
+
+    monkeypatch.setattr("tools.curation_report.pull_images", fake_pull)
+    main(["--cache", str(tmp_path), "pull-images"])
+    assert pulled == [[1]]  # 조인 결손(row_missing)이 검수 대상으로 남는다
+    assert (tmp_path / "images_index.md").exists()
 
 
 def test_load_enriched_wires_the_current_fingerprint_so_pairs_stay_evaluable(tmp_path):

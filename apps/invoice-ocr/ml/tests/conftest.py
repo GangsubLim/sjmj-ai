@@ -72,8 +72,9 @@ def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over)
     return {**base, **over}
 
 
-# --- 큐레이션 리포트 계열 합성 헬퍼 (test_curation_enrich·test_curation_report 공유) ---
-# 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_report.py)이 두 모듈로
+# --- 큐레이션 리포트 계열 합성 헬퍼 (test_curation_enrich·test_curation_report·
+# test_curation_render 공유) ---
+# 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_render.py)이 별도 모듈로
 # 갈리며 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
 
 # frozenset — 모듈 전역 공유 픽스처라 한 테스트가 add/discard하면 수집 순서에 따라 다른
@@ -115,6 +116,7 @@ def _pair(**over):
         "canonical_label": "엔진오일",
         "supply": 100000,
         "status": "included",
+        "exclusion_reason": None,
         "reviewed_at": None,
     }
     return {**base, **over}
@@ -160,6 +162,7 @@ def _enriched_row(**over):
         "job_id": 1,
         "crop_ref": "job-1/row-0",
         "status": "included",
+        "exclusion_reason": None,
         "answer": "안가방",
         "final_label": "안가방",
         "draft_label": "안가방",

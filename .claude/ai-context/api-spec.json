@@ -401,7 +401,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label)",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용)",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
@@ -2365,6 +2365,7 @@
     "/api/curation/pairs/{id}": {
       "patch": {
         "summary": "쌍 큐레이션 — status 또는 canonical_label 갱신(Pydantic 검증)",
+        "description": "status를 'excluded'로 갱신하면 서버가 같은 UPDATE에서 exclusion_reason을 NULL로 함께 적용한다(사람 판정이 기계 배제 사유를 덮어씀, ADR 0006). exclusion_reason 자체는 요청 화이트리스트(status/canonical_label) 밖이라 클라이언트가 값을 보낼 수 없다 — 오직 서버(자동 배제 파이프라인)만 채운다.",
         "tags": ["curation"],
         "parameters": [
           {
@@ -3564,6 +3565,12 @@
           "status": {
             "type": "string",
             "enum": ["included", "excluded"]
+          },
+          "exclusion_reason": {
+            "type": "string",
+            "enum": ["blank_crop", null],
+            "nullable": true,
+            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400."
           },
           "reviewed_at": {
             "type": "string",

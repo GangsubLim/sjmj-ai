@@ -5,10 +5,10 @@
 버킷으로 귀속한 마크다운 리포트를 만든다. LLM 에이전트가 리포트→실패 크롭 시각 검수→
 개선(뱅크 추가·warp 재검토) 루프를 돌리기 위한 입구다. 사용법은 docs/runbooks 참조.
 
-코어 규약 준수: stdlib 전용(paddle/torch 불필요), 렌더 계층은 순수함수(테스트 대상),
-ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다. 순수 계층은 두 모듈에
-분리돼 있고 의존은 단방향이다 — 이 모듈(fetch·CLI·렌더) → tools/curation_enrich.py(파싱·
-버킷·조인·집계) → tools/curation_cohort.py(코호트·평가 가능성 술어·재평가 게이트).
+코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 세 모듈에 분리돼 있고 의존은
+단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
+tools/curation_enrich.py(파싱·버킷·조인·집계) → tools/curation_cohort.py(코호트·평가 가능성
+술어·재평가 게이트). ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
 
 Usage:
     uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/bank 동기화
@@ -29,12 +29,8 @@ from pathlib import Path
 # 모듈 레벨 import가 numpy/torch를 끌지 않는다(paddle-free 코어 규약 유지).
 from handwriting.bank_id import file_digest
 from tools.curation_cohort import (
-    ITEM_EVALUABLE_COHORTS,
-    is_amount_failure,
-    is_item_evaluable,
     is_item_failure,
     parse_reeval_jsonl,
-    partition_misses,
     reeval_after,
     reeval_gate,
 )
@@ -42,12 +38,10 @@ from tools.curation_enrich import (
     JOBS_SQL,
     PAIRS_SQL,
     enrich_pairs,
-    job_flags,
-    oob_label_counts,
     parse_jobs_tsv,
     parse_pairs_tsv,
-    summarize,
 )
+from tools.curation_render import NO_FINGERPRINT_NOTICE, render_report
 from tools.remote import (
     ENV_BACKEND_ENV,
     ENV_ML_ROOT,
@@ -63,322 +57,6 @@ from tools.remote import (
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "curation"
-
-# ---------------------------------------------------------------------------
-# 리포트 렌더 계층 (단위테스트 대상 — IO 없음)
-# ---------------------------------------------------------------------------
-
-
-def _pct(k: int, n: int) -> str:
-    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
-
-
-# 표본 구성표 — 분모를 핵심 지표보다 먼저 읽게 한다(spec §3-C). 표에 없는 코호트가 생기면
-# 그 쌍들은 조용히 사라지므로 test_cohort_table_covers_every_cohort_a_pair_can_get이 이 표를
-# COHORTS(+ no_label)와 구조적으로 대조한다.
-# ○/✗ 마크는 여기 적지 않는다 — _cohort_mark가 ITEM_EVALUABLE_COHORTS에서 도출한다(M3).
-COHORT_TABLE = (
-    ("reevaluated", "현재 뱅크로 재retrieval"),
-    ("current_bank", "현재 retrieval 상태로 추론(스탬프 확인)"),
-    ("stale_bank", "구 retrieval 상태 + 재평가 없음"),
-    ("unknown", "스탬프 이전 잡 + 재평가 없음"),
-    ("no_label", "canonical_label 없음(정답 부재)"),
-)
-
-
-def _cohort_mark(name: str) -> str:
-    """지표 산출 대상 여부를 마크로 낸다 — 상수에서 도출해 계산과 표시가 갈라지지 않게 한다.
-
-    표에 손으로 적으면 ITEM_EVALUABLE_COHORTS가 바뀌어도 표만 옛말을 인쇄한다(계산 A/표시 B).
-    """
-    return "○" if name in ITEM_EVALUABLE_COHORTS else "✗"
-
-
-_REEVAL_ABSENT = (
-    "재평가 없음: 서버에 재평가 산출물이 없다 — macmini에서 "
-    "`bank_update score --scope all`을 돌리면 지표가 복원된다."
-)
-# 현재 지문을 모르면 재평가 사유를 말할 자격이 없다(H1) — 그 상태에서는 어떤 재평가도
-# 게이트(no_fingerprint)를 통과하지 못하고 전 잡이 stale_bank/unknown으로 떨어진다.
-_NO_FINGERPRINT_NOTICE = (
-    "현재 retrieval 지문을 확정하지 못했다 — 재평가를 돌려도 게이트가 no_fingerprint로 "
-    "기각해 지표는 그대로 0/0이다. `fetch`를 먼저 다시 실행한다"
-    "(그래도 미확정이면 서버 `git rev-parse HEAD`·모델 파일을 확인한다)."
-)
-# 사유를 읽지 못했을 때의 폴백 — **없다고 단정하지 않는다**(H1). 부재 단정은 사용자를 엉뚱한
-# 조치(재평가 재실행)로 보내는데, 실제 원인이 stale·다이제스트 불일치면 그 조치는 헛수고다.
-_REEVAL_UNKNOWN_REASON = (
-    "재평가 없음: 채택하지 않은 사유가 미상이다(리포트가 모르는 사유 코드) — "
-    "서버 산출물의 유무는 이 줄로 판단할 수 없다. `meta.json`의 reeval 항목을 확인한다."
-)
-# 새 ReevalReason(curation_cohort.REEVAL_REJECT_REASONS)을 추가하고 문구를 빠뜨리면
-# reeval_notice가 "사유 미상"을 낸다 — test_every_reeval_reject_reason_has_display_text가
-# 두 집합의 일치를 강제한다.
-_REEVAL_REJECT_TEXT = {
-    "no_meta": (
-        "서버에 score.jsonl은 있으나 score_meta.json이 없다(#53 이전 산출물) — "
-        "재평가를 다시 실행해야 지표가 복원된다."
-    ),
-    "no_fingerprint": "retrieval 지문을 확정하지 못했다(코드 SHA 부재 등) — 재평가를 채택하지 않았다.",
-    "stale": (
-        "재평가의 after 지문이 현재와 달라 통째로 폐기했다 — 뱅크·모델·**배포 코드** 중 "
-        "하나가 바뀌었다(릴리스 배포도 지문을 바꾼다). 각 쌍을 스탬프 기준으로 재분기했다"
-        "(스탬프가 현재와 같은 잡은 current_bank로 남는다). 재평가를 다시 돌리면 복원된다."
-    ),
-    "digest_mismatch": "score_meta.json의 다이제스트가 회수분과 어긋난다(중단된 재실행 의심).",
-    "bad_meta": "score_meta.json의 n_pairs가 올바른 정수가 아니다(산출물 손상 의심) — 재평가를 다시 실행해야 한다.",
-    "no_records": (
-        "재평가 대상 레코드가 0건이다(정상 — --scope 필터·크롭 부재로 표본이 0건일 수 있다). "
-        "표본이 있는 재평가를 다시 돌리면 지표가 채워진다."
-    ),
-    "record_count": "레코드 수가 표본수 × 2 × 축수와 다르다(중단된 재실행 의심).",
-    "no_invoice_axis": "재평가 산출물에 전표(invoice) 축이 없다(#53 이전 채점기 의심) — 재평가를 다시 실행해야 한다.",
-    "record_shape": "재평가 레코드의 (side, axis) 조합이 axes와 다르다(산출물 손상 의심).",
-    "pair_count": "전표 축 after 레코드 수가 표본 수와 다르다 — 일부 쌍이 사유 없이 빠졌다(중단된 재실행 의심).",
-}
-
-
-def reeval_notice(meta: dict) -> str:
-    """재평가 채택 여부와 사유를 한 줄로 낸다.
-
-    score.jsonl만 있고 meta가 없는 경우(`no_meta`)도 정상 경로로 설명해 사용자가 재평가를
-    돌렸다고 착각하지 않게 한다(spec §3-C). **"산출물이 없다"는 단정은 정보 자체가 없을 때만
-    한다**(H1 — 근거는 `_REEVAL_UNKNOWN_REASON`). `no_meta`는 회수 상태(ReevalState)이자 게이트
-    사유(ReevalReason)로 같은 철자를 쓰므로 분기가 따로 필요 없다 — state를 사유 폴백으로
-    그대로 조회한다(M2).
-    """
-    info = meta.get("reeval") or {}
-    if info.get("adopted"):
-        return (
-            f"재평가: {info.get('generated_at', '?')} · retrieval 지문 "
-            f"{info.get('after', '?')}(현재와 일치) · scope={info.get('scope', '?')} · "
-            f"표본 {info.get('n_pairs', '?')}쌍"
-        )
-    state = info.get("state")
-    if not info or state == "absent":
-        return _REEVAL_ABSENT
-    text = _REEVAL_REJECT_TEXT.get(info.get("reason") or state)
-    return f"재평가 없음: {text}" if text else _REEVAL_UNKNOWN_REASON
-
-
-def status_notice(meta: dict) -> str:
-    """리포트가 실을 상태 한 줄 — 현재 지문 부재를 재평가 사유보다 먼저 말한다(H1).
-
-    `reeval_notice`를 그대로 부르면 지문 미확정 상태에서 "재평가 산출물이 없다"를 인쇄하고 수십
-    분짜리 원격 재채점을 권한다 — 그 재채점도 같은 이유로 기각돼 사용자는 시간을 쓰고도 같은
-    0/0을 본다. 두 축을 한 함수에 겹치지 않는 이유: `reeval_notice`의 치역은 ReevalState/
-    ReevalReason 전량과 대조되고 있어 지문 유무라는 직교 조건이 곱해지면 안 된다.
-    """
-    if not meta.get("retrieval_version"):
-        return _NO_FINGERPRINT_NOTICE
-    return reeval_notice(meta)
-
-
-def _render_cohort_table(s: dict, meta: dict) -> list[str]:
-    """표본 구성표 + 재평가 알림을 렌더한다(핵심 지표 절보다 먼저 — 분모를 먼저 읽는다, §3-C)."""
-    return [
-        "## 표본 구성",
-        "",
-        "| 코호트 | 쌍 | 지표 산출 |",
-        "| --- | --- | --- |",
-        *[
-            f"| {name} | {s['cohorts'].get(name, 0)} | {_cohort_mark(name)} {note} |"
-            for name, note in COHORT_TABLE
-        ],
-        f"| excluded | {s['n_excluded']} | — 검수자 학습 제외(해석 비대상) |",
-        "",
-        # ○ 합계와 품목 분모는 어긋날 수 있다 — is_item_evaluable이 row_missing도 분모에서 뺀다.
-        f"품목 지표 분모(평가 가능 쌍) {s['n_item_evaluable']}쌍 — ○ 코호트 합계와 다를 수 있다"
-        f"(row_missing {s['label_buckets'].get('row_missing', 0)}건은 분모에서 빠진다).",
-        "",
-        status_notice(meta),
-        # 빈 줄이 없으면 별개 알림 2건이 마크다운에서 한 문단으로 병합돼 한 문장처럼 읽힌다.
-        "",
-        "뱅크 추가 후보는 코호트와 무관하게 현재 뱅크 기준으로 집계된다(성능 측정과 기준이 다르다).",
-        "",
-    ]
-
-
-def _render_key_metrics(s: dict) -> list[str]:
-    """핵심 지표 표 + 유사도 통계 줄을 렌더한다(render_report에서 순수 추출, M3)."""
-    lines = [
-        "## 핵심 지표",
-        "",
-        "| 지표 | 값 |",
-        "| --- | --- |",
-        f"| 품목 top-1 (평가 가능 쌍 기준) | {_pct(s['top1_hits'], s['n_item_evaluable'])} |",
-        f"| 품목 top-5 (평가 가능 쌍 기준) | {_pct(s['top5_hits'], s['n_item_evaluable'])} |",
-        "| 정답이 뱅크에 존재(현재 뱅크 기준 · 평가 가능 쌍 분모) | "
-        f"{_pct(s['in_bank_n'], s['n_item_evaluable'])} |",
-        f"| in-bank 한정 top-1 | {_pct(s['in_bank_top1'], s['in_bank_n'])} |",
-        f"| in-bank 한정 top-5 | {_pct(s['in_bank_top5'], s['in_bank_n'])} |",
-        f"| 금액 일치 | {_pct(s['amount_ok'], s['amount_n'])} |",
-        "",
-        f"라벨 버킷: {dict(s['label_buckets'])}",
-        f"금액 버킷: {dict(s['amount_buckets'])}",
-    ]
-    if s["hit_sim_mean"] is not None and s["miss_sim_mean"] is not None:
-        lines += [
-            "",
-            f"top1 유사도 — 적중 평균 {s['hit_sim_mean']:.3f}(min {s['hit_sim_min']:.3f}) vs "
-            f"미스 평균 {s['miss_sim_mean']:.3f}(max {s['miss_sim_max']:.3f})",
-        ]
-    return lines
-
-
-def _render_job_table(
-    enriched: list[dict], inc: list[dict], flags: dict[int, list[str]]
-) -> list[str]:
-    """잡별 요약 표를 렌더한다(render_report에서 순수 추출, M3)."""
-    lines = [
-        "",
-        "## 잡별 요약",
-        "",
-        "| job | pairs | top1 | 금액ok | 플래그 |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for jid in sorted({r["job_id"] for r in enriched}):
-        recs = [r for r in inc if r["job_id"] == jid]
-        ev = [r for r in recs if is_item_evaluable(r)]
-        amts = [r for r in recs if r["amount_bucket"] is not None]
-        # top-1을 k/n으로 적는다 — 0/n으로 적히면 판정 불가 잡이 전패로 오독된다.
-        lines.append(
-            f"| {jid} | {len(recs)} | "
-            f"{sum(r['label_bucket'] == 'ok' for r in ev)}/{len(ev)} | "
-            f"{sum(r['amount_bucket'] == 'ok' for r in amts)}/{len(amts)} | "
-            f"{', '.join(flags.get(jid, [])) or '—'} |"
-        )
-    return lines
-
-
-def _render_miss_list(misses: list[dict], unreachable: list[dict]) -> list[str]:
-    """in-bank 리트리벌 미스 목록을 렌더한다(render_report에서 순수 추출).
-
-    구조적 도달 불가(전표 축 제외로 정답 크롭이 후보에서 전부 빠진 쌍)는 목록에서 빼되 건수는
-    공개한다 — 숨기면 미스 수가 조용히 줄어 개선 여지가 없는 쌍을 사람이 계속 뒤진다.
-    """
-    lines = ["", "## in-bank 리트리벌 미스", ""]
-    for r in misses:
-        lines.append(
-            f"- {r['crop_ref']}: answer={r['answer']!r} (final={r['final_label']!r}) "
-            f"draft={r['draft_label']!r} sim={r['top1_sim']:.3f} [{r['label_bucket']}] "
-            f"top5={r['top5_labels']}"
-        )
-    if not misses:
-        lines.append("- 없음")
-    if unreachable:
-        lines += [
-            "",
-            f"※ 전표 축 제외로 정답에 **도달 불가**한 {len(unreachable)}건은 위 목록에서 뺐다"
-            "(재평가 has_peer=False — 정답 라벨이 그 잡의 크롭으로만 뱅크에 있다).",
-        ]
-    return lines
-
-
-def _render_bank_candidates(
-    enriched: list[dict], inc: list[dict]
-) -> tuple[list[str], list[tuple[str, int]]]:
-    """뱅크 추가 후보 절 + 현재-뱅크 커버리지 줄을 렌더한다.
-
-    커버리지는 핵심 지표 표 분모(평가 가능 쌍)엔 안 보이는 코호트 무관 수치라 여기서 직접
-    낸다(spec §1.2). oob는 render_report의 "다음 액션" 절이 재사용한다.
-    """
-    lines = [
-        "",
-        "## 뱅크 추가 후보 (현재 뱅크에 없는 정답 라벨)",
-        "",
-        "현재 뱅크 기준이며 코호트·성능 버킷과 무관하게 집계된다 — 이미 든 라벨을 또 추가할 수",
-        "없으므로 성능 측정과 기준이 다른 것이 정상이다.",
-        "",
-    ]
-    oob = oob_label_counts(enriched)
-    if oob:
-        lines += [f"- {label} ×{n}" for label, n in oob]
-    else:
-        lines.append("- 없음")
-    labeled = [r for r in inc if r["answer"]]
-    lines += [
-        # 빈 줄이 없으면 CommonMark lazy continuation으로 마지막 불릿에 흡수돼 그 라벨 수치로 읽힌다.
-        "",
-        f"현재 뱅크 보유: {_pct(sum(r['in_bank'] for r in labeled), len(labeled))} "
-        "(라벨 있는 included 전체 기준 — 코호트와 무관)",
-    ]
-    return lines, oob
-
-
-def _render_amount_failures(inc: list[dict]) -> list[str]:
-    """금액 실패 목록을 렌더한다(헬퍼 대칭 완성 — render_report는 조립만 한다)."""
-    amt_fail = [r for r in inc if is_amount_failure(r)]
-    lines = ["", "## 금액 실패", ""]
-    lines += [
-        f"- {r['crop_ref']}: draft={r['draft_supply']} final={r['supply']} "
-        f"raw={r['amount_raw']!r} [{r['amount_bucket']}] (품목={r['final_label']!r})"
-        for r in amt_fail
-    ]
-    if not amt_fail:
-        lines.append("- 없음")
-    return lines
-
-
-def _render_excluded(enriched: list[dict]) -> list[str]:
-    """검수자가 학습 제외한 쌍 목록을 렌더한다 — 없으면 절 자체를 만들지 않는다."""
-    excluded = [r for r in enriched if r["status"] == "excluded"]
-    if not excluded:
-        return []
-    return [
-        "",
-        "## excluded (검수자가 학습 제외 — 크롭 불량 신호)",
-        "",
-        *[
-            f"- {r['crop_ref']}: final={r['final_label']!r} draft={r['draft_label']!r}"
-            for r in excluded
-        ],
-    ]
-
-
-def render_report(enriched: list[dict], meta: dict) -> str:
-    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
-    s = summarize(enriched)
-    flags = job_flags(enriched)
-    inc = [r for r in enriched if r["status"] == "included"]
-    lines = [
-        "# OCR 큐레이션 학습쌍 분석 리포트",
-        "",
-        f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
-        f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍",
-        f"- 뱅크: 임베딩 {meta.get('bank_size', '?')}개 / 라벨 {meta.get('bank_distinct', '?')}종",
-        # 코호트 판정의 기준값 — 인쇄하지 않으면 stale_bank 표기를 검증할 근거가 리포트에 없다.
-        f"- 현재 retrieval 지문: {meta.get('retrieval_version') or '미확정'}",
-        "",
-    ]
-    lines += _render_cohort_table(s, meta)
-    lines += _render_key_metrics(s)
-
-    bank_candidate_lines, oob = _render_bank_candidates(enriched, inc)
-    lines += bank_candidate_lines
-
-    misses, unreachable = partition_misses(inc)
-    lines += _render_miss_list(misses, unreachable)
-
-    lines += _render_amount_failures(inc)
-    lines += _render_job_table(enriched, inc, flags)
-    lines += _render_excluded(enriched)
-
-    warp_jobs = [jid for jid, f in flags.items() if "warp_suspect" in f]
-    lines += [
-        "",
-        "## 다음 액션",
-        "",
-        f"- 뱅크 추가 후보 {len(oob)}라벨 {sum(n for _, n in oob)}크롭 → 재평가 전에는 "
-        "`pull-images` 기본 호출이 판정 불가 잡을 당기지 않는다(정상) — 해당 라벨이 나온 "
-        "잡 id를 확인해 `pull-images --jobs <job_id...>`로 직접 지정해 크롭을 검수한다",
-        f"- warp 재검토 대상 잡: {warp_jobs or '없음'} "
-        "→ warped.png를 시각 검수해 warp 실패 여부 확인",
-        f"- 리트리벌 미스 {len(misses)}건 → 해당 라벨 뱅크 프로토타입 보강 검토",
-        "- 뱅크에 넣은 크롭을 다시 맞히는 낙관 편향의 분해(peer/hold-out)는 여기서 다시 만들지",
-        "  않는다 — `bank_update score`의 `score.md`가 `peer_n`/`peer_top1`으로 낸다.",
-    ]
-    return "\n".join(lines) + "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -719,6 +397,27 @@ def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
     return enriched, {**meta, "reeval": info}
 
 
+def _require_exclusion_reason(enriched: list[dict]) -> None:
+    """배제 집계를 소비하기 직전에 구버전 pairs.json 캐시를 막는다.
+
+    exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json은 이 키가 없다. 조용히 통과시키면
+    사람/기계 배제·되돌림 집계가 모두 0으로 보여 오탐률(ADR 0006)을 숨기게 되므로 즉시 실패시켜
+    재동기화를 유도한다.
+
+    검사를 `_load_enriched`가 아니라 이 소비자 앞에 둔다 — `pull-images`는 status만 읽고
+    exclusion_reason을 한 번도 보지 않는데, 공통 경로에서 막으면 크롭 검수까지 함께 죽는다.
+    하필 그 상황이 `fetch_error_message`가 "배포 전에는 기존 캐시로 검수 루프를 계속하라"고
+    안내하는 바로 그 상황이다.
+
+    Raises:
+        ValueError: pairs.json이 exclusion_reason 키 없는 구버전일 때.
+    """
+    if enriched and "exclusion_reason" not in enriched[0]:
+        raise ValueError(
+            f"pairs.json 캐시가 구버전이다(exclusion_reason 키 없음) — {_CACHE_RECOVERY}"
+        )
+
+
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
     """pull-images 기본 대상 — 검수 대상 실패가 있는 잡 + excluded가 있는 잡.
 
@@ -745,7 +444,7 @@ def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache
     print(f"현재 retrieval 지문: {version or '미확정'} · 재평가: {meta['reeval_state']}")
     if not version:
         print(f"지문 계산 실패 사유: {meta['retrieval_version_error'] or '미상(원격 진단 없음)'}")
-        print(_NO_FINGERPRINT_NOTICE)
+        print(NO_FINGERPRINT_NOTICE)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -772,6 +471,7 @@ def main(argv: list[str] | None = None) -> None:
     enriched, meta = _load_enriched(args.cache)
 
     if args.cmd == "report":
+        _require_exclusion_reason(enriched)
         report = render_report(enriched, meta)
         report_path = args.cache / "report.md"
         report_path.write_text(report)

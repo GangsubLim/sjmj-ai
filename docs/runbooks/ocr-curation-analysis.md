@@ -11,6 +11,9 @@
 
 모든 명령은 `apps/invoice-ocr/ml`에서 실행한다.
 
+> 선행: 운영 DB에 `db/migration_009_training_pairs_exclusion_reason.sql`이 적용돼 있어야 한다
+> (`fetch`가 `training_pairs.exclusion_reason`을 읽는다).
+
 ```bash
 # 0. (선택·권장) macmini에서 재평가 산출 — 현재 뱅크로 다시 retrieval해 지표를 복원한다.
 #    이것을 돌리지 않으면 스탬프 이전 잡은 전부 판정 불가(unevaluable)로 나온다.
@@ -62,7 +65,8 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
    - `unknown` — 스탬프 이전 잡 + 재평가 없음. 판정 불가.
    - `no_label` — `canonical_label`이 없어 정답이 없는 쌍. 판정 불가. `final_label`로
      폴백하지 않는다.
-   - `excluded` — 검수자가 학습에서 뺀 쌍(해석 비대상).
+   - `excluded` — 학습에서 뺀 쌍(해석 비대상). 사람 배제와 기계 자동 배제가 함께 들어가며
+     소유 축 분해는 아래 4번이 낸다.
 
    판정 불가 표본은 **품목** 지표의 분자·분모에서 빠지고, **품목 실패로는**
    `failures.jsonl`·`pull-images` 대상에도 들어가지 않는다
@@ -103,10 +107,13 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
    - `degenerate`(`!!!` 등): MLX-VLM 퇴화 출력 — 재시도 로직 부재가 원인.
    - `misread`: 행 밴드와 손글씨 세로 어긋남(오프바이원) 또는 자릿수 오독 — warp와
      인접 행 금액을 같이 봐야 구분된다.
-4. **excluded** 쌍은 검수자가 학습에서 뺀 것으로, 두 종류를 구분해서 읽는다.
-   - **크롭 불량** — 빈 품목칸 행 검출 등 행검출 이슈의 직접 신호. 개선 대상이다.
-   - **원본에 품목 미기재** — 이미지에 정답이 없는 행(아래 "검수 시 제외 기준").
-     개선 신호가 아니므로 성능 해석에서 제외한다.
+4. **배제 집계** — `excluded`는 사유로 두 축을 가른다.
+   - **기계 자동 배제**(사유 `blank_crop`) — 빈 크롭 가드가 잡은 것. 행검출 이슈의 직접 신호다.
+   - **사람 배제**(사유 없음) — 검수자가 뺀 것. 종전 두 갈래(크롭 불량 / 원본에 품목 미기재)가
+     여기 섞여 있고 사유 선택 수단이 없어 분리되지 않는다(ADR 0004 부채).
+     섞어 세지 않는다 — 기계 배제율은 가드의 계측기, 사람 배제율은 크롭 품질·원본 결손의 신호다.
+5. **오탐 관측치** — `included`인데 사유가 `blank_crop`인 쌍은 사람이 자동 배제를 되돌린 것으로,
+   그 개수가 곧 이 가드의 오탐률 관측치다(ADR 0006).
 
 ## 검수 시 제외 기준
 
@@ -120,6 +127,11 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 
 자동 판별은 하지 않는다 — 잡 53은 숫자를 잘못 크롭했는데도 top-1 유사도가 0.862로
 적중 평균(0.845)을 웃돌아, 미확신 신호로 걸러지지 않는다.
+
+빈 크롭은 **`BLANK_INK_MAX`가 확정된 뒤에는** 사람이 제외하지 않아도 된다 —
+`tools/blank_crop_report.py apply`가 자동 배제한다. 임계 확정 전까지는 종전대로 사람이
+제외한다. 자동 배제가 틀렸다고 판단되면 큐레이션 화면에서 "포함"으로 되돌린다
+(되돌린 쌍은 재판정에서 영구 보호된다).
 
 ## 개선 작업으로 잇기
 
