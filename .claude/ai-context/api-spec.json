@@ -3344,6 +3344,10 @@
           "item_conf_threshold": {
             "type": "number",
             "description": "rows[].item_uncertain 판정에 쓰인 top1 유사도 임계값. 플래그 도입(Issue #22) 이전 잡에는 없다."
+          },
+          "retrieval_version": {
+            "type": "string",
+            "description": "추론에 쓰인 retrieval artifact 지문(품목 뱅크 행 + 모델 파일 + 배포 코드 SHA의 sha256 앞 12자). 큐레이션 분석이 '어느 retrieval 상태로 추론된 잡인가'를 판정하는 근거다. 스탬프 도입(Issue #49) 이전 잡에는 없으며, 워커가 지문을 얻지 못한 경우에도 키를 넣지 않는다."
           }
         }
       },

@@ -7,10 +7,12 @@ import pytest
 
 from tools.remote import (
     ENV_BACKEND_ENV,
+    ENV_ML_ROOT,
     ENV_SSH_HOST,
     RemoteError,
     env_or,
     mysql_script,
+    remote_path,
     run_ssh,
     source_env,
 )
@@ -19,6 +21,17 @@ from tools.remote import (
 def test_env_or_returns_default_when_unset(monkeypatch):
     monkeypatch.delenv(ENV_SSH_HOST.name, raising=False)
     assert env_or(ENV_SSH_HOST) == "macmini"
+
+
+def test_env_ml_root_defaults_to_the_deployed_ml_directory(monkeypatch):
+    # 지문 스크립트의 cwd와 재평가 산출물 회수 양쪽에 필요하다 — 경로 하드코딩 금지 규약.
+    monkeypatch.delenv(ENV_ML_ROOT.name, raising=False)
+    assert env_or(ENV_ML_ROOT) == "$HOME/sjmj-ai/apps/invoice-ocr/ml"
+
+
+def test_env_ml_root_is_overridable(monkeypatch):
+    monkeypatch.setenv(ENV_ML_ROOT.name, "/srv/other/ml")
+    assert env_or(ENV_ML_ROOT) == "/srv/other/ml"
 
 
 def test_env_or_prefers_environment(monkeypatch):
@@ -31,6 +44,15 @@ def test_env_or_treats_empty_value_as_unset(monkeypatch):
     # (ocr_poc/config.py의 `if not raw` 관례와 동일).
     monkeypatch.setenv(ENV_SSH_HOST.name, "")
     assert env_or(ENV_SSH_HOST) == "macmini"
+
+
+def test_remote_path_expands_a_leading_tilde_for_double_quoted_use():
+    # 치환이 source_env 안에만 있으면 다른 원격 경로 소비자(`cd "{ml_root}"`)가 같은 함정을
+    # 다시 밟는다 — SJMJ_REMOTE_ML_ROOT=~/... 주입이 리터럴 `~` 디렉터리 탐색으로 즉시 실패한다.
+    assert remote_path("~/sjmj-ai/apps/invoice-ocr/ml") == "$HOME/sjmj-ai/apps/invoice-ocr/ml"
+    assert remote_path("$HOME/x") == "$HOME/x"
+    assert remote_path("/srv/ml") == "/srv/ml"
+    assert remote_path("~backup/ml") == "~backup/ml"  # `~user` 형태는 우리 관심사가 아니다
 
 
 def test_source_env_prefix_exports_all_vars_and_fails_fast():
