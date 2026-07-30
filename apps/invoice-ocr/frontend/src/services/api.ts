@@ -381,7 +381,7 @@ export const fetchServerVersion = async (): Promise<string> => {
   const body: unknown = await response.json();
   const version =
     typeof body === "object" && body !== null && "version" in body
-      ? (body as { version: unknown }).version
+      ? body.version
       : undefined;
   if (typeof version !== "string") {
     throw new Error("health 응답에 version 문자열이 없다");

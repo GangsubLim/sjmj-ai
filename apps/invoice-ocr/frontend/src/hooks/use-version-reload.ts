@@ -42,8 +42,11 @@ export function useVersionReload(): void {
         if (!isStale && serverVersion !== __APP_VERSION__) {
           window.location.reload();
         }
-      } catch {
-        // 오프라인·일시 장애는 무시한다 — 버전 확인 실패가 화면 전환을 방해해선 안 된다.
+      } catch (error) {
+        // 화면 전환은 막지 않되(오프라인·일시 장애가 흔한 실패 원인) 조용히 삼키지도
+        // 않는다 — define 누락(__APP_VERSION__ ReferenceError)이나 health 응답 계약
+        // 변경처럼 기능이 영구히 죽는 원인도 이 catch로 들어오기 때문이다.
+        console.warn("배포 버전 확인 실패 — 자동 리로드를 건너뛴다:", error);
       }
     })();
 

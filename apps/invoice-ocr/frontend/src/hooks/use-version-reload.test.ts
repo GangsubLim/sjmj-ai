@@ -76,14 +76,14 @@ describe("useVersionReload", () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it("서버 버전 조회 실패는 조용히 무시한다", async () => {
+  it("서버 버전 조회 실패는 화면 전환을 막지 않고 경고만 남긴다", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockFetchServerVersion.mockRejectedValue(new Error("offline"));
     const { rerender } = renderHook(() => useVersionReload());
     routerState.pathname = "/list";
     rerender();
-    await waitFor(() =>
-      expect(mockFetchServerVersion).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    warn.mockRestore();
     expect(reload).not.toHaveBeenCalled();
   });
 });
