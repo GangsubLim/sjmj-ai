@@ -25,6 +25,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal, get_args
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ML_ROOT / "results" / "bank_update"
@@ -43,12 +44,52 @@ def is_crop_ref(key: str) -> bool:
     return bool(CROP_REF_RE.fullmatch(key))
 
 
+def _is_included(pair: dict) -> bool:
+    """쌍의 status가 included인지 판정한다(migration_008 기본값 술어의 단일 진실원).
+
+    안전 관련 술어라 select_desired·select_scoped 양쪽에서 반드시 이 함수를 통해야
+    한다 — 문자열 리터럴을 각자 들고 있으면 한쪽만 갱신되는 드리프트가 모집단
+    오염으로 이어진다.
+    """
+    return pair["status"] == "included"
+
+
 def select_desired(pairs: list[dict], reviewed_job_ids: set[int]) -> list[dict]:
     """ADR 0004 게이트 — 검수 완료 잡의 included 쌍만 뱅크 대상으로 남긴다.
 
     status 기본값이 included(migration_008)라 status만 보면 미검수 쌍이 전부 통과한다.
     """
-    return [p for p in pairs if p["job_id"] in reviewed_job_ids and p["status"] == "included"]
+    return [p for p in pairs if p["job_id"] in reviewed_job_ids and _is_included(p)]
+
+
+# 모집단 축(spec §3-B). AXES(제외 축)와 다른 축이며 CLI 플래그는 score에만 붙는다.
+# Scope가 닫힌 집합의 진실원 — SCOPES는 get_args로 그로부터 도출해 둘이 구조적으로
+# 드리프트할 수 없다(새 scope를 추가하려면 Literal부터 고쳐야 SCOPES도 따라온다).
+Scope = Literal["reviewed", "all"]
+SCOPES = get_args(Scope)
+# plan 경로의 모집단은 reviewed 고정 — ADR 0004 검수 게이트다. 상수로 못 박아 args가
+# 우연히 흘러들어오지 못하게 한다(누수의 결과는 되돌리기 어려운 뱅크 오염이다).
+PLAN_SCOPE: Scope = "reviewed"
+
+
+def select_scoped(pairs: list[dict], reviewed_job_ids: set[int], scope: Scope) -> list[dict]:
+    """모집단 축에 따라 included 쌍을 고른다 — 분기를 명시하고 끝에서 던진다(_axis_excluded 관용구).
+
+    Args:
+        pairs: training_pairs 전량.
+        reviewed_job_ids: 검수 완료 잡 id 집합.
+        scope: "reviewed"(ADR 0004 게이트 적용) 또는 "all"(검수 여부 무관, 채점 전용).
+
+    Raises:
+        ValueError: 분기가 배선되지 않은 scope(미지의 이름 · SCOPES에만 추가된 이름 모두).
+            `scope not in SCOPES`만 걸러 reviewed로 흘려보내면, 새 scope가 reviewed 숫자를
+            다른 이름표로 달고 조용히 산출된다.
+    """
+    if scope == "reviewed":
+        return select_desired(pairs, reviewed_job_ids)
+    if scope == "all":
+        return [p for p in pairs if _is_included(p)]
+    raise ValueError(f"미지의 모집단 scope {scope!r} — 분기가 배선되지 않았다(SCOPES={SCOPES})")
 
 
 def bank_current_map(*, labs: list[str], keys: list[str]) -> dict[str, str]:
@@ -686,8 +727,11 @@ def prod_embed_fn(models_dir):
 # ---------------------------------------------------------------------------
 
 
-def _desired_pairs(backend_env: str) -> tuple[list[dict], list[dict]]:
-    """검수 게이트 통과 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
+def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dict]]:
+    """모집단 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
+
+    scope는 호출자가 명시한다 — 기본값을 두지 않는다. 기본값이 있으면 plan 경로가 실수로
+    넓은 모집단을 물려받는 경로가 생긴다(ADR 0004).
 
     M3: crop_ref 형식 게이트를 라벨 게이트보다 먼저 적용한다 — 둘 다 뱅크에 넣을 수
     없는 사유이므로 같은 invalid 목록에 합류시켜, 형식 불량 쌍이 plan.jsonl까지
@@ -695,7 +739,7 @@ def _desired_pairs(backend_env: str) -> tuple[list[dict], list[dict]]:
     """
     pairs = fetch_pairs(backend_env)
     reviewed = fetch_reviewed_job_ids(backend_env)
-    desired = select_desired(pairs, reviewed)
+    desired = select_scoped(pairs, reviewed, scope)
     crop_ref_ok, bad_crop_ref = partition_crop_ref(desired)
     valid, invalid = partition_valid(crop_ref_ok)
     return valid, invalid + bad_crop_ref
@@ -710,7 +754,7 @@ def cmd_plan(args) -> None:
     """desired 대비 뱅크 diff를 계산해 plan.jsonl과 요약을 낸다."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     bank_path = Path(require_env("SJMJ_ML_MODELS_DIR")) / "bank.npz"
-    valid, invalid = _desired_pairs(args.backend_env)
+    valid, invalid = _desired_pairs(args.backend_env, PLAN_SCOPE)
 
     _, labs, _, keys = load_bank(bank_path)
     desired = {p["crop_ref"]: p["canonical_label"] for p in valid}
@@ -807,7 +851,7 @@ def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
-    valid, _ = _desired_pairs(args.backend_env)
+    valid, _ = _desired_pairs(args.backend_env, args.scope)
     # 크롭이 없는 쌍은 임베딩할 수 없으므로 채점 대상에서 뺀다(뱅크 항목은 그대로 둔다).
     valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
     queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
@@ -879,6 +923,12 @@ def main(argv: list[str] | None = None) -> None:
     p_score = sub.add_parser("score", parents=[common], help="before/after 뱅크 동일 채점기 비교")
     p_score.add_argument("--before", type=Path, required=True, help="갱신 전 뱅크(.npz.bak)")
     p_score.add_argument("--after", type=Path, required=True, help="갱신 후 뱅크(bank.npz)")
+    p_score.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default="reviewed",
+        help="채점 모집단 — reviewed(검수 완료만, 기본) | all(미검수 포함, 채점 전용)",
+    )
     args = ap.parse_args(argv)
 
     {"plan": cmd_plan, "apply": cmd_apply, "score": cmd_score}[args.cmd](args)

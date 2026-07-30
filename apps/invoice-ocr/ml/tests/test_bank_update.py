@@ -13,6 +13,8 @@ import pytest
 from tools.bank_update import (
     AXES,
     EMB_DIM,
+    PLAN_SCOPE,
+    SCOPES,
     BankDiff,
     MergePlan,
     _axis_excluded,
@@ -44,6 +46,7 @@ from tools.bank_update import (
     score_one,
     score_summary,
     select_desired,
+    select_scoped,
     topk_dedup,
     validate_bank_arrays,
 )
@@ -1285,6 +1288,7 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
     """queries[i]는 valid[i]의 임베딩이어야 한다 — 어긋나면 after top-1이 조용히 무너진다."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1318,7 +1322,13 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
 
     out_dir = tmp_path / "out"
     cmd_score(
-        SimpleNamespace(backend_env="dummy.env", out=out_dir, before=before_bank, after=after_bank)
+        SimpleNamespace(
+            backend_env="dummy.env",
+            out=out_dir,
+            before=before_bank,
+            after=after_bank,
+            scope="reviewed",
+        )
     )
 
     # spec D4 전제 — 축(crop_ref/invoice)이 늘어도 임베딩은 side당이 아니라 통틀어 1회다
@@ -1367,6 +1377,7 @@ def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_pa
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1388,7 +1399,11 @@ def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_pa
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
     out_dir = tmp_path / "out"
-    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
 
     rows = [
         json.loads(ln) for ln in (out_dir / "score.jsonl").read_text().splitlines() if ln.strip()
@@ -1407,6 +1422,7 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     """크롭이 없는 쌍은 임베딩할 수 없어 채점 대상에서 빠진다(0건이어도 리포트는 렌더된다)."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
     data_dir = tmp_path / "data"
     (data_dir / "ocr_crops").mkdir(parents=True)
     bank = _write_bank(models_dir / "bank.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
@@ -1420,7 +1436,11 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
     out_dir = tmp_path / "out"
-    cmd_score(SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank))
+    cmd_score(
+        SimpleNamespace(
+            backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="reviewed"
+        )
+    )
 
     assert (out_dir / "score.jsonl").read_text().strip() == ""
     assert (
@@ -1436,6 +1456,7 @@ def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monk
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1460,5 +1481,132 @@ def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monk
 
     with pytest.raises(RuntimeError, match="뱅크 배열 길이 불일치"):
         cmd_score(
-            SimpleNamespace(backend_env="dummy.env", out=tmp_path / "out", before=bad, after=bad)
+            SimpleNamespace(
+                backend_env="dummy.env",
+                out=tmp_path / "out",
+                before=bad,
+                after=bad,
+                scope="reviewed",
+            )
         )
+
+
+# --- 모집단 scope (ADR 0004 게이트가 score 확장으로 새지 않는지) ---
+
+
+def test_select_scoped_reviewed_keeps_only_reviewed_jobs():
+    pairs = [_pair(job_id=1), _pair(id=2, job_id=2, crop_ref="job-2/row-0")]
+    assert select_scoped(pairs, {1}, "reviewed") == [_pair(job_id=1)]
+
+
+def test_select_scoped_all_ignores_the_review_gate_but_not_status():
+    pairs = [
+        _pair(job_id=1),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0"),
+        _pair(id=3, job_id=2, crop_ref="job-2/row-1", status="excluded"),
+    ]
+    scoped = select_scoped(pairs, {1}, "all")
+    assert [p["crop_ref"] for p in scoped] == ["job-1/row-0", "job-2/row-0"]
+
+
+def test_select_scoped_rejects_an_unwired_scope():
+    # _axis_excluded와 같은 관용구 — 이름만 늘고 분기가 없으면 조용히 reviewed 숫자가 나온다.
+    with pytest.raises(ValueError, match="scope"):
+        select_scoped([], set(), "everything")
+
+
+def test_plan_scope_is_pinned_to_reviewed():
+    assert PLAN_SCOPE == "reviewed" and set(SCOPES) == {"reviewed", "all"}
+
+
+def test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs(tmp_path, monkeypatch):
+    """ADR 0004 회귀 — plan에 scope가 새면 미검수 쌍이 뱅크 갱신 대상이 되고 되돌릴 수 없다."""
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    for ref in ("job-1/row-0", "job-2/row-0"):
+        _touch_crop(crops_root, ref)
+    _write_bank(models_dir / "bank.npz", ["job-9/row-0"], ["공임"])
+
+    pairs = [
+        _pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방"),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="미검수"),
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    # args에 scope="all"이 실려 있어도 plan은 그것을 읽지 않는다.
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, scope="all"))
+
+    records = [
+        json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    refs = {r["crop_ref"] for r in records}
+    assert "job-1/row-0" in refs
+    assert "job-2/row-0" not in refs  # 미검수 잡은 어떤 경우에도 뱅크 대상이 아니다
+
+
+def test_cmd_score_all_scope_adds_unreviewed_pairs(tmp_path, monkeypatch):
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    for ref in ("job-1/row-0", "job-2/row-0"):
+        _touch_crop(crops_root, ref)
+    bank = _write_bank(
+        models_dir / "bank.npz",
+        ["job-1/row-0", "job-2/row-0"],
+        ["안가방", "공임"],
+        emb=[_onehot(0), _onehot(1)],
+    )
+    pairs = [
+        _pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방"),
+        _pair(id=2, job_id=2, crop_ref="job-2/row-0", canonical_label="공임"),
+    ]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    monkeypatch.setattr("tools.bank_update.prod_embed_fn", lambda _models_dir: _onehot_embed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+
+    out_dir = tmp_path / "out"
+    cmd_score(
+        SimpleNamespace(backend_env="dummy.env", out=out_dir, before=bank, after=bank, scope="all")
+    )
+    refs = {
+        json.loads(ln)["crop_ref"]
+        for ln in (out_dir / "score.jsonl").read_text().splitlines()
+        if ln.strip()
+    }
+    assert refs == {"job-1/row-0", "job-2/row-0"}  # 미검수 job-2도 채점 대상
+
+
+def test_main_score_defaults_to_reviewed_scope(monkeypatch):
+    captured = {}
+    monkeypatch.setattr("tools.bank_update.cmd_score", lambda args: captured.update(vars(args)))
+    main(["score", "--before", "b.npz", "--after", "a.npz"])
+    assert captured["scope"] == "reviewed"
+
+
+def test_main_score_rejects_an_unknown_scope():
+    with pytest.raises(SystemExit):
+        main(["score", "--before", "b.npz", "--after", "a.npz", "--scope", "everything"])
+
+
+def test_main_plan_rejects_scope_flag_at_the_cli_surface():
+    """ADR 0004 회귀 — --scope가 common 파서로 옮겨지면 plan도 이 플래그를 받아버린다.
+
+    함수 레벨 테스트(test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs)는
+    cmd_plan이 args.scope를 무시하는지만 본다. 이 테스트는 그보다 바깥 층 —
+    "plan 서브커맨드가 애초에 --scope를 파싱 가능한 옵션으로 아는가"를 argparse
+    수준에서 못 박는다.
+    """
+    with pytest.raises(SystemExit):
+        main(["plan", "--scope", "all"])
