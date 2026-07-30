@@ -321,6 +321,49 @@ def test_patch_pair_updates_status_preserves_canonical_label(client, db_conn):
     assert res.json()["data"]["canonical_label"] == "품목"
 
 
+def _reason_in_db(engine, pair_id):
+    """응답 echo가 아니라 DB 실값으로 사유를 읽는다(화이트리스트 실검증)."""
+    with engine.begin() as conn:
+        return conn.execute(
+            text("SELECT exclusion_reason FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+
+
+def test_patch_pair_ignores_client_sent_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # status는 included 유지 + 사유를 심으려는 시도 — 사유는 무시된다(기계만 채운다).
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "included", "exclusion_reason": "blank_crop"},
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["exclusion_reason"] is None
+
+
+def test_patch_pair_client_sent_reason_does_not_overwrite_machine_reason(client, db_conn):
+    # Arrange — 기계가 심은 사유가 있는 상태
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    # Act — 포함으로 되돌리면서 사유를 클라이언트 값으로 덮으려는 시도
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "included", "exclusion_reason": "hacked"},
+    )
+    # Assert — 화이트리스트가 클라이언트 사유를 버리고, 포함 방향은 사유를 지우지도 않는다.
+    assert res.status_code == 200
+    assert _reason_in_db(db_conn, pid) == "blank_crop"
+
+
+def test_patch_pair_with_only_exclusion_reason_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"exclusion_reason": "blank_crop"})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
 # ── POST /api/curation/jobs/{job_id}/review ────────────────────────────────
 
 
