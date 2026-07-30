@@ -459,7 +459,7 @@ def load_bank(path: str | Path):
 def validate_bank_arrays(emb, labs: list[str], invs: list[str], keys: list[str]) -> None:
     """뱅크 정합 검증 — 4배열 길이·임베딩 차원·유한값·crop_ref key 유일성.
 
-    저장 직전(save_bank_atomic)과 채점 적재 직후(cmd_score) 양쪽에서 부른다. 워커
+    적재 직후(apply_sync·cmd_score)와 저장 직전(save_bank_atomic) 3곳에서 부른다. 워커
     (worker/main.py)는 시작 시 emb/lab만 적재하므로 구조 불량이 추론 시점까지 잠복한다 —
     쓰기 전에 차단한다. crop_ref 형식 key의 중복은 sync 멱등성(keys=UNIQUE 가정)을 깨므로
     함께 막는다. 길이 정합뿐 아니라 emb 차원·유한값·crop_ref key 중복까지 강제하므로,
