@@ -4,6 +4,7 @@ import sys
 import types
 
 import numpy as np
+import pytest
 
 import handwriting
 from worker.main import ModelBundle, load_models, retrieval_version_or_none
@@ -83,22 +84,36 @@ def test_retrieval_version_or_none_delegates_to_the_shared_entry_point(tmp_path,
     assert seen == {"models_dir": tmp_path, "labs": ["가"]}
 
 
-def test_worker_loads_the_same_model_file_the_fingerprint_hashes():
+def test_worker_loads_the_same_artifact_files_the_fingerprint_uses():
     """M4 — 워커는 bank_id를 fail-safe 밖에서 import할 수 없어(기동을 깨면 안 된다) 파일명을
-    상수 참조로 공유하지 못한다. 두 리터럴이 갈라지면 지문이 추론과 다른 파일을 해시한다.
+    상수 참조로 공유하지 못한다. 리터럴이 갈라지면 워커가 추론에 쓴 파일과 지문이 해시·집계하는
+    파일이 달라져(원격 분석 스크립트는 bank_id 상수를 쓴다) 모든 잡이 조용히 stale이 된다.
     """
     from handwriting import bank_id
-    from worker.main import MODEL_FILENAME
+    from worker.main import BANK_FILENAME, MODEL_FILENAME
 
     assert MODEL_FILENAME == bank_id.MODEL_FILENAME
+    assert BANK_FILENAME == bank_id.BANK_FILENAME
 
 
-def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version):
+def _fake_npz() -> dict:
+    return {
+        "emb": np.ones((2, 3), dtype="float32"),
+        "lab": np.array(["가", "나"], dtype=object),
+        "keys": np.array(["k1", "k2"], dtype=object),
+    }
+
+
+def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version, npz=None) -> dict:
     """load_models가 실제로 실행되도록 torch 의존 handwriting.infer_photo와 np.load를 가짜로 교체.
 
     handwriting.infer_photo는 모듈 최상단에서 torch를 import해 이 venv(worker+cv)에는 없다
     (tests/test_infer_job_gate.py와 동일 사유·동일 패턴). 그래서 그 모듈만 가짜로 갈아끼우고
     np.load만 합성 뱅크로 바꿔, load_models 본문(속성 읽기·인자 순서)은 실제로 실행한다.
+
+    Returns:
+        가짜 np.load가 받은 경로를 `bank_path`로 담는 dict — "어느 뱅크 파일을 여는가"를
+        호출부가 단언할 수 있게 한다(가짜가 인자를 무시하면 파일명 회귀가 통과한다).
     """
     fake_infer_photo = types.ModuleType("handwriting.infer_photo")
     fake_infer_photo.load_model_from = lambda path, device: f"model:{path.name}:{device}"
@@ -106,37 +121,69 @@ def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version):
     monkeypatch.setattr(handwriting, "infer_photo", fake_infer_photo, raising=False)
     monkeypatch.setitem(sys.modules, "handwriting.infer_photo", fake_infer_photo)
 
-    fake_npz = {
-        "emb": np.ones((2, 3), dtype="float32"),
-        "lab": np.array(["가", "나"], dtype=object),
-        "keys": np.array(["k1", "k2"], dtype=object),
-    }
-    monkeypatch.setattr("numpy.load", lambda *a, **kw: fake_npz)
+    loaded = _fake_npz() if npz is None else npz
+    seen: dict = {}
+
+    def fake_load(path, *a, **kw):
+        seen["bank_path"] = path
+        return loaded
+
+    monkeypatch.setattr("numpy.load", fake_load)
     monkeypatch.setattr("handwriting.bank_id.compute_retrieval_version", compute_retrieval_version)
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(tmp_path))
+    return seen
 
 
 def test_load_models_wires_the_fingerprint_through(monkeypatch, tmp_path):
     """load_models가 z["keys"]·z["emb"]·labs를 뒤섞지 않고 지문 계산에 넘기는지 확인한다.
 
-    compute_retrieval_version을 인자별로 검증하는 가짜로 바꿔, 인자 순서 회귀(예:
-    z↔labs 교환)가 나면 fail-safe가 조용히 None을 반환하는 대신 이 테스트가 실패한다.
+    인자는 기록만 하고 단언은 fail-safe(retrieval_version_or_none의 except) 밖에서 한다 —
+    안에서 assert하면 AssertionError가 그 except에 삼켜져 진단이 "지문 계산 실패" 한 줄로
+    뭉개진다. 인자 순서 회귀(예: z↔labs 교환)는 여기서 실패로 드러나야 한다.
     """
+    from handwriting import bank_id
+
+    seen: dict = {}
 
     def fake_compute(model_path, keys, labs, emb):
-        assert model_path.name == "ft_prod.pt"
-        assert keys == ["k1", "k2"]
-        assert labs == ["가", "나"]
-        assert emb.shape == (2, 3)
+        seen.update(model_path=model_path, keys=keys, labs=labs, emb=emb)
         return "fingerprint123"
 
-    _install_fake_bank(monkeypatch, tmp_path, compute_retrieval_version=fake_compute)
+    files = _install_fake_bank(monkeypatch, tmp_path, compute_retrieval_version=fake_compute)
 
     bundle = load_models()
 
     assert bundle.retrieval_version == "fingerprint123"
     assert bundle.labs == ["가", "나"]
     assert bundle.device == "cpu"
+    # 지문이 추론과 같은 파일을 쓰는지 — 리터럴이 아니라 bank_id 상수와 대조한다.
+    assert files["bank_path"] == tmp_path / bank_id.BANK_FILENAME
+    assert seen["model_path"] == tmp_path / bank_id.MODEL_FILENAME
+    assert seen["keys"] == ["k1", "k2"]
+    assert seen["labs"] == ["가", "나"]
+    assert seen["emb"].shape == (2, 3)
+
+
+@pytest.mark.parametrize("missing", ["emb", "lab"])
+def test_load_models_hard_fails_when_the_bank_lacks_inference_arrays(
+    monkeypatch, tmp_path, missing
+):
+    """추론 필수 자원은 fail-safe가 아니다 — 뱅크 없는 워커가 조용히 기동하면 안 된다.
+
+    지문(keys·코드 SHA)의 실패는 진단 필드 하나의 손실이라 삼키지만, emb/lab이 없으면 품목
+    retrieval 자체가 불가능하다. 그때 조용히 기동하면 전 잡이 쓰레기 초안을 내고 launchd는
+    "정상"으로 보고한다. 광범위 except가 이 적재까지 덮거나 z.get()으로 완화되면 여기서 깨진다.
+    """
+    npz = {k: v for k, v in _fake_npz().items() if k != missing}
+    _install_fake_bank(
+        monkeypatch,
+        tmp_path,
+        compute_retrieval_version=lambda *a, **kw: "fingerprint123",
+        npz=npz,
+    )
+
+    with pytest.raises(KeyError):
+        load_models()
 
 
 def test_load_models_logs_the_boot_fingerprint_to_stderr(monkeypatch, tmp_path, capsys):

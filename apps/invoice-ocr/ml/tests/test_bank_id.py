@@ -1,5 +1,6 @@
 """handwriting.bank_id — retrieval 지문의 순수 계층 단위테스트(numpy는 bank_rows에만)."""
 
+import hashlib
 import shutil
 import subprocess
 
@@ -98,12 +99,23 @@ def test_bank_rows_pairs_arrays_and_rejects_length_mismatch():
 
 
 def test_file_digest_streams_the_file(tmp_path):
-    p = tmp_path / "ft_prod.pt"
+    p = tmp_path / MODEL_FILENAME
     p.write_bytes(b"weights")
     first = file_digest(p)
     assert first == file_digest(p)
     p.write_bytes(b"weights2")
     assert file_digest(p) != first
+
+
+def test_file_digest_hashes_every_chunk_not_just_the_first(tmp_path, monkeypatch):
+    # 실제 ft_prod.pt(347MB)는 청크 루프를 수백 번 돌지만 테스트 파일은 한 청크에 다 들어가
+    # 루프가 1회뿐이다 — "첫 청크만 해시" 회귀가 그대로 통과한다. _CHUNK를 낮춰 다중 청크
+    # 경로를 실제로 태우고, 표준 sha256과 대조해 청크 경계 처리까지 고정한다.
+    monkeypatch.setattr("handwriting.bank_id._CHUNK", 4)
+    data = b"0123456789ab"
+    p = tmp_path / MODEL_FILENAME
+    p.write_bytes(data)
+    assert file_digest(p) == hashlib.sha256(data).hexdigest()
 
 
 def test_code_version_returns_none_when_git_is_unavailable(monkeypatch):
@@ -118,15 +130,54 @@ def test_code_version_returns_none_outside_a_repo(tmp_path):
     assert code_version(tmp_path) is None
 
 
-def test_code_version_returns_full_sha_in_a_real_git_checkout():
-    # ml CI 잡은 실제 git checkout에서 돈다 — 이 성공 경로가 지금까지 어떤 테스트에도
-    # 걸려 있지 않았다(H1a). git이 없는 환경만 skip한다.
+def _hermetic_repo(path):
+    """커밋 1개짜리 레포를 만든다 — 성공 경로를 실행 트리 상태에 의존시키지 않는다.
+
+    ML_ROOT로 성공 경로를 검증하면 tarball·컨테이너처럼 .git이 없는 checkout에서 테스트가
+    거짓 실패한다(테스트가 코드 대신 실행 환경을 검증하게 된다). gpgsign·user 설정은 전역
+    git config를 타지 않게 -c로 고정한다.
+    """
     if shutil.which("git") is None:
         pytest.skip("git not installed")
-    version = code_version()
+    path.mkdir(parents=True, exist_ok=True)
+
+    def _git(*args):
+        subprocess.run(["git", *args], cwd=str(path), check=True, capture_output=True)
+
+    _git("init", "-q")
+    _git(
+        "-c",
+        "user.email=t@example.com",
+        "-c",
+        "user.name=t",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        "fixture",
+    )
+    return path
+
+
+def test_code_version_returns_full_sha_for_a_git_repo(tmp_path):
+    # 성공 경로가 지금까지 어떤 테스트에도 걸려 있지 않았다(H1a).
+    version = code_version(_hermetic_repo(tmp_path))
     assert version is not None
     assert len(version) == 40
     assert all(c in "0123456789abcdef" for c in version)
+
+
+def test_code_version_ignores_inherited_git_env_vars(tmp_path, monkeypatch):
+    # GIT_DIR/GIT_WORK_TREE는 cwd보다 우선한다 — 걷어내지 않으면 rev-parse가 repo_dir이 아닌
+    # 다른 레포(또는 존재하지 않는 레포)를 보고, 그 SHA도 정상 40자 hex라 검증을 통과해
+    # 지문이 조용히 어긋난다.
+    repo = _hermetic_repo(tmp_path / "repo")
+    expected = code_version(repo)
+    monkeypatch.setenv("GIT_DIR", str(tmp_path / "nonexistent.git"))
+    monkeypatch.setenv("GIT_WORK_TREE", str(tmp_path / "nonexistent"))
+    assert code_version(repo) == expected
 
 
 def test_code_version_logs_reason_to_stderr_when_git_is_unavailable(monkeypatch, capsys):
@@ -136,6 +187,37 @@ def test_code_version_logs_reason_to_stderr_when_git_is_unavailable(monkeypatch,
 
     monkeypatch.setattr(subprocess, "run", _boom)
     assert code_version() is None
+    assert capsys.readouterr().err.strip() != ""
+
+
+def test_code_version_reports_the_git_returncode_when_rev_parse_fails(monkeypatch, capsys):
+    # returncode 분기를 지워도 stdout이 비어 SHA 형식 검증에 걸려 None이 나온다 — 즉
+    # "None을 돌려준다"만 단언하면 이 분기가 고정되지 않는다. 진단에 git의 returncode와
+    # stderr가 실려야 운영에서 원인(권한·손상·detached 아님)을 로그만으로 좁힐 수 있다.
+    class _FakeProc:
+        returncode = 128
+        stdout = b""
+        stderr = b"fatal: not a git repository"
+
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: _FakeProc())
+    assert code_version() is None
+    err = capsys.readouterr().err
+    assert "returncode=128" in err
+    assert "not a git repository" in err
+
+
+def test_code_version_returns_none_when_git_hangs(monkeypatch, capsys):
+    # 워커는 기동 중 이 함수를 부른다 — timeout이 없으면 git이 매달릴 때 워커 기동이
+    # 무한 블록된다(운영 중단). timeout 인자 자체를 단언해야 그 회귀가 잡힌다.
+    seen = {}
+
+    def _hang(*a, **kw):
+        seen.update(kw)
+        raise subprocess.TimeoutExpired(cmd="git", timeout=kw["timeout"])
+
+    monkeypatch.setattr(subprocess, "run", _hang)
+    assert code_version() is None
+    assert seen["timeout"] > 0
     assert capsys.readouterr().err.strip() != ""
 
 
@@ -175,6 +257,20 @@ def test_bank_retrieval_version_owns_the_model_filename_and_array_selection(tmp_
     assert bank_retrieval_version(tmp_path, npz, ["a"]) == compute_retrieval_version(
         model, ["k0"], ["a"], emb
     )
+
+
+def test_bank_retrieval_version_accepts_a_str_models_dir(tmp_path, monkeypatch):
+    """실제 소비자 하나는 str을 넘긴다 — tools/curation_report.py의 원격 인라인 스크립트가
+    os.environ['SJMJ_ML_MODELS_DIR']를 그대로 전달한다. Path 강제 변환이 사라지면 워커
+    경로만 멀쩡하고 원격만 TypeError로 죽어 자기 except에 삼켜진다(지문 전량 None).
+    """
+    (tmp_path / MODEL_FILENAME).write_bytes(b"w")
+    monkeypatch.setattr("handwriting.bank_id.code_version", lambda repo_dir=None: "sha1")
+    npz = {"keys": np.array(["k0"], dtype=object), "emb": np.zeros((1, 2), dtype="float32")}
+
+    from_str = bank_retrieval_version(str(tmp_path), npz, ["a"])
+    assert from_str is not None
+    assert from_str == bank_retrieval_version(tmp_path, npz, ["a"])
 
 
 def test_bank_retrieval_version_propagates_a_bank_without_keys(tmp_path):

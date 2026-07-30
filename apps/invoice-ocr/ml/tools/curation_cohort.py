@@ -121,10 +121,11 @@ def pair_cohort(
 def is_item_evaluable(row: dict) -> bool:
     """그 쌍의 품목 판정이 성능 수치로 해석 가능한지 판정한다 — `label_bucket` 한 키만 본다.
 
-    **전제**: 코호트 판정이 이미 `label_bucket`에 반영돼 있다고 가정한다 — `reevaluated`·
-    `current_bank` 외 코호트(`stale_bank`·`unknown`)는 `label_bucket == "unevaluable"`로
-    귀속된 뒤에야 이 함수의 반환값이 의미를 갖는다. 그 배선(코호트 판정 → label_bucket 대입)은
-    아직 없다(Task 11의 `enrich_pairs`가 만든다) — 이 함수 자체는 코호트를 보지 않는다.
+    **전제**: 코호트 판정이 이미 `label_bucket`에 반영돼 있다고 가정한다 — `ITEM_EVALUABLE_COHORTS`
+    밖의 코호트(`stale_bank`·`unknown`·`no_label`)가 `label_bucket == "unevaluable"`로 귀속된
+    뒤에야 이 함수의 반환값이 의미를 갖는다. 그 배선(코호트 판정 → label_bucket 대입)은
+    `curation_enrich._item_bucket`이 만들고 `enrich_pairs`가 호출한다 — 이 함수 자체는 코호트를
+    보지 않으므로, 배선 없이 부르면 판정 불가 쌍이 성능 수치로 새어 들어간다.
 
     소비자를 하나씩 고치면 빠뜨리는 자리가 생긴다(spec §3-C). 특히 `_failure_job_ids`가
     판정 불가를 실패로 세면 `pull-images`가 전 잡 크롭을 당긴다.
@@ -224,7 +225,12 @@ REEVAL_REJECT_REASONS = get_args(ReevalReason)
 # 철자를 하나(`no_meta`)로 공유한다 — 두 철자로 부르면 소비자 분기가 하나 늘고, 생산자가
 # 철자를 흘리는 순간 리포트가 "재평가 산출물이 없다"는 거짓 단정으로 샌다(M2).
 # 어휘가 원시 문자열로만 존재하면 그 드리프트를 잡는 장치가 0이라 Literal로 결속한다
-# (Cohort/COHORTS·ReevalReason/REEVAL_REJECT_REASONS와 같은 관용구).
+# (Cohort/COHORTS·ReevalReason/REEVAL_REJECT_REASONS와 같은 관용구). 단 **결속만으로는 아무것도
+# 강제되지 않는다**: 생산자(`curation_report._fetch_reeval`)와 소비자(`reeval_notice`)는 이 상수를
+# import하지 않고 리터럴을 쓰며, 타입 힌트는 런타임에 강제되지 않고 이 레포는 타입 검사기를
+# CI에서 돌리지 않는다. 실제 그물은
+# test_fetch_reeval_state_range_matches_the_literal_bijectively이며, 생산자의 *실제 반환 집합*을
+# 전수 입력으로 이 치역과 대조해 오타·dead 상태 양방향을 잡는다(위 두 관용구도 같은 짝을 둔다).
 ReevalState = Literal["absent", "no_meta", "present"]
 REEVAL_STATES = get_args(ReevalState)
 
@@ -280,8 +286,14 @@ def _validate_reeval_records(records: list[dict]) -> None:
     Raises:
         ValueError: 필수 키가 없거나 문자열이 아닌 레코드가 있을 때 · (side, axis, crop_ref)
             유일키가 중복될 때(덮어쓰기는 조용한 오분류다) · `preds`가 `list[str]`이 아닐 때 ·
-            `preds`가 비어있지 않은데 `top1_sim`이 수치(bool 제외)가 아닐 때(불변식
-            `preds 비어있음 ⟺ top1_sim is None`을 강제) · `label`이 str이 아닐 때.
+            `preds`의 비어있음과 `top1_sim`의 수치(bool 제외) 여부가 어긋날 때 · `label`이
+            str이 아닐 때.
+
+    불변식 `preds 비어있음 ⟺ top1_sim is None`은 **양방향으로** 강제한다 — 생산자
+    `bank_update.score_one`이 둘을 같은 `ranked`에서 내므로(`preds = [lb for lb, _ in ranked]`,
+    `top1_sim = ranked[0][1] if ranked else None`) 정상 산출물은 어느 방향도 어기지 않는다.
+    역방향(후보 0건인데 유사도가 실렸다)을 통과시키면 그 쌍은 `no_candidates`로 미스 목록 밖에
+    남으면서 유사도 분포에는 계상돼, 게이트를 지난 손상이 조용히 수치만 흔든다.
     """
     seen: set[tuple[str, str, str]] = set()
     for i, r in enumerate(records, start=1):
@@ -297,9 +309,9 @@ def _validate_reeval_records(records: list[dict]) -> None:
             raise ValueError(f"재평가 레코드 {i}행의 preds가 list[str]이 아니다 — 산출물 손상")
         top1_sim = r.get("top1_sim")
         is_numeric = isinstance(top1_sim, (int, float)) and not isinstance(top1_sim, bool)
-        if preds and not is_numeric:
+        if bool(preds) != is_numeric:
             raise ValueError(
-                f"재평가 레코드 {i}행: preds가 비어있지 않은데 top1_sim이 수치가 아니다 — "
+                f"재평가 레코드 {i}행: preds({len(preds)}건)와 top1_sim({top1_sim!r})이 어긋난다 — "
                 "불변식(preds 비어있음 ⟺ top1_sim is None) 위반, 산출물 손상"
             )
         if not isinstance(r.get("label"), str):

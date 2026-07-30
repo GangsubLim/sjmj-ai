@@ -10,11 +10,12 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from handwriting.bank_id import compute_retrieval_version
+from handwriting.bank_id import MODEL_FILENAME, compute_retrieval_version
 from tools.bank_update import (
     AXES,
     EMB_DIM,
     PLAN_SCOPE,
+    SCOPE_LABELS,
     SCOPES,
     BankDiff,
     MergePlan,
@@ -1022,11 +1023,13 @@ def test_render_score_md_renders_every_cell_with_before_after_percentages():
         _score_rec(in_bank=True),
     ]
     md = render_score_md(
-        _axis_summaries(before_recs, after_recs), {"bank_before": 100, "bank_after": 120}
+        _axis_summaries(before_recs, after_recs),
+        {"bank_before": 100, "bank_after": 120},
+        scope="reviewed",
     )
 
     assert "- 뱅크 크기: 100 → 120" in md
-    assert "- 채점 대상(desired 쌍): 4건" in md
+    assert "- 채점 대상: 4건" in md
     assert "| 커버리지 in-bank(제외 무관) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
     assert "| 커버리지 out_of_bank | 3/4 (75.0%) | 0/4 (0.0%) |" in md
     assert "| 제외 후 top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
@@ -1037,7 +1040,7 @@ def test_render_score_md_renders_every_cell_with_before_after_percentages():
 
 def test_render_score_md_renders_dash_when_denominator_is_zero():
     """채점 대상 0건에서도 ZeroDivisionError 없이 '0/0 (—)'로 렌더돼야 한다."""
-    md = render_score_md(_axis_summaries([], []), {})
+    md = render_score_md(_axis_summaries([], []), {}, scope="reviewed")
     assert "- 뱅크 크기: ? → ?" in md
     assert "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in md
     assert "| peer 존재 한정 top-1 | 0/0 (—) | 0/0 (—) |" in md
@@ -1053,7 +1056,7 @@ def test_render_score_md_splits_one_table_per_axis():
         ("before", "invoice"): score_summary([miss]),
         ("after", "invoice"): score_summary([miss]),
     }
-    md = render_score_md(summaries, {"bank_before": 100, "bank_after": 120})
+    md = render_score_md(summaries, {"bank_before": 100, "bank_after": 120}, scope="reviewed")
 
     assert md.count("| 지표 | before | after |") == 2
     assert md.index("## 제외 축: crop_ref") < md.index("## 제외 축: invoice")
@@ -1061,6 +1064,25 @@ def test_render_score_md_splits_one_table_per_axis():
     crop_part, inv_part = md.split("## 제외 축: invoice")
     assert "| 제외 후 top-1 | 1/1 (100.0%) | 1/1 (100.0%) |" in crop_part
     assert "| 제외 후 top-1 | 0/1 (0.0%) | 0/1 (0.0%) |" in inv_part
+
+
+def test_render_score_md_states_the_population_scope_in_the_body():
+    """파일명·표 형식이 scope와 무관하게 같으므로 본문이 유일한 구분 근거다."""
+    summaries = _axis_summaries([_score_rec()], [_score_rec()])
+    reviewed_md = render_score_md(summaries, {}, scope="reviewed")
+    all_md = render_score_md(summaries, {}, scope="all")
+
+    assert f"- 모집단 scope: reviewed — {SCOPE_LABELS['reviewed']}" in reviewed_md
+    assert f"- 모집단 scope: all — {SCOPE_LABELS['all']}" in all_md
+    # 'desired'는 ADR 0004 게이트 모집단을 뜻하는 도구 용어라 all 결과를 좁게 읽히게 한다.
+    assert "desired" not in all_md
+
+
+def test_render_score_md_rejects_a_scope_without_a_label():
+    # SCOPES에 이름만 늘고 설명이 없으면 조용히 오독되는 리포트가 나온다.
+    assert set(SCOPE_LABELS) == set(SCOPES)
+    with pytest.raises(KeyError):
+        render_score_md(_axis_summaries([], []), {}, scope="everything")
 
 
 # --- DB TSV 파싱 / env 경계 / CLI (mysql 호출 자체는 단위테스트 범위 밖) ---
@@ -1291,7 +1313,7 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
     """queries[i]는 valid[i]의 임베딩이어야 한다 — 어긋나면 after top-1이 조용히 무너진다."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1380,7 +1402,7 @@ def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_pa
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1425,7 +1447,7 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     """크롭이 없는 쌍은 임베딩할 수 없어 채점 대상에서 빠진다(0건이어도 리포트는 렌더된다)."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     (data_dir / "ocr_crops").mkdir(parents=True)
     bank = _write_bank(models_dir / "bank.npz", ["job-3/row-0"], ["공임"], emb=[_onehot(1)])
@@ -1449,6 +1471,9 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
     assert (
         "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
     )
+    # n_pairs는 크롭 필터 '이후' 수다 — 필터 이전 값(1)으로 회귀하면 리포트의 재평가 게이트
+    # (레코드 수 == n_pairs × 2 × len(axes))가 정상 산출물을 손상으로 기각한다.
+    assert json.loads((out_dir / "score_meta.json").read_text(encoding="utf-8"))["n_pairs"] == 0
 
 
 def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monkeypatch):
@@ -1459,7 +1484,7 @@ def test_cmd_score_rejects_a_bank_whose_arrays_disagree_in_length(tmp_path, monk
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1557,7 +1582,7 @@ def test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs(tmp_path, monkey
 def test_cmd_score_all_scope_adds_unreviewed_pairs(tmp_path, monkeypatch):
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1589,6 +1614,9 @@ def test_cmd_score_all_scope_adds_unreviewed_pairs(tmp_path, monkeypatch):
         if ln.strip()
     }
     assert refs == {"job-1/row-0", "job-2/row-0"}  # 미검수 job-2도 채점 대상
+    # 산출물에도 all이 표기돼야 한다 — 리터럴 "reviewed"로 회귀하면 조용한 오표기가 된다.
+    assert json.loads((out_dir / "score_meta.json").read_text(encoding="utf-8"))["scope"] == "all"
+    assert "- 모집단 scope: all" in (out_dir / "score.md").read_text(encoding="utf-8")
 
 
 def test_main_score_defaults_to_reviewed_scope(monkeypatch):
@@ -1598,21 +1626,41 @@ def test_main_score_defaults_to_reviewed_scope(monkeypatch):
     assert captured["scope"] == "reviewed"
 
 
-def test_main_score_rejects_an_unknown_scope():
-    with pytest.raises(SystemExit):
+def _sentinel(name):
+    """서브커맨드 본체를 막는 감시자 — 파서가 거부해야 할 인자가 통과하면 여기서 드러난다."""
+
+    def _blocked(args):
+        raise AssertionError(f"{name}이 실행되면 안 된다(파서가 거부해야 한다): {vars(args)}")
+
+    return _blocked
+
+
+ARGPARSE_USAGE_EXIT = 2  # argparse가 사용법 위반에 쓰는 종료코드
+
+
+def test_main_score_rejects_an_unknown_scope(monkeypatch):
+    monkeypatch.setattr("tools.bank_update.cmd_score", _sentinel("cmd_score"))
+    with pytest.raises(SystemExit) as exc:
         main(["score", "--before", "b.npz", "--after", "a.npz", "--scope", "everything"])
+    assert exc.value.code == ARGPARSE_USAGE_EXIT
 
 
-def test_main_plan_rejects_scope_flag_at_the_cli_surface():
+def test_main_plan_rejects_scope_flag_at_the_cli_surface(monkeypatch):
     """ADR 0004 회귀 — --scope가 common 파서로 옮겨지면 plan도 이 플래그를 받아버린다.
 
     함수 레벨 테스트(test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs)는
     cmd_plan이 args.scope를 무시하는지만 본다. 이 테스트는 그보다 바깥 층 —
     "plan 서브커맨드가 애초에 --scope를 파싱 가능한 옵션으로 아는가"를 argparse
     수준에서 못 박는다.
+
+    cmd_plan을 감시자로 막고 종료코드까지 단언한다 — 막지 않으면 회귀 시 main이 실제
+    cmd_plan을 불러 모킹되지 않은 경계(운영 DB env·DEFAULT_OUT)로 나간다. env가 세팅된
+    머신(macmini)에서는 그 실패가 운영 DB 질의를 거친 RuntimeError라 원인을 가린다.
     """
-    with pytest.raises(SystemExit):
+    monkeypatch.setattr("tools.bank_update.cmd_plan", _sentinel("cmd_plan"))
+    with pytest.raises(SystemExit) as exc:
         main(["plan", "--scope", "all"])
+    assert exc.value.code == ARGPARSE_USAGE_EXIT
 
 
 # --- score 산출 계약(score_meta.json · 원자 쓰기) ---
@@ -1650,6 +1698,26 @@ def test_write_jsonl_leaves_no_tmp_file_and_replaces_atomically(tmp_path):
     assert list(tmp_path.glob("*.tmp")) == []
 
 
+def test_write_jsonl_keeps_the_previous_file_intact_when_the_replace_fails(tmp_path, monkeypatch):
+    """원자 교체 불변식 — 대상 경로에 직접 쓰면 이 테스트가 RED가 된다.
+
+    tmp 잔여물·직렬화 실패만 보는 테스트는 `path.write_text(text)` 비원자 구현에서도 GREEN이다
+    (비원자 구현은 tmp를 아예 만들지 않고, 직렬화 실패는 파일 접근보다 먼저 터진다). 교체
+    단계에서 터뜨려야 "이전 산출물이 온전히 남는가"가 실제로 고정된다.
+    """
+    out = tmp_path / "score.jsonl"
+    _write_jsonl(out, [{"a": 1}])
+
+    def _boom(src, dst):
+        raise OSError("교체 실패")
+
+    monkeypatch.setattr("tools.bank_update.os.replace", _boom)
+    with pytest.raises(OSError, match="교체 실패"):
+        _write_jsonl(out, [{"a": 2}])
+    assert out.read_text(encoding="utf-8") == '{"a": 1}\n'
+    assert list(tmp_path.glob("*.tmp")) == []
+
+
 def test_write_jsonl_keeps_the_previous_file_when_serialization_fails(tmp_path):
     out = tmp_path / "score.jsonl"
     _write_jsonl(out, [{"a": 1}])
@@ -1663,7 +1731,7 @@ def _score_workspace(tmp_path, monkeypatch):
     """cmd_score를 돌릴 최소 작업공간(합성 뱅크 + 더미 모델 파일 + 크롭 + Fake 임베딩)."""
     models_dir = tmp_path / "models"
     models_dir.mkdir()
-    (models_dir / "ft_prod.pt").write_bytes(b"w")
+    (models_dir / MODEL_FILENAME).write_bytes(b"w")
     data_dir = tmp_path / "data"
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
@@ -1818,6 +1886,6 @@ def test_cmd_score_inline_fingerprint_matches_compute_retrieval_version(tmp_path
     )
     meta = json.loads((out_dir / "score_meta.json").read_text())
     emb, labs, _invs, keys = load_bank(bank)
-    expected = compute_retrieval_version(models_dir / "ft_prod.pt", keys, labs, emb)
+    expected = compute_retrieval_version(models_dir / MODEL_FILENAME, keys, labs, emb)
     assert meta["retrieval_version"]["before"] == expected
     assert meta["retrieval_version"]["after"] == expected

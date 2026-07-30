@@ -115,18 +115,34 @@ def test_get_job_returns_done_with_result(client):
 
 
 def test_get_job_passes_retrieval_version_through_untouched(client):
-    """result_json은 가공 없이 실린다 — ML 워커가 더한 필드가 API 표면에 그대로 나타난다."""
+    """result_json은 가공 없이 실린다 — ML 워커가 더한 필드가 API 표면에 그대로 나타난다.
+
+    새 키 하나만 단언하면 "통과-보존"이 아니라 "그 키가 있다"만 고정된다. 저장한 dict 전체와
+    동등 비교해 다른 필드의 누락·재정렬·타입 변형(중첩 rows 포함)까지 회귀로 잡는다.
+    """
     repo = OcrRepository()
     job_id = repo.insert_job("/x.jpg")
-    repo.update_result(
-        job_id,
-        "done",
-        {"rows": [], "supply_sum": 0, "warp_ok": True, "retrieval_version": "a1b2c3d4e5f6"},
-    )
+    stored = {
+        "rows": [
+            {
+                "row_index": 0,
+                "crop_ref": f"job-{job_id}/row-0",
+                "item_top5": [{"label": "타이어", "sim": 0.91}],
+                "supply": 364000,
+                "amount_raw": "364",
+                "item_uncertain": False,
+            }
+        ],
+        "supply_sum": 364000,
+        "warp_ok": True,
+        "item_conf_threshold": 0.62,
+        "retrieval_version": "a1b2c3d4e5f6",
+    }
+    repo.update_result(job_id, "done", stored)
     r = client.get(f"/api/ocr/jobs/{job_id}")
     assert r.status_code == 200
     b = r.json()
-    assert b["data"]["result"]["retrieval_version"] == "a1b2c3d4e5f6"
+    assert b["data"]["result"] == stored
 
 
 def test_get_job_works_for_jobs_without_a_retrieval_version(client):

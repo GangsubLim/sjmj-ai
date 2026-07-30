@@ -10,11 +10,13 @@ from worker.db import WorkerQueue, build_engine
 from worker.poll import process_one_job
 
 POLL_INTERVAL_SEC = 2.0
-# 품목 인코더 파일명. handwriting.bank_id.MODEL_FILENAME과 같은 값이어야 한다(지문이 추론과
-# 같은 파일을 해시한다) — 상수를 import해 공유하지 않는 이유는 bank_id import 자체가
-# retrieval_version_or_none의 fail-safe 안에 있어야 하기 때문이다(그 import 실패가 기동을
-# 깨면 안 된다). 두 리터럴의 일치는 tests/test_worker_models.py가 고정한다.
+# 지문 입력 파일명. handwriting.bank_id의 동명 상수와 같은 값이어야 한다 — 워커가 추론에 쓴
+# 파일과 지문이 해시·집계하는 파일이 갈라지면 두 소비자(워커·원격 분석 스크립트)의 지문이
+# 전량 어긋나 모든 잡이 조용히 stale로 오분류된다. 상수를 import해 공유하지 않는 이유는
+# bank_id import 자체가 retrieval_version_or_none의 fail-safe 안에 있어야 하기 때문이다
+# (그 import 실패가 기동을 깨면 안 된다). 리터럴 일치는 tests/test_worker_models.py가 고정한다.
 MODEL_FILENAME = "ft_prod.pt"
+BANK_FILENAME = "bank.npz"
 
 
 class ModelBundle(NamedTuple):
@@ -92,7 +94,7 @@ def load_models() -> ModelBundle:
     device = "cpu"  # PyTorch-MPS와 MLX Metal 동시 사용 시 degenerate — CPU 고정
     model_path = models_dir / MODEL_FILENAME
     item_model = ip.load_model_from(model_path, device)
-    z = np.load(models_dir / "bank.npz", allow_pickle=True)
+    z = np.load(models_dir / BANK_FILENAME, allow_pickle=True)
     emb = z["emb"]
     labs = [str(x) for x in z["lab"]]
     qwen = ip.load_ocr()

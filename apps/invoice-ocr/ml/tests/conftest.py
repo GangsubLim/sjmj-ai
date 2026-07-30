@@ -76,7 +76,9 @@ def _reeval_record(crop_ref="job-1/row-0", side="after", axis="invoice", **over)
 # 분석 계층(tools/curation_enrich.py)과 렌더 계층(tools/curation_report.py)이 두 모듈로
 # 갈리며 같은 합성 입력을 양쪽이 쓴다 — _reeval_record와 같은 이유로 conftest에 둔다(L3).
 
-BANK = {"엔진오일", "드라이", "타이어", "공임"}
+# frozenset — 모듈 전역 공유 픽스처라 한 테스트가 add/discard하면 수집 순서에 따라 다른
+# 테스트의 버킷 판정이 바뀐다(프로젝트 불변성 규약).
+BANK = frozenset({"엔진오일", "드라이", "타이어", "공임"})
 _CUR_VERSION = "cur-fingerprint"
 
 
@@ -119,7 +121,18 @@ def _pair(**over):
 
 
 def _job(job_id=1, rows=None, retrieval_version=_CUR_VERSION):
-    result = {"rows": rows or [], "warp_ok": True}
+    """result_json 1건 — rows의 crop_ref가 이 잡에 속하는지 조립 시점에 검증한다.
+
+    `_job(job_id=...)`와 `_row(job=...)`는 기본값이 독립이라 한쪽만 바꾸면 조용히 어긋난다.
+    그러면 pair의 crop_ref가 rows_by_ref에서 안 잡혀 검증하려던 버킷이 아니라 row_missing이
+    나오고, 테스트는 그 사실을 모른 채 통과한다 — 그래서 즉시 실패시킨다(덮어쓰기가 아니라
+    실패로 막는 이유: crop_ref 불일치를 의도적으로 쓰는 테스트의 의도를 지워버리지 않는다).
+    """
+    rows = rows or []
+    strays = [r["crop_ref"] for r in rows if not r["crop_ref"].startswith(f"job-{job_id}/")]
+    if strays:
+        raise AssertionError(f"_job(job_id={job_id})에 다른 잡의 행이 섞였다: {strays}")
+    result = {"rows": rows, "warp_ok": True}
     if retrieval_version is not None:
         result["retrieval_version"] = retrieval_version
     return {"job_id": job_id, "image_path": f"/data/up/{job_id}.jpeg", "result": result}

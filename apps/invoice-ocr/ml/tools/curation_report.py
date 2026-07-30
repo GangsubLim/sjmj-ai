@@ -142,14 +142,10 @@ def reeval_notice(meta: dict) -> str:
     """재평가 채택 여부와 사유를 한 줄로 낸다.
 
     score.jsonl만 있고 meta가 없는 경우(`no_meta`)도 정상 경로로 설명해 사용자가 재평가를
-    돌렸다고 착각하지 않게 한다(spec §3-C).
-
-    **"산출물이 없다"는 단정은 정보 자체가 없을 때만 한다**(H1). `state` 키 하나의 기본값으로
-    부재를 단정하면 사유(reason)가 손에 있는데도 원인을 오보하고, 이 알림이 막으려던 오인
-    (사용자가 원인을 모른 채 엉뚱한 조치를 함)을 알림이 스스로 만든다.
-
-    `no_meta`는 회수 상태(ReevalState)이자 게이트 사유(ReevalReason)로 같은 철자를 쓰므로
-    분기가 따로 필요 없다 — state를 사유 폴백으로 그대로 조회한다(M2).
+    돌렸다고 착각하지 않게 한다(spec §3-C). **"산출물이 없다"는 단정은 정보 자체가 없을 때만
+    한다**(H1 — 근거는 `_REEVAL_UNKNOWN_REASON`). `no_meta`는 회수 상태(ReevalState)이자 게이트
+    사유(ReevalReason)로 같은 철자를 쓰므로 분기가 따로 필요 없다 — state를 사유 폴백으로
+    그대로 조회한다(M2).
     """
     info = meta.get("reeval") or {}
     if info.get("adopted"):
@@ -168,11 +164,10 @@ def reeval_notice(meta: dict) -> str:
 def status_notice(meta: dict) -> str:
     """리포트가 실을 상태 한 줄 — 현재 지문 부재를 재평가 사유보다 먼저 말한다(H1).
 
-    `reeval_notice`를 그대로 부르면 지문 미확정 상태에서 "재평가 산출물이 없다"를 인쇄하고
-    수십 분짜리 원격 재채점을 권한다. 그 재채점도 같은 이유로 기각되므로 사용자는 시간을 쓰고도
-    같은 0/0을 본다 — 이 모듈의 원칙("부재 단정은 사용자를 엉뚱한 조치로 보낸다")을 지문 축에서
-    다시 밟는 것이다. 두 축을 한 함수에 겹치지 않는 이유: `reeval_notice`의 치역은
-    ReevalState/ReevalReason 전량과 대조되고 있어 지문 유무라는 직교 조건이 곱해지면 안 된다.
+    `reeval_notice`를 그대로 부르면 지문 미확정 상태에서 "재평가 산출물이 없다"를 인쇄하고 수십
+    분짜리 원격 재채점을 권한다 — 그 재채점도 같은 이유로 기각돼 사용자는 시간을 쓰고도 같은
+    0/0을 본다. 두 축을 한 함수에 겹치지 않는 이유: `reeval_notice`의 치역은 ReevalState/
+    ReevalReason 전량과 대조되고 있어 지문 유무라는 직교 조건이 곱해지면 안 된다.
     """
     if not meta.get("retrieval_version"):
         return _NO_FINGERPRINT_NOTICE
@@ -192,8 +187,7 @@ def _render_cohort_table(s: dict, meta: dict) -> list[str]:
         ],
         f"| excluded | {s['n_excluded']} | — 검수자 학습 제외(해석 비대상) |",
         "",
-        # ○ 코호트 합계와 품목 지표 분모는 어긋날 수 있다 — is_item_evaluable이 row_missing도
-        # 분모에서 뺀다. 이 절의 존재 이유가 "분모를 먼저 읽게 한다"이므로 그 차이를 밝힌다.
+        # ○ 합계와 품목 분모는 어긋날 수 있다 — is_item_evaluable이 row_missing도 분모에서 뺀다.
         f"품목 지표 분모(평가 가능 쌍) {s['n_item_evaluable']}쌍 — ○ 코호트 합계와 다를 수 있다"
         f"(row_missing {s['label_buckets'].get('row_missing', 0)}건은 분모에서 빠진다).",
         "",
@@ -304,8 +298,7 @@ def _render_bank_candidates(
         lines.append("- 없음")
     labeled = [r for r in inc if r["answer"]]
     lines += [
-        # 빈 줄이 없으면 CommonMark lazy continuation으로 이 줄이 마지막 후보 불릿의 문단에
-        # 병합돼, 전체 커버리지가 그 라벨 하나의 수치인 것처럼 읽힌다(계산 A/표시 B).
+        # 빈 줄이 없으면 CommonMark lazy continuation으로 마지막 불릿에 흡수돼 그 라벨 수치로 읽힌다.
         "",
         f"현재 뱅크 보유: {_pct(sum(r['in_bank'] for r in labeled), len(labeled))} "
         "(라벨 있는 included 전체 기준 — 코호트와 무관)",
@@ -393,17 +386,18 @@ def render_report(enriched: list[dict], meta: dict) -> str:
 # ---------------------------------------------------------------------------
 
 
-# 원격 인라인 스크립트에 지문 로직도 그 **입력**(모델 파일명·뱅크 파일명·배열 선택)도 복붙하지
-# 않는다 — bank_id.bank_retrieval_version 하나를 워커와 공유한다(M4). 두 곳이 다른 입력을 고르면
-# 지문이 전량 어긋나 모든 잡이 조용히 stale이 된다(spec §3-A). 지문은 **원격에서** 계산해야
-# 유효하다: 코드 SHA가 입력이라 로컬에서 계산하면 전 잡이 조용히 stale로 오분류된다.
-#
-# 지문 계산만 try로 감싼다(M3) — keys 없는 뱅크는 실재 가능한 상태이고(운영 워커도 같은 실패를
-# 진단 필드 하나로 격리한다) 그 실패로 pairs/jobs 동기화까지 막을 이유가 없다. `handwriting`
-# import는 try 밖이라 hard-fail을 유지한다 — 그건 배포 누락 신호다.
+# 원격 인라인 스크립트에 지문 로직도 그 **입력**(모델·뱅크 파일명·배열 선택)도 복붙하지 않는다 —
+# bank_id.bank_retrieval_version 하나를 워커와 공유한다(M4). 두 곳이 다른 입력을 고르면 지문이
+# 전량 어긋나 모든 잡이 조용히 stale이 된다(spec §3-A). 계산은 **원격에서** 해야 유효하다:
+# 코드 SHA가 입력이라 로컬 계산은 전 잡을 조용히 stale로 오분류한다. 지문 계산만 try로 감싼다
+# (M3) — keys 없는 뱅크는 실재 가능하고(운영 워커도 진단 필드 하나로 격리한다) 그 실패로
+# pairs/jobs 동기화까지 막을 이유가 없다. `handwriting` import는 try 밖이라 hard-fail을 유지한다
+# (배포 누락 신호). 사유는 **stdout 페이로드**에 싣는다 — stderr는 종료코드 0인 이 경로에서
+# run_ssh가 통째로 버려 원인(git SHA 부재/npz 결손/모델 접근 실패)을 구분할 창구가 로컬에
+# 남지 않는다(`result_json` 스탬프 규칙과 다른 축 — 이건 fetch 캐시의 진단 필드다).
 # 셸 이중따옴표 안에 그대로 들어가므로 `"`·`$`·백틱·백슬래시를 쓰지 않는다.
 _BANK_PY = """
-import collections, json, os, sys
+import collections, json, os
 import numpy as np
 from handwriting import bank_id
 d = os.environ['SJMJ_ML_MODELS_DIR']
@@ -411,15 +405,23 @@ z = np.load(os.path.join(d, bank_id.BANK_FILENAME), allow_pickle=True)
 labs = [str(x) for x in z['lab']]
 try:
     version = bank_id.bank_retrieval_version(d, z, labs)
+    error = None
 except Exception as e:
-    print('retrieval_version 계산 실패(%s: %s)' % (type(e).__name__, e), file=sys.stderr)
+    error = '%s: %s' % (type(e).__name__, e)
     version = None
 print(json.dumps({'size': len(labs), 'counts': collections.Counter(labs),
-                  'retrieval_version': version}, ensure_ascii=False))
+                  'retrieval_version': version, 'retrieval_version_error': error},
+                 ensure_ascii=False))
 """
 
-# 이 값들이 없으면 서버가 지문 기능(#49) 이전 릴리스라는 뜻이다 — 다른 모듈 부재는 다른 원인이다.
-_FINGERPRINT_MODULES = ("handwriting.bank_id", "handwriting")
+# `from handwriting import bank_id`가 서버에서 낼 수 있는 두 문구 — 이 문구가 곧 지문 기능(#49)
+# 이전 릴리스 신호다(다른 모듈 부재는 다른 원인이다). 배포 서버에는 `handwriting/`이 이미 있고
+# `bank_id.py`만 없어 CPython이 ModuleNotFoundError가 아닌 ImportError를 내며(실측), 그쪽이 주
+# 경로다 — "No module named"만 보면 정작 주 시나리오에서 안내문이 발화하지 않는다.
+_FINGERPRINT_IMPORT_MARKERS = (
+    "No module named 'handwriting'",  # handwriting/ 자체가 없다
+    "cannot import name 'bank_id' from 'handwriting'",  # bank_id.py만 없다
+)
 # 상단 메시지에 실을 원격 stderr 꼬리 줄 수 — traceback 전문은 길고 원인은 끝에 있다.
 _STDERR_EXCERPT_LINES = 3
 
@@ -464,7 +466,6 @@ def _replace_atomically(cache: Path, files: list[tuple[str, bytes]]) -> None:
     한 벌은 셋이다(M2): 재평가 두 파일과 **그 둘을 해석하는** meta.json(retrieval_version·
     reeval_state). 앞의 둘만 원자적이면 meta.json이 평범한 쓰기로 먼저 굳어, 짝이 어긋난 상태의
     사유가 stale로 오보된다 — 수치는 fail-closed라 안전하지만 사용자는 잘못된 조치로 간다.
-
     교체 사이에 죽는 창은 남으므로 순서를 고정한다(호출자가 준 순서 = REEVAL_FILES + meta.json):
     meta.json 교체 전에 죽으면 이전 meta의 지문·다이제스트가 새 산출물과 어긋나 게이트가
     "재평가 없음"으로 닫는다(fail-closed).
@@ -484,9 +485,8 @@ def _replace_atomically(cache: Path, files: list[tuple[str, bytes]]) -> None:
 def _clear_reeval(cache: Path) -> None:
     """캐시의 재평가 두 파일을 함께 지운다 — 두 파일은 항상 같이 움직인다.
 
-    남겨두면 서버에서 산출물이 사라지거나 옮겨진 뒤에도 로컬 reeval_meta.json이 살아남아
-    재평가가 유효한 것처럼 읽힌다(warp_gate_report.fetch_all이 이전 fetch 산출을 먼저
-    rmtree하는 것과 같은 이유).
+    남겨두면 서버에서 산출물이 사라지거나 옮겨진 뒤에도 로컬 reeval_meta.json이 살아남아 재평가가
+    유효한 것처럼 읽힌다(warp_gate_report.fetch_all이 이전 산출을 먼저 rmtree하는 것과 같은 이유).
     """
     for _remote, local in REEVAL_FILES:
         (cache / local).unlink(missing_ok=True)
@@ -495,10 +495,10 @@ def _clear_reeval(cache: Path) -> None:
 def _read_reeval_files(jsonl_path: Path, meta_path: Path) -> tuple[list[dict], dict]:
     """캐시의 재평가 두 파일을 읽는다 — 손상은 파일명·복구 지침과 함께 경계에서 막는다(H2).
 
-    `parse_reeval_jsonl`이 dict 아닌 줄을 막는 것과 같은 이유로 meta도 dict 여부를 본다:
-    게이트 안쪽까지 흘러가면 dict가 아닌 값에 AttributeError가 나 원인이 파싱 경계에서
-    멀어진다(`null`은 게이트가 no_meta로 정상 처리하는데 `_reeval_info`가 먼저 죽었다).
-    읽기 인코딩도 여기서 못박는다(L5) — 쓰기는 UTF-8 bytes다.
+    `parse_reeval_jsonl`이 dict 아닌 줄을 막는 것과 같은 이유로 meta도 dict 여부를 본다: 게이트
+    안쪽까지 흘러가면 dict가 아닌 값에 AttributeError가 나 원인이 파싱 경계에서 멀어진다(`null`은
+    게이트가 no_meta로 정상 처리하는데 `_reeval_info`가 먼저 죽었다). 읽기 인코딩도 여기서
+    못박는다(L5) — 쓰기는 UTF-8 bytes다.
 
     Raises:
         json.JSONDecodeError: score.jsonl이 파싱되지 않을 때(즉시 실패 계약 유지 — 이 타입은
@@ -569,12 +569,13 @@ def fetch_error_message(stderr: str) -> str | None:
 
     판정은 **모듈명까지** 본다(M1). `No module named` 단독 매칭은 서버 venv의 numpy/torch
     부재까지 "#49 이전 릴리스"로 오진하는데, 그 경우 배포는 이미 됐고 원인은 venv라 지침이
-    엉뚱하다. 원본 stderr 발췌도 싣는다 — 삼키면 어떤 모듈이 없는지 확인할 창구가 사라진다.
+    엉뚱하다. 대신 문구는 예외 2종을 모두 본다(`_FINGERPRINT_IMPORT_MARKERS` 참조 — 주 경로가
+    ImportError다). 원본 stderr 발췌도 싣는다 — 삼키면 어떤 모듈이 없는지 볼 창구가 사라진다.
 
     raise가 아니라 메시지를 반환한다 — 조건부로만 던지는 헬퍼는 호출부에서 제어흐름이 보이지
     않아, 반환 후 다음 줄이 실행되는지를 헬퍼 본문을 열어야 알 수 있다.
     """
-    if not any(f"No module named '{name}'" in stderr for name in _FINGERPRINT_MODULES):
+    if not any(marker in stderr for marker in _FINGERPRINT_IMPORT_MARKERS):
         return None
     excerpt = " / ".join(stderr.strip().splitlines()[-_STDERR_EXCERPT_LINES:])
     return (
@@ -609,8 +610,12 @@ def _write_json(path: Path, obj) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=1), encoding="utf-8")
 
 
-def fetch_all(host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> dict:
-    """서버에서 training_pairs·result_json·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다."""
+def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> dict:
+    """서버에서 training_pairs·result_json·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다.
+
+    인자는 키워드 전용이다 — 동종 str 4개(host·두 env 경로·ml_root)가 인접해 위치로 넘기면
+    뒤바꿔도 예외가 안 나고, ml_root가 뒤에 끼어든 시점부터 조용한 오연결 위험이 커졌다.
+    """
     cache.mkdir(parents=True, exist_ok=True)
     pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
     jobs = parse_jobs_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
@@ -629,6 +634,7 @@ def fetch_all(host: str, backend_env: str, worker_env: str, ml_root: str, cache:
         "bank_size": bank["size"],
         "bank_distinct": len(bank["counts"]),
         "retrieval_version": bank.get("retrieval_version"),
+        "retrieval_version_error": bank.get("retrieval_version_error"),  # 원격 진단(성공 시 None)
         "reeval_state": reeval_state,
     }
     _write_json(cache / "pairs.json", pairs)
@@ -669,10 +675,9 @@ def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -
     """가져온 크롭을 검수할 때 참조할 ref→파일→라벨 인덱스를 만든다.
 
     M6: 판정 술어(`is_item_evaluable`/`is_item_failure`)로 거르지 않고 그 잡의 행 전량을
-    나열한다 — 이 함수는 spec §3-C 소비자 표(5곳)에 없다. plan Task 8 Step 5 Self-Review
-    항목 ②가 "`_write_images_index`는 표시용이라 술어를 쓰지 않는다(의도)"라고 명시했다.
-    `pull-images`로 당겨온 잡은 검수자가 크롭을 육안으로 보며 판정하므로, 판정 불가 행도
-    같이 보여야 "이 행이 왜 판정 불가인지"를 그 자리에서 확인할 수 있다.
+    나열한다(의도) — 이 함수는 spec §3-C 소비자 표에 없는 **표시용**이다. `pull-images`로 당겨온
+    잡은 검수자가 크롭을 육안으로 보며 판정하므로, 판정 불가 행도 같이 보여야 "이 행이 왜 판정
+    불가인지"를 그 자리에서 확인할 수 있다.
     """
     lines = ["# 큐레이션 크롭 검수 인덱스", ""]
     for r in enriched:
@@ -728,15 +733,18 @@ def _failure_job_ids(enriched: list[dict]) -> list[int]:
 def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> None:
     """fetch 서브커맨드 — 동기화하고 다음 조치를 판단할 요약을 출력한다.
 
-    지문이 미확정이면 그 사실과 조치를 그 자리에서 말한다(M3·H1) — 원격 지문 계산 실패는 fetch를
-    죽이지 않고 null로 통과시키므로, 여기서 안 알리면 리포트가 전량 stale_bank로 나온 뒤에야
-    원인을 찾게 된다.
+    지문이 미확정이면 그 사실·사유·조치를 그 자리에서 말한다(M3·H1) — 원격 지문 계산 실패는
+    fetch를 죽이지 않고 null로 통과시키므로, 여기서 안 알리면 리포트가 전량 stale_bank로 나온
+    뒤에야 원인을 찾게 된다. 사유는 원격 진단을 그대로 옮기고, 없으면 "없다"고 단정하지 않는다.
     """
-    meta = fetch_all(host, backend_env, worker_env, ml_root, cache)
+    meta = fetch_all(
+        host=host, backend_env=backend_env, worker_env=worker_env, ml_root=ml_root, cache=cache
+    )
     version = meta["retrieval_version"]
     print(f"동기화 완료 → {cache} ({meta['fetched_at']})")
     print(f"현재 retrieval 지문: {version or '미확정'} · 재평가: {meta['reeval_state']}")
     if not version:
+        print(f"지문 계산 실패 사유: {meta['retrieval_version_error'] or '미상(원격 진단 없음)'}")
         print(_NO_FINGERPRINT_NOTICE)
 
 

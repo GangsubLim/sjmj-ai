@@ -202,6 +202,18 @@ def test_is_item_failure_is_true_for_an_evaluable_item_miss():
     assert is_item_failure(_row_for_predicates("ok", "ok")) is False
 
 
+def test_is_item_failure_covers_every_non_ok_evaluable_bucket():
+    """실패 판정을 RETRIEVAL_MISS_BUCKETS로 좁히는 '정리' 리팩터가 신호를 지우지 못하게 못박는다.
+
+    미스 목록(`partition_misses`)이 top5_only·in_bank_miss만 나열하는 것은 **사람이 크롭을 보고
+    개선할 여지**를 기준으로 좁힌 것이고, 실패 판정은 그보다 넓다 — out_of_bank(뱅크 커버리지
+    부족)·no_candidates(리트리벌 무산출)를 실패에서 빼면 그 쌍들이 failures.jsonl과 pull-images
+    기본 대상에서 조용히 사라진다. 두 상수의 역할 차이를 버킷 전량으로 고정한다.
+    """
+    for bucket in ("in_bank_miss", "top5_only", "out_of_bank", "no_candidates"):
+        assert is_item_failure(_row_for_predicates(bucket, "ok")) is True, bucket
+
+
 def test_is_item_failure_is_false_for_an_ok_item_with_no_amount_recorded():
     """M6 — enrich_pairs는 금액 미기재(supply is None)에 label_bucket과 무관하게
     amount_bucket=None을 낸다(실데이터 경로). `(None, "ok")`에서 None을 지우는 뮤턴트가
@@ -554,6 +566,71 @@ def test_reeval_gate_fails_fast_when_top1_sim_is_missing_but_preds_is_not_empty(
             current_retrieval_version=_CUR,
             jsonl_sha256="digest-1",
         )
+
+
+def test_reeval_gate_fails_fast_when_preds_holds_a_non_string():
+    """M/C16 — `list[str]`의 원소 타입 절이 무커버리지였다(뮤테이션 실증: 절을 지워도 GREEN).
+
+    preds에 dict가 섞이면 `_truth_source`가 그대로 top5_labels로 실어, `label_bucket`이 정답
+    문자열과 비교되며 전량 미스로 오분류되고 미스 목록 렌더도 dict를 라벨처럼 인쇄한다.
+    """
+    records = _four_vintages()
+    records[3]["preds"] = ["안가방", {"label": "공임"}]
+    with pytest.raises(ValueError, match="preds"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_rejects_a_boolean_top1_sim():
+    """C16 — bool 제외 절이 무커버리지였다(뮤테이션 실증: `not isinstance(..., bool)`을 지워도
+    GREEN). bool은 int의 하위형이라 `True`가 수치로 통과하면 `_render_miss_list`의 `:.3f`가
+    유사도 1.000을 인쇄해, 손상이 "완벽한 적중"으로 보고된다.
+    """
+    records = _four_vintages()
+    records[3]["top1_sim"] = True
+    with pytest.raises(ValueError, match="top1_sim"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_rejects_a_top1_sim_carried_without_any_preds():
+    """C5 — 불변식(preds 비어있음 ⟺ top1_sim is None)의 **역방향**을 강제한다.
+
+    생산자 bank_update.score_one은 preds와 top1_sim을 같은 `ranked`에서 내므로 정상 산출물은
+    이 방향도 어기지 않는다. 통과시키면 그 쌍은 no_candidates로 미스 목록 밖에 남는데 유사도
+    분포에는 계상돼, 게이트를 지난 손상이 조용히 수치만 흔든다.
+    """
+    records = _four_vintages()
+    records[3]["preds"] = []
+    with pytest.raises(ValueError, match="불변식"):
+        reeval_gate(
+            records=records,
+            meta=_reeval_meta(),
+            current_retrieval_version=_CUR,
+            jsonl_sha256="digest-1",
+        )
+
+
+def test_reeval_gate_accepts_an_empty_preds_with_no_top1_sim():
+    """정상 산출물의 무후보 쌍(ranked 0건)은 그대로 통과해야 한다 — 양방향 강제의 반대편."""
+    records = _four_vintages()
+    for r in records:
+        r["preds"], r["top1_sim"] = [], None
+    gate = reeval_gate(
+        records=records,
+        meta=_reeval_meta(),
+        current_retrieval_version=_CUR,
+        jsonl_sha256="digest-1",
+    )
+    assert gate.reason is None and set(gate.pairs) == {"job-1/row-0"}
 
 
 def test_reeval_gate_fails_fast_when_the_label_is_not_a_string():

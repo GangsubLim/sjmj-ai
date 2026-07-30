@@ -138,6 +138,31 @@ def test_enrich_marks_row_missing_when_crop_ref_not_in_result():
     assert enriched[0]["draft_supply"] is None
 
 
+def test_enrich_leaves_the_amount_bucket_none_when_the_truth_supply_is_absent():
+    """금액 축 가드 — 정답 금액(training_pairs.supply)이 NULL이면 채점 자체가 성립하지 않는다.
+
+    가드가 빠지면 `amount_bucket(draft, None)`이 `draft == final` 비교를 지나 `draft == -final`
+    에서 `-None` TypeError로 리포트가 통째로 죽거나(draft 있음), draft=0일 때 zero_drift로
+    오분류돼 그 잡이 warp_suspect로 오염된다. 품목 축은 이 가드와 무관하게 살아 있어야 한다
+    (두 축 독립 — spec §8).
+    """
+    pairs = [_pair(supply=None)]
+    enriched = _enrich(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)], supply=0)])])
+    assert enriched[0]["amount_bucket"] is None
+    assert enriched[0]["draft_supply"] == 0  # 초안은 그대로 남아 검수자가 볼 수 있다
+    assert enriched[0]["label_bucket"] == "ok"
+
+
+def test_summarize_drops_pairs_without_a_truth_supply_from_the_amount_denominator():
+    """분모 오염 회귀 — 정답 금액 부재 쌍이 amount_n에 들어가면 금액 일치율이 눌린다."""
+    rows = [
+        _enriched_row(label_bucket="ok", amount_bucket="ok", top1_sim=0.9),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="ok", amount_bucket=None, supply=None),
+    ]
+    s = summarize(rows)
+    assert (s["amount_n"], s["amount_ok"]) == (1, 1)
+
+
 def test_enrich_no_candidates_when_row_exists_but_top5_empty():
     pairs = [_pair()]
     enriched = _enrich(pairs, [_job(rows=[_row(top5=[])])])
@@ -193,18 +218,45 @@ def test_oob_candidates_follow_the_canonical_label():
 # --- 잡 플래그 / OOB 후보 / 요약 ---
 
 
+def _amount_job(*buckets, job_id=1):
+    return [{"job_id": job_id, "status": "included", "amount_bucket": b} for b in buckets]
+
+
 def test_job_flags_warp_suspect_on_majority_zero_drift():
-    recs = [
-        {"job_id": 1, "status": "included", "amount_bucket": "zero_drift"},
-        {"job_id": 1, "status": "included", "amount_bucket": "zero_drift"},
-        {"job_id": 1, "status": "included", "amount_bucket": "ok"},
-    ]
-    assert job_flags(recs)[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok"))[1] == ["warp_suspect"]
 
 
 def test_job_flags_empty_when_amounts_ok():
     recs = [{"job_id": 2, "status": "included", "amount_bucket": "ok"}]
     assert job_flags(recs)[2] == []
+
+
+def test_job_flags_pins_both_arms_of_the_warp_suspect_threshold():
+    """양성 1건·전패 1건만으로는 하한(≥MIN_WARP_SUSPECT_BAD)도 비율 조건도 고정되지 않는다.
+
+    실행으로 확인한 현재 동작을 그대로 못박는다(임계·연산자 변경은 운영 검수 대상 목록을
+    바꾸므로 이 이슈의 범위 밖이다 — 그래서 "고정"이 목적이다):
+      - 정확히 절반(2/4)은 켜진다 — `bad * 2 >= len(amts)`는 과반이 아니라 절반 이상이다.
+      - 절반 미달(2/5)은 꺼진다.
+      - 비율은 채우지만 절대 건수가 1건(1/1·1/2)이면 꺼진다 — 단일 오독은 잡 신호가 아니다.
+    """
+    assert job_flags(_amount_job("zero_drift", "degenerate", "ok", "ok"))[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok", "ok", "ok"))[1] == []
+    assert job_flags(_amount_job("zero_drift"))[1] == []
+    assert job_flags(_amount_job("degenerate", "ok"))[1] == []
+
+
+def test_job_flags_ignores_rows_without_a_recorded_amount():
+    """금액 미기재(None)는 분모에도 분자에도 들어가지 않는다 — 섞이면 비율 조건이 흔들린다."""
+    recs = _amount_job("zero_drift", "zero_drift", None, None, None)
+    assert job_flags(recs)[1] == ["warp_suspect"]
+
+
+def test_job_flags_skips_excluded_pairs():
+    recs = _amount_job("zero_drift", "zero_drift") + [
+        {"job_id": 1, "status": "excluded", "amount_bucket": "ok"}
+    ]
+    assert job_flags(recs)[1] == ["warp_suspect"]  # excluded는 분모에 없다
 
 
 def test_oob_label_counts_orders_by_frequency():
@@ -247,8 +299,14 @@ def test_oob_label_counts_skips_pairs_without_a_canonical_label():
     assert oob_label_counts(recs) == []
 
 
-def test_oob_label_counts_ignores_a_whitespace_only_label():
-    """정답 라벨의 정규화 규칙이 한 곳이어야 한다 — 공백 라벨이 뱅크 후보로 올라가지 않는다."""
+def test_oob_label_counts_reads_the_normalized_answer_not_the_raw_canonical_label():
+    """정규화 규칙은 한 곳(enrich_pairs의 strip)이며 집계는 그 결과(answer)만 읽는다.
+
+    이름이 "공백 라벨 무시"였지만 이 함수는 공백을 판정하지 않는다 — 그 경로는
+    test_enrich_treats_a_blank_canonical_label_like_a_missing_one이 닫는다. 여기서 고정할 것은
+    원본 canonical_label이 공백으로 남아 있어도 판정에 쓰이지 않는다는 쪽이다:
+    `r["canonical_label"] or r["answer"]` 같은 폴백이 들어오면 공백 라벨이 후보로 되살아난다.
+    """
     recs = [{"status": "included", "in_bank": False, "canonical_label": "   ", "answer": ""}]
     assert oob_label_counts(recs) == []
 
@@ -275,6 +333,55 @@ def test_summarize_computes_rates():
     assert s["in_bank_n"] == 1
     assert s["amount_ok"] == 1
     assert s["label_buckets"]["out_of_bank"] == 1
+
+
+def test_summarize_reports_top5_in_bank_and_amount_breakdowns():
+    """summarize의 절반(top5_hits·in_bank_top1/top5·amount_buckets·n_jobs)이 미검증이었다.
+
+    분자·분모를 뒤바꾸거나 top5 판정에서 "ok"를 빠뜨리는 회귀가 리포트 표 전체를 오보한다.
+    한 표본으로 네 축을 동시에 고정한다 — 잡 2개(in_bank 적중 1 · in_bank top5 1 · 뱅크 밖 1).
+    """
+    rows = [
+        _enriched_row(label_bucket="ok", in_bank=True, top1_sim=0.9),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="top5_only", in_bank=True, top1_sim=0.4),
+        _enriched_row(
+            job_id=2,
+            crop_ref="job-2/row-0",
+            label_bucket="out_of_bank",
+            in_bank=False,
+            top1_sim=0.3,
+            amount_bucket="zero_drift",
+        ),
+    ]
+    s = summarize(rows)
+    assert s["n_jobs"] == 2
+    assert (s["top1_hits"], s["top5_hits"]) == (1, 2)  # top5는 ok도 포함한다
+    assert (s["in_bank_n"], s["in_bank_top1"], s["in_bank_top5"]) == (2, 1, 2)
+    assert dict(s["amount_buckets"]) == {"ok": 2, "zero_drift": 1}
+    assert (s["amount_n"], s["amount_ok"]) == (3, 2)
+
+
+def test_summarize_keeps_a_zero_similarity_in_the_distribution():
+    """C7 — truthiness 필터는 유사도 0.0을 관측 부재와 함께 버려 분포를 낙관 쪽으로 민다.
+
+    0.0은 bank_update.score_one의 ranked[0][1]이 낼 수 있는 유효 관측치다(후보가 없을 때만
+    None). 미스 쪽 max가 0.0으로, 적중 쪽 min이 0.0으로 내려가는 경계를 함께 고정한다.
+    """
+    rows = [
+        _enriched_row(label_bucket="ok", top1_sim=0.0),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="ok", top1_sim=1.0),
+        _enriched_row(crop_ref="job-1/row-2", label_bucket="in_bank_miss", top1_sim=0.0),
+    ]
+    s = summarize(rows)
+    assert (s["hit_sim_mean"], s["hit_sim_min"]) == (0.5, 0.0)
+    assert (s["miss_sim_mean"], s["miss_sim_max"]) == (0.0, 0.0)
+
+
+def test_summarize_leaves_similarity_stats_none_when_nothing_was_observed():
+    """관측이 0건이면 None이다 — 0.0과 구분돼야 리포트가 유사도 줄을 아예 빼는 분기를 탄다."""
+    s = summarize([_enriched_row(label_bucket="ok", top1_sim=None)])
+    assert (s["hit_sim_mean"], s["hit_sim_min"]) == (None, None)
+    assert (s["miss_sim_mean"], s["miss_sim_max"]) == (None, None)
 
 
 def test_summarize_excludes_unevaluable_from_item_denominators():
@@ -449,14 +556,31 @@ def test_sample_table_rows_sum_to_the_included_count():
     assert sum(s["cohorts"].values()) == s["n_included"]
 
 
-def test_pairs_sql_lives_with_its_parser_so_bank_update_need_not_import_the_report():
+def test_bank_update_shares_the_pairs_query_instead_of_inlining_its_own():
     """L6 — SQL 상수 하나 때문에 bank_update가 리포트 모듈에 의존할 이유가 없다.
 
     그 모듈은 fetch 글루·CLI에 더해 handwriting.bank_id까지 끌고 온다. SQL은 그 결과를 푸는
     파서(parse_pairs_tsv) 옆에 두는 것이 컬럼 계약과도 맞는다.
+
+    예전 단언 둘은 계약을 비껴갔다: 하나는 PAIRS_SQL의 정의를 그대로 재진술한 항진이었고
+    (정의를 고치면 기대도 함께 바뀌어 아무것도 못 잡는다), 다른 하나는 "리포트를 import하지
+    않는다"만 봐서 **SQL 사본을 인라인해도** 통과했다. 지금은 공유 상수를 실제로 쓰는지를 본다.
     """
     src = (Path(__file__).resolve().parent.parent / "tools" / "bank_update.py").read_text(
         encoding="utf-8"
     )
     assert "curation_report" not in src
-    assert PAIRS_SQL.startswith(f"SELECT {PAIR_COLS} FROM training_pairs")
+    assert "from tools.curation_enrich import" in src and "PAIRS_SQL" in src
+    # 인라인 사본 금지 — 사본이 생기면 컬럼 계약이 파서와 조용히 갈라진다(docstring 언급은
+    # SQL이 아니므로 SELECT와 같은 줄에 있는 것만 본다).
+    assert [ln for ln in src.splitlines() if "SELECT" in ln and "training_pairs" in ln] == []
+
+
+def test_pair_cols_and_the_parsed_row_keys_are_one_contract():
+    """SQL이 파서 옆에 사는 이유 자체를 고정한다 — 컬럼 목록과 파서 산출 키가 한 벌이다.
+
+    컬럼을 늘리고 parse_pairs_tsv를 안 고치면(또는 반대) 새 컬럼이 조용히 사라지거나 소비자가
+    KeyError로 터진다. 합성 pair(`_pair`)는 파서 산출과 같은 shape이라 그 키로 대조한다.
+    """
+    assert {col.strip() for col in PAIR_COLS.split(",")} == set(_pair())
+    assert PAIRS_SQL.endswith("ORDER BY job_id, row_index")  # 행 순서가 곧 검수 순서다

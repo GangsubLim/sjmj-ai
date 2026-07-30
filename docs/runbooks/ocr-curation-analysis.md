@@ -37,7 +37,8 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 
 > [!NOTE]
 > **이 기능(era-aware 재평가, Issue #49)의 최초 배포 전 한정** — 배포되기 전에는 `fetch`가
-> 서버의 `handwriting.bank_id`를 import하지 못해 `ModuleNotFoundError`로 실패하고, macmini
+> 서버의 `handwriting.bank_id`를 import하지 못해 `ImportError`로 실패하고(서버에 `handwriting`
+> 패키지는 이미 있고 `bank_id`만 없으므로 `ModuleNotFoundError`가 아니다), macmini
 > `score --scope all`도 같은 이유로 실행할 수 없다. 배포 순서·근거는
 > `docs/runbooks/ocr-bank-update.md` 4단계 WARNING 참조. **배포가 끝나면 이 알림은 소거
 > 대상이다.**

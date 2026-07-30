@@ -18,6 +18,7 @@ false-stale이 구조적으로 생기지 않는다.
 """
 
 import hashlib
+import os
 import re
 import subprocess
 import sys
@@ -113,6 +114,16 @@ def file_digest(path) -> str:
     return h.hexdigest()
 
 
+def _git_env() -> dict[str, str]:
+    """GIT_* 를 걷어낸 환경 — repo_dir(cwd)이 어느 레포인지를 실제로 결정하게 만든다.
+
+    `GIT_DIR`·`GIT_WORK_TREE`는 cwd보다 우선하므로, 호출 프로세스에 이 변수가 있으면
+    rev-parse가 repo_dir이 아닌 **다른 레포의** HEAD를 돌려준다. 그 값도 정상 40자 hex라
+    _SHA_RE를 통과해 지문이 조용히 어긋난다(전 잡이 stale로 오분류).
+    """
+    return {k: v for k, v in os.environ.items() if not k.startswith("GIT_")}
+
+
 def code_version(repo_dir=ML_ROOT) -> str | None:
     """배포 코드 SHA(git rev-parse HEAD). 얻지 못하면 None — 자리표시자를 만들지 않는다.
 
@@ -131,6 +142,7 @@ def code_version(repo_dir=ML_ROOT) -> str | None:
         proc = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=str(repo_dir),
+            env=_git_env(),
             capture_output=True,
             check=False,
             timeout=_GIT_TIMEOUT_SEC,
@@ -183,7 +195,9 @@ def bank_retrieval_version(models_dir, npz, labs) -> str | None:
     막으려던 실패 모드가 입력 축에 그대로 남는다.
 
     `npz`는 이미 적재된 것을 받는다: 워커는 추론용으로, 원격 스크립트는 라벨 집계용으로 각각
-    bank.npz를 이미 열어 둔다(파일명은 BANK_FILENAME으로 공유). `labs`도 두 호출부가 자기
+    bank.npz를 이미 열어 둔다. 원격 스크립트는 BANK_FILENAME을 직접 참조하고, 워커는
+    bank_id import 자체를 fail-safe 안에 둬야 해서 같은 값을 자기 리터럴로 들고 있다
+    (두 값의 일치는 tests/test_worker_models.py가 고정한다). `labs`도 두 호출부가 자기
     목적(추론·집계)으로 이미 만들어 두므로 인자로 받는다 — 여기서 다시 만들면 같은 배열을
     두 벌 만든다.
 

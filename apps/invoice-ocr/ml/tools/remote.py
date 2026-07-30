@@ -27,6 +27,11 @@ ENV_WORKER_ENV = EnvVar("SJMJ_REMOTE_WORKER_ENV", "$HOME/.sjmj-ai/ml-worker.env"
 ENV_ML_ROOT = EnvVar("SJMJ_REMOTE_ML_ROOT", "$HOME/sjmj-ai/apps/invoice-ocr/ml")
 
 
+# 이중따옴표 안에서도 셸 의미를 갖는 토큰 — `remote_path`가 경계에서 거부한다.
+# `$`는 통째로 막지 않는다: `$HOME` 확장이 원격 경로 관례의 전제다(위 ENV_* 기본값 참조).
+UNSAFE_PATH_TOKENS = ('"', "`", "$(", "\\", "\n")
+
+
 class RemoteError(RuntimeError):
     """원격 ssh 실행 실패(비0 종료·타임아웃)."""
 
@@ -50,7 +55,22 @@ def remote_path(path: str) -> str:
     로컬 `os.path.expanduser`는 쓰지 않는다(로컬 홈 ≠ 원격 홈이라 잘못된 절대경로를 굳힐
     수 있다) — 확장은 원격 셸이 `$HOME`으로 한다. `~user/` 형태는 치환하지 않는다:
     `$HOME`으로 바꾸면 다른 사용자의 홈을 조용히 우리 홈으로 바꿔치기하게 된다.
+
+    이름이 약속하는 "이중따옴표 안에서 안전"을 경계에서 실제로 검증한다 — 값은 `cd "..."`·
+    `source "..."`에 그대로 보간되므로 `"`는 인용을 깨고 백틱·`$(`는 원격에서 명령을 실행하며
+    `\\`는 다음 문자를 먹는다. 출처가 운영자 자신의 env(SJMJ_REMOTE_*)라 공격면은 아니지만,
+    오타 하나가 원격에서 조용히 다른 명령이 되는 것보다 즉시 실패가 낫다(fail-fast 규약).
+    `$` 전체를 막지는 않는다 — `$HOME` 확장이 이 함수의 존재 이유다.
+
+    Raises:
+        ValueError: 이중따옴표 안에서 셸 의미를 갖는 문자(`"`, 백틱, `$(`, `\\`, 개행)를
+            포함할 때.
     """
+    bad = [token for token in UNSAFE_PATH_TOKENS if token in path]
+    if bad:
+        raise ValueError(
+            f"원격 경로에 셸 특수문자가 있다: {bad} — env(SJMJ_REMOTE_*) 값을 확인한다"
+        )
     return "$HOME/" + path[2:] if path.startswith("~/") else path
 
 

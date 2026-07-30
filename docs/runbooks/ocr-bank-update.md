@@ -122,7 +122,7 @@ SHA가 들어가므로 배포가 기존 재평가를 stale로 만든다.
 > **최초 배포 전에만 해당하는 한정 경고**다. 배포가 끝나면 이 경고는 소거 대상이다. 서버
 > 레포는 `v*` 태그로 checkout된 detached HEAD다 — `--scope all`을 쓰려면 이 기능이 포함된
 > 릴리스가 먼저 배포돼야 하고, 원격 지문 스크립트도 `handwriting.bank_id`를 import할 수
-> 있어야 한다(배포 전에는 로컬 `curation_report fetch`도 같은 이유로 `ModuleNotFoundError`로
+> 있어야 한다(배포 전에는 로컬 `curation_report fetch`도 같은 이유로 `ImportError`로
 > 실패한다). 배포 순서는 **머지 → 릴리스 태그 → 배포 → macmini 재평가(`score --scope all`) →
 > 로컬 `fetch`/`report`**다. 러너 워크스페이스를 수동 checkout해 앞당기지 않는다(다음 배포와
 > 충돌한다). 이 배포 순서 상세는 `docs/runbooks/ocr-curation-analysis.md`에도 중복 서술하지

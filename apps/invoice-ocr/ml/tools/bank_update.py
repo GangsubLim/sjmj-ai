@@ -27,6 +27,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, get_args
 
+# 모델 파일명은 bank_id가 진실원이다(M4) — 소비자가 각자 리터럴을 들면 한쪽만 바뀔 때
+# 지문 입력과 적재 대상이 어긋난다. bank_id는 stdlib 전용이라 최상위 import가 코어
+# paddle-free 규약을 깨지 않는다(무거운 cv2/torch만 함수 본문 지연 import).
+from handwriting.bank_id import MODEL_FILENAME
+
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ML_ROOT / "results" / "bank_update"
 
@@ -422,11 +427,26 @@ AXIS_TITLES = {
 }
 
 
-def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
+# 모집단 scope의 사람용 설명. score.md는 파일명·표 형식이 scope와 무관하게 같으므로 두 실행
+# 결과가 섞이면 본문 말고는 구분할 근거가 없다. 미배선 scope는 KeyError로 즉시 드러난다
+# (select_scoped와 같은 관용구 — 이름만 늘면 조용히 좁게 읽히는 리포트가 나온다).
+SCOPE_LABELS = {
+    "reviewed": "검수 완료 잡의 included 쌍만(ADR 0004 게이트 — 뱅크 갱신 대상과 같은 모집단)",
+    "all": "검수 여부 무관 included 쌍 전체(채점 전용 — 뱅크 갱신 대상이 아니다)",
+}
+
+
+def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict, *, scope: str) -> str:
     """(side, axis) → 요약 맵을 제외 축별 표로 렌더한다(표마다 before/after 2열 유지).
 
     4열(crop_ref before/after · invoice before/after) 한 표로 만들지 않는다 — 읽는 사람이
     비교해야 할 축은 before↔after이지 crop_ref↔invoice가 아니다(spec §4).
+
+    scope는 필수 인자다 — 기본값을 두면 --scope all 결과가 reviewed로 표기된 리포트를
+    낸다(score_meta.json에만 남은 scope는 사람이 md를 읽을 때 보이지 않는다).
+
+    Raises:
+        KeyError: SCOPE_LABELS에 배선되지 않은 scope.
     """
     rows = [
         # 두 축이 같은 값이다(in_bank은 제외와 무관하게 label in labs). "self 포함"은 축이
@@ -442,8 +462,8 @@ def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
         "# 뱅크 증분 갱신 전/후 비교",
         "",
         f"- 뱅크 크기: {meta.get('bank_before', '?')} → {meta.get('bank_after', '?')}",
-        f"- 채점 대상(desired 쌍): {summaries[('after', AXES[0])]['n']}건 · "
-        "동일 채점기로 before/after 산출",
+        f"- 모집단 scope: {scope} — {SCOPE_LABELS[scope]}",
+        f"- 채점 대상: {summaries[('after', AXES[0])]['n']}건 · 동일 채점기로 before/after 산출",
         "- 표본 수는 두 축이 같다(같은 쿼리 쌍을 제외 축만 바꿔 채점). 축마다 달라지는 것은",
         "  후보에서 빠지는 뱅크 항목이며, 그 여파가 peer 분모에 드러난다.",
     ]
@@ -735,7 +755,7 @@ def prod_embed_fn(models_dir):
         from handwriting import infer_photo as ip
 
         device = "cpu"  # ADR 0002 — MPS/MLX 동시 사용 회피
-        model = ip.load_model_from(Path(models_dir) / "ft_prod.pt", device)
+        model = ip.load_model_from(Path(models_dir) / MODEL_FILENAME, device)
         crops = []
         for p in paths:
             img = cv2.imread(str(p))
@@ -776,11 +796,16 @@ def _atomic_write_text(path: Path, text: str) -> None:
     부분 기록된 산출물이 유효한 것처럼 읽히는 것을 막는다 — 중단된 재실행이 새 score.jsonl과
     이전 meta를 짝지으면, 같은 뱅크로 재채점하는 흔한 경우엔 지문이 일치해 stale 방어도
     이를 못 잡는다(spec §3-B).
+
+    encoding은 명시한다 — 산출물에는 한글 라벨이 그대로 들어가고 소비자(큐레이션 리포트)는
+    utf-8로 읽는다. 로케일 기본 인코딩에 맡기면 LANG이 비정상인 셸(launchd·CI)에서 산출이
+    UnicodeEncodeError로 죽거나 같은 데이터가 다른 바이트로 기록돼, 바이트 다이제스트인
+    score_jsonl_sha256이 환경 차이를 데이터 변경으로 오판한다.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     try:
-        tmp.write_text(text)
+        tmp.write_text(text, encoding="utf-8")
         os.replace(tmp, path)
     except Exception:
         tmp.unlink(missing_ok=True)
@@ -863,7 +888,10 @@ def cmd_apply(args) -> None:
     """plan.jsonl대로 뱅크를 sync한다(백업 자동 생성 · 제거는 --yes 필요)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
-    records = [json.loads(ln) for ln in args.plan.read_text().splitlines() if ln.strip()]
+    # 쓰기(_atomic_write_text)가 utf-8 고정이므로 읽기도 명시한다 — 짝이 어긋나면 한글
+    # 라벨이 로케일에 따라 다르게 디코딩돼 뱅크에 깨진 라벨이 들어간다.
+    plan_text = args.plan.read_text(encoding="utf-8")
+    records = [json.loads(ln) for ln in plan_text.splitlines() if ln.strip()]
     require_removal_confirmation(records, confirmed=args.yes)
     summary = apply_sync(models_dir / "bank.npz", records, crops_root, prod_embed_fn(models_dir))
     print(
@@ -901,7 +929,7 @@ def _side_fingerprints(models_dir: Path, bank_arrays: dict[str, tuple]) -> dict[
     """
     from handwriting import bank_id
 
-    model_digest = bank_id.file_digest(models_dir / "ft_prod.pt")
+    model_digest = bank_id.file_digest(models_dir / MODEL_FILENAME)
     code_sha = bank_id.code_version()
     return {
         side: (
@@ -936,7 +964,7 @@ def _write_score_artifacts(
     """
     from handwriting import bank_id
 
-    md = render_score_md(summaries, meta)
+    md = render_score_md(summaries, meta, scope=scope)
     md_path = out / "score.md"
     _atomic_write_text(md_path, md)
     score_path = out / "score.jsonl"

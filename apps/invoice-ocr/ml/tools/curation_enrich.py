@@ -37,6 +37,9 @@ JOBS_SQL = (
     "WHERE id IN (SELECT DISTINCT job_id FROM training_pairs)"
 )
 
+# warp_suspect를 켤 금액 실패 최소 건수 — 1건은 단일 오독으로도 나므로 잡 단위 신호가 못 된다.
+MIN_WARP_SUSPECT_BAD = 2
+
 
 def _cell(value: str) -> str | None:
     return None if value == "NULL" else value
@@ -172,9 +175,9 @@ def _truth_source(
 
     `preds`·`label`은 `reeval_gate._validate_reeval_records`가 이미 존재·타입(list[str]·str)을
     강제했으므로 `[...]`로 직접 접근한다(H1 — `.get()` fail-open을 이 자리에서 걷어낸다).
-    `top1_sim`은 `preds`가 비어있지 않을 때만 수치임이 강제되고 비어있을 때는 부재를 허용하는
-    (불변식: preds 비어있음 ⟺ top1_sim is None) 조건부 검증이라 `.get()`을 유지한다 — 비어있는
-    쪽에서 None을 가정해도 안전하다. `has_peer`도 검증 대상이 아니고 부재·None 모두 "판정
+    `top1_sim`은 게이트가 불변식(preds 비어있음 ⟺ top1_sim is None)을 양방향으로 강제하되 키
+    자체의 부재는 허용하므로 `.get()`을 유지한다 — preds가 비어있는 쪽에서 None을 가정해도
+    안전하다. `has_peer`도 검증 대상이 아니고 부재·None 모두 "판정
     보류"라는 유효한 의미를 이미 가지므로 `.get()`을 유지한다.
 
     Args:
@@ -273,7 +276,12 @@ def enrich_pairs(
 
 
 def job_flags(enriched: list[dict]) -> dict[int, list[str]]:
-    """잡 단위 이상 플래그를 계산한다. warp_suspect = 금액 무산출·0드리프트가 과반(≥2건)."""
+    """잡 단위 이상 플래그를 계산한다.
+
+    warp_suspect = 금액 무산출·0드리프트가 그 잡 금액 기재 행의 **절반 이상**이고 절대 건수가
+    MIN_WARP_SUSPECT_BAD 이상. "과반"이 아니라 정확히 절반도 포함한다(`bad * 2 >= len(amts)`) —
+    임계·비교 연산자는 운영 검수 대상 목록을 정하는 값이므로 이 이슈에서 바꾸지 않는다.
+    """
     by_job: dict[int, list[dict]] = {}
     for r in enriched:
         if r["status"] == "included":
@@ -282,7 +290,8 @@ def job_flags(enriched: list[dict]) -> dict[int, list[str]]:
     for jid, recs in by_job.items():
         amts = [r["amount_bucket"] for r in recs if r["amount_bucket"] is not None]
         bad = sum(b in ("zero_drift", "degenerate") for b in amts)
-        flags[jid] = ["warp_suspect"] if bad >= 2 and bad * 2 >= len(amts) else []
+        suspect = bad >= MIN_WARP_SUSPECT_BAD and bad * 2 >= len(amts)
+        flags[jid] = ["warp_suspect"] if suspect else []
     return flags
 
 
@@ -313,8 +322,14 @@ def summarize(enriched: list[dict]) -> dict:
     ev = [r for r in inc if is_item_evaluable(r)]
     in_bank = [r for r in ev if r["in_bank"]]
     amounts = [r for r in inc if r["amount_bucket"] is not None]
-    hit_sims = [r["top1_sim"] for r in ev if r["label_bucket"] == "ok" and r["top1_sim"]]
-    miss_sims = [r["top1_sim"] for r in ev if r["label_bucket"] != "ok" and r["top1_sim"]]
+    # `is not None`으로 명시한다 — truthiness 필터는 유사도 0.0(bank_update.score_one의
+    # ranked[0][1]이 낼 수 있는 유효 관측치)을 관측 부재와 함께 버려 분포를 낙관 쪽으로 민다.
+    hit_sims = [
+        r["top1_sim"] for r in ev if r["label_bucket"] == "ok" and r["top1_sim"] is not None
+    ]
+    miss_sims = [
+        r["top1_sim"] for r in ev if r["label_bucket"] != "ok" and r["top1_sim"] is not None
+    ]
     return {
         "n_included": len(inc),
         "n_item_evaluable": len(ev),
