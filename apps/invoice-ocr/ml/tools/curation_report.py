@@ -99,21 +99,45 @@ def parse_jobs_tsv(text: str) -> list[dict]:
     return out
 
 
-def label_bucket(final: str | None, top5_labels: list[str], bank: set[str]) -> str:
+def label_bucket(answer: str, top5_labels: list[str], bank: set[str]) -> str:
     """품목 결과를 실패 원인 버킷으로 귀속한다.
+
+    정답원(answer)은 canonical_label이다 — 뱅크가 저장하는 라벨이 canonical이므로 retrieval
+    예측도 canonical 공간이고, bank_update score도 canonical로 채점한다(spec §3-C).
+
+    answer는 빈 값이 없는 str이어야 한다 — 정답 부재 판정은 호출자(`_item_bucket`)의 몫이다
+    (`None`을 받으면 `out_of_bank`로 조용히 오분류되는 죽은 경로가 있었다).
 
     ok(=top1 적중) / out_of_bank(뱅크에 정답 없음 — 구조적 실패) /
     top5_only(후보엔 있었음) / in_bank_miss(뱅크에 있는데 후보 밖) / no_candidates.
     """
     if not top5_labels:
         return "no_candidates"
-    if final == top5_labels[0]:
+    if answer == top5_labels[0]:
         return "ok"
-    if final not in bank:
+    if answer not in bank:
         return "out_of_bank"
-    if final in top5_labels:
+    if answer in top5_labels:
         return "top5_only"
     return "in_bank_miss"
+
+
+def _item_bucket(answer: str, row_missing: bool, top5_labels: list[str], bank: set[str]) -> str:
+    """품목 버킷 — 정답이 없으면 채점이 성립하지 않는다(no_label 코호트).
+
+    row_missing(데이터 정합 장애 — 재처리로 result_json과 training_pairs가 어긋난 상태)을
+    answer 부재보다 먼저 검사한다. curation_cohort.DATA_INTEGRITY_FAILURE_BUCKETS 계약상
+    row_missing은 unevaluable(시점 판정 불가)로 삼켜지면 안 되고 운영 실패로 남아야 한다
+    (failures.jsonl·pull-images가 소비한다) — bank_update의 partition_valid와 같은 기준으로
+    성능 지표에서 제외하되, 그 수는 표본 구성표에 남는다. 실측 결측은 0건이므로 지금은 순수
+    방어다(training_pairs는 confirm 시 canonical_label = final_label로 생성된다 —
+    migration_008).
+    """
+    if row_missing:
+        return "row_missing"
+    if not answer:
+        return "unevaluable"
+    return label_bucket(answer, top5_labels, bank)
 
 
 def amount_bucket(draft: int | None, final: int) -> str:
@@ -134,7 +158,14 @@ def amount_bucket(draft: int | None, final: int) -> str:
 
 
 def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[dict]:
-    """training_pairs에 result_json(top5·초안금액)과 뱅크 존재 여부를 조인해 버킷을 매긴다."""
+    """training_pairs에 result_json(top5·초안금액)과 뱅크 존재 여부를 조인해 버킷을 매긴다.
+
+    enriched 행의 키 계약(정답 라벨이 둘로 보일 수 있어 명시한다): `answer`가 판정에 쓰인
+    정본(strip된 canonical_label)이다 — `label_bucket`·`in_bank`·`oob_label_counts`가
+    전부 이 키를 읽는다. `**p`로 실리는 `canonical_label`은 DB 원본 값(미가공 — 공백·None
+    가능)이며 표시·감사용으로만 남고 어떤 판정에도 쓰이지 않는다. 새 소비자는 `answer`만
+    읽어야 한다.
+    """
     rows_by_ref = {r.get("crop_ref"): r for j in jobs for r in (j["result"].get("rows") or [])}
     out = []
     for p in pairs:
@@ -145,17 +176,18 @@ def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[di
         row = row or {}
         top5 = row.get("item_top5") or []
         top5_labels = [t["label"] for t in top5]
-        final = p["final_label"]
+        # 정답원은 canonical_label이다 — final_label은 confirm 시 사용자 입력명(불변 스냅샷)이고
+        # canonical_label은 학습용 정규화 라벨이다(migration_008). 뱅크가 저장하는 쪽이 후자다.
+        answer = (p.get("canonical_label") or "").strip()
         draft_supply = row.get("supply")
         out.append(
             {
                 **p,
                 "top5_labels": top5_labels,
                 "top1_sim": top5[0]["sim"] if top5 else None,
-                "in_bank": final in bank,
-                "label_bucket": (
-                    "row_missing" if row_missing else label_bucket(final, top5_labels, bank)
-                ),
+                "answer": answer,
+                "in_bank": bool(answer) and answer in bank,
+                "label_bucket": _item_bucket(answer, row_missing, top5_labels, bank),
                 "draft_supply": draft_supply,
                 "amount_raw": row.get("amount_raw", ""),
                 "amount_bucket": (
@@ -191,18 +223,10 @@ def oob_label_counts(enriched: list[dict]) -> list[tuple[str, int]]:
     추론 시점과 무관한 사실이다. 버킷을 보면 판정 불가 표본이 unevaluable로 귀속되는 순간
     후보 목록이 통째로 비어 개선 워크플로가 끊긴다.
     """
-
-    def _answer(r: dict) -> str:
-        # `answer` 생산자(Task 10)가 아직 없어 실제 행에는 이 키가 없다. 우선순위는 키
-        # 존재 여부가 아니라 값의 유효성이어야 하므로 `dict.get(key, default)`이 아니라
-        # `or` 체인을 쓴다 — `answer`가 존재해도 falsy(빈 문자열 등)면 canonical_label로
-        # 넘어간다(H1: dict.get 형태는 키 존재만으로 폴백을 건너뛰는 false guard였다).
-        return r.get("answer") or (r.get("canonical_label") or "").strip()
-
     counts = Counter(
-        _answer(r)
+        r["answer"]
         for r in enriched
-        if r["status"] == "included" and _answer(r) and not r["in_bank"]
+        if r["status"] == "included" and r["answer"] and not r["in_bank"]
     )
     return counts.most_common()
 
@@ -326,8 +350,9 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     lines += ["", "## in-bank 리트리벌 미스", ""]
     for r in misses:
         lines.append(
-            f"- {r['crop_ref']}: final={r['final_label']!r} draft={r['draft_label']!r} "
-            f"sim={r['top1_sim']:.3f} [{r['label_bucket']}] top5={r['top5_labels']}"
+            f"- {r['crop_ref']}: answer={r['answer']!r} (final={r['final_label']!r}) "
+            f"draft={r['draft_label']!r} sim={r['top1_sim']:.3f} [{r['label_bucket']}] "
+            f"top5={r['top5_labels']}"
         )
     if not misses:
         lines.append("- 없음")
@@ -439,7 +464,7 @@ def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -
         if r["job_id"] not in job_ids:
             continue
         lines.append(
-            f"- images/{r['crop_ref']}.png · final={r['final_label']!r} "
+            f"- images/{r['crop_ref']}.png · answer={r['answer']!r} (final={r['final_label']!r}) "
             f"draft={r['draft_label']!r} [{r['label_bucket']}/{r['amount_bucket']}] "
             f"supply={r['supply']} raw={r['amount_raw']!r}"
         )

@@ -173,6 +173,52 @@ def test_enrich_no_candidates_when_row_exists_but_top5_empty():
     assert enriched[0]["label_bucket"] == "no_candidates"
 
 
+# --- 정답원 통일 (spec §3-C) ---
+
+
+def test_enrich_buckets_by_canonical_label_not_final_label():
+    """회귀 — 검수자가 canonical을 정정한 쌍은 예측이 맞아도 out_of_bank로 오판됐다."""
+    pairs = [_pair(final_label="안가방", canonical_label="엔진오일")]
+    enriched = enrich_pairs(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])], BANK)
+    assert enriched[0]["label_bucket"] == "ok"
+    assert enriched[0]["in_bank"] is True
+    assert enriched[0]["final_label"] == "안가방"  # 표시·감사용으로 그대로 남는다
+
+
+def test_enrich_marks_no_canonical_label_as_unevaluable_without_falling_back():
+    # 폴백하면 방금 없앤 불일치가 되살아난다 — 정답이 없으면 채점이 성립하지 않는다.
+    pairs = [_pair(final_label="엔진오일", canonical_label=None)]
+    enriched = enrich_pairs(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])], BANK)
+    assert enriched[0]["label_bucket"] == "unevaluable"
+    assert enriched[0]["in_bank"] is False
+
+
+def test_enrich_treats_a_blank_canonical_label_like_a_missing_one():
+    enriched = enrich_pairs(
+        [_pair(canonical_label="   ")], [_job(rows=[_row(top5=[("엔진오일", 0.9)])])], BANK
+    )
+    assert enriched[0]["label_bucket"] == "unevaluable"
+    assert enriched[0]["in_bank"] is False
+    assert oob_label_counts(enriched) == []  # 공백 라벨이 뱅크 후보로 새지 않는다
+
+
+def test_item_bucket_prefers_row_missing_over_missing_answer():
+    """M1 회귀 — row_missing(데이터 정합 장애)은 answer 부재보다 먼저 판정돼야 한다.
+
+    curation_cohort.DATA_INTEGRITY_FAILURE_BUCKETS 계약: row_missing은 unevaluable로
+    삼켜지면 안 되고 실패로 남아야 한다(failures.jsonl·pull-images 소비).
+    """
+    pairs = [_pair(canonical_label=None, row_index=9, crop_ref="job-1/row-9")]
+    enriched = enrich_pairs(pairs, [_job(rows=[])], BANK)
+    assert enriched[0]["label_bucket"] == "row_missing"
+
+
+def test_oob_candidates_follow_the_canonical_label():
+    pairs = [_pair(final_label="엔진오일", canonical_label="중고")]
+    enriched = enrich_pairs(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])], BANK)
+    assert oob_label_counts(enriched) == [("중고", 1)]
+
+
 # --- 잡 플래그 / OOB 후보 / 요약 ---
 
 
@@ -236,41 +282,17 @@ def test_oob_label_counts_ignores_a_whitespace_only_label():
     assert oob_label_counts(recs) == []
 
 
-def test_oob_label_counts_falls_back_to_canonical_label_when_answer_key_is_absent():
-    """H1 — `answer` 생산자(Task 10)가 아직 없으므로 실제 프로덕션 행은 `answer` 키 자체가
-    없다. 위 테스트들처럼 `"answer": ""`를 주입하면 `dict.get`이 키 존재만으로 폴백을
-    건너뛰어 `canonical_label` 경로가 한 번도 실행되지 않는다(false guard) — 이 테스트는
-    키를 아예 빼서 실제 폴백을 강제한다.
-    """
-    recs = [{"status": "included", "in_bank": False, "canonical_label": "중고"}]
-    assert oob_label_counts(recs) == [("중고", 1)]
-
-
-def test_oob_label_counts_falls_back_and_strips_whitespace_only_canonical_label():
-    """H1 — 폴백 경로에서도 공백만인 라벨은 후보에 오르지 않는다(`.strip()` 회귀 포착)."""
-    recs = [{"status": "included", "in_bank": False, "canonical_label": "   "}]
-    assert oob_label_counts(recs) == []
-
-
-def test_oob_label_counts_falls_back_when_canonical_label_is_none():
-    """H1 — `answer` 키도 없고 `canonical_label`도 없는 행은 후보에서 빠진다."""
-    recs = [{"status": "included", "in_bank": False, "canonical_label": None}]
-    assert oob_label_counts(recs) == []
-
-
-def test_oob_label_counts_falls_back_when_answer_key_is_present_but_falsy():
-    """H1② — 우선순위는 키 존재 여부가 아니라 값의 유효성이어야 한다. `answer`가 빈
-    문자열이어도 `canonical_label`이 있으면 그것을 쓴다. `dict.get(key, default)`은 키가
-    있으면 값이 falsy여도 default를 쓰지 않으므로, 이 테스트는 그 형태에서는 RED다.
-    """
-    recs = [{"status": "included", "in_bank": False, "canonical_label": "중고", "answer": ""}]
-    assert oob_label_counts(recs) == [("중고", 1)]
-
-
 def test_summarize_computes_rates():
     pairs = [
         _pair(),
-        _pair(id=2, crop_ref="job-1/row-1", row_index=1, final_label="안가방", supply=50000),
+        _pair(
+            id=2,
+            crop_ref="job-1/row-1",
+            row_index=1,
+            final_label="안가방",
+            canonical_label="안가방",
+            supply=50000,
+        ),
     ]
     rows = [
         _row(top5=[("엔진오일", 0.9)]),
@@ -298,7 +320,16 @@ def test_render_report_handles_job_with_only_excluded_pairs():
 
 
 def test_render_report_smoke_contains_key_sections():
-    pairs = [_pair(), _pair(id=2, crop_ref="job-1/row-1", row_index=1, final_label="안가방")]
+    pairs = [
+        _pair(),
+        _pair(
+            id=2,
+            crop_ref="job-1/row-1",
+            row_index=1,
+            final_label="안가방",
+            canonical_label="안가방",
+        ),
+    ]
     rows = [_row(top5=[("엔진오일", 0.9)]), _row(idx=1, top5=[("드라이", 0.7)], supply=0, raw="0")]
     enriched = enrich_pairs(pairs, [_job(rows=rows)], BANK)
     md = render_report(enriched, {"fetched_at": "2026-07-27T00:00:00", "bank_distinct": 4})
@@ -317,7 +348,6 @@ def _enriched_row(**over):
         "job_id": 1,
         "crop_ref": "job-1/row-0",
         "status": "included",
-        "canonical_label": "안가방",
         "answer": "안가방",
         "final_label": "안가방",
         "draft_label": "안가방",
@@ -392,6 +422,22 @@ def test_render_report_shows_evaluable_denominators_and_no_none_sim_crash():
     assert "| 1 | 2 | 0/1 |" in md  # 잡별 top-1은 k/n 표기
     assert "job-1/row-1" in md  # 미스 목록엔 평가 가능 쌍만
     assert "job-1/row-0" not in md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
+
+
+def test_misses_list_prints_the_judged_answer_not_just_final_label():
+    """H1 회귀 — 버킷은 answer(canonical_label)로 매겨지므로 판정에 쓴 값을 함께 인쇄해야
+    한다. final만 찍으면 top5에 없는 라벨이 '정답'으로 읽혀 자기모순이 된다.
+    """
+    row = _enriched_row(
+        answer="엔진오일",
+        final_label="안가방",
+        label_bucket="top5_only",
+        top5_labels=["드라이", "엔진오일"],
+        top1_sim=0.7,
+    )
+    md = render_report([row], {"fetched_at": "t"})
+    misses = md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
+    assert "answer='엔진오일'" in misses
 
 
 def test_row_missing_pairs_stay_in_failures_and_pull_images():
