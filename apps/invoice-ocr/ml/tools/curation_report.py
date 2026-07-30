@@ -38,7 +38,7 @@ DEFAULT_CACHE = ML_ROOT / "results" / "curation"
 
 PAIR_COLS = (
     "id, crop_ref, job_id, row_index, draft_label, final_label, "
-    "canonical_label, supply, status, reviewed_at"
+    "canonical_label, supply, status, exclusion_reason, reviewed_at"
 )
 PAIRS_SQL = f"SELECT {PAIR_COLS} FROM training_pairs ORDER BY job_id, row_index"
 JOBS_SQL = (
@@ -74,6 +74,7 @@ def parse_pairs_tsv(text: str) -> list[dict]:
                 "canonical_label": _cell(d["canonical_label"]),
                 "supply": None if supply is None else int(supply),
                 "status": d["status"],
+                "exclusion_reason": _cell(d["exclusion_reason"]),
                 "reviewed_at": _cell(d["reviewed_at"]),
             }
         )
@@ -196,6 +197,28 @@ def summarize(enriched: list[dict]) -> dict:
     return {
         "n_included": len(inc),
         "n_excluded": sum(r["status"] == "excluded" for r in enriched),
+        # 사람 배제와 기계 자동 배제를 섞어 세면 배제율이 파이프라인 개선 신호로서의
+        # 의미를 잃는다(ADR 0006). 사유가 비어 있는 배제가 사람 판정이다.
+        "n_excluded_machine": sum(
+            r["status"] == "excluded" and r["exclusion_reason"] is not None for r in enriched
+        ),
+        "n_excluded_human": sum(
+            r["status"] == "excluded" and r["exclusion_reason"] is None for r in enriched
+        ),
+        # 기계가 배제했으나 사람이 되돌린 쌍 — 이 개수가 곧 빈 크롭 가드의 오탐률 관측치다
+        # (spec §6 세 번째 칸, ADR 0006 Consequences). 런북이 이 수치를 안내한다.
+        # 집계 조건(exclusion_reason is not None)은 소유 축이라 사유가 늘어도 유효하다.
+        # 다만 이 수를 "특정 가드"(예: 빈 크롭 가드)의 오탐으로 읽는 것은 사유 값 집합이
+        # blank_crop 단일인 동안만 참이다 — 사유가 여러 개로 늘면 여러 가드의 되돌림이
+        # 이 수치 하나에 섞인다(가드별 분해는 reverted_reason_counts 참조).
+        "n_reverted_machine": sum(
+            r["status"] == "included" and r["exclusion_reason"] is not None for r in enriched
+        ),
+        "reverted_reason_counts": Counter(
+            r["exclusion_reason"]
+            for r in enriched
+            if r["status"] == "included" and r["exclusion_reason"] is not None
+        ),
         "n_jobs": len({r["job_id"] for r in enriched}),
         "top1_hits": sum(r["label_bucket"] == "ok" for r in inc),
         "top5_hits": sum(r["label_bucket"] in ("ok", "top5_only") for r in inc),
@@ -226,7 +249,10 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         "# OCR 큐레이션 학습쌍 분석 리포트",
         "",
         f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
-        f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍",
+        f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍"
+        f"(기계 {s['n_excluded_machine']} / 사람 {s['n_excluded_human']})"
+        f" · 기계배제 되돌림 {s['n_reverted_machine']}쌍"
+        f"(오탐 관측치, 사유별 {dict(s['reverted_reason_counts'])})",
         f"- 뱅크: 임베딩 {meta.get('bank_size', '?')}개 / 라벨 {meta.get('bank_distinct', '?')}종",
         "",
         "## 핵심 지표",
@@ -239,6 +265,8 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         f"| in-bank 한정 top-1 | {_pct(s['in_bank_top1'], s['in_bank_n'])} |",
         f"| in-bank 한정 top-5 | {_pct(s['in_bank_top5'], s['in_bank_n'])} |",
         f"| 금액 일치 | {_pct(s['amount_ok'], s['amount_n'])} |",
+        f"| 빈 크롭 가드 오탐(되돌림/기계 판정) | "
+        f"{_pct(s['n_reverted_machine'], s['n_reverted_machine'] + s['n_excluded_machine'])} |",
         "",
         f"라벨 버킷: {dict(s['label_buckets'])}",
         f"금액 버킷: {dict(s['amount_buckets'])}",
@@ -293,12 +321,33 @@ def render_report(enriched: list[dict], meta: dict) -> str:
             f"{', '.join(flags.get(jid, [])) or '—'} |"
         )
 
-    excluded = [r for r in enriched if r["status"] == "excluded"]
-    if excluded:
-        lines += ["", "## excluded (검수자가 학습 제외 — 크롭 불량 신호)", ""]
+    machine_excluded = [
+        r for r in enriched if r["status"] == "excluded" and r["exclusion_reason"] is not None
+    ]
+    human_excluded = [
+        r for r in enriched if r["status"] == "excluded" and r["exclusion_reason"] is None
+    ]
+    if machine_excluded:
+        lines += ["", "## excluded — 기계 자동 배제 (사유 기록됨)", ""]
+        lines += [
+            f"- {r['crop_ref']}: [{r['exclusion_reason']}] final={r['final_label']!r} "
+            f"draft={r['draft_label']!r}"
+            for r in machine_excluded
+        ]
+    if human_excluded:
+        lines += ["", "## excluded — 사람 배제 (사유 미분류)", ""]
         lines += [
             f"- {r['crop_ref']}: final={r['final_label']!r} draft={r['draft_label']!r}"
-            for r in excluded
+            for r in human_excluded
+        ]
+    reverted = [
+        r for r in enriched if r["status"] == "included" and r["exclusion_reason"] is not None
+    ]
+    if reverted:
+        lines += ["", "## included — 기계 자동 배제를 사람이 되돌림 (오탐 관측치)", ""]
+        lines += [
+            f"- {r['crop_ref']}: [{r['exclusion_reason']}] final={r['final_label']!r}"
+            for r in reverted
         ]
 
     warp_jobs = [jid for jid, f in flags.items() if "warp_suspect" in f]
@@ -311,6 +360,7 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         f"- warp 재검토 대상 잡: {warp_jobs or '없음'} "
         "→ warped.png를 시각 검수해 warp 실패 여부 확인",
         f"- 리트리벌 미스 {len(misses)}건 → 해당 라벨 뱅크 프로토타입 보강 검토",
+        "- 참고: 실패 잡 수(`pull-images` 기본 대상)에는 기계 자동 배제가 포함된다.",
     ]
     return "\n".join(lines) + "\n"
 
@@ -400,6 +450,14 @@ def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
     jobs = json.loads((cache / "jobs.json").read_text())
     bank = json.loads((cache / "bank.json").read_text())
     meta = json.loads((cache / "meta.json").read_text())
+    # exclusion_reason 컬럼 신설 이전 fetch가 만든 pairs.json은 이 키가 없다. 조용히
+    # .get()으로 None 처리하면 사람/기계 배제·되돌림 집계가 모두 0으로 보여 오탐률을
+    # 숨기게 되므로, 구버전 캐시는 즉시 실패시켜 재동기화를 유도한다.
+    if pairs and "exclusion_reason" not in pairs[0]:
+        raise ValueError(
+            "pairs.json 캐시가 구버전입니다(exclusion_reason 키 없음) — "
+            "`uv run python -m tools.curation_report fetch`를 다시 실행하세요."
+        )
     return enrich_pairs(pairs, jobs, set(bank["counts"])), meta
 
 
