@@ -62,7 +62,10 @@ jobs:
           set -euo pipefail
           cd "$FRONTEND_DIR"
           npm ci
-          npm run build
+          # 콘텐츠 해시 청크를 지우지 않는다 — 배포 전에 열려 있던 탭이 아직 요청하지 않은
+          # 옛 page-*.js / jspdf 청크를 404 없이 받게 한다(설정을 소스에 두면 롤백 빌드가
+          # 이전 SHA를 체크아웃해 설정이 사라지므로 배포 스텝에서 강제한다).
+          npm run build -- --no-emptyOutDir
 
       - name: Restart LaunchAgent
         run: |
@@ -119,7 +122,7 @@ jobs:
           git checkout --force "$PREV"
           cd "$BACKEND_DIR" && uv sync --frozen && uv run python -c "from app.main import app; assert app"
           cd /Users/submini/sjmj-ai/"$FRONTEND_DIR"
-          npm ci && npm run build
+          npm ci && npm run build -- --no-emptyOutDir
           cd /Users/submini/sjmj-ai
           SJMJ_ENV_FILE="$SJMJ_ENV_FILE" scripts/install-launchagent.sh
           ok=0
