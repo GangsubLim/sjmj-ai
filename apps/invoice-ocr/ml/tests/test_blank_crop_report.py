@@ -2,23 +2,25 @@
 
 import pytest
 
-from tools.blank_crop_report import (
+from tools.blank_crop_calib import (
     STATUS_CROP_MISSING,
     STATUS_CROP_UNREADABLE,
     STATUS_OK,
-    PairUpdate,
-    apply_exit_code,
-    build_apply_script,
-    classify_affected,
     count_exact_zero_ink,
     crop_status,
     label_margin,
     load_labels,
+    read_labels_csv,
+    render_blank_report,
+)
+from tools.blank_crop_report import (
+    PairUpdate,
+    apply_exit_code,
+    build_apply_script,
+    classify_affected,
     parse_apply_output,
     parse_pairs_tsv,
     plan_updates,
-    read_labels_csv,
-    render_blank_report,
     select_targets,
 )
 
@@ -74,6 +76,28 @@ def test_parse_pairs_tsv_converts_types_and_null():
             "curation_reviewed": False,
         },
     ]
+
+
+@pytest.mark.parametrize(
+    "bad_ref",
+    [
+        "../../etc/passwd",
+        "job-3/../../row-1",
+        "job-3/row-1|깨는값",
+        "job-3/row-1\r",
+        "",
+    ],
+)
+def test_parse_pairs_tsv_rejects_crop_ref_outside_the_job_row_shape(bad_ref):
+    # M6: crop_ref는 crop_path가 `cache/crops/<ref>.png`로 조립하는 값이자 마크다운 표에
+    # 그대로 실리는 값이다 — DB 원문을 무검증으로 통과시키면 캐시 밖 파일의 잉크율로
+    # 판정이 갈리고(`../`), `|`·개행이 리포트 표를 깨뜨린다.
+    text = (
+        "id\tcrop_ref\tjob_id\tstatus\texclusion_reason\tcuration_reviewed\n"
+        f"7\t{bad_ref}\t3\tincluded\tNULL\t0"
+    )
+    with pytest.raises(ValueError, match="crop_ref"):
+        parse_pairs_tsv(text)
 
 
 # --- manifest 검증 (spec §7) ---
@@ -641,6 +665,21 @@ def test_build_apply_script_rejects_non_int_pair_id():
 def test_build_apply_script_rejects_non_int_job_id():
     with pytest.raises(ValueError):
         build_apply_script([_u(job_id="0; DROP TABLE training_pairs")])
+
+
+def test_build_apply_script_rejects_a_script_beyond_the_remote_argument_limit():
+    # M5: 조립된 스크립트는 통째로 `mysql ... -e <one arg>`에 실려 ssh argv로 나간다.
+    # 첫 실전 회차가 전 이력 일괄 배제라 쌍 수가 수천이면 ARG_MAX(1MiB)에 닿는다 —
+    # 청크 분할은 트랜잭션 원자성을 깨므로, 알 수 없는 E2BIG 대신 여기서 먼저 멈춘다.
+    updates = [_u(pair_id=i, job_id=1) for i in range(1, 4001)]
+    with pytest.raises(ValueError, match="상한"):
+        build_apply_script(updates)
+
+
+def test_build_apply_script_allows_a_realistic_batch():
+    # 상한이 현실적인 회차까지 막으면 도구가 첫 실전에서 못 쓰인다.
+    updates = [_u(pair_id=i, job_id=1) for i in range(1, 1001)]
+    assert build_apply_script(updates).startswith("START TRANSACTION;")
 
 
 # --- affected row 해석 ---

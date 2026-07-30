@@ -4,16 +4,22 @@
 분포와 판정을 전수 산출하고(report) 확정된 임계로 운영 DB에 자동 배제를 반영한다(apply).
 쓰기를 별 커맨드로 뗀 이유는 운영 DB 사고 방지다 — report를 눈으로 보고 apply를 친다.
 
-계층 분리는 warp_gate_report와 같다: 순수 계층(파싱·마진·렌더·SQL 조립·결과 해석)은
-단위테스트 대상이고, ssh/mysql 글루는 비대상이다.
+계층 분리는 warp_gate_report와 같다: 순수 계층(파싱·SQL 조립·계획·결과 해석)은 단위테스트
+대상이고, ssh/mysql 글루는 비대상이다. 캘리브레이션 축(라벨 manifest·마진·리포트 렌더)은
+`tools.blank_crop_calib`, 원격→캐시 동기화는 `tools.cache_sync`(warp_gate_report와 공유)에
+있다.
 
 Usage:
     uv run python -m tools.blank_crop_report fetch
     uv run python -m tools.blank_crop_report report --labels <labels.csv>
+    uv run python -m tools.blank_crop_report apply --dry-run
     uv run python -m tools.blank_crop_report apply [--recheck-reviewed] [--allow-holds]
 """
 
-import csv
+import argparse
+import json
+import re
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -24,9 +30,34 @@ from handwriting.blank_crop import (
     is_blank,
     is_machine_writable,
 )
+from tools.blank_crop_calib import (
+    HOLD_STATUSES,
+    STATUS_OK,
+    crop_status,
+    load_labels,
+    read_labels_csv,
+    render_blank_report,
+)
+from tools.cache_sync import (
+    invalidate_manifest,
+    load_cache_meta,
+    sync_remote_files,
+    write_manifest,
+)
+from tools.remote import (
+    ENV_BACKEND_ENV,
+    ENV_SSH_HOST,
+    ENV_WORKER_ENV,
+    env_or,
+    mysql_script,
+    run_ssh,
+)
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "blank_crop"
+
+PAIRS_NAME = "pairs.json"
+CROP_GLOB = "job-*/row-*.png"
 
 PAIRS_SQL = (
     "SELECT tp.id, tp.crop_ref, tp.job_id, tp.status, tp.exclusion_reason, j.curation_reviewed "
@@ -34,27 +65,45 @@ PAIRS_SQL = (
     "ORDER BY tp.job_id, tp.row_index"
 )
 
-STATUS_OK = "ok"
-STATUS_CROP_MISSING = "crop_missing"  # training_pairs 행은 있는데 crop PNG 없음
-STATUS_CROP_UNREADABLE = "crop_unreadable"  # PNG는 있으나 cv2.imread가 None (손상·권한)
-HOLD_STATUSES = (STATUS_CROP_MISSING, STATUS_CROP_UNREADABLE)
-
-LABEL_BLANK = "blank"
-LABEL_NONBLANK = "nonblank"
-LABEL_VALUES = (LABEL_BLANK, LABEL_NONBLANK)
-
 # SQL 리터럴로 나갈 수 있는 값의 닫힌 집합 — 축별로 따로 닫는다(사유 값이 status 자리에
 # 들어가도 SQL은 통과하지만 학습쌍 상태가 알 수 없는 값으로 뒤집히기 때문).
 ALLOWED_PAIR_STATUS = (STATUS_INCLUDED, STATUS_EXCLUDED)
 ALLOWED_EXCLUSION_REASON = (None, BLANK_CROP)
+
+# crop_ref는 경로 조립과 마크다운 셀로 동시에 나간다 — 두 문을 이 한 줄로 닫는다(M6).
+CROP_REF_RE = re.compile(r"job-\d+/row-\d+")
+
+# 조립된 스크립트는 통째로 `mysql ... -e <one arg>`에 실려 ssh argv로 나간다. macOS
+# ARG_MAX는 1MiB이고 거기엔 환경변수와 나머지 argv도 함께 들어가므로 1/4을 상한으로 둔다
+# (쌍당 약 210B → 대략 1,200쌍). 청크 분할은 트랜잭션 원자성을 깨므로 하지 않는다(M5).
+MAX_APPLY_SCRIPT_BYTES = 256 * 1024
 
 
 def _cell(value: str) -> str | None:
     return None if value == "NULL" else value
 
 
+def _crop_ref(value: str) -> str:
+    """DB의 crop_ref를 `job-<n>/row-<m>` 형태로 좁힌다(M6).
+
+    이 값은 두 문으로 동시에 나간다 — `crop_path`가 `cache/crops/<ref>.png`로 경로를
+    조립하고(`../`면 캐시 밖 파일의 잉크율로 판정이 갈린다), 리포트 표에 셀로 그대로
+    실린다(`|`·개행이 표를 깨뜨린다). 정규식 하나로 두 문을 함께 닫는다.
+
+    Raises:
+        ValueError: 형태가 어긋날 때.
+    """
+    if not CROP_REF_RE.fullmatch(value):
+        raise ValueError(f"crop_ref 형태가 아니다: {value!r} — 'job-<n>/row-<m>'만 허용")
+    return value
+
+
 def parse_pairs_tsv(text: str) -> list[dict]:
-    """mysql --batch TSV(training_pairs + 잡 검수 표식)를 dict 리스트로 파싱한다."""
+    """mysql --batch TSV(training_pairs + 잡 검수 표식)를 dict 리스트로 파싱한다.
+
+    Raises:
+        ValueError: id 축이 정수가 아니거나 crop_ref가 `job-<n>/row-<m>` 형태가 아닐 때.
+    """
     lines = text.strip().split("\n")
     header = lines[0].split("\t")
     out = []
@@ -65,7 +114,7 @@ def parse_pairs_tsv(text: str) -> list[dict]:
         out.append(
             {
                 "id": int(d["id"]),
-                "crop_ref": d["crop_ref"],
+                "crop_ref": _crop_ref(d["crop_ref"]),
                 "job_id": int(d["job_id"]),
                 "pair_status": d["status"],
                 "exclusion_reason": _cell(d["exclusion_reason"]),
@@ -78,220 +127,6 @@ def parse_pairs_tsv(text: str) -> list[dict]:
 def crop_path(cache: Path, crop_ref: str) -> Path:
     """crop_ref('job-42/row-0')에 대응하는 캐시 PNG 경로."""
     return cache / "crops" / f"{crop_ref}.png"
-
-
-REQUIRED_LABEL_COLUMNS = ("crop_ref", "label")
-
-
-def read_labels_csv(path: Path) -> list[dict]:
-    """labels.csv를 dict 행 리스트로 읽는다(crop_ref, label, 확인자, 확인일).
-
-    labels.csv는 사람이 Excel로 작성하는 파일이라 BOM·헤더 오타가 현실적이다.
-
-    Raises:
-        ValueError: 헤더에 crop_ref·label 컬럼이 없을 때. 없이 계속 읽으면 전 행의
-            ref가 빈 문자열로 붕괴해 진단이 인코딩이 아닌 엉뚱한 곳(캐시 불일치 등)을
-            가리킨다.
-    """
-    with path.open(encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        fieldnames = reader.fieldnames or []
-        missing = [col for col in REQUIRED_LABEL_COLUMNS if col not in fieldnames]
-        if missing:
-            raise ValueError(
-                f"labels.csv에 필수 컬럼이 없다({missing}) — 실제 헤더: {fieldnames}. "
-                "Excel 저장 시 인코딩(BOM)이나 컬럼명을 확인할 것."
-            )
-        return list(reader)
-
-
-def load_labels(rows: list[dict], known_refs: set[str]) -> dict[str, str]:
-    """육안 라벨 manifest를 검증해 ref→label 맵으로 만든다.
-
-    Raises:
-        ValueError: 캐시에 없는 crop_ref · 중복 crop_ref · 알 수 없는 label 값.
-            조용히 빠진 표본은 마진을 낙관적으로 만든다(spec §7).
-    """
-    labels: dict[str, str] = {}
-    for row in rows:
-        ref = (row.get("crop_ref") or "").strip()
-        label = (row.get("label") or "").strip()
-        if ref not in known_refs:
-            raise ValueError(f"labels.csv의 crop_ref가 캐시에 없다: {ref} — fetch를 다시 실행할 것")
-        if ref in labels:
-            raise ValueError(f"labels.csv에 crop_ref가 중복이다: {ref}")
-        if label not in LABEL_VALUES:
-            raise ValueError(f"labels.csv의 label 값이 잘못됐다({ref}): {label!r} — {LABEL_VALUES}")
-        labels[ref] = label
-    return labels
-
-
-def crop_status(*, exists: bool, readable: bool) -> str:
-    """`crop_ink_ratio` 호출 전에 판정 불가를 가른다(spec §8, Task 2 리뷰 이월).
-
-    `crop_ink_ratio(None)`은 `.size` 접근에서 `AttributeError`로 샌다 — 호출자(fetch/apply
-    글루)는 cv2.imread 결과가 None인지 이 함수로 먼저 가른 뒤에만 `crop_ink_ratio`를
-    부른다. 이 함수 자체는 cv2에 의존하지 않는 순수 분류다.
-
-    Args:
-        exists: crop_path가 가리키는 PNG가 캐시에 존재하는지.
-        readable: exists=True일 때 cv2.imread가 성공했는지(None이 아닌지).
-            exists=False면 이 값은 무의미하다.
-
-    Returns:
-        STATUS_CROP_MISSING · STATUS_CROP_UNREADABLE · STATUS_OK 중 하나.
-    """
-    if not exists:
-        return STATUS_CROP_MISSING
-    if not readable:
-        return STATUS_CROP_UNREADABLE
-    return STATUS_OK
-
-
-def label_margin(records: list[dict], labels: dict[str, str]) -> dict | None:
-    """라벨된 표본에서 정상최악 / 빈크롭최선 / 분리 마진(%)을 계산한다.
-
-    · 정상최악 = nonblank 라벨 중 잉크율이 가장 **낮은** 값
-    · 빈크롭최선 = blank 라벨 중 잉크율이 가장 **높은** 값
-    임계는 이 둘 사이에 두고, 마진은 gap을 정상최악으로 나눈 비율로 적는다
-    (warp_gate.py의 기존 임계 4종이 15.6~17.6% 마진).
-
-    라벨된 표본이 crop_missing/crop_unreadable로 보류돼 측정에서 빠지면 어떤
-    카운터에도 안 잡히고 조용히 사라진다 — 빠진 게 blank면 best_blank가 내려가
-    마진이 낙관적으로 커진다(load_labels의 fail-fast가 막으려던 spec §7과 같은 문제가
-    다른 문으로 들어온 것). `n_labeled_dropped`/`labeled_dropped_refs`로 드러낸다.
-
-    Returns:
-        한쪽 라벨군이 비면 None(마진 계산 불가). 아니면 아래 키를 담은 dict:
-        worst_normal, best_blank, gap, margin_pct, denom_fallback(정상최악=0이라
-        분모를 1.0으로 대체했는지), n_blank, n_nonblank, n_unlabeled(측정됐으나
-        라벨 없음), n_labeled_dropped/labeled_dropped_refs(라벨은 있으나 보류라
-        측정에서 빠진 건수·ref).
-    """
-    scored = [r for r in records if r["crop_status"] == STATUS_OK and r["ratio"] is not None]
-    scored_refs = {r["crop_ref"] for r in scored}
-    blank = [r["ratio"] for r in scored if labels.get(r["crop_ref"]) == LABEL_BLANK]
-    nonblank = [r["ratio"] for r in scored if labels.get(r["crop_ref"]) == LABEL_NONBLANK]
-    n_unlabeled = sum(1 for r in scored if r["crop_ref"] not in labels)
-    dropped_refs = tuple(sorted(ref for ref in labels if ref not in scored_refs))
-    if not blank or not nonblank:
-        return None
-    worst_normal, best_blank = min(nonblank), max(blank)
-    gap = worst_normal - best_blank
-    return {
-        "worst_normal": worst_normal,
-        "best_blank": best_blank,
-        "gap": gap,
-        "margin_pct": 100.0 * gap / (abs(worst_normal) or 1.0),
-        # 정상최악이 0이면 비율의 기준이 없어 분모를 1.0으로 대체한다 — 그때 margin_pct는
-        # 백분율이 아니라 gap의 절대값이다(warp_gate_report.py 관례와 동일).
-        "denom_fallback": not abs(worst_normal),
-        "n_blank": len(blank),
-        "n_nonblank": len(nonblank),
-        "n_unlabeled": n_unlabeled,
-        "n_labeled_dropped": len(dropped_refs),
-        "labeled_dropped_refs": dropped_refs,
-    }
-
-
-def count_exact_zero_ink(records: list[dict]) -> int:
-    """잉크율이 정확히 0.0인 측정 건수를 별도 집계한다(spec §8, Task 2 리뷰 이월 #2).
-
-    `_ink_mask`가 국소대비 기반이라 전면 클리핑·균일 크롭은 획이 있어도 잉크율이 0.0으로
-    붕괴할 수 있다 — "잉크 0"과 "측정 불가"가 같은 값으로 붙는다는 뜻이다. 파일은 멀쩡해
-    crop_unreadable 보류에도 걸리지 않는다. 여기서는 코드 동작을 바꾸지 않고 건수만
-    드러낸다 — 유의미하면 이후 퇴화 검사를 추가할 근거가 된다.
-    """
-    return sum(1 for r in records if r["crop_status"] == STATUS_OK and r["ratio"] == 0.0)
-
-
-def _render_margin_section(margin: dict | None, labels: dict[str, str]) -> list[str]:
-    if margin is None:
-        # 라벨 0건과 "한쪽뿐"은 원인이 다르다 — 같은 문구로 붕괴시키면 --labels를 안 준
-        # 것을 "반대쪽만 더 라벨하면 된다"로 오독하게 된다.
-        if not labels:
-            return [
-                "## 임계 선정 근거",
-                "",
-                "- 라벨된 표본이 0건이다 — --labels로 labels.csv를 지정할 것.",
-            ]
-        return [
-            "## 임계 선정 근거",
-            "",
-            "- 라벨된 표본이 한쪽(blank 또는 nonblank)뿐이라 마진을 계산할 수 없다 — "
-            "labels.csv를 보강할 것.",
-        ]
-    lines = [
-        "## 임계 선정 근거",
-        "",
-        f"- 정상최악(nonblank 최저 잉크율): {margin['worst_normal']:.5f} (n={margin['n_nonblank']})",
-        f"- 빈크롭최선(blank 최고 잉크율): {margin['best_blank']:.5f} (n={margin['n_blank']})",
-        f"- gap {margin['gap']:.5f} · 마진 {margin['margin_pct']:.1f}%"
-        f"{'*' if margin['denom_fallback'] else ''}",
-        f"- 라벨 없는 표본 {margin['n_unlabeled']}건(분포에만 실리고 근거로는 쓰지 않는다)",
-    ]
-    if margin["n_labeled_dropped"]:
-        lines.append(
-            f"- ⚠️ 라벨된 표본 {margin['n_labeled_dropped']}건이 측정 보류라 근거에서 "
-            f"빠졌다: {', '.join(margin['labeled_dropped_refs'])}"
-        )
-    if margin["denom_fallback"]:
-        lines += [
-            "",
-            "\\*: 정상최악값이 0이라 마진% 분모를 1.0으로 대체했다 — "
-            "백분율이 아니라 gap의 절대값이다.",
-        ]
-    if margin["gap"] <= 0:
-        lines += [
-            "",
-            "> ⚠️ 두 분포가 겹친다(gap ≤ 0) — 오탐 0을 우선해 보수적으로 잡는다. 배제된 "
-            "정상 쌍은 사람이 되돌리지 않으면 그대로 사라지지만, 오염은 큐레이션에서 "
-            "잡을 기회가 한 번 더 있다.",
-        ]
-    return lines
-
-
-def render_blank_report(
-    records: list[dict], labels: dict[str, str], meta: dict, threshold: float | None = None
-) -> str:
-    """잉크율 분포·판정·보류를 마크다운으로 렌더한다.
-
-    Args:
-        threshold: 확정된(또는 미확정인) `BLANK_INK_MAX`. 모듈 전역을 이 함수가 직접
-            읽지 않고 호출자(Task 10/11 CLI가 `handwriting.blank_crop`에서 읽어 넘김)가
-            주입한다 — 같은 인자로 호출하면 임계 확정 전후로 출력이 갈리지 않는다.
-    """
-    scored = [r for r in records if r["crop_status"] == STATUS_OK and r["ratio"] is not None]
-    holds = [r for r in records if r["crop_status"] in HOLD_STATUSES]
-    threshold_line = (
-        f"- 임계 BLANK_INK_MAX = {threshold:.5f}"
-        if threshold is not None
-        else "- 임계 BLANK_INK_MAX: 미확정"
-    )
-    lines = [
-        "# 빈 크롭 캘리브레이션 리포트",
-        "",
-        f"- 동기화: {meta.get('fetched_at', '?')} · 호스트 {meta.get('host', '?')}",
-        f"- 학습쌍 {len(records)} = 측정 {len(scored)} + 보류 {len(holds)}",
-        threshold_line,
-        f"- 잉크율 정확히 0.0인 표본 {count_exact_zero_ink(records)}건(참고 — 균일/클리핑 크롭에서 측정 자체가 붕괴했을 수 있다)",
-        "",
-        *_render_margin_section(label_margin(records, labels), labels),
-        "",
-        "## 잉크율 전수 (오름차순)",
-        "",
-        "| crop_ref | 잉크율 | 육안 라벨 | pair_status(DB) | 사유 | 검수완료 |",
-        "| --- | --- | --- | --- | --- | --- |",
-    ]
-    for r in sorted(scored, key=lambda x: x["ratio"]):
-        lines.append(
-            f"| {r['crop_ref']} | {r['ratio']:.5f} | {labels.get(r['crop_ref'], '—')} | "
-            f"{r['pair_status']} | {r['exclusion_reason'] or '—'} | "
-            f"{'Y' if r['curation_reviewed'] else '—'} |"
-        )
-    lines += ["", "## 보류 (판정 불가 — DB 미변경)", ""]
-    lines += [f"- {r['crop_ref']}: {r['crop_status']}" for r in holds] or ["- 없음"]
-    return "\n".join(lines) + "\n"
 
 
 @dataclass(frozen=True)
@@ -365,6 +200,38 @@ def plan_updates(records: list[dict], threshold: float) -> tuple[list[PairUpdate
     return updates, counts
 
 
+@dataclass(frozen=True)
+class ApplyPlan:
+    """apply 한 회차의 계획 — 대상·보류·UPDATE 계획·집계."""
+
+    targets: list[dict]
+    holds: list[dict]
+    updates: list[PairUpdate]
+    counts: dict[str, int]
+
+
+def plan_apply(records: list[dict], threshold: float, *, recheck_reviewed: bool) -> ApplyPlan:
+    """잡 단위 가드 → 보류 분리 → UPDATE 계획 순서를 코드로 고정한다(M3).
+
+    `plan_updates`는 `curation_reviewed`를 보지 않는다 — 검수 완료 잡 가드는 오직
+    `select_targets`를 **먼저** 부르는 것으로만 성립한다. 순서를 호출자 기억에 맡기면
+    빠뜨렸을 때 아무 증상 없이 검수 완료 잡을 기계가 쓴다. 보류도 전 레코드가 아니라
+    선택된 대상에서만 센다(기본 실행이 안 건드릴 잡의 보류로 게이트를 세우지 않는다).
+
+    Args:
+        records: `evaluate_cached`가 만든 측정 결과 전수.
+        threshold: 확정된 `BLANK_INK_MAX`.
+        recheck_reviewed: True면 검수 완료 잡까지 대상에 포함한다.
+
+    Returns:
+        ApplyPlan — 이 회차의 대상·보류·UPDATE 계획·집계.
+    """
+    targets = select_targets(records, recheck_reviewed=recheck_reviewed)
+    holds = [r for r in targets if r["crop_status"] in HOLD_STATUSES]
+    updates, counts = plan_updates(targets, threshold)
+    return ApplyPlan(targets=targets, holds=holds, updates=updates, counts=counts)
+
+
 def _status_lit(value: str) -> str:
     """pair status를 SQL 리터럴로 만든다(닫힌 집합 밖이면 즉시 실패 — 주입 표면 없음)."""
     if value not in ALLOWED_PAIR_STATUS:
@@ -418,7 +285,8 @@ def build_apply_script(updates: list[PairUpdate]) -> str:
         실행 가능한 SQL 스크립트. 계획이 비면 빈 문자열(쏠 것이 없다).
 
     Raises:
-        ValueError: status·사유가 닫힌 집합 밖이거나, pair_id/job_id가 int가 아닐 때(H1).
+        ValueError: status·사유가 닫힌 집합 밖이거나, pair_id/job_id가 int가 아닐 때(H1) ·
+            조립 결과가 `MAX_APPLY_SCRIPT_BYTES`를 넘을 때(M5).
     """
     if not updates:
         return ""
@@ -445,7 +313,17 @@ def build_apply_script(updates: list[PairUpdate]) -> str:
         "WHERE tp.job_id = ocr_jobs.id AND tp.reviewed_at IS NULL);"
     )
     parts.append("COMMIT;")
-    return "\n".join(parts) + "\n"
+    script = "\n".join(parts) + "\n"
+    size = len(script.encode())
+    if size > MAX_APPLY_SCRIPT_BYTES:
+        raise ValueError(
+            f"apply 스크립트가 상한을 넘었다({size}B > {MAX_APPLY_SCRIPT_BYTES}B, "
+            f"쌍 {len(updates)}건) — 이 스크립트는 `mysql -e <one arg>`로 실려 ssh argv와 "
+            "원격 셸 argv를 두 번 통과하므로 ARG_MAX(1MiB)에 걸린다. 청크로 쪼개면 "
+            "트랜잭션 원자성이 깨지므로 쪼개지 말 것: SQL을 argv가 아닌 stdin으로 "
+            "보내야 한다(run_ssh를 stdin 경유로 바꾸고 mysql도 heredoc으로 먹인다)."
+        )
+    return script
 
 
 def parse_apply_output(text: str) -> dict[int, int]:
@@ -495,10 +373,10 @@ def classify_affected(updates: list[PairUpdate], affected: dict[int, int]) -> di
 
 def apply_exit_code(
     holds: list[dict],
-    conflicts: list[int],
+    conflicts: Sequence[int],
     *,
     allow_holds: bool,
-    unknown: tuple[int, ...] = (),
+    unknown: Sequence[int] = (),
 ) -> int:
     """보류 또는 충돌(계획 밖 id 포함)이 있으면 비-0으로 끝난다.
 
@@ -512,3 +390,272 @@ def apply_exit_code(
     if holds and not allow_holds:
         return 1
     return 0
+
+
+def fetch_warnings(*, n_pairs: int, n_crops: int) -> list[str]:
+    """fetch 결과가 '조용한 빈 결과'인지 판별한다(L4).
+
+    `parse_pairs_tsv("")`는 `[]`를 돌려주므로 원격 질의가 빈 결과를 주면 리포트가 "학습쌍
+    0"으로 태연히 렌더된다 — 잘못된 DB를 봤다는 사실이 어디에도 안 남는다. 크롭 0도 같은
+    모양으로 전 쌍을 crop_missing 보류로 만든다. 두 축은 원인이 다르므로 따로 말한다
+    (warp_gate_report.fetch_all의 fetch 가드 선례).
+    """
+    warnings = []
+    if n_pairs == 0:
+        warnings.append(
+            "⚠️  training_pairs가 0건이다 — 원격 백엔드 env(DB_NAME 등)를 확인할 것. "
+            "리포트는 '학습쌍 0'으로 태연히 렌더된다."
+        )
+    if n_crops == 0:
+        warnings.append(
+            "⚠️  품목 크롭 PNG가 0건이다 — 원격 워커 env(SJMJ_DATA_DIR)를 확인할 것. "
+            "리포트는 전 쌍을 crop_missing 보류로 찍는다."
+        )
+    return warnings
+
+
+# ---------------------------------------------------------------------------
+# ssh/mysql 글루 + CLI (원격 접속 — 글루 자체는 단위테스트 비대상, 배선만 고정한다)
+# ---------------------------------------------------------------------------
+
+
+def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
+    """training_pairs 전수와 품목 크롭 PNG를 캐시로 동기화한다(DB 쓰기 없음)."""
+    cache.mkdir(parents=True, exist_ok=True)
+    # 중단 시 '새 크롭 + 옛 meta'라는 하이브리드 캐시가 남지 않도록 먼저 무효화한다(M2).
+    invalidate_manifest(cache, PAIRS_NAME)
+    pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL)).decode())
+    names = sync_remote_files(host, worker_env, pattern=CROP_GLOB, dest=cache / "crops")
+    meta = write_manifest(
+        cache, PAIRS_NAME, pairs, host=host, counts={"n_pairs": len(pairs), "n_crops": len(names)}
+    )
+    for line in fetch_warnings(n_pairs=meta["n_pairs"], n_crops=meta["n_crops"]):
+        print(line)
+    return meta
+
+
+def evaluate_cached(cache: Path, *, imread: Callable[[str], object] | None = None) -> list[dict]:
+    """캐시된 크롭에 잉크율을 매겨 record 리스트를 만든다.
+
+    Args:
+        cache: fetch가 채운 캐시 디렉터리.
+        imread: 이미지 리더 주입구(테스트의 Fake 어댑터). 기본값 None이면 이때만 cv2를
+            import해 `cv2.imread`를 쓴다 — 덕분에 이 평가 경로를 코어 venv에서도 테스트한다.
+
+    Returns:
+        pairs.json의 각 쌍에 `crop_status`·`ratio`를 더한 record 리스트.
+    """
+    from handwriting.blank_crop import crop_ink_ratio
+
+    if imread is None:
+        import cv2
+
+        imread = cv2.imread
+
+    pairs = json.loads((cache / PAIRS_NAME).read_text())
+    records = []
+    for p in pairs:
+        png = crop_path(cache, p["crop_ref"])
+        exists = png.exists()
+        # imread는 손상/권한 문제에서 예외 없이 None을 준다 → crop_ink_ratio(None)이
+        # AttributeError로 샌다. 잉크를 재기 전에 crop_status로 가른다(spec §8).
+        img = imread(str(png)) if exists else None
+        status = crop_status(exists=exists, readable=img is not None)
+        ratio = crop_ink_ratio(img) if status == STATUS_OK else None
+        records.append({**p, "crop_status": status, "ratio": ratio})
+    return records
+
+
+def _load_manifest(path: Path | None, known_refs: set[str]) -> dict[str, str]:
+    """labels.csv를 읽어 검증한다 — 순수 계층의 ValueError를 종료 코드로 바꾼다.
+
+    Raises:
+        SystemExit: manifest의 헤더·crop_ref·label 값이 캐시와 맞지 않을 때. 조용히 빠진
+            표본은 마진을 낙관적으로 만든다(spec §7).
+    """
+    if path is None:
+        return {}
+    try:
+        return load_labels(read_labels_csv(path), known_refs)
+    except ValueError as e:
+        raise SystemExit(f"labels.csv를 쓸 수 없다({path}): {e}") from e
+
+
+def _run_report(args: argparse.Namespace, meta: dict) -> None:
+    """캐시를 평가해 리포트를 렌더한다(DB 쓰기 없음)."""
+    from handwriting.blank_crop import BLANK_INK_MAX
+
+    records = evaluate_cached(args.cache)
+    labels = _load_manifest(args.labels, {r["crop_ref"] for r in records})
+    md = render_blank_report(records, labels, meta, threshold=BLANK_INK_MAX)
+    out = args.cache / "blank_crop_report.md"
+    out.write_text(md)
+    print(md)
+    print(f"저장: {out}")
+
+
+def require_same_host(meta: dict, host: str) -> None:
+    """캐시를 만든 호스트와 쓰기 대상 호스트가 같은지 대조한다(H2).
+
+    조건부 UPDATE의 `WHERE ... status = <seen>`에 실리는 seen 상태는 '**fetch한 DB에서**
+    본 상태'다. 스키마·id 채번이 같은 스테이징/운영 사이에서는 그 상태가 우연히 일치할 수
+    있어, 대조 없이 쏘면 다른 DB에서 본 근거로 운영 행을 뒤집는 일이 가능하다.
+
+    Raises:
+        SystemExit: meta의 호스트와 대상 호스트가 다를 때.
+    """
+    cached_host = meta.get("host")
+    if cached_host != host:
+        raise SystemExit(
+            f"캐시를 만든 호스트({cached_host})와 쓰기 대상({host})이 다르다 — 조건부 "
+            "UPDATE의 seen 상태는 fetch한 DB에서 본 값이라 그대로 쏘면 다른 DB에서 본 "
+            f"근거로 운영 행을 뒤집는다. `--host {host}`로 fetch를 다시 실행할 것."
+        )
+
+
+def recheck_extras(plan: ApplyPlan) -> dict[str, int]:
+    """`--recheck-reviewed`가 추가로 끌어들인 잡·쌍·변경 예정 건수(기본 실행이면 전부 0).
+
+    이 플래그는 파괴 범위를 넓히는데, 무엇이 몇 건 늘었는지 사전에 볼 방법이 없으면
+    운영자가 범위를 눈으로 확인할 수 없다.
+    """
+    pairs = [r for r in plan.targets if r["curation_reviewed"]]
+    jobs = {r["job_id"] for r in pairs}
+    return {
+        "jobs": len(jobs),
+        "pairs": len(pairs),
+        "updates": sum(1 for u in plan.updates if u.job_id in jobs),
+    }
+
+
+def plan_summary_lines(plan: ApplyPlan, *, host: str, backend_env: str) -> list[str]:
+    """쓰기 **전에** 보여줄 계획 요약 — 대상/보호/불변/변경 예정과 쓰기 대상 자체를 싣는다."""
+    extras = recheck_extras(plan)
+    lines = [
+        f"쓰기 대상: {host} · backend-env {backend_env}",
+        f"대상 {len(plan.targets)} · 보호 {plan.counts['protected']} · "
+        f"불변 {plan.counts['unchanged']} · 변경 예정 {len(plan.updates)} · "
+        f"보류 {len(plan.holds)}",
+    ]
+    if extras["pairs"]:
+        lines.append(
+            f"--recheck-reviewed로 추가된 잡 {extras['jobs']} · 쌍 {extras['pairs']} · "
+            f"변경 예정 {extras['updates']}"
+        )
+    return lines
+
+
+def _run_apply(args: argparse.Namespace, meta: dict) -> None:
+    """판정을 운영 DB에 반영한다(쓰기 — report를 눈으로 본 뒤에만 친다).
+
+    Args:
+        args: 파싱된 CLI 인자.
+        meta: 캐시 meta.json — 이 캐시를 만든 호스트를 쓰기 대상과 대조한다(H2).
+
+    Raises:
+        RuntimeError: 임계 미확정(캐시 평가·원격 접근보다 먼저 멈춘다, spec §8).
+        RemoteError: 원격 mysql이 비-0으로 끝났을 때. stdout의 ROW_COUNT 프로브는 COMMIT
+            앞에서 찍히므로 출력만으로 성공을 판정하면 거짓 안심이 된다(M4) — 성공 판정은
+            run_ssh의 비-0 종료 검사를 통과한 뒤에만 한다.
+        SystemExit: 캐시와 쓰기 대상 호스트가 다를 때 · 보류·충돌·계획 밖 id가 남았을 때
+            (비-0 종료, spec §8).
+    """
+    from handwriting.blank_crop import require_blank_ink_max
+
+    threshold = require_blank_ink_max()
+    require_same_host(meta, args.host)
+    backend_env = env_or(ENV_BACKEND_ENV)
+    plan = plan_apply(
+        evaluate_cached(args.cache), threshold, recheck_reviewed=args.recheck_reviewed
+    )
+    # 요약은 쓰기 **앞**에 찍는다 — 뒤에 있으면 원격이 죽었을 때 무엇을 쏘려 했는지도 남지 않는다.
+    for line in plan_summary_lines(plan, host=args.host, backend_env=backend_env):
+        print(line)
+    if args.dry_run:
+        print("--dry-run — 원격에 아무것도 쏘지 않고 끝낸다.")
+        return
+
+    result: dict[str, list[int]] = {"changed": [], "conflict": [], "unknown": []}
+    if plan.updates:
+        script = mysql_script(backend_env, build_apply_script(plan.updates))
+        result = classify_affected(
+            plan.updates, parse_apply_output(run_ssh(args.host, script).decode())
+        )
+
+    print(f"변경 {len(result['changed'])} · 충돌 {len(result['conflict'])}")
+    if result["conflict"]:
+        print(
+            f"⚠️  충돌(fetch 이후 사람이 PATCH함) — 재-fetch 후 다시 실행할 것: {result['conflict']}"
+        )
+    if result["unknown"]:
+        print(f"⚠️  계획에 없는 pair_id가 출력에 섞였다(stale/잘린 출력): {result['unknown']}")
+    for r in plan.holds:
+        print(f"⚠️  보류 {r['crop_status']}: {r['crop_ref']} (DB 미변경)")
+
+    code = apply_exit_code(
+        plan.holds,
+        result["conflict"],
+        allow_holds=args.allow_holds,
+        unknown=result["unknown"],
+    )
+    if code:
+        raise SystemExit(
+            f"보류 {len(plan.holds)}건 · 충돌 {len(result['conflict'])}건 · "
+            f"계획 밖 {len(result['unknown'])}건 — 보류는 크롭 재생성 또는 사람 배제로 해소"
+            "(무시하려면 --allow-holds), 충돌·계획 밖은 재-fetch 후 다시 실행할 것"
+        )
+
+
+def resolve_cache(cache: Path) -> Path:
+    """--cache를 절대경로로 굳히고 남의 디렉터리를 캐시로 지목하는 자해를 막는다.
+
+    무검증이면 `--cache ""`는 cwd, `--cache /`는 `/`가 되고 fetch가 그 안의 `crops/`를
+    통째로 rmtree 대상으로 삼는다. 비었거나 없는 디렉터리는 첫 fetch이므로 통과시키고,
+    내용이 있는데 이 도구의 산출이 하나도 없으면 거부한다(중단된 fetch로 매니페스트만
+    없는 상태는 `crops/`가 남아 있어 계속 통과한다).
+
+    Raises:
+        SystemExit: 이 도구의 캐시로 보이지 않는 비어 있지 않은 디렉터리일 때.
+    """
+    resolved = cache.resolve()
+    if not resolved.is_dir():
+        return resolved
+    owned = (PAIRS_NAME, "meta.json", "crops", "blank_crop_report.md")
+    if any(resolved.iterdir()) and not any((resolved / name).exists() for name in owned):
+        raise SystemExit(
+            f"--cache가 이 도구의 캐시가 아니다({resolved}) — fetch는 그 안의 crops/를 "
+            "통째로 지운다. 빈 디렉터리나 기존 캐시를 지정할 것."
+        )
+    return resolved
+
+
+def main(argv: list[str] | None = None) -> None:
+    """서브커맨드(fetch/report/apply)를 파싱해 실행한다."""
+    ap = argparse.ArgumentParser(prog="blank_crop_report", description=__doc__)
+    ap.add_argument("--host", default=env_or(ENV_SSH_HOST), help="ssh 호스트(별칭)")
+    ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help="로컬 캐시 디렉터리")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("fetch", help="training_pairs + 품목 크롭 PNG 동기화")
+    p_rep = sub.add_parser("report", help="캐시 평가 → blank_crop_report.md")
+    p_rep.add_argument("--labels", type=Path, help="육안 라벨 manifest(labels.csv)")
+    p_app = sub.add_parser("apply", help="판정을 운영 DB에 반영(쓰기)")
+    p_app.add_argument("--recheck-reviewed", action="store_true", help="검수 완료 잡까지 포함")
+    p_app.add_argument("--allow-holds", action="store_true", help="보류가 있어도 0으로 종료")
+    p_app.add_argument("--dry-run", action="store_true", help="계획만 출력하고 쓰지 않는다")
+    args = ap.parse_args(argv)
+    args.cache = resolve_cache(args.cache)
+
+    if args.cmd == "fetch":
+        meta = fetch_all(args.host, env_or(ENV_BACKEND_ENV), env_or(ENV_WORKER_ENV), args.cache)
+        print(f"동기화 완료 → {args.cache} (쌍 {meta['n_pairs']} · 크롭 {meta['n_crops']})")
+        return
+
+    meta = load_cache_meta(args.cache, PAIRS_NAME, tool="blank_crop_report")
+    if args.cmd == "report":
+        _run_report(args, meta)
+        return
+    _run_apply(args, meta)
+
+
+if __name__ == "__main__":
+    main()
