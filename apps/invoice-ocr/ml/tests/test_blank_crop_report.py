@@ -6,14 +6,23 @@ from tools.blank_crop_report import (
     STATUS_CROP_MISSING,
     STATUS_CROP_UNREADABLE,
     STATUS_OK,
+    PairUpdate,
+    apply_exit_code,
+    build_apply_script,
+    classify_affected,
     count_exact_zero_ink,
     crop_status,
     label_margin,
     load_labels,
+    parse_apply_output,
     parse_pairs_tsv,
+    plan_updates,
     read_labels_csv,
     render_blank_report,
+    select_targets,
 )
+
+THRESHOLD = 0.01
 
 
 def _rec(
@@ -23,11 +32,13 @@ def _rec(
     crop_status=STATUS_OK,
     pair_status="included",
     reason=None,
+    pair_id=1,
+    job_id=1,
 ):
     return {
-        "id": 1,
+        "id": pair_id,
         "crop_ref": crop_ref,
-        "job_id": 1,
+        "job_id": job_id,
         "pair_status": pair_status,
         "exclusion_reason": reason,
         "curation_reviewed": False,
@@ -359,3 +370,360 @@ def test_render_blank_report_omits_overlap_warning_when_gap_positive():
     labels = {"job-1/row-0": "blank", "job-1/row-1": "nonblank"}
     md = render_blank_report(records, labels, {"fetched_at": "t"})
     assert "겹친다" not in md
+
+
+# --- apply 계획: §6 불변식 2×2 전수 ---
+# 측정 축은 crop_status(ok/crop_missing/crop_unreadable), DB 축은 pair_status(included/excluded).
+# 보류 게이트는 crop_status로, 조건부 UPDATE의 WHERE는 pair_status로 판단해야 한다.
+
+
+def test_plan_updates_excludes_blank_pair_in_clean_state():
+    # 2×2 네 번째 칸: (included, NULL) = 정상 후보 → 새로 배제 가능.
+    updates, counts = plan_updates([_rec(ratio=0.001)], THRESHOLD)
+    assert [(u.new_status, u.new_reason) for u in updates] == [("excluded", "blank_crop")]
+    assert counts == {"protected": 0, "unchanged": 0}
+
+
+def test_plan_updates_carries_db_pair_status_into_seen_state():
+    # WHERE에 실리는 것은 DB 축(pair_status)이지 측정 축(crop_status='ok')이 아니다 —
+    # 한 글자 차이로 뒤집히면 사람 PATCH 충돌 검출이 통째로 무의미해진다.
+    updates, _ = plan_updates([_rec(ratio=0.001, pair_status="included", reason=None)], THRESHOLD)
+    assert (updates[0].seen_status, updates[0].seen_reason) == ("included", None)
+
+
+def test_plan_updates_reverts_machine_exclusion_and_clears_reason():
+    # 2×2 두 번째 칸: 기계가 자기 판정을 취소할 때 사유를 반드시 NULL로 지운다 —
+    # 남기면 세 번째 칸(사람이 되돌림)과 구분되지 않아 자기 정정 결과를 영구 보호해버린다.
+    rec = _rec(ratio=0.5, pair_status="excluded", reason="blank_crop")
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert [(u.new_status, u.new_reason) for u in updates] == [("included", None)]
+    assert (updates[0].seen_status, updates[0].seen_reason) == ("excluded", "blank_crop")
+    assert counts == {"protected": 0, "unchanged": 0}
+
+
+def test_plan_updates_never_touches_human_excluded_pair():
+    # 2×2 첫 번째 칸: (excluded, NULL) = 사람이 배제 → 어떤 경우에도 덮지 않는다.
+    rec = _rec(ratio=0.001, pair_status="excluded", reason=None)
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts["protected"] == 1
+    assert counts["unchanged"] == 0
+
+
+def test_plan_updates_never_touches_human_reverted_pair():
+    # 2×2 세 번째 칸: (included, blank_crop) = 사람이 되돌림 → 영구 보호(오탐 관측치).
+    rec = _rec(ratio=0.001, pair_status="included", reason="blank_crop")
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts["protected"] == 1
+    assert counts["unchanged"] == 0
+
+
+def test_plan_updates_counts_human_reverted_pair_as_protected_not_unchanged():
+    # 사람이 되돌린 쌍은 목표 상태(included, NULL)와 사유가 달라 '불변'이 아니다.
+    # 보호가 불변으로 집계되면 사람 판정을 덮지 않았다는 증거가 리포트에서 사라진다.
+    rec = _rec(ratio=0.5, pair_status="included", reason="blank_crop")
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts == {"protected": 1, "unchanged": 0}
+
+
+def test_plan_updates_skips_pairs_already_at_target():
+    # 이미 목표 상태인 쌍에는 쏘지 않는다 — 쏘면 affected 0이 충돌과 구분되지 않는다.
+    rec = _rec(ratio=0.001, pair_status="excluded", reason="blank_crop")
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts == {"protected": 0, "unchanged": 1}
+
+
+def test_plan_updates_skips_included_pair_that_is_not_blank():
+    rec = _rec(ratio=0.5, pair_status="included", reason=None)
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts == {"protected": 0, "unchanged": 1}
+
+
+def test_plan_updates_treats_ratio_at_threshold_as_blank():
+    # is_blank는 '이하'다 — 경계값이 반대로 붙으면 임계 근거(마진)와 어긋난다.
+    updates, _ = plan_updates([_rec(ratio=THRESHOLD)], THRESHOLD)
+    assert [(u.new_status, u.new_reason) for u in updates] == [("excluded", "blank_crop")]
+
+
+@pytest.mark.parametrize("hold", [STATUS_CROP_MISSING, STATUS_CROP_UNREADABLE])
+def test_plan_updates_skips_hold_records(hold):
+    # 보류는 계획에서 빠지고 DB에서 기존 상태 그대로 남는다 — 보호도 불변도 아니다.
+    rec = _rec(ratio=None, crop_status=hold, pair_status="included", reason=None)
+    updates, counts = plan_updates([rec], THRESHOLD)
+    assert updates == []
+    assert counts == {"protected": 0, "unchanged": 0}
+
+
+def test_plan_updates_maps_pair_and_job_ids():
+    rec = _rec(ratio=0.001, pair_id=42, job_id=7)
+    updates, _ = plan_updates([rec], THRESHOLD)
+    assert (updates[0].pair_id, updates[0].job_id) == (42, 7)
+
+
+def test_plan_updates_handles_mixed_records_asymmetrically():
+    # 배제 1 · 보호 2 · 불변 1 · 보류 1 — 개수가 서로 달라야 축이 뒤바뀐 구현을 잡는다.
+    records = [
+        _rec("job-1/row-0", ratio=0.001, pair_id=1),
+        _rec("job-1/row-1", ratio=0.001, pair_status="excluded", reason=None, pair_id=2),
+        _rec("job-1/row-2", ratio=0.001, pair_status="included", reason="blank_crop", pair_id=3),
+        _rec("job-1/row-3", ratio=0.5, pair_status="included", reason=None, pair_id=4),
+        _rec("job-1/row-4", ratio=None, crop_status=STATUS_CROP_MISSING, pair_id=5),
+    ]
+    updates, counts = plan_updates(records, THRESHOLD)
+    assert [u.pair_id for u in updates] == [1]
+    assert counts == {"protected": 2, "unchanged": 1}
+
+
+def test_plan_updates_is_idempotent_on_second_pass():
+    rec = _rec(ratio=0.001)
+    updates, _ = plan_updates([rec], THRESHOLD)
+    applied = {
+        **rec,
+        "pair_status": updates[0].new_status,
+        "exclusion_reason": updates[0].new_reason,
+    }
+    # 소소한 것: counts도 함께 고정해 "안 쏜다"의 근거(unchanged=1)를 완결한다 —
+    # updates == []만 보면 protected로 빠졌을 가능성과 구분되지 않는다.
+    updates2, counts2 = plan_updates([applied], THRESHOLD)
+    assert updates2 == []
+    assert counts2 == {"protected": 0, "unchanged": 1}
+
+
+# --- 잡 단위 가드 ---
+
+
+def test_select_targets_skips_reviewed_jobs_by_default():
+    # 비대칭(미검수 2 · 검수완료 1)으로 두어 '전부 통과'가 통과하지 않게 한다.
+    recs = [
+        _rec("job-1/row-0"),
+        _rec("job-2/row-0", job_id=2) | {"curation_reviewed": True},
+        _rec("job-3/row-0", job_id=3),
+    ]
+    assert [r["crop_ref"] for r in select_targets(recs, recheck_reviewed=False)] == [
+        "job-1/row-0",
+        "job-3/row-0",
+    ]
+
+
+def test_select_targets_includes_reviewed_jobs_when_rechecking():
+    recs = [
+        _rec("job-1/row-0"),
+        _rec("job-2/row-0", job_id=2) | {"curation_reviewed": True},
+        _rec("job-3/row-0", job_id=3),
+    ]
+    assert len(select_targets(recs, recheck_reviewed=True)) == 3
+
+
+# --- 조건부 UPDATE SQL 조립 ---
+
+
+def _u(**over):
+    base = {
+        "pair_id": 7,
+        "job_id": 3,
+        "seen_status": "included",
+        "seen_reason": None,
+        "new_status": "excluded",
+        "new_reason": "blank_crop",
+    }
+    return PairUpdate(**{**base, **over})
+
+
+_REVERT = {
+    "pair_id": 8,
+    "job_id": 5,
+    "seen_status": "excluded",
+    "seen_reason": "blank_crop",
+    "new_status": "included",
+    "new_reason": None,
+}
+
+
+def test_build_apply_script_emits_full_transaction_in_order():
+    # 전문 고정 — ROW_COUNT() 프로브는 자기 UPDATE 바로 뒤에 와야 하고(다른 문이 끼면
+    # 엉뚱한 문의 행수를 읽는다), 잡 표식 되돌림은 모든 쌍 UPDATE 뒤에 와야 한다.
+    sql = build_apply_script([_u(), _u(**_REVERT)])
+    assert sql == (
+        "START TRANSACTION;\n"
+        "UPDATE training_pairs SET status = 'excluded', exclusion_reason = 'blank_crop', "
+        "reviewed_at = NULL "
+        "WHERE id = 7 AND status = 'included' AND exclusion_reason <=> NULL;\n"
+        "SELECT 7 AS pair_id, ROW_COUNT() AS affected;\n"
+        "UPDATE training_pairs SET status = 'included', exclusion_reason = NULL, "
+        "reviewed_at = NULL "
+        "WHERE id = 8 AND status = 'excluded' AND exclusion_reason <=> 'blank_crop';\n"
+        "SELECT 8 AS pair_id, ROW_COUNT() AS affected;\n"
+        "UPDATE ocr_jobs SET curation_reviewed = FALSE WHERE id IN (3, 5) AND EXISTS ("
+        "SELECT 1 FROM training_pairs tp "
+        "WHERE tp.job_id = ocr_jobs.id AND tp.reviewed_at IS NULL);\n"
+        "COMMIT;\n"
+    )
+
+
+def test_build_apply_script_carries_seen_state_in_where():
+    sql = build_apply_script([_u()])
+    assert "WHERE id = 7 AND status = 'included'" in sql
+    assert "exclusion_reason <=> NULL" in sql  # `= NULL`은 항상 거짓이라 조용히 0행이 된다
+
+
+def test_build_apply_script_never_compares_reason_with_plain_equals():
+    # `AND exclusion_reason = NULL`이 한 번이라도 나오면 사유 NULL 쌍이 전부 0행이 된다.
+    sql = build_apply_script([_u(), _u(**_REVERT)])
+    assert "AND exclusion_reason = " not in sql
+
+
+def test_build_apply_script_uses_null_safe_compare_for_non_null_reason():
+    sql = build_apply_script([_u(seen_status="excluded", seen_reason="blank_crop")])
+    assert "exclusion_reason <=> 'blank_crop'" in sql
+
+
+def test_build_apply_script_nulls_reviewed_at_on_changed_pair():
+    # 잡 표식만 되돌리면 큐레이션 큐의 미처리 수(reviewed_at IS NULL)가 0으로 보여
+    # 사람이 '볼 것 없음'으로 읽는다 — 전수 재검사가 그대로 망가진다.
+    assert "reviewed_at = NULL " in build_apply_script([_u()])
+
+
+def test_build_apply_script_reverts_job_review_flag_only_for_jobs_with_unreviewed_pairs():
+    # 충돌만 있고 변경 0인 잡은 EXISTS가 거짓 → 표식 유지 → '미검수 + 미처리 0'이 안 생긴다.
+    sql = build_apply_script([_u(job_id=3), _u(pair_id=8, job_id=5)])
+    assert sql.startswith("START TRANSACTION;")
+    assert "UPDATE ocr_jobs SET curation_reviewed = FALSE WHERE id IN (3, 5) AND EXISTS (" in sql
+    assert "tp.reviewed_at IS NULL" in sql
+    assert sql.rstrip().endswith("COMMIT;")
+
+
+def test_build_apply_script_dedupes_and_sorts_job_ids():
+    sql = build_apply_script([_u(pair_id=7, job_id=5), _u(pair_id=8, job_id=3), _u(pair_id=9)])
+    assert "WHERE id IN (3, 5) AND EXISTS (" in sql
+
+
+def test_build_apply_script_emits_row_count_probe_per_pair():
+    sql = build_apply_script([_u()])
+    assert "SELECT 7 AS pair_id, ROW_COUNT() AS affected;" in sql
+
+
+def test_build_apply_script_is_empty_without_updates():
+    assert build_apply_script([]) == ""
+
+
+@pytest.mark.parametrize("field", ["new_status", "seen_status"])
+def test_build_apply_script_rejects_unknown_status_value(field):
+    with pytest.raises(ValueError):
+        build_apply_script([_u(**{field: "deleted"})])
+
+
+@pytest.mark.parametrize("field", ["new_status", "seen_status"])
+def test_build_apply_script_rejects_reason_value_in_status_field(field):
+    # 닫힌 집합은 축별로 닫혀야 한다 — 사유 값이 status에 들어가면 SQL은 통과하지만
+    # 학습쌍 상태가 알 수 없는 값으로 뒤집힌다.
+    with pytest.raises(ValueError):
+        build_apply_script([_u(**{field: "blank_crop"})])
+
+
+@pytest.mark.parametrize("field", ["new_reason", "seen_reason"])
+def test_build_apply_script_rejects_unknown_reason_value(field):
+    with pytest.raises(ValueError):
+        build_apply_script([_u(**{field: "bad_warp"})])
+
+
+def test_build_apply_script_rejects_non_int_pair_id():
+    # H1: pair_id는 status/reason과 달리 화이트리스트가 없어 f-string으로 그대로
+    # SQL에 실렸다 — "7 OR 1=1"이 WHERE 절 우선순위상 (included, NULL) 쌍 전수를
+    # 일괄 배제시킨다.
+    with pytest.raises(ValueError):
+        build_apply_script([_u(pair_id="7 OR 1=1")])
+
+
+def test_build_apply_script_rejects_non_int_job_id():
+    with pytest.raises(ValueError):
+        build_apply_script([_u(job_id="0; DROP TABLE training_pairs")])
+
+
+# --- affected row 해석 ---
+
+
+def test_parse_apply_output_maps_pair_to_affected():
+    # mysql --batch는 결과셋마다 헤더를 다시 찍는다. 변경 2 · 충돌 1로 비대칭을 둔다.
+    header = "pair_id\taffected"
+    text = f"{header}\n7\t1\n{header}\n8\t0\n{header}\n9\t1\n"
+    assert parse_apply_output(text) == {7: 1, 8: 0, 9: 1}
+
+
+def test_parse_apply_output_ignores_blank_lines():
+    assert parse_apply_output("pair_id\taffected\n\n7\t1\n\n") == {7: 1}
+
+
+def test_parse_apply_output_is_empty_for_empty_text():
+    assert parse_apply_output("") == {}
+
+
+def test_parse_apply_output_raises_clear_error_on_unparseable_line():
+    # M1: 경고 줄이 섞이거나 --batch가 아니면 `int()`의 원문 에러만 나와 원인(원격
+    # mysql이 --batch가 아님 / 경고가 stdout으로 샘)을 못 짚는다 — 원문 줄을 메시지에 싣는다.
+    text = "pair_id\taffected\nWarning: Using a password on the command line is insecure\n7\t1\n"
+    with pytest.raises(ValueError, match="apply 출력 해석 실패"):
+        parse_apply_output(text)
+
+
+def test_parse_apply_output_rejects_duplicate_pair_id():
+    # M2: 중복 pair_id를 마지막 값으로 덮으면 stale/잘린 출력이 섞였을 때 조용히 사라진다.
+    text = "pair_id\taffected\n7\t1\n7\t0\n"
+    with pytest.raises(ValueError, match="중복"):
+        parse_apply_output(text)
+
+
+def test_classify_affected_splits_changed_and_conflict():
+    updates = [_u(pair_id=7), _u(pair_id=8), _u(pair_id=9)]
+    out = classify_affected(updates, {7: 1, 8: 0, 9: 0})
+    assert out == {"changed": [7], "conflict": [8, 9], "unknown": []}
+
+
+def test_classify_affected_treats_missing_probe_as_conflict():
+    # 프로브 자체가 없으면(스크립트 중단 등) 적용됐다고 볼 근거가 없다.
+    assert classify_affected([_u(pair_id=7)], {}) == {
+        "changed": [],
+        "conflict": [7],
+        "unknown": [],
+    }
+
+
+def test_classify_affected_flags_ids_not_in_plan():
+    # M2: 계획에 없는 id가 프로브에 섞이면 지금까진 조용히 버려져 "충돌 0"이라는
+    # 거짓 안심이 나왔다 — stale/잘린 출력 혼입을 unknown으로 드러낸다.
+    updates = [_u(pair_id=1)]
+    out = classify_affected(updates, {1: 1, 999: 1})
+    assert out == {"changed": [1], "conflict": [], "unknown": [999]}
+
+
+# --- 보류·충돌 게이트 (spec §8) ---
+
+
+def test_apply_exit_code_is_non_zero_when_holds_exist():
+    assert apply_exit_code([_rec(crop_status=STATUS_CROP_MISSING)], [], allow_holds=False) != 0
+
+
+def test_apply_exit_code_is_zero_with_allow_holds():
+    assert apply_exit_code([_rec(crop_status=STATUS_CROP_MISSING)], [], allow_holds=True) == 0
+
+
+def test_apply_exit_code_is_non_zero_when_conflicts_exist():
+    # 충돌에는 우회 플래그가 없다 — 부분 적용 상태로 bank_update에 넘어가면 안 된다.
+    assert apply_exit_code([], [7], allow_holds=True) != 0
+
+
+def test_apply_exit_code_is_non_zero_when_unknown_ids_present():
+    # M2: 계획 밖 id(unknown)도 충돌과 동격으로 다룬다 — 우회 플래그를 두지 않는다.
+    assert apply_exit_code([], [], allow_holds=True, unknown=[999]) != 0
+
+
+def test_apply_exit_code_is_non_zero_for_conflicts_even_with_holds_allowed():
+    holds = [_rec(crop_status=STATUS_CROP_MISSING)]
+    assert apply_exit_code(holds, [7, 8], allow_holds=True) != 0
+
+
+def test_apply_exit_code_is_zero_when_clean():
+    assert apply_exit_code([], [], allow_holds=False) == 0

@@ -14,7 +14,16 @@ Usage:
 """
 
 import csv
+from dataclasses import dataclass
 from pathlib import Path
+
+from handwriting.blank_crop import (
+    BLANK_CROP,
+    STATUS_EXCLUDED,
+    STATUS_INCLUDED,
+    is_blank,
+    is_machine_writable,
+)
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CACHE = ML_ROOT / "results" / "blank_crop"
@@ -33,6 +42,11 @@ HOLD_STATUSES = (STATUS_CROP_MISSING, STATUS_CROP_UNREADABLE)
 LABEL_BLANK = "blank"
 LABEL_NONBLANK = "nonblank"
 LABEL_VALUES = (LABEL_BLANK, LABEL_NONBLANK)
+
+# SQL 리터럴로 나갈 수 있는 값의 닫힌 집합 — 축별로 따로 닫는다(사유 값이 status 자리에
+# 들어가도 SQL은 통과하지만 학습쌍 상태가 알 수 없는 값으로 뒤집히기 때문).
+ALLOWED_PAIR_STATUS = (STATUS_INCLUDED, STATUS_EXCLUDED)
+ALLOWED_EXCLUSION_REASON = (None, BLANK_CROP)
 
 
 def _cell(value: str) -> str | None:
@@ -278,3 +292,223 @@ def render_blank_report(
     lines += ["", "## 보류 (판정 불가 — DB 미변경)", ""]
     lines += [f"- {r['crop_ref']}: {r['crop_status']}" for r in holds] or ["- 없음"]
     return "\n".join(lines) + "\n"
+
+
+@dataclass(frozen=True)
+class PairUpdate:
+    """조건부 UPDATE 1건 — 캐시에서 본 상태(seen)와 목표 상태(new)를 함께 싣는다."""
+
+    pair_id: int
+    job_id: int
+    seen_status: str
+    seen_reason: str | None
+    new_status: str
+    new_reason: str | None
+
+
+def select_targets(records: list[dict], *, recheck_reviewed: bool) -> list[dict]:
+    """잡 단위 가드 — 검수 완료된 잡은 기계가 손대지 않는다(--recheck-reviewed로 해제)."""
+    if recheck_reviewed:
+        return list(records)
+    return [r for r in records if not r["curation_reviewed"]]
+
+
+def plan_updates(records: list[dict], threshold: float) -> tuple[list[PairUpdate], dict[str, int]]:
+    """판정을 §6 불변식에 통과시켜 조건부 UPDATE 계획으로 바꾼다.
+
+    측정 축(`crop_status`)과 DB 축(`pair_status`)은 다른 축이다 — 보류 게이트는 전자로,
+    조건부 UPDATE의 WHERE에 실리는 seen 상태는 후자로 판단한다.
+
+    보류(잉크율 없음)는 계획에서 빠지고 DB에서 기존 상태 그대로 남는다 — '보류'라는
+    세 번째 상태값은 존재하지 않는다(spec §8). 목표 상태가 캐시에서 본 상태와 같은 쌍에는
+    UPDATE를 쏘지 않는다: MySQL의 affected row는 실제로 바뀐 행 수라 no-op도 0을 내므로,
+    안 쏘는 쌍을 걸러야 affected 0이 언제나 충돌을 뜻하게 된다.
+
+    Args:
+        records: `select_targets`를 통과한 집합이어야 한다(M3) — 잡 단위 검수완료 가드는
+            여기서 다시 걸지 않는다. 순서를 빠뜨리면 검수 완료 잡을 기계가 조용히 쓴다.
+            그 외엔 fetch/측정이 끝난 레코드(`crop_status`·`ratio`·`pair_status`·
+            `exclusion_reason`·`id`·`job_id`).
+        threshold: 확정된 `BLANK_INK_MAX`.
+
+    Returns:
+        (계획, {"protected": 사람 판정이라 건드리지 않은 수, "unchanged": 이미 목표 상태인 수})
+    """
+    updates: list[PairUpdate] = []
+    counts: dict[str, int] = {"protected": 0, "unchanged": 0}
+    for r in records:
+        if r["crop_status"] != STATUS_OK or r["ratio"] is None:
+            continue
+        seen_status, seen_reason = r["pair_status"], r["exclusion_reason"]
+        if not is_machine_writable(seen_status, seen_reason):
+            counts["protected"] += 1
+            continue
+        if is_blank(r["ratio"], threshold):
+            new_status, new_reason = STATUS_EXCLUDED, BLANK_CROP
+        else:
+            # 기계가 자기 판정을 취소할 때 사유를 반드시 NULL로 지운다 — 남기면
+            # '사람이 되돌림' 칸과 구분되지 않아 자기 정정 결과를 영구 보호해버린다.
+            new_status, new_reason = STATUS_INCLUDED, None
+        if (new_status, new_reason) == (seen_status, seen_reason):
+            counts["unchanged"] += 1
+            continue
+        updates.append(
+            PairUpdate(
+                pair_id=r["id"],
+                job_id=r["job_id"],
+                seen_status=seen_status,
+                seen_reason=seen_reason,
+                new_status=new_status,
+                new_reason=new_reason,
+            )
+        )
+    return updates, counts
+
+
+def _status_lit(value: str) -> str:
+    """pair status를 SQL 리터럴로 만든다(닫힌 집합 밖이면 즉시 실패 — 주입 표면 없음)."""
+    if value not in ALLOWED_PAIR_STATUS:
+        raise ValueError(f"허용되지 않은 status 리터럴: {value!r} — {ALLOWED_PAIR_STATUS}")
+    return f"'{value}'"
+
+
+def _reason_lit(value: str | None) -> str:
+    """exclusion_reason을 SQL 리터럴로 만든다(NULL 포함 닫힌 집합)."""
+    if value not in ALLOWED_EXCLUSION_REASON:
+        raise ValueError(f"허용되지 않은 사유 리터럴: {value!r} — {ALLOWED_EXCLUSION_REASON}")
+    return "NULL" if value is None else f"'{value}'"
+
+
+def _id_lit(value: int) -> str:
+    """pair_id/job_id를 SQL 리터럴로 만든다(H1 — 정수 축도 문자열 축과 같이 닫는다).
+
+    `PairUpdate`의 `int` 타입힌트는 런타임에 강제되지 않는다 — 현재 유일한 생산 경로가
+    `parse_pairs_tsv`의 `int()`라 도달 불가일 뿐, 검증을 호출자 기억에만 맡기면 방어가
+    아니다. `bool`은 `int`의 서브클래스라 `isinstance(value, int)`만으로는 걸러지지
+    않으므로 별도로 배제한다.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ValueError(f"허용되지 않은 id 리터럴: {value!r} — int만 허용")
+    return str(value)
+
+
+def build_apply_script(updates: list[PairUpdate]) -> str:
+    """조건부 UPDATE + ROW_COUNT 프로브 + 잡 검수표식 되돌림을 한 트랜잭션으로 조립한다.
+
+    각 UPDATE는 캐시에서 본 상태를 WHERE에 실어 fetch~apply 사이의 사람 PATCH를 덮지 않는다
+    (파이썬 술어는 SELECT한 행에만 적용되므로 WHERE에 재표명하지 않으면 그 사이에 들어온
+    사람 PATCH를 덮는다). exclusion_reason 비교는 항상 `<=>`다 — `= NULL`은 항상 거짓이라
+    사유가 NULL인 쌍이 전부 조용히 0행이 된다.
+
+    잡 검수표식은 **미처리 쌍이 남은 잡만** 되돌린다(EXISTS로 SQL 안에서 유도) — spec §4③의
+    "판정이 바뀐 쌍을 가진 잡"을 근사 없이 충족한다. 조건부 UPDATE가 실제로 성공한 쌍에만
+    reviewed_at = NULL을 쓰므로, 뒤 시점의 '미처리 쌍이 있는 잡'은 곧 '판정이 바뀐 쌍이
+    있는 잡'이다. 충돌만 있고 변경 0인 잡은 조건이 거짓이 되어 표식이 유지되므로
+    '미검수 + 미처리 0'(사람이 "볼 것 없음"으로 읽는 상태)이 만들어지지 않는다.
+
+    ROW_COUNT 프로브는 전부 COMMIT 앞에서 출력된다(M4) — 교착·연결 끊김으로 COMMIT 자체가
+    실패해도 stdout엔 이미 `affected 1`이 찍혀 있어, 출력만 보면 "적용 성공"처럼 읽힐 수
+    있다. 원자성 자체는 문제없다(부분 적용 없음). **Task 11이 지켜야 할 계약**: apply 글루는
+    반드시 `tools/remote.py`의 `run_ssh`를 경유해 mysql 비-0 종료를 `RemoteError`로 올려야
+    하고, stdout 파싱 결과(`parse_apply_output`/`classify_affected`)만으로 성공 판정하지
+    말 것. sentinel(예: `SELECT 'committed'`)을 추가하면 이 문제를 없앨 수 있지만 파서와
+    동시 수정이 필요해 커플링이 생기므로 여기서는 하지 않는다.
+
+    Returns:
+        실행 가능한 SQL 스크립트. 계획이 비면 빈 문자열(쏠 것이 없다).
+
+    Raises:
+        ValueError: status·사유가 닫힌 집합 밖이거나, pair_id/job_id가 int가 아닐 때(H1).
+    """
+    if not updates:
+        return ""
+    parts = ["START TRANSACTION;"]
+    for u in updates:
+        pair_id_lit = _id_lit(u.pair_id)
+        parts.append(
+            "UPDATE training_pairs SET "
+            f"status = {_status_lit(u.new_status)}, "
+            f"exclusion_reason = {_reason_lit(u.new_reason)}, "
+            "reviewed_at = NULL "
+            f"WHERE id = {pair_id_lit} AND status = {_status_lit(u.seen_status)} "
+            f"AND exclusion_reason <=> {_reason_lit(u.seen_reason)};"
+        )
+        parts.append(f"SELECT {pair_id_lit} AS pair_id, ROW_COUNT() AS affected;")
+    job_id_set = {u.job_id for u in updates}
+    for jid in job_id_set:
+        _id_lit(jid)  # sorted()가 mixed-type 비교로 TypeError를 내기 전에 먼저 검증한다
+    job_ids = ", ".join(str(j) for j in sorted(job_id_set))
+    parts.append(
+        "UPDATE ocr_jobs SET curation_reviewed = FALSE "
+        f"WHERE id IN ({job_ids}) AND EXISTS ("
+        "SELECT 1 FROM training_pairs tp "
+        "WHERE tp.job_id = ocr_jobs.id AND tp.reviewed_at IS NULL);"
+    )
+    parts.append("COMMIT;")
+    return "\n".join(parts) + "\n"
+
+
+def parse_apply_output(text: str) -> dict[int, int]:
+    """ROW_COUNT 프로브 출력(TSV, 결과셋마다 헤더 반복)을 pair_id→affected로 파싱한다.
+
+    엄격 파싱을 택했다(M1) — 선례 `tools/bank_update.py`의 `parse_reviewed_job_ids`는
+    관용 파싱(`isdigit`으로 조용히 skip)이지만, 거긴 단순 조회고 여긴 실제 운영 DB에
+    반영된 UPDATE의 결과 확인이라 조용한 skip이 곧 거짓 안심("변경 성공")으로 직결된다.
+
+    Raises:
+        ValueError: 프로브 형식(`숫자\\t숫자`)이 아닌 줄을 만났을 때(경고 줄 혼입,
+            `--batch` 누락 등 — 원문 줄을 메시지에 실어 원인을 짚게 한다) · 같은
+            pair_id가 두 번 이상 나올 때(M2 — stale/잘린 출력 혼입을 조용히 덮지 않는다).
+    """
+    out: dict[int, int] = {}
+    for raw in text.strip().split("\n"):
+        line = raw.strip()
+        if not line or line.startswith("pair_id"):
+            continue
+        pid, _, affected = line.partition("\t")
+        try:
+            parsed_pid, parsed_affected = int(pid), int(affected)
+        except ValueError as e:
+            raise ValueError(f"apply 출력 해석 실패 — 프로브 형식이 아닌 줄: {raw!r}") from e
+        if parsed_pid in out:
+            raise ValueError(
+                f"apply 출력에 pair_id 중복: {parsed_pid} — stale 출력이 섞였을 수 있다"
+            )
+        out[parsed_pid] = parsed_affected
+    return out
+
+
+def classify_affected(updates: list[PairUpdate], affected: dict[int, int]) -> dict[str, list[int]]:
+    """affected row를 변경/충돌/미지로 가른다 — 안 쏜 쌍을 걸렀으므로 0은 언제나 충돌이다.
+
+    프로브 자체가 없는 쌍(스크립트 중단 등)도 적용됐다고 볼 근거가 없어 충돌로 센다.
+
+    unknown(M2): 계획(updates)에 없는 pair_id가 프로브에 나타난 경우다 — 지금까진 조용히
+    버려져 stale/잘린 출력이 섞여도 "충돌 0"이라는 거짓 안심이 나왔다.
+    """
+    planned_ids = {u.pair_id for u in updates}
+    changed = [u.pair_id for u in updates if affected.get(u.pair_id, 0) > 0]
+    conflict = [u.pair_id for u in updates if affected.get(u.pair_id, 0) <= 0]
+    unknown = sorted(pid for pid in affected if pid not in planned_ids)
+    return {"changed": changed, "conflict": conflict, "unknown": unknown}
+
+
+def apply_exit_code(
+    holds: list[dict],
+    conflicts: list[int],
+    *,
+    allow_holds: bool,
+    unknown: tuple[int, ...] = (),
+) -> int:
+    """보류 또는 충돌(계획 밖 id 포함)이 있으면 비-0으로 끝난다.
+
+    런북에서 apply는 bank_update의 앞 단계이므로(spec §5), 여기서 성공으로 끝나면 운영자가
+    부분 적용 상태로 뱅크 갱신에 넘어간다. 보류는 --allow-holds로 의도적 무시가 가능하지만
+    충돌·unknown에는 우회 플래그를 두지 않는다(M2) — 정확한 해소는 재-fetch 후 재실행이고,
+    도구가 멱등이라 재실행 비용이 낮다(spec §8).
+    """
+    if conflicts or unknown:
+        return 1
+    if holds and not allow_holds:
+        return 1
+    return 0
