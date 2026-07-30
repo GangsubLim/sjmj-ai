@@ -41,6 +41,7 @@ gh pr list --base main --state merged --limit 3
 ```
 
 - **devel → main 작업이 아직 main에 없으면**: 먼저 commit-push-pr로 devel→main PR을 merge한다.
+  PR 본문에 그간 종결된 이슈를 `Closes #N`으로 모두 나열한다(아래).
 - **이미 merge됨**: 그대로 진행. release 브랜치는 main에서 생성된다.
 
 ```bash
@@ -49,6 +50,18 @@ git log main..devel --oneline   # 빈 결과 = devel이 main보다 앞서지 않
 ```
 
 `git log main..devel`에 결과가 있으면 devel→main PR을 먼저 처리한다.
+
+> [!IMPORTANT]
+> devel→main PR 본문에 그간 종결된 이슈를 빠짐없이 `Closes #N`으로 나열한다.
+> 이슈가 여러 개면 키워드를 각각 반복한다 — `Closes #17`, `Closes #20`.
+
+```bash
+# 종결 대상 후보 — devel에 머지된 PR의 본문 closing 키워드([...])와 제목의 이슈 언급을 함께 훑는다
+gh pr list --base devel --state merged --limit 30 --json number,title,body \
+  --jq '.[] | "#\(.number) [\((.body // "") | [scan("(?i)(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?) +#[0-9]+")] | join(", "))] \(.title)"'
+```
+
+`[...]`가 빈 PR도 제목에 이슈가 언급될 수 있다(`(#22)`, `(Issue #18)`). 둘 다 확인한 뒤 `gh issue view <N>`으로 아직 열려 있는 것만 나열한다.
 
 ## Step 2: 버전 결정
 
