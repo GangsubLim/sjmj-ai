@@ -198,6 +198,16 @@ def is_item_evaluable(row: dict) -> bool:
     return row["label_bucket"] not in UNEVALUABLE_BUCKETS
 
 
+def is_amount_failure(row: dict) -> bool:
+    """금액 채점이 실패인지 판정한다 — 미기재(None)와 ok를 모두 걸러낸다.
+
+    금액 실패 판정이 두 자리(`is_item_failure`·`render_report`의 금액 실패 목록)에 각기
+    다른 문법으로 인라인되면, 한쪽에 예외가 붙는 순간 조용히 갈라진다 — 이 술어 하나로
+    양쪽이 같은 정의를 공유하게 한다.
+    """
+    return row["amount_bucket"] not in (None, "ok")
+
+
 def is_item_failure(row: dict) -> bool:
     """검수 대상 실패인지 판정한다 — 품목축·금액축·row_missing 세 조건의 **합집합**이다.
 
@@ -219,7 +229,7 @@ def is_item_failure(row: dict) -> bool:
     if row["label_bucket"] in DATA_INTEGRITY_FAILURE_BUCKETS:
         return True
     item_failed = is_item_evaluable(row) and row["label_bucket"] != "ok"
-    return item_failed or row["amount_bucket"] not in (None, "ok")
+    return item_failed or is_amount_failure(row)
 
 
 def enrich_pairs(pairs: list[dict], jobs: list[dict], bank: set[str]) -> list[dict]:
@@ -272,28 +282,49 @@ def job_flags(enriched: list[dict]) -> dict[int, list[str]]:
 
 
 def oob_label_counts(enriched: list[dict]) -> list[tuple[str, int]]:
-    """뱅크 부재(out_of_bank) 라벨의 빈도 내림차순 목록 — 뱅크 추가 후보."""
+    """정답 라벨이 현재 뱅크에 없는 included 쌍의 빈도 내림차순 — 뱅크 추가 후보.
+
+    성능 버킷(label_bucket)을 보지 않는다. 성능 측정은 *추론 시점 뱅크* 기준이어야 하지만
+    뱅크 추가 후보는 *현재 뱅크* 기준이어야 한다 — 이미 든 라벨을 또 추가할 수는 없다
+    (spec §1.2). 판정 불가 표본도 후보 집계에는 포함된다: "정답 라벨이 현재 뱅크에 없다"는
+    추론 시점과 무관한 사실이다. 버킷을 보면 판정 불가 표본이 unevaluable로 귀속되는 순간
+    후보 목록이 통째로 비어 개선 워크플로가 끊긴다.
+    """
+
+    def _answer(r: dict) -> str:
+        # `answer` 생산자(Task 10)가 아직 없어 실제 행에는 이 키가 없다. 우선순위는 키
+        # 존재 여부가 아니라 값의 유효성이어야 하므로 `dict.get(key, default)`이 아니라
+        # `or` 체인을 쓴다 — `answer`가 존재해도 falsy(빈 문자열 등)면 canonical_label로
+        # 넘어간다(H1: dict.get 형태는 키 존재만으로 폴백을 건너뛰는 false guard였다).
+        return r.get("answer") or (r.get("canonical_label") or "").strip()
+
     counts = Counter(
-        r["canonical_label"]
+        _answer(r)
         for r in enriched
-        if r["status"] == "included" and r["label_bucket"] == "out_of_bank"
+        if r["status"] == "included" and _answer(r) and not r["in_bank"]
     )
     return counts.most_common()
 
 
 def summarize(enriched: list[dict]) -> dict:
-    """included 쌍에 대한 핵심 지표(라벨 top1/top5·in-bank 분해·금액 정확도)를 집계한다."""
+    """included 쌍의 핵심 지표를 집계한다 — 품목 지표는 평가 가능 쌍만 분모로 쓴다.
+
+    금액 지표는 품목 평가 가능성과 무관하다(두 축이 독립이고 금액 버킷은 뱅크와 무관하다).
+    label_buckets는 included 전체 분포를 유지한다 — unevaluable이 몇 건인지 보여야 한다.
+    """
     inc = [r for r in enriched if r["status"] == "included"]
-    in_bank = [r for r in inc if r["in_bank"]]
+    ev = [r for r in inc if is_item_evaluable(r)]
+    in_bank = [r for r in ev if r["in_bank"]]
     amounts = [r for r in inc if r["amount_bucket"] is not None]
-    hit_sims = [r["top1_sim"] for r in inc if r["label_bucket"] == "ok" and r["top1_sim"]]
-    miss_sims = [r["top1_sim"] for r in inc if r["label_bucket"] != "ok" and r["top1_sim"]]
+    hit_sims = [r["top1_sim"] for r in ev if r["label_bucket"] == "ok" and r["top1_sim"]]
+    miss_sims = [r["top1_sim"] for r in ev if r["label_bucket"] != "ok" and r["top1_sim"]]
     return {
         "n_included": len(inc),
+        "n_item_evaluable": len(ev),
         "n_excluded": sum(r["status"] == "excluded" for r in enriched),
         "n_jobs": len({r["job_id"] for r in enriched}),
-        "top1_hits": sum(r["label_bucket"] == "ok" for r in inc),
-        "top5_hits": sum(r["label_bucket"] in ("ok", "top5_only") for r in inc),
+        "top1_hits": sum(r["label_bucket"] == "ok" for r in ev),
+        "top5_hits": sum(r["label_bucket"] in ("ok", "top5_only") for r in ev),
         "in_bank_n": len(in_bank),
         "in_bank_top1": sum(r["label_bucket"] == "ok" for r in in_bank),
         "in_bank_top5": sum(r["label_bucket"] in ("ok", "top5_only") for r in in_bank),
@@ -312,25 +343,17 @@ def _pct(k: int, n: int) -> str:
     return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
 
 
-def render_report(enriched: list[dict], meta: dict) -> str:
-    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
-    s = summarize(enriched)
-    flags = job_flags(enriched)
-    inc = [r for r in enriched if r["status"] == "included"]
+def _render_key_metrics(s: dict) -> list[str]:
+    """핵심 지표 표 + 유사도 통계 줄을 렌더한다(render_report에서 순수 추출, M3)."""
     lines = [
-        "# OCR 큐레이션 학습쌍 분석 리포트",
-        "",
-        f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
-        f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍",
-        f"- 뱅크: 임베딩 {meta.get('bank_size', '?')}개 / 라벨 {meta.get('bank_distinct', '?')}종",
-        "",
         "## 핵심 지표",
         "",
         "| 지표 | 값 |",
         "| --- | --- |",
-        f"| 품목 top-1 | {_pct(s['top1_hits'], s['n_included'])} |",
-        f"| 품목 top-5 | {_pct(s['top5_hits'], s['n_included'])} |",
-        f"| 정답이 뱅크에 존재(in-bank) | {_pct(s['in_bank_n'], s['n_included'])} |",
+        f"| 품목 top-1 (평가 가능 쌍 기준) | {_pct(s['top1_hits'], s['n_item_evaluable'])} |",
+        f"| 품목 top-5 (평가 가능 쌍 기준) | {_pct(s['top5_hits'], s['n_item_evaluable'])} |",
+        "| 정답이 뱅크에 존재(현재 뱅크 기준 · 평가 가능 쌍 분모) | "
+        f"{_pct(s['in_bank_n'], s['n_item_evaluable'])} |",
         f"| in-bank 한정 top-1 | {_pct(s['in_bank_top1'], s['in_bank_n'])} |",
         f"| in-bank 한정 top-5 | {_pct(s['in_bank_top5'], s['in_bank_n'])} |",
         f"| 금액 일치 | {_pct(s['amount_ok'], s['amount_n'])} |",
@@ -344,6 +367,48 @@ def render_report(enriched: list[dict], meta: dict) -> str:
             f"top1 유사도 — 적중 평균 {s['hit_sim_mean']:.3f}(min {s['hit_sim_min']:.3f}) vs "
             f"미스 평균 {s['miss_sim_mean']:.3f}(max {s['miss_sim_max']:.3f})",
         ]
+    return lines
+
+
+def _render_job_table(
+    enriched: list[dict], inc: list[dict], flags: dict[int, list[str]]
+) -> list[str]:
+    """잡별 요약 표를 렌더한다(render_report에서 순수 추출, M3)."""
+    lines = [
+        "",
+        "## 잡별 요약",
+        "",
+        "| job | pairs | top1 | 금액ok | 플래그 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for jid in sorted({r["job_id"] for r in enriched}):
+        recs = [r for r in inc if r["job_id"] == jid]
+        ev = [r for r in recs if is_item_evaluable(r)]
+        amts = [r for r in recs if r["amount_bucket"] is not None]
+        # top-1을 k/n으로 적는다 — 0/n으로 적히면 판정 불가 잡이 전패로 오독된다.
+        lines.append(
+            f"| {jid} | {len(recs)} | "
+            f"{sum(r['label_bucket'] == 'ok' for r in ev)}/{len(ev)} | "
+            f"{sum(r['amount_bucket'] == 'ok' for r in amts)}/{len(amts)} | "
+            f"{', '.join(flags.get(jid, [])) or '—'} |"
+        )
+    return lines
+
+
+def render_report(enriched: list[dict], meta: dict) -> str:
+    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
+    s = summarize(enriched)
+    flags = job_flags(enriched)
+    inc = [r for r in enriched if r["status"] == "included"]
+    lines = [
+        "# OCR 큐레이션 학습쌍 분석 리포트",
+        "",
+        f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
+        f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍",
+        f"- 뱅크: 임베딩 {meta.get('bank_size', '?')}개 / 라벨 {meta.get('bank_distinct', '?')}종",
+        "",
+    ]
+    lines += _render_key_metrics(s)
 
     lines += ["", "## 뱅크 추가 후보 (out_of_bank 라벨)", ""]
     oob = oob_label_counts(enriched)
@@ -352,7 +417,11 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     else:
         lines.append("- 없음")
 
-    misses = [r for r in inc if r["label_bucket"] in ("top5_only", "in_bank_miss")]
+    misses = [
+        r
+        for r in inc
+        if is_item_evaluable(r) and r["label_bucket"] in ("top5_only", "in_bank_miss")
+    ]
     lines += ["", "## in-bank 리트리벌 미스", ""]
     for r in misses:
         lines.append(
@@ -362,7 +431,7 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     if not misses:
         lines.append("- 없음")
 
-    amt_fail = [r for r in inc if r["amount_bucket"] is not None and r["amount_bucket"] != "ok"]
+    amt_fail = [r for r in inc if is_amount_failure(r)]
     lines += ["", "## 금액 실패", ""]
     for r in amt_fail:
         lines.append(
@@ -372,21 +441,7 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     if not amt_fail:
         lines.append("- 없음")
 
-    lines += [
-        "",
-        "## 잡별 요약",
-        "",
-        "| job | pairs | top1 | 금액ok | 플래그 |",
-        "| --- | --- | --- | --- | --- |",
-    ]
-    for jid in sorted({r["job_id"] for r in enriched}):
-        recs = [r for r in inc if r["job_id"] == jid]
-        amts = [r for r in recs if r["amount_bucket"] is not None]
-        lines.append(
-            f"| {jid} | {len(recs)} | {sum(r['label_bucket'] == 'ok' for r in recs)} | "
-            f"{sum(r['amount_bucket'] == 'ok' for r in amts)}/{len(amts)} | "
-            f"{', '.join(flags.get(jid, [])) or '—'} |"
-        )
+    lines += _render_job_table(enriched, inc, flags)
 
     excluded = [r for r in enriched if r["status"] == "excluded"]
     if excluded:
@@ -470,7 +525,14 @@ def pull_images(
 
 
 def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -> Path:
-    """가져온 크롭을 검수할 때 참조할 ref→파일→라벨 인덱스를 만든다."""
+    """가져온 크롭을 검수할 때 참조할 ref→파일→라벨 인덱스를 만든다.
+
+    M6: 판정 술어(`is_item_evaluable`/`is_item_failure`)로 거르지 않고 그 잡의 행 전량을
+    나열한다 — 이 함수는 spec §3-C 소비자 표(5곳)에 없다. plan Task 8 Step 5 Self-Review
+    항목 ②가 "`_write_images_index`는 표시용이라 술어를 쓰지 않는다(의도)"라고 명시했다.
+    `pull-images`로 당겨온 잡은 검수자가 크롭을 육안으로 보며 판정하므로, 판정 불가 행도
+    같이 보여야 "이 행이 왜 판정 불가인지"를 그 자리에서 확인할 수 있다.
+    """
     lines = ["# 큐레이션 크롭 검수 인덱스", ""]
     for r in enriched:
         if r["job_id"] not in job_ids:
@@ -499,14 +561,13 @@ def _load_enriched(cache: Path) -> tuple[list[dict], dict]:
 
 
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
+    """pull-images 기본 대상 — 검수 대상 실패가 있는 잡 + excluded가 있는 잡.
+
+    판정 불가만 있는 잡은 당기지 않는다(전 잡 폭주 방지). 재평가 전에는 금액 실패·excluded
+    기반 검수 루프만 돌고, 품목 크롭 검수는 재평가 이후에 의미가 생긴다(spec §5).
+    """
     return sorted(
-        {
-            r["job_id"]
-            for r in enriched
-            if r["status"] == "excluded"
-            or r["label_bucket"] != "ok"
-            or (r["amount_bucket"] not in (None, "ok"))
-        }
+        {r["job_id"] for r in enriched if r["status"] == "excluded" or is_item_failure(r)}
     )
 
 
@@ -537,11 +598,9 @@ def main(argv: list[str] | None = None) -> None:
         report = render_report(enriched, meta)
         report_path = args.cache / "report.md"
         report_path.write_text(report)
-        failures = [
-            r
-            for r in enriched
-            if r["label_bucket"] != "ok" or (r["amount_bucket"] not in (None, "ok"))
-        ]
+        # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
+        # 산출물에 그대로 남는다(spec §3-C).
+        failures = [r for r in enriched if is_item_failure(r)]
         fail_path = args.cache / "failures.jsonl"
         fail_path.write_text(
             "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
