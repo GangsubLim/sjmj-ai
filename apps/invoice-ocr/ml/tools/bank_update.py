@@ -374,7 +374,10 @@ def _pct(k: int, n: int) -> str:
 AXES = ("crop_ref", "invoice")
 AXIS_TITLES = {
     "crop_ref": "crop_ref (쿼리 자신만 제외)",
-    "invoice": "invoice (같은 전표 전체 제외)",
+    # 전표 판정은 뱅크 inv 열이며 key와 inv는 네임스페이스가 둘이다(부트스트랩
+    # '2025-08-18_inv011.jpg' vs 큐레이션 'job-42'). 큐레이션 쿼리의 inv는 부트스트랩 항목과
+    # 절대 일치하지 않으므로 "전표 전체"로 읽히면 과대 약속이다 — 제목은 기준을 그대로 적는다.
+    "invoice": "invoice (뱅크 inv 열이 같은 항목 전체 제외)",
 }
 
 
@@ -385,7 +388,9 @@ def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
     비교해야 할 축은 before↔after이지 crop_ref↔invoice가 아니다(spec §4).
     """
     rows = [
-        ("커버리지 in-bank(self 포함)", "in_bank", "n"),
+        # 두 축이 같은 값이다(in_bank은 제외와 무관하게 label in labs). "self 포함"은 축이
+        # crop_ref뿐이던 시절의 표현이라 invoice 표에서 실제보다 좁게 읽힌다.
+        ("커버리지 in-bank(제외 무관)", "in_bank", "n"),
         ("커버리지 out_of_bank", "out_of_bank", "n"),
         ("제외 후 top-1", "top1", "n"),
         ("제외 후 top-5", "top5", "n"),
@@ -783,15 +788,19 @@ def cmd_apply(args) -> None:
 def _axis_excluded(axis: str, keys: list[str], invs: list[str], self_ref: str) -> set[int]:
     """축 이름 → 제외 집합. invoice 축에도 self_ref를 함께 넘겨 자기 제외를 보장한다(D4).
 
+    분기를 축마다 명시하고 끝에서 던진다 — `axis not in AXES`만 걸러 crop_ref로 흘려보내면
+    AXES에 세 번째 축을 추가하고 여기 분기를 빠뜨린 경우를 못 막는다(그 축은 crop_ref 숫자를
+    다른 이름표로 달고 조용히 산출되며, 레코드 수 side×axis×쌍은 그대로 맞아 §4 유일키·개수
+    단언도 통과한다).
+
     Raises:
-        ValueError: axis가 AXES에 없을 때. 검사가 없으면 미지의 축이 crop_ref로 조용히
-            채점돼(spec §3-D3) 세 번째 축을 추가하고 레코드 수만 맞추면 통과해버린다.
+        ValueError: 분기가 배선되지 않은 축 이름(미지의 축 · AXES에만 추가된 축 모두).
     """
-    if axis not in AXES:
-        raise ValueError(f"미지의 제외 축 {axis!r} — AXES에 없음: {AXES}")
+    if axis == "crop_ref":
+        return excluded_indices(keys, invs, self_ref=self_ref)
     if axis == "invoice":
         return excluded_indices(keys, invs, self_ref=self_ref, self_inv=inv_of(self_ref))
-    return excluded_indices(keys, invs, self_ref=self_ref)
+    raise ValueError(f"미지의 제외 축 {axis!r} — 분기가 배선되지 않았다(AXES={AXES})")
 
 
 def cmd_score(args) -> None:

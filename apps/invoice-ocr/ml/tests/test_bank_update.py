@@ -813,15 +813,32 @@ def test_excluded_indices_rejects_mismatched_keys_and_invs_lengths():
         excluded_indices(_BOOT_KEYS, _BOOT_INVS[:2], self_ref="2025-08-18_inv011_0")
 
 
-def test_axis_excluded_rejects_an_axis_outside_axes():
-    """§3-D3 — 미지의 축 이름을 crop_ref로 조용히 채점하지 않는다(fail-fast).
+def test_axis_excluded_rejects_an_axis_with_no_branch_wired(monkeypatch):
+    """§3-D3 — 분기가 없는 축을 crop_ref로 조용히 채점하지 않는다(fail-fast).
 
-    이 파일의 인접 관용구(excluded_indices·topk_dedup)는 모두 잘못된 입력을 ValueError로
-    거부한다. 세 번째 축을 추가하고 기대 레코드 수만 맞추면 그 축이 crop_ref 숫자를 다른
-    이름표로 달고 조용히 산출되는 실패 유형을 막는다.
+    AXES 화이트리스트만 검사하면 **AXES에 추가했지만 분기를 빠뜨린** 축이 통과해 crop_ref
+    숫자를 다른 이름표로 달고 산출된다. 레코드 수(side×axis×쌍)는 그대로 맞아 §4 유일키·개수
+    단언도 못 잡으므로, 여기서 AXES에 있는 미배선 축까지 거부하는지 본다.
     """
     with pytest.raises(ValueError, match="미지의 제외 축"):
         _axis_excluded("bogus", _BOOT_KEYS, _BOOT_INVS, "2025-08-18_inv011_0")
+
+    monkeypatch.setattr("tools.bank_update.AXES", ("crop_ref", "invoice", "writer"))
+    with pytest.raises(ValueError, match="미지의 제외 축"):
+        _axis_excluded("writer", _BOOT_KEYS, _BOOT_INVS, "2025-08-18_inv011_0")
+
+
+def test_axis_excluded_on_invoice_axis_excludes_self_even_when_its_inv_disagrees():
+    """D4 — invoice 축에도 self_ref를 넘겨 뱅크 `inv` 값이 어떻든 자기 제외를 보장한다.
+
+    두 cmd_score 픽스처는 `inv`가 `key`와 정렬돼 inv 제외가 self 제외의 상위집합이므로,
+    invoice 분기에서 `self_ref=self_ref`를 지워도 전부 통과한다. 자기 행의 `inv`만 어긋난
+    뱅크를 세워 그 뮤테이션을 잡는다.
+    """
+    keys = ["job-1/row-0", "job-1/row-1"]
+    invs = ["job-9", "job-1"]  # 인덱스 0(자기 행)의 inv가 job-1을 가리키지 않는다
+
+    assert _axis_excluded("invoice", keys, invs, "job-1/row-0") == {0, 1}
 
 
 def test_topk_dedup_skips_excluded_indices():
@@ -1004,7 +1021,7 @@ def test_render_score_md_renders_every_cell_with_before_after_percentages():
 
     assert "- 뱅크 크기: 100 → 120" in md
     assert "- 채점 대상(desired 쌍): 4건" in md
-    assert "| 커버리지 in-bank(self 포함) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
+    assert "| 커버리지 in-bank(제외 무관) | 1/4 (25.0%) | 4/4 (100.0%) |" in md
     assert "| 커버리지 out_of_bank | 3/4 (75.0%) | 0/4 (0.0%) |" in md
     assert "| 제외 후 top-1 | 1/4 (25.0%) | 1/4 (25.0%) |" in md
     assert "| 제외 후 top-5 | 1/4 (25.0%) | 2/4 (50.0%) |" in md
@@ -1016,7 +1033,7 @@ def test_render_score_md_renders_dash_when_denominator_is_zero():
     """채점 대상 0건에서도 ZeroDivisionError 없이 '0/0 (—)'로 렌더돼야 한다."""
     md = render_score_md(_axis_summaries([], []), {})
     assert "- 뱅크 크기: ? → ?" in md
-    assert "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in md
+    assert "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in md
     assert "| peer 존재 한정 top-1 | 0/0 (—) | 0/0 (—) |" in md
 
 
@@ -1339,7 +1356,7 @@ def test_cmd_score_scores_before_and_after_with_row_aligned_queries(tmp_path, mo
 
     md = (out_dir / "score.md").read_text()
     assert "- 뱅크 크기: 1 → 3" in md
-    assert md.count("| 커버리지 in-bank(self 포함) | 1/2 (50.0%) | 2/2 (100.0%) |") == 2
+    assert md.count("| 커버리지 in-bank(제외 무관) | 1/2 (50.0%) | 2/2 (100.0%) |") == 2
 
 
 def test_cmd_score_diverges_between_axes_when_one_invoice_repeats_a_label(tmp_path, monkeypatch):
@@ -1407,7 +1424,7 @@ def test_cmd_score_skips_pairs_without_crop_png(tmp_path, monkeypatch):
 
     assert (out_dir / "score.jsonl").read_text().strip() == ""
     assert (
-        "| 커버리지 in-bank(self 포함) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
+        "| 커버리지 in-bank(제외 무관) | 0/0 (—) | 0/0 (—) |" in (out_dir / "score.md").read_text()
     )
 
 
