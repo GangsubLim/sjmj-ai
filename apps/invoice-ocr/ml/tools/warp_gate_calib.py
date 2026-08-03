@@ -18,7 +18,13 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import fields
 
-from handwriting.warp_gate import WarpGateMetrics, blue_asymmetry
+from handwriting.warp_gate import (
+    WarpGateMetrics,
+    WarpGateMetricsEnh,
+    blue_asymmetry,
+    evaluate_warp,
+    evaluate_warp_enh,
+)
 
 # 원시 지표는 DTO 필드에서 파생한다 — WarpGateMetrics에 필드가 늘면 표가 자동으로 따라간다.
 RAW_METRIC_KEYS = tuple(f.name for f in fields(WarpGateMetrics))
@@ -137,6 +143,119 @@ def stored_vs_rewarp(records: list[dict]) -> list[dict]:
     return rows
 
 
+# ---------------------------------------------------------------------------
+# 판정 전이 4분류 (Task 12) — M5: 리포트가 운영 술어를 직접 호출해 근거를 재현 가능하게 한다.
+# ---------------------------------------------------------------------------
+
+FLIP_PASS_PASS = "pass→pass"
+FLIP_FAIL_PASS = "fail→pass"
+FLIP_FAIL_FAIL = "fail→fail"
+FLIP_PASS_FAIL = "pass→fail"  # 설계상 발생 불가 — 표가 비어 있음을 증거로 남기기 위해 존재한다
+
+RESCUE_JOBS = frozenset({59, 60, 61, 62, 63, 65, 66, 67})  # 오강등 구제 전량(DoD 2, spec §4.2)
+DAMAGED_JOBS = frozenset({17, 21, 24, 29, 30, 31, 39})  # 파손 확정 전량(DoD 3, spec §4.2)
+
+
+def classify_flip(metrics: dict) -> str:
+    """표준 판정 → enh 폴백 판정의 전이를 4분류한다(spec §4.2).
+
+    운영 술어(evaluate_warp/evaluate_warp_enh)를 직접 호출한다 — 판정 로직을 리포트 쪽에
+    복제하지 않는다(#60 리뷰 M5). 임계 상수가 바뀌면 이 분류도 그대로 따라 움직여 근거가
+    코드로 재현 가능하게 유지된다.
+
+    "표준 먼저 → 실패 시에만 enh"라는 **분기 순서** 자체는 여전히 이 함수와
+    `handwriting.infer_job._warp_gate_passes` 양쪽이 각자 소유한다(cv2 무의존 규약 때문에
+    그 함수를 직접 재사용할 수 없다) — 운영 쪽 분기 순서가 바뀌면 이 함수도 함께 고쳐야
+    한다. 그러지 않으면 이 함수는 옛 구조로 계속 `pass→fail: []`을 출력해 거짓 증거를
+    낸다(#60 리뷰 M2).
+
+    metrics는 std·enh 두 축을 항상 함께 가져야 한다(job_metrics 계약). std가 통과해 enh를
+    참조하지 않는 정상 경로에서도 이 계약을 미리 검사한다 — 그러지 않으면 enh 키가
+    통째로 빠진 상류 배선 버그가 std 통과 시엔 조용히 숨었다가 std 실패 시에만
+    KeyError로 드러나는 비대칭이 생긴다(#60 리뷰 L1).
+
+    Raises:
+        KeyError: `metrics`에 "std" 또는 "enh" 축이 없을 때.
+    """
+    missing = {"std", "enh"} - metrics.keys()
+    if missing:
+        raise KeyError(f"classify_flip: metrics에 {sorted(missing)} 축이 없다")
+    if evaluate_warp(WarpGateMetrics(**metrics["std"])):
+        return FLIP_PASS_PASS
+    if evaluate_warp_enh(WarpGateMetricsEnh(**metrics["enh"])):
+        return FLIP_FAIL_PASS
+    return FLIP_FAIL_FAIL
+
+
+def flip_table(records: list[dict]) -> dict[str, list[int]]:
+    """잡을 판정 전이별로 묶는다. `pass→fail` 키는 항상 존재하며 구성상 비어 있어야 한다.
+
+    `axis_margins`와 동일한 이유로 `r["metrics"]`를 fail-fast로 읽는다(#60 리뷰 M5) —
+    `.get()`으로 흡수하면 metrics 키 자체가 없는 상류 배선 버그가 조용히 분모에서
+    빠진다. `metrics`가 `None`인 레코드(§4.1 분모 제외 대상)는 계약대로 키는 있으니
+    그대로 스킵된다.
+    """
+    out: dict[str, list[int]] = {
+        FLIP_PASS_PASS: [],
+        FLIP_FAIL_PASS: [],
+        FLIP_FAIL_FAIL: [],
+        FLIP_PASS_FAIL: [],
+    }
+    for r in records:
+        if r["metrics"]:
+            out[classify_flip(r["metrics"])].append(r["job_id"])
+    return out
+
+
+def _dod_marks(table: dict[str, list[int]]) -> dict[str, bool]:
+    """flip 표에서 DoD 1~3(spec §4.2)을 자동판정한다.
+
+    DoD 1은 `classify_flip`이 표준 통과 시 즉시 반환해 `pass→fail`을 구성상 방출할 수 없으므로
+    이 표가 비어 있음 자체가 증거다(운영 배선 테스트가 그 전제를 별도로 고정한다).
+
+    DoD 2·3의 `>=`(초과집합)는 잡이 더 있어도 무방하다는 의도지만, 기준 집합
+    (RESCUE_JOBS/DAMAGED_JOBS)이 비면 `set() >= frozenset()`이 항상 참이라 모집단 없이도
+    무조건 ✅가 나온다 — 이 침묵 붕괴를 막기 위해 기준 집합이 비어 있지 않은지 먼저
+    본다(#60 리뷰 M3).
+    """
+    return {
+        "dod1_no_pass_to_fail": not table[FLIP_PASS_FAIL],
+        "dod2_rescue_all_fail_to_pass": bool(RESCUE_JOBS)
+        and set(table[FLIP_FAIL_PASS]) >= RESCUE_JOBS,
+        "dod3_damaged_all_fail_to_fail": bool(DAMAGED_JOBS)
+        and set(table[FLIP_FAIL_FAIL]) >= DAMAGED_JOBS,
+    }
+
+
+def _render_flip_section(table: dict[str, list[int]], total_records: int) -> list[str]:
+    """판정 전이 4분류 절을 렌더한다(spec §4.2) — 전이별 잡 id + DoD 1~3 자동판정.
+
+    Args:
+        table: `flip_table`의 출력.
+        total_records: 재워프 리포트 전체 모집단 크기(`len(records)`). metrics=None인 잡은
+            `flip_table`이 조용히 건너뛰므로(§4.1 분모 제외), 절 머리에 합계/모집단/제외
+            건수를 나란히 적어 눈에 띄게 한다(#60 리뷰 M4).
+    """
+    marks = _dod_marks(table)
+    classified = sum(len(v) for v in table.values())
+    return [
+        "## 판정 전이 4분류",
+        "",
+        f"- 합계 {classified} / 모집단 {total_records} (지표 없음 {total_records - classified})",
+        f"- {FLIP_PASS_PASS}: {sorted(table[FLIP_PASS_PASS])}",
+        f"- {FLIP_FAIL_PASS}: {sorted(table[FLIP_FAIL_PASS])}",
+        f"- {FLIP_FAIL_FAIL}: {sorted(table[FLIP_FAIL_FAIL])}",
+        f"- {FLIP_PASS_FAIL}: {sorted(table[FLIP_PASS_FAIL])}",
+        "",
+        f"- DoD 1(`pass→fail` 0건): {'✅' if marks['dod1_no_pass_to_fail'] else '❌'} "
+        "(구성상 보장 — classify_flip이 표준 통과 시 즉시 반환)",
+        f"- DoD 2(오강등 구제 {sorted(RESCUE_JOBS)} 전부 fail→pass): "
+        f"{'✅' if marks['dod2_rescue_all_fail_to_pass'] else '❌'}",
+        f"- DoD 3(파손 확정 {sorted(DAMAGED_JOBS)} 전부 fail→fail): "
+        f"{'✅' if marks['dod3_damaged_all_fail_to_fail'] else '❌'}",
+    ]
+
+
 def _render_axis_margin_table(title: str, margins: dict) -> list[str]:
     """마스크 축 하나의 분리 마진 표를 렌더한다(axis_margins의 출력 shape 전용)."""
     rows = []
@@ -175,6 +294,7 @@ def render_rewarp_report(records: list[dict], margins: dict, drift: list[dict], 
     """
     status_counts = Counter(r["status"] for r in records)
     label_counts = Counter(r["label"] for r in records)
+    flip = flip_table(records)
     lines = [
         "# warp 정합 게이트 — 재워프 기준 캘리브레이션 리포트",
         "",
@@ -188,6 +308,8 @@ def render_rewarp_report(records: list[dict], margins: dict, drift: list[dict], 
         *_render_axis_margin_table("표준", margins.get("std") or {}),
         "",
         *_render_axis_margin_table("enh", margins.get("enh") or {}),
+        "",
+        *_render_flip_section(flip, len(records)),
         "",
         "## 지표 전수표",
         "",

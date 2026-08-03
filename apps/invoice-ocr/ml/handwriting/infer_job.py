@@ -129,6 +129,11 @@ def _warp_gate_passes(w, job_id: int) -> bool:
     로그만으로 판별할 수 있도록 구제·강등 양쪽에 std·enh 지표를 두 벌 다 싣는다.
     flush=True 필수: 워커는 while True 폴링 상시 프로세스라 파일 리다이렉트 시 블록
     버퍼링에 걸리면 로그가 한참 뒤에야 보인다.
+
+    ⚠️ 이 분기 순서(표준 우선 → 실패 시에만 enh)를 바꾸면 `tools.warp_gate_calib.classify_flip`도
+    함께 고쳐야 한다 — 그 함수는 cv2 무의존 규약 때문에 이 함수를 직접 재사용하지 못하고
+    같은 분기 구조를 별도로 복제해 갖고 있다. 순서만 여기서 바뀌면 그쪽은 옛 구조로 계속
+    `pass→fail: []`을 출력해 거짓 증거를 낸다(#60 리뷰 M2).
     """
     std = compute_metrics(w)
     if evaluate_warp(std):

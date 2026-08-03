@@ -11,6 +11,8 @@ from tools.warp_gate_calib import (
     LABEL_UNLABELED,
     METRIC_KEYS,
     axis_margins,
+    classify_flip,
+    flip_table,
     label_of,
     render_rewarp_report,
     stored_vs_rewarp,
@@ -194,6 +196,136 @@ def test_axis_margins_ignores_jobs_above_the_snapshot_bound():
     assert m["hline_count"]["worst_normal"] == 20
 
 
+# --- flip 4분류(Task 12) ---
+
+
+def _m(hline, pitch, blue):
+    return {
+        "hline_count": hline,
+        "pitch_dev": pitch,
+        "blue_ratio_left": blue,
+        "blue_ratio_right": blue,
+    }
+
+
+def test_classify_flip_marks_standard_pass_without_touching_enh():
+    from handwriting.warp_gate import MAX_PITCH_DEV, MIN_BLUE_RATIO, MIN_HLINES
+
+    good = _m(MIN_HLINES + 3, MAX_PITCH_DEV / 2, MIN_BLUE_RATIO * 3)
+    assert classify_flip({"std": good, "enh": _m(0, 1.0, 0.0)}) == "pass→pass"
+
+
+def test_classify_flip_marks_rescue_when_only_enh_passes():
+    from handwriting.warp_gate import ENH_MAX_PITCH_DEV, ENH_MIN_BLUE_RATIO, ENH_MIN_HLINES
+
+    enh_good = _m(ENH_MIN_HLINES + 3, ENH_MAX_PITCH_DEV / 2, ENH_MIN_BLUE_RATIO * 3)
+    assert classify_flip({"std": _m(0, 1.0, 0.0), "enh": enh_good}) == "fail→pass"
+
+
+def test_classify_flip_marks_double_failure():
+    assert classify_flip({"std": _m(0, 1.0, 0.0), "enh": _m(0, 1.0, 0.0)}) == "fail→fail"
+
+
+def test_classify_flip_delegates_to_the_operational_predicate():
+    # M5: 별도 판정식을 리포트 쪽에 복제하지 않고 handwriting.warp_gate.evaluate_warp를 그대로
+    # 호출해야 한다 — 임계 상수를 바꾸면 이 분류도 따라 움직여야 근거가 코드로 재현 가능하다.
+    import tools.warp_gate_calib as calib
+
+    original = calib.evaluate_warp
+    calib.evaluate_warp = lambda metrics: True
+    try:
+        assert classify_flip({"std": _m(0, 1.0, 0.0), "enh": _m(0, 1.0, 0.0)}) == "pass→pass"
+    finally:
+        calib.evaluate_warp = original
+
+
+def test_flip_table_groups_jobs_by_transition():
+    records = [
+        {"job_id": 57, "metrics": {"std": _m(20, 0.02, 0.2), "enh": _m(20, 0.02, 0.2)}},
+        {"job_id": 59, "metrics": {"std": _m(0, 1.0, 0.0), "enh": _m(20, 0.02, 0.3)}},
+    ]
+    assert flip_table(records) == {
+        "pass→pass": [57],
+        "fail→pass": [59],
+        "fail→fail": [],
+        "pass→fail": [],
+    }
+
+
+def test_flip_table_skips_records_without_metrics():
+    records = [
+        {"job_id": 51, "metrics": None},
+        {"job_id": 57, "metrics": {"std": _m(20, 0.02, 0.2), "enh": _m(20, 0.02, 0.2)}},
+    ]
+    assert flip_table(records)["pass→pass"] == [57]
+
+
+def test_rescue_and_damaged_job_manifests_are_pinned_to_spec():
+    # 두 상수는 spec §4.2에서 손으로 옮겨 적은 값이다 — 드리프트가 나면 DoD 2·3이
+    # 조용히 다른 기준으로 판정된다(#60 리뷰 M3).
+    from tools.warp_gate_calib import DAMAGED_JOBS, RESCUE_JOBS
+
+    assert frozenset({59, 60, 61, 62, 63, 65, 66, 67}) == RESCUE_JOBS
+    assert frozenset({17, 21, 24, 29, 30, 31, 39}) == DAMAGED_JOBS
+
+
+def test_dod2_stays_unsatisfied_when_rescue_manifest_is_emptied(monkeypatch):
+    # RESCUE_JOBS가 빈 집합이면 `set() >= frozenset()`이 항상 참이라 DoD 2가 데이터와
+    # 무관하게 ✅가 된다 — 모집단 없는 침묵 붕괴를 가드가 막아야 한다(#60 리뷰 M3).
+    import tools.warp_gate_calib as calib
+
+    monkeypatch.setattr(calib, "RESCUE_JOBS", frozenset())
+    table = {
+        calib.FLIP_PASS_PASS: [],
+        calib.FLIP_FAIL_PASS: [],
+        calib.FLIP_FAIL_FAIL: [],
+        calib.FLIP_PASS_FAIL: [],
+    }
+    assert calib._dod_marks(table)["dod2_rescue_all_fail_to_pass"] is False
+
+
+def test_dod3_stays_unsatisfied_when_damaged_manifest_is_emptied(monkeypatch):
+    import tools.warp_gate_calib as calib
+
+    monkeypatch.setattr(calib, "DAMAGED_JOBS", frozenset())
+    table = {
+        calib.FLIP_PASS_PASS: [],
+        calib.FLIP_FAIL_PASS: [],
+        calib.FLIP_FAIL_FAIL: [],
+        calib.FLIP_PASS_FAIL: [],
+    }
+    assert calib._dod_marks(table)["dod3_damaged_all_fail_to_fail"] is False
+
+
+def test_classify_flip_fails_fast_when_enh_axis_is_missing_even_if_std_passes():
+    # std가 통과하면 enh를 참조하지 않으므로 enh 키가 통째로 빠져도 조용히 pass→pass가
+    # 나온다 — std 실패 시에만 KeyError로 드러나는 비대칭을 없앤다(#60 리뷰 L1).
+    from handwriting.warp_gate import MAX_PITCH_DEV, MIN_BLUE_RATIO, MIN_HLINES
+
+    good = _m(MIN_HLINES + 3, MAX_PITCH_DEV / 2, MIN_BLUE_RATIO * 3)
+    with pytest.raises(KeyError):
+        classify_flip({"std": good})
+
+
+def test_flip_table_fails_fast_when_metrics_key_is_absent():
+    # axis_margins의 fail-fast 관용(#60 리뷰 M5)과 통일한다 — `.get()`으로 흡수하면
+    # 상류 배선 버그로 빠진 레코드가 조용히 분모에서 사라진다.
+    with pytest.raises(KeyError):
+        flip_table([{"job_id": 1, "label": "normal"}])
+
+
+def test_flip_table_never_produces_pass_to_fail_by_construction():
+    # 폴백은 표준 통과를 뒤집지 않는다 — 표준이 통과하면 enh는 판정에 참여하지 않는다.
+    # 이 성질이 코드로 보장됨을 고정한다(spec §4.2: pass→fail 1건이라도 나오면 설계 결함).
+    from handwriting.warp_gate import MAX_PITCH_DEV, MIN_BLUE_RATIO, MIN_HLINES
+
+    good = _m(MIN_HLINES + 3, MAX_PITCH_DEV / 2, MIN_BLUE_RATIO * 3)
+    table = flip_table(
+        [{"job_id": 1, "label": "normal", "metrics": {"std": good, "enh": _m(0, 1.0, 0.0)}}]
+    )
+    assert table["pass→fail"] == []
+
+
 # --- 렌더 ---
 
 
@@ -253,6 +385,70 @@ def test_render_rewarp_report_footnotes_zero_baseline_margin():
     margins = {"std": axis_margins(records, "std"), "enh": {}}
     md = render_rewarp_report(records, margins, [], {})
     assert "마진% 분모를 1.0으로 대체" in md
+
+
+def test_render_rewarp_report_includes_flip_transition_section():
+    records = [
+        _rec(50, LABEL_NORMAL),  # std 기본값이 통과 임계를 넘는다 → pass→pass
+        _rec(24, LABEL_SUSPECT, std_hline=6),  # std 실패, enh 기본값이 통과 → fail→pass
+    ]
+    margins = {"std": axis_margins(records, "std"), "enh": axis_margins(records, "enh")}
+    md = render_rewarp_report(records, margins, [], {})
+    assert "## 판정 전이 4분류" in md
+    assert "- pass→pass: [50]" in md
+    assert "- fail→pass: [24]" in md
+    assert "- pass→fail: []" in md
+
+
+def test_render_flip_section_states_its_own_denominator():
+    # metrics=None인 잡은 flip 절에서 조용히 빠진다 — 아래 "분모 제외" 절과 교차대조하지
+    # 않아도 되게, 절 머리에서 합계/모집단/제외 건수를 바로 밝힌다(#60 리뷰 M4).
+    records = [
+        _rec(50, LABEL_NORMAL),
+        {**_rec(51, LABEL_NORMAL), "status": "upload_missing", "metrics": None},
+    ]
+    margins = {"std": axis_margins(records, "std"), "enh": axis_margins(records, "enh")}
+    md = render_rewarp_report(records, margins, [], {})
+    assert "- 합계 1 / 모집단 2 (지표 없음 1)" in md
+
+
+def test_render_flip_section_sorts_job_ids_ascending_within_bucket():
+    # `sorted()`를 제거하는 변이가 생존하지 않도록 잡 2건을 역순으로 넣어 오름차순 렌더를
+    # 고정한다(#60 리뷰 L2, snapshot_diff의 순서 고정과 동일 취지).
+    records = [
+        _rec(24, LABEL_SUSPECT, std_hline=6),
+        _rec(5, LABEL_SUSPECT, std_hline=6),
+    ]
+    margins = {"std": axis_margins(records, "std"), "enh": axis_margins(records, "enh")}
+    md = render_rewarp_report(records, margins, [], {})
+    assert "- fail→pass: [5, 24]" in md
+
+
+def test_render_rewarp_report_marks_dod1_satisfied_by_construction():
+    md = render_rewarp_report([_rec(50, LABEL_NORMAL)], {"std": {}, "enh": {}}, [], {})
+    assert "DoD 1(`pass→fail` 0건): ✅ (구성상 보장" in md
+
+
+def test_render_rewarp_report_marks_dod2_and_dod3_unsatisfied_when_incomplete():
+    # 정상 잡 1건뿐이면 오강등 구제 8건·파손 확정 7건이 하나도 안 채워졌다. 마크는 각
+    # DoD 줄 전체(잡 목록 + 기호)로 고정한다 — "문서 어딘가에 ❌가 있다"만 보면 DoD 2·3
+    # 각각의 판정을 서로 대신 충족시키는 변이가 생존한다(#60 리뷰 H1).
+    md = render_rewarp_report([_rec(50, LABEL_NORMAL)], {"std": {}, "enh": {}}, [], {})
+    assert "DoD 2(오강등 구제 [59, 60, 61, 62, 63, 65, 66, 67] 전부 fail→pass): ❌" in md
+    assert "DoD 3(파손 확정 [17, 21, 24, 29, 30, 31, 39] 전부 fail→fail): ❌" in md
+
+
+def test_render_rewarp_report_marks_dod2_and_dod3_satisfied_when_all_jobs_present():
+    from tools.warp_gate_calib import DAMAGED_JOBS, RESCUE_JOBS
+
+    records = [_rec(50, LABEL_NORMAL)]
+    records += [_rec(j, LABEL_SUSPECT, std_hline=6) for j in sorted(RESCUE_JOBS)]
+    records += [_rec(j, LABEL_SUSPECT, std_hline=6, enh_hline=3) for j in sorted(DAMAGED_JOBS)]
+    margins = {"std": axis_margins(records, "std"), "enh": axis_margins(records, "enh")}
+    md = render_rewarp_report(records, margins, [], {})
+    # 전역 부정("❌" not in md) 대신 DoD 2·3 각 줄의 ✅를 직접 확인한다(#60 리뷰 H1).
+    assert "DoD 2(오강등 구제 [59, 60, 61, 62, 63, 65, 66, 67] 전부 fail→pass): ✅" in md
+    assert "DoD 3(파손 확정 [17, 21, 24, 29, 30, 31, 39] 전부 fail→fail): ✅" in md
 
 
 # --- crop-identity 스냅샷 대조(Task 7) ---
