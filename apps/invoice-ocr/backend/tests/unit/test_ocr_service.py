@@ -192,3 +192,141 @@ def test_confirm_strips_ocr_only_keys_at_the_invoice_service_seam():
     # 원본 payload는 손상되지 않아야 한다 — build_correction이 label_source를 여기서 읽는다.
     assert payload["items"][0]["label_source"] == "top1_kept"
     assert repo.correction["lines"][0]["label_source"] == "top1_kept"
+
+
+class _FakeUnconfirmedRepo:
+    """list_unconfirmed만 답하는 fake — 실 DB 없이 정규화 로직만 검증한다."""
+
+    def __init__(self, rows, total=None):
+        self.rows = rows
+        self.total = total if total is not None else len(rows)
+        self.calls = []
+
+    def list_unconfirmed(self, limit, offset):
+        self.calls.append((limit, offset))
+        return self.rows, self.total
+
+
+def _raw(job_id, **over):
+    base = {
+        "job_id": job_id,
+        "status": "done",
+        "created_at": "2026-08-01T09:00:00",
+        "rows_type": "ARRAY",
+        "row_count": 3,
+        "warp_ok": "true",
+        "error": None,
+    }
+    return {**base, **over}
+
+
+def test_list_unconfirmed_translates_page_to_offset(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    repo = _FakeUnconfirmedRepo([])
+    service = OcrService(repo=repo)
+
+    jobs, total = service.list_unconfirmed(3, 20)
+
+    assert repo.calls == [(20, 40)]
+    assert jobs == []
+    assert total == 0
+
+
+def test_list_unconfirmed_passes_through_repo_total_not_page_size(tmp_path, monkeypatch):
+    """total은 repo의 전체 건수를 그대로 통과시킨다 — 현재 페이지 길이가 아니다.
+
+    다른 테스트는 전부 total == len(rows)라 둘을 구별하지 못한다. 라우터가 이 값으로
+    totalPages를 계산하므로(routers/ocr.py:49), len(jobs)로 대체되면 뒤 페이지가 남았는데도
+    목록이 1페이지로 무너진다.
+    """
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    service = OcrService(repo=_FakeUnconfirmedRepo([_raw(1)], total=57))
+
+    jobs, total = service.list_unconfirmed(1, 20)
+
+    assert len(jobs) == 1
+    assert total == 57
+
+
+def test_list_unconfirmed_marks_unconfirmed_and_keeps_row_count(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    service = OcrService(repo=_FakeUnconfirmedRepo([_raw(7)]))
+
+    jobs, total = service.list_unconfirmed(1, 20)
+
+    assert total == 1
+    assert jobs[0]["job_id"] == 7
+    assert jobs[0]["observation_status"] == "unconfirmed"
+    assert jobs[0]["row_count"] == 3
+    assert jobs[0]["error"] is None
+    assert jobs[0]["created_at"] == "2026-08-01T09:00:00"
+    # 이 dict는 envelope.list_response로 그대로 응답 body가 된다 — 키 집합이 곧 API 표면이다.
+    # 개별 키만 단정하면 관측 원값(warp_ok·rows_type·raw error)이나 파일 경로가 덧붙는
+    # 변경이 조용히 새어 나간다(confirm seam 테스트의 set(...) 패턴과 같은 방어).
+    assert set(jobs[0]) == {"job_id", "observation_status", "row_count", "error", "created_at"}
+
+
+def test_list_unconfirmed_splits_demoted_from_no_warp_by_warped_file(tmp_path, monkeypatch):
+    from app.config import crop_dir
+
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    demoted_id = 11
+    warped = crop_dir(demoted_id)
+    warped.mkdir(parents=True, exist_ok=True)
+    (warped / "warped.png").write_bytes(b"png")
+
+    rows = [
+        _raw(demoted_id, warp_ok="false", row_count=0),
+        _raw(12, warp_ok="false", row_count=0),  # warped.png 없음
+    ]
+    service = OcrService(repo=_FakeUnconfirmedRepo(rows))
+
+    jobs, _ = service.list_unconfirmed(1, 20)
+    by_id = {j["job_id"]: j for j in jobs}
+
+    assert by_id[demoted_id]["observation_status"] == "demoted"
+    assert by_id[12]["observation_status"] == "no_warp"
+
+
+def test_list_unconfirmed_nulls_row_count_when_rows_not_array(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    rows = [
+        _raw(1, status="pending", rows_type=None, row_count=None, warp_ok=None),
+        # rows: null의 실제 DB 행 — JSON_LENGTH가 1을 준다(NULL이 아니다). 이 1이 새어 나가면
+        # 화면이 "1행 검출된 미확정 잡"으로 읽힌다.
+        _raw(2, rows_type="NULL", row_count=1),
+        _raw(3, status="failed", rows_type=None, row_count=None, warp_ok=None, error="warp 실패"),
+    ]
+    service = OcrService(repo=_FakeUnconfirmedRepo(rows))
+
+    jobs, _ = service.list_unconfirmed(1, 20)
+    by_id = {j["job_id"]: j for j in jobs}
+
+    # 0행 검출과 "아직 모름"은 다른 사실이다 — 0이 아니라 None으로 내보낸다.
+    assert by_id[1]["observation_status"] == "pending"
+    assert by_id[1]["row_count"] is None
+    assert by_id[2]["observation_status"] == "no_result"
+    assert by_id[2]["row_count"] is None, "rows_type이 ARRAY가 아닌데 row_count가 새어 나갔다"
+    assert by_id[3]["observation_status"] == "failed"
+    assert by_id[3]["row_count"] is None
+    assert by_id[3]["error"] == "warp 실패"
+
+
+def test_list_unconfirmed_keeps_zero_row_count_for_detected_empty_rows(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    service = OcrService(repo=_FakeUnconfirmedRepo([_raw(5, row_count=0)]))
+
+    jobs, _ = service.list_unconfirmed(1, 20)
+
+    assert jobs[0]["observation_status"] == "no_rows"
+    assert jobs[0]["row_count"] == 0
+
+
+def test_list_unconfirmed_fills_default_error_when_failed_without_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    rows = [_raw(9, status="failed", rows_type=None, row_count=None, warp_ok=None, error=None)]
+    service = OcrService(repo=_FakeUnconfirmedRepo(rows))
+
+    jobs, _ = service.list_unconfirmed(1, 20)
+
+    assert jobs[0]["error"] == "추론 실패"

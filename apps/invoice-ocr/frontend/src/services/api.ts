@@ -19,6 +19,7 @@ import type {
   CurationPairPatchResult,
   CurationImageKind,
 } from "@/types/curation";
+import type { UnconfirmedJobSummary } from "@/types/observation";
 
 // --- Mock mode flag ---
 
@@ -303,6 +304,16 @@ const _realOcrAPI = {
   getJob: async (id: number) => {
     const response = await api.get(`/ocr/jobs/${id}`);
     return response.data as { success: boolean; data: OcrJobStatus };
+  },
+
+  getUnconfirmedJobs: async (params?: {
+    page?: number;
+    limit?: number;
+  }): Promise<ListResponse<UnconfirmedJobSummary>> => {
+    const response = await api.get("/ocr/jobs", {
+      params: { page: params?.page ?? 1, limit: params?.limit ?? 20 },
+    });
+    return response.data;
   },
 
   confirm: async (id: number, payload: unknown) => {
