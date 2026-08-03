@@ -162,13 +162,33 @@ def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
 # cv2가 없는 코어 venv에서는 이 절만 스킵된다. 판정 순수함수 테스트는 계속 돈다.
 
 
-def _compute(img):
+def _compute(img, **kw):
     import pytest
 
     pytest.importorskip("cv2", exc_type=ImportError)
     from handwriting.warp_gate import compute_metrics
 
-    return compute_metrics(img)
+    return compute_metrics(img, **kw)
+
+
+def _faint_grid():
+    """(b−r) = 10인 합성 격자 — blue_mask의 `> 10`은 통째로 놓치고 blue_mask_enh만 살린다.
+
+    표준 마스크에서 세 필드가 전부 0이므로, enhanced=True에서 하나라도 0으로 남으면
+    그 필드가 표준 마스크에서 왔다는 뜻이 된다(spec §5.5 — 마스크 출처를 필드 단위로 고정).
+    """
+    import pytest
+
+    pytest.importorskip("cv2", exc_type=ImportError)
+    np = pytest.importorskip("numpy")
+
+    from handwriting.grid_v4 import WARP_H, WARP_W
+
+    img = np.full((WARP_H, WARP_W, 3), 255, np.uint8)
+    for k in range(16):
+        y = 620 + k * 83
+        img[y : y + 28, 0:WARP_W] = (250, 120, 240)  # b=250, r=240 → b−r = 10 (경계 '초과' 미달)
+    return img
 
 
 def test_compute_metrics_on_healthy_grid_passes_gate(make_warped):
@@ -241,25 +261,40 @@ def test_compute_metrics_filters_doubled_lines_from_pitch():
     assert m.pitch_dev <= MAX_PITCH_DEV  # 이중선 gap이 MAD 계산에서 배제돼야 오탐하지 않는다
 
 
-def test_compute_metrics_forces_deterministic_faint_state(make_warped, monkeypatch):
-    # docstring이 "두 함수가 순수함수라 동일 동작"이라 주장했지만 hline_ys는 grid_v4의
-    # 모듈 전역 _FAINT를 읽는다(FaintOn으로 토글). ambient 상태와 무관하게 항상
-    # FaintOn(False)로 고정 호출됨을 spy로 고정한다(spec §3.1: 게이트는 결정론적).
+def test_standard_mask_sees_nothing_in_the_faint_grid():
+    m = _compute(_faint_grid())
+    assert m.hline_count == 0
+    assert m.blue_ratio_left == 0.0
+    assert m.blue_ratio_right == 0.0
+
+
+def test_enhanced_mask_feeds_every_field_of_the_metrics():
+    # 세 필드가 '모두 같은 enh 마스크에서' 나오는지 고정한다. hline만 enh로 갈아끼우고
+    # blue_ratio를 표준으로 남기는 오배선(#16의 FaintOn 부분 회수와 같은 함정)을 잡는다.
+    # 개수는 참고값(이 합성에서 실측 16)일 뿐 단언은 '표준 0 / enh 양수'로 건다 —
+    # morphology 파라미터가 바뀌어도 부서지지 않게.
+    m = _compute(_faint_grid(), enhanced=True)
+    assert m.hline_count > 0
+    assert m.blue_ratio_left > 0.0
+    assert m.blue_ratio_right > 0.0
+
+
+def test_compute_metrics_is_independent_of_ambient_faint_state():
+    # FaintOn을 경유하지 않으므로 ambient _FAINT와 무관하게 같은 값이 나오고,
+    # 전역 상태를 변경하지도 않는다(spec §5.2·§5.4 — 전역 mutation 0). make_warped()의
+    # 정상 격자(표준·enh 마스크가 둘 다 16선)는 이 가드에 못 쓴다 — hline_ys(조건부
+    # FaintOn 로직)로 되돌아가는 회귀가 있어도 두 마스크의 선 개수가 같아 ambient
+    # _FAINT값과 무관하게 결과가 같아지므로 검출력이 없다(리뷰 H1). _faint_grid()는
+    # 표준 마스크 0선/enh 16선으로 갈라져 있어, hline_ys 경유 시 ambient _FAINT에 따라
+    # 값이 달라지는 회귀를 실제로 잡는다.
     import handwriting.grid_v4 as grid_v4
 
-    seen_faint_states = []
-    original_hline_ys = grid_v4.hline_ys
-
-    def spy(warped):
-        seen_faint_states.append(grid_v4._FAINT)
-        return original_hline_ys(warped)
-
-    monkeypatch.setattr(grid_v4, "hline_ys", spy)
-
+    img = _faint_grid()
     with grid_v4.FaintOn(True):
-        _compute(make_warped())
-
-    assert seen_faint_states == [False]
+        inside = _compute(img)
+        assert grid_v4._FAINT is True  # 게이트가 전역을 되돌려놓지 않았음을 확인
+    assert inside == _compute(img)
+    assert grid_v4._FAINT is False
 
 
 def test_compute_metrics_clamps_nan_pitch_dev_to_worst(make_warped, monkeypatch):

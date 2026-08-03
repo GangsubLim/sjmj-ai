@@ -84,18 +84,29 @@ def evaluate_warp(metrics: WarpGateMetrics) -> bool:
     return blue_asymmetry(metrics.blue_ratio_left, metrics.blue_ratio_right) <= MAX_BLUE_ASYMMETRY
 
 
-def compute_metrics(warped_bgr) -> WarpGateMetrics:
+def compute_metrics(warped_bgr, *, enhanced: bool = False) -> WarpGateMetrics:
     """워프된 BGR(WARP_W×WARP_H)에서 게이트 지표 4종을 뽑는다(cv2 글루).
 
-    기존 격자 함수만 재사용한다 — grid_v4.hline_ys(FaintOn(False)로 명시 고정: 흐림 회수를
-    켜지 않아야 게이트 판정이 결정론적이다), grid_v4.blue_mask, canon.global_pitch.
-    global_pitch는 운영 행검출(infer_photo.extract_rows_for_job)과 **동일 호출**을 써서
-    게이트가 다운스트림이 실제로 쓸 피치를 검증하게 한다. 선이 14개 미만이면 global_pitch가
-    양식 공칭 피치(83.0)를 돌려주므로, 그때 pitch_dev는 '공칭 대비 편차'가 된다.
+    기존 격자 함수만 재사용한다 — grid_v4.hlines_from_mask, grid_v4.blue_mask(또는
+    blue_mask_enh), canon.global_pitch. global_pitch는 운영 행검출
+    (infer_photo.extract_rows_for_job)과 **동일 호출**을 써서 게이트가 다운스트림이 실제로 쓸
+    피치를 검증하게 한다. 선이 14개 미만이면 global_pitch가 양식 공칭 피치(83.0)를 돌려주므로,
+    그때 pitch_dev는 '공칭 대비 편차'가 된다.
+
+    grid_v4.hline_ys가 아니라 hlines_from_mask(mask_fn(w))를 직접 부른다. hline_ys의
+    FaintOn 경로는 "enh가 DATA_Y 안에서 선을 더 줄 때만 채택"이라는 **조건부** 로직이라
+    폴백에 쓰면 축이 혼합되고, _FAINT는 모듈 전역 mutation이다. 여기서는 전역 상태를
+    읽지도 쓰지도 않는다(결정론).
 
     ⚠️ 여기의 handwriting.canon/grid_v4는 infer_photo가 쓰는 top-level canon/grid_v4와 다른
-       모듈 객체다(canon이 sys.path.insert로 top-level import를 한다). 모듈 전역 상태(_FAINT)를
-       공유하지 않으므로, 위 FaintOn(False) 고정이 게이트와 운영의 결정론을 각자 보장한다.
+       모듈 객체다(canon이 sys.path.insert로 top-level import를 한다) — 아래 테스트가
+       단언하는 `_FAINT`도 이 모듈 전용이다.
+
+    Args:
+        warped_bgr: 워프·deskew된 BGR 이미지.
+        enhanced: True면 대비향상 마스크(blue_mask_enh)로 **네 지표 전부**를 재측정한다
+            (Issue #60 2단 폴백). 마스크를 한 번만 만들어 hline과 blue_ratio가 같은 축에서
+            나오도록 강제한다 — 축이 섞이면 '일관 재측정'이라는 폴백의 전제가 깨진다.
 
     Raises:
         ValueError: `warped_bgr`가 `(WARP_H, WARP_W)` 크기가 아닐 때. 크기가 다른 입력은
@@ -105,14 +116,21 @@ def compute_metrics(warped_bgr) -> WarpGateMetrics:
     import numpy as np
 
     from handwriting.canon import global_pitch
-    from handwriting.grid_v4 import DATA_Y, WARP_H, WARP_W, FaintOn, blue_mask, hline_ys
+    from handwriting.grid_v4 import (
+        DATA_Y,
+        WARP_H,
+        WARP_W,
+        blue_mask,
+        blue_mask_enh,
+        hlines_from_mask,
+    )
 
     if warped_bgr.shape[:2] != (WARP_H, WARP_W):
         raise ValueError(f"warped_bgr must be {WARP_H}x{WARP_W}, got {warped_bgr.shape[:2]}")
 
     y0, y1 = DATA_Y
-    with FaintOn(False):
-        ys = sorted(y for y in hline_ys(warped_bgr) if y0 - 40 <= y <= y1 + 40)
+    mask = (blue_mask_enh if enhanced else blue_mask)(warped_bgr)
+    ys = sorted(y for y in hlines_from_mask(mask) if y0 - 40 <= y <= y1 + 40)
     if len(ys) >= 2:
         # 이중선(간격<40px) gap은 MAD 계산에서 배제한다 — 원시 gap 전량으로 MAD를 재면
         # 정상 행검출인 이중검출 전표를 오탐한다. 하한 40px는 기존 이중선 배제 선례
@@ -134,7 +152,7 @@ def compute_metrics(warped_bgr) -> WarpGateMetrics:
     else:
         pitch_dev = WORST_PITCH_DEV
 
-    band = blue_mask(warped_bgr)[y0:y1] > 0
+    band = mask[y0:y1] > 0
     half = WARP_W // 2
     return WarpGateMetrics(
         hline_count=len(ys),
