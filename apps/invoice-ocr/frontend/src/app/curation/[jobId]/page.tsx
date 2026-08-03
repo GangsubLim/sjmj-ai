@@ -2,14 +2,10 @@ import { useNavigate, useParams } from "react-router-dom";
 
 import { useCurationJob } from "@/hooks/use-curation-job";
 import { CurationPairRow } from "@/components/curation/CurationPairRow";
+import { JobImagePanel } from "@/components/curation/JobImagePanel";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { curationImageUrl } from "@/services/api";
-import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
-
-const PLACEHOLDER = placeholderSvg(240, 160);
-const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
 export default function CurationJobPage() {
   const { jobId } = useParams();
@@ -59,33 +55,8 @@ export default function CurationJobPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        {/* 좌: 단계 이미지 */}
-        <div className="space-y-3">
-          <div>
-            <p className="text-muted-foreground mb-1 text-xs">① 원본</p>
-            <img
-              src={curationImageUrl(job.job_id, "original")}
-              alt="원본 전표"
-              className="w-full rounded border"
-              onError={handleImageError}
-            />
-          </div>
-          <div>
-            <p className="text-muted-foreground mb-1 text-xs">② Warp</p>
-            {job.warp_ok ? (
-              <img
-                src={curationImageUrl(job.job_id, "warped")}
-                alt="워프 전표"
-                className="w-full rounded border"
-                onError={handleImageError}
-              />
-            ) : (
-              <div className="bg-muted text-muted-foreground flex h-32 items-center justify-center rounded border text-sm">
-                워프 산출 없음
-              </div>
-            )}
-          </div>
-        </div>
+        {/* 좌: 단계 이미지 (확정 전 상세와 공유) */}
+        <JobImagePanel jobId={job.job_id} />
 
         {/* 우: 행별 학습쌍 */}
         <div>
