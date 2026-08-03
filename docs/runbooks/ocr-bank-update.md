@@ -157,16 +157,12 @@ meta이고 둘 다 원자 교체이므로, 중단된 재실행이 남긴 반쪽 
 불일치로 걸러진다. 또한 **릴리스 배포 후에는 이 단계를 다시 돌린다** — 지문에 배포 코드
 SHA가 들어가므로 배포가 기존 재평가를 stale로 만든다.
 
-> [!WARNING]
-> **머지만으로는 이 단계를 macmini에서 돌릴 수 없다** — 이 기능(era-aware 재평가, Issue #49)의
-> **최초 배포 전에만 해당하는 한정 경고**다. 배포가 끝나면 이 경고는 소거 대상이다. 서버
-> 레포는 `v*` 태그로 checkout된 detached HEAD다 — `--scope all`을 쓰려면 이 기능이 포함된
-> 릴리스가 먼저 배포돼야 하고, 원격 지문 스크립트도 `handwriting.bank_id`를 import할 수
-> 있어야 한다(배포 전에는 로컬 `curation_report fetch`도 같은 이유로 `ImportError`로
-> 실패한다). 배포 순서는 **머지 → 릴리스 태그 → 배포 → macmini 재평가(`score --scope all`) →
-> 로컬 `fetch`/`report`**다. 러너 워크스페이스를 수동 checkout해 앞당기지 않는다(다음 배포와
-> 충돌한다). 이 배포 순서 상세는 `docs/runbooks/ocr-curation-analysis.md`에도 중복 서술하지
-> 않는다 — 이 WARNING이 정본이다.
+> [!NOTE]
+> **재평가 도구를 고쳤다면 머지만으로는 이 단계에 반영되지 않는다.** 서버 레포는 `v*` 태그로
+> checkout된 detached HEAD이므로 순서는 **머지 → 릴리스 태그 → 배포 → macmini
+> 재평가(`score --scope all`) → 로컬 `fetch`/`report`**다. 러너 워크스페이스를 수동 checkout해
+> 앞당기지 않는다(다음 배포와 충돌한다). 이 배포 순서는 여기가 정본이며
+> `docs/runbooks/ocr-curation-analysis.md`에 중복 서술하지 않는다.
 
 `score.md`는 **제외 축별로 표 2개**를 낸다. 축은 "채점할 때 뱅크에서 무엇을 빼는가"다.
 같은 쿼리 쌍을 축만 바꿔 채점하므로 표본 수(`n`)는 두 축이 같다 — 축마다 달라지는 것은

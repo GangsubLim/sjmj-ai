@@ -38,14 +38,6 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 > 품목 실패로 선정된다. 특정 잡을 강제로 확인하려면 `--jobs <job_id...>`를 코호트와 무관하게
 > 명시한다.
 
-> [!NOTE]
-> **이 기능(era-aware 재평가, Issue #49)의 최초 배포 전 한정** — 배포되기 전에는 `fetch`가
-> 서버의 `handwriting.bank_id`를 import하지 못해 `ImportError`로 실패하고(서버에 `handwriting`
-> 패키지는 이미 있고 `bank_id`만 없으므로 `ModuleNotFoundError`가 아니다), macmini
-> `score --scope all`도 같은 이유로 실행할 수 없다. 배포 순서·근거는
-> `docs/runbooks/ocr-bank-update.md` 4단계 WARNING 참조. **배포가 끝나면 이 알림은 소거
-> 대상이다.**
-
 > [!WARNING]
 > **릴리스 배포는 재평가를 무효화한다.** retrieval 지문에는 배포 코드 SHA가 들어간다(전처리·
 > 임베딩·후보 선택 코드가 결과 경로의 일부이고 `deploy.yml`이 배포마다 워커를 재시작한다).
@@ -96,15 +88,27 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
    - `top5_only`: 후보엔 있었음 — 뱅크 프로토타입 보강·리랭킹 여지.
    - `in_bank_miss`: 뱅크에 있는데 후보 밖 — 크롭 품질(우측 잘림·옆칸 잉크 침입) 또는
      동일 라벨의 필체 변형 부족을 의심하고 크롭을 눈으로 확인한다.
+   - `no_candidates`: 후보가 0건 — 리트리벌이 아예 돌지 않은 것이다(뱅크 미적재·크롭 부재
+     의심). 라벨 문제가 아니므로 뱅크 보강이 아니라 추론 경로를 확인한다.
    - `row_missing`: 학습쌍의 crop_ref가 현재 result_json에 없음(재처리 등) — 모델 문제가
      아니라 데이터 정합 문제이므로 성능 해석에서 제외하고 원인을 별도 확인한다.
    - `unevaluable`: 위 0번 코호트가 판정 불가로 격리한 쌍 — 시점 정합이 안 돼 지금 채점할
      근거가 없다는 뜻이며, `row_missing`(데이터 정합 문제)과는 관심사가 다르다.
+
+   "in-bank 리트리벌 미스" 목록은 **도달 불가**(재평가 `has_peer=False` — 정답 라벨이 그
+   잡의 크롭으로만 뱅크에 있어 전표 축 제외 후 후보가 남지 않는 쌍)를 목록에서 빼고 건수만
+   낸다. 개선 여지가 없는 쌍이므로 뒤지지 않는다. 같은 절의 "현재 뱅크 보유" 커버리지 줄은
+   라벨 있는 `included` 전체 기준이라 위 핵심 지표(평가 가능 쌍 분모)와 분모가 다르다.
+
 3. **금액 버킷**:
    - `zero_drift`(0으로 읽음)가 잡 단위로 몰리면 `warp_suspect` 플래그가 붙는다 —
      해당 잡 `warped.png`를 반드시 눈으로 확인. 쿼드 오검출(배경 포함·오프셋)이면
      템플릿 좌표(ITEM_X/AMOUNT_X)가 통째로 어긋난 것.
-   - `degenerate`(`!!!` 등): MLX-VLM 퇴화 출력 — 재시도 로직 부재가 원인.
+   - `degenerate`(`!!!` 등): MLX-VLM 퇴화 출력. 재시도는 이미 걸려 있으므로
+     (`handwriting/amount_read.py`의 `read_amount_with_retry`) 여기 남은 건은 **재시도까지
+     실패한 것**이다 — `amount_raw`가 시도별 원문을 `→`로 join하므로 그것부터 본다.
+   - `sign_mismatch`: 부호만 상이(`draft == -final`) — 값 자체는 읽었으므로 크롭·필체가
+     아니라 부호 처리(반품·차감 행) 쪽을 본다.
    - `misread`: 행 밴드와 손글씨 세로 어긋남(오프바이원) 또는 자릿수 오독 — warp와
      인접 행 금액을 같이 봐야 구분된다.
 4. **배제 집계** — `excluded`는 사유로 두 축을 가른다.
@@ -203,15 +207,15 @@ ORDER BY pairs DESC;
 
 ## 개선 작업으로 잇기
 
-| 발견                           | 다음 작업                                                                                                                |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| out_of_bank 누적               | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`                                                                      |
-| warp_suspect 잡                | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계                                                         |
-| in_bank_miss 크롭 잘림         | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조)                                                        |
-| degenerate 반복                | read_amount에 퇴화 감지 + 재시도 추가                                                                                    |
-| unknown/stale_bank 다수        | 재평가 실행 — `docs/runbooks/ocr-bank-update.md` 4단계(`--scope all`)                                                    |
-| 재평가 상태가 stale            | 릴리스 배포 후인지 확인 — 배포는 지문을 바꾼다. `score --scope all` 재실행                                               |
-| 품목 어휘 발산 진단이 0행 아님 | 진단 절의 원인 표를 위에서부터 확인 — 사람의 사전 편집 / 서비스 밖 writer / 배포 컷오버 / 등록 경로 회귀 (ADR 0008, #40) |
+| 발견                           | 다음 작업                                                                                                                                            |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| out_of_bank 누적               | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`                                                                                                  |
+| warp_suspect 잡                | `warped.png` 육안 확인 → 게이트(`handwriting/warp_gate.py`)가 이미 운영 중이므로, 판정이 실물과 어긋나면 `tools.warp_gate_report`로 지표·마진 재산출 |
+| in_bank_miss 크롭 잘림         | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조)                                                                                    |
+| degenerate 반복                | 재시도(`amount_read.read_amount_with_retry`)를 통과한 잔여이므로 `amount_raw`의 시도별 원문으로 프롬프트·크롭을 확인                                 |
+| unknown/stale_bank 다수        | 재평가 실행 — `docs/runbooks/ocr-bank-update.md` 4단계(`--scope all`)                                                                                |
+| 재평가 상태가 stale            | 릴리스 배포 후인지 확인 — 배포는 지문을 바꾼다. `score --scope all` 재실행                                                                           |
+| 품목 어휘 발산 진단이 0행 아님 | 진단 절의 원인 표를 위에서부터 확인 — 사람의 사전 편집 / 서비스 밖 writer / 배포 컷오버 / 등록 경로 회귀 (ADR 0008, #40)                             |
 
 분석 결과와 개선 결정은 `docs/work/{yyyy-mm}/{yyyy-mm-dd}-{job-slug}/`에 기록한다.
 첫 분석(2026-07-27, 잡 15개·46쌍 기준 top-1 26%)의 상세와 개선 우선순위는
