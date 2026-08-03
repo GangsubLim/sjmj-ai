@@ -1,5 +1,8 @@
 """CurationService 단위 테스트 — repository는 mock, DB 비의존."""
 
+from contextlib import nullcontext
+from unittest.mock import MagicMock
+
 from app.services.curation_service import CurationService
 
 
@@ -13,6 +16,7 @@ def _pair(pair_id: int, row_index: int) -> dict:
         "canonical_label": "무",
         "supply": 8000,
         "status": "included",
+        "exclusion_reason": None,
         "reviewed_at": None,
     }
 
@@ -33,6 +37,12 @@ class _Repo:
             },
             "pairs": self._pairs,
         }
+
+
+def test_detail_pair_exposes_exclusion_reason():
+    repo = _Repo({"rows": []}, pairs=[{**_pair(1, 0), "exclusion_reason": "blank_crop"}])
+    detail = CurationService(repo).get_detail(1)
+    assert detail["pairs"][0]["exclusion_reason"] == "blank_crop"
 
 
 def test_pair_carries_uncertain_flag_from_result_json():
@@ -110,3 +120,156 @@ def test_detail_survives_non_dict_row_elements():
     detail = CurationService(repo=repo).get_detail(1)
     assert detail["pairs"][0]["uncertain"] is False
     assert detail["pairs"][0]["top5"] == []
+
+
+# ── 정식 라벨 → 자동완성 사전 단방향 등록(ADR 0008, #40 spec §3.2) ──────────
+
+
+def _sync_svc(repo, item_repo):
+    """등록 트리거 검증용 서비스 — 트랜잭션은 nullcontext로 대체(DB 비의존)."""
+    return CurationService(repo, item_repo, transaction=nullcontext)
+
+
+def _registered(item_repo) -> list[str]:
+    return [c.args[0] for c in item_repo.ensure_exists.call_args_list]
+
+
+def test_mark_reviewed_registers_included_labels():
+    repo = MagicMock()
+    repo.job_exists.return_value = True
+    repo.list_included_labels.return_value = ["휠", "중고"]
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).mark_reviewed(7)
+
+    assert _registered(item_repo) == ["휠", "중고"]
+    repo.list_included_labels.assert_called_once_with(7)
+
+
+def test_mark_reviewed_skips_blank_labels():
+    """빈 문자열·공백만인 canonical_label은 사전에 새지 않는다.
+
+    확정 요청의 품목 name은 빈 문자열이 허용되고(app/schemas/ocr.py), ocr_correction이
+    그 값을 그대로 canonical_label로 삼아 included 쌍을 만든다 — 실재하는 입력이다.
+    """
+    repo = MagicMock()
+    repo.job_exists.return_value = True
+    repo.list_included_labels.return_value = ["", "   ", "  배선수리  "]
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).mark_reviewed(7)
+
+    assert _registered(item_repo) == ["배선수리"]  # strip 후 등록, 빈 값은 skip
+
+
+def test_mark_reviewed_dedupes_repeated_labels_across_rows():
+    """같은 라벨이 여러 행에 있어도 ensure_exists는 라벨당 한 번만 호출된다.
+
+    반복 INSERT는 unique 인덱스 락을 매번 다시 잡는 락 위생 문제라 dedup한다.
+    공백만 다른 변형(" 휠 ")도 같은 라벨이다 — list_included_labels는 공백을 그대로
+    넘기므로(SQL은 NULL만 거른다), 원본 문자열 기준 dedup은 이 케이스를 놓쳐
+    동일한 ensure_exists("휠")를 두 번 발행한다. 정규화 후에 dedup해야 한다.
+    """
+    repo = MagicMock()
+    repo.job_exists.return_value = True
+    repo.list_included_labels.return_value = ["휠", "중고", "휠", " 휠 "]
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).mark_reviewed(7)
+
+    assert _registered(item_repo) == ["휠", "중고"]
+
+
+def test_mark_reviewed_response_shape_is_unchanged():
+    repo = MagicMock()
+    repo.job_exists.return_value = True
+    repo.list_included_labels.return_value = []
+    result = _sync_svc(repo, MagicMock()).mark_reviewed(7)
+    assert result == {"job_id": 7, "curation_reviewed": True}
+
+
+def _patched(status, label, *, job_reviewed):
+    """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다."""
+    repo = MagicMock()
+    pair = {
+        "id": 5,
+        "crop_ref": "job-3/row-0",
+        "job_id": 3,
+        "row_index": 0,
+        "draft_label": "중고타이어",
+        "final_label": label,
+        "canonical_label": label,
+        "supply": 8000,
+        "status": status,
+        "exclusion_reason": None,
+        "reviewed_at": None,
+    }
+    repo.find_pair.return_value = pair
+    repo.is_job_reviewed.return_value = job_reviewed
+    return repo
+
+
+def test_patch_pair_registers_when_job_already_reviewed():
+    """검수완료 버튼은 이미 검수된 잡에서 disabled라, 이 경로가 없으면 '검수완료 후 라벨 수정'이 구멍으로 남는다."""
+    repo = _patched("included", "휠", job_reviewed=True)
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "휠"})
+
+    assert _registered(item_repo) == ["휠"]
+    repo.is_job_reviewed.assert_called_once_with(3)
+
+
+def test_patch_pair_does_not_register_when_job_not_reviewed():
+    """검수 중인 잡의 라벨 입력 중간값이 사전에 새지 않게 한다."""
+    repo = _patched("included", "중간값", job_reviewed=False)
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "중간값"})
+
+    assert _registered(item_repo) == []
+
+
+def test_patch_pair_skips_null_canonical_label():
+    """canonical_label이 NULL인 쌍은 등록 대상이 없다 — None 가드가 태워지는 유일한 실경로.
+
+    mark_reviewed 경로는 repository SQL이 NULL을 걸러 서비스에 None이 도달하지 않는다.
+    반면 training_pairs.canonical_label은 nullable이고 CurationPairPatch는
+    {"status": "included"} 단독 요청을 허용하므로, 검수완료 잡에서 라벨이 NULL인 쌍을
+    included로 되돌리면 _register_label(None)이 실제로 호출된다. 가드가 label.strip()으로
+    단순화되면 여기서 AttributeError → 500이 난다.
+    """
+    repo = _patched("included", None, job_reviewed=True)
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).patch_pair(5, {"status": "included"})
+
+    assert _registered(item_repo) == []
+
+
+def test_patch_pair_does_not_register_when_excluded():
+    repo = _patched("excluded", "제외품목", job_reviewed=True)
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).patch_pair(5, {"status": "excluded"})
+
+    assert _registered(item_repo) == []
+
+
+def test_patch_pair_response_shape_is_unchanged():
+    repo = _patched("included", "휠", job_reviewed=True)
+    result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+    assert set(result) == {
+        "id",
+        "crop_ref",
+        "job_id",
+        "row_index",
+        "draft_label",
+        "final_label",
+        "canonical_label",
+        "supply",
+        "status",
+        "exclusion_reason",
+        "reviewed_at",
+    }
+    assert result["canonical_label"] == "휠"

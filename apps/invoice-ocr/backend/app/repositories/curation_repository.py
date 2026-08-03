@@ -5,6 +5,7 @@ import json
 from sqlalchemy import text
 
 from app.db import connection
+from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
@@ -63,7 +64,7 @@ class CurationRepository:
                 conn.execute(
                     text(
                         "SELECT id, crop_ref, row_index, draft_label, final_label, canonical_label, "
-                        "supply, status, reviewed_at FROM training_pairs "
+                        "supply, status, exclusion_reason, reviewed_at FROM training_pairs "
                         "WHERE job_id = :id ORDER BY row_index ASC, id ASC"
                     ),
                     {"id": job_id},
@@ -84,8 +85,8 @@ class CurationRepository:
                 conn.execute(
                     text(
                         "SELECT id, crop_ref, job_id, invoice_id, row_index, draft_label, "
-                        "final_label, canonical_label, supply, status, reviewed_at, created_at "
-                        "FROM training_pairs WHERE id = :id"
+                        "final_label, canonical_label, supply, status, exclusion_reason, "
+                        "reviewed_at, created_at FROM training_pairs WHERE id = :id"
                     ),
                     {"id": pair_id},
                 )
@@ -95,17 +96,33 @@ class CurationRepository:
             return dict(row) if row else None
 
     def update_pair(self, pair_id: int, fields: dict) -> None:
-        """학습쌍의 status/canonical_label을 갱신한다(화이트리스트 컬럼만)."""
+        """학습쌍의 status/canonical_label을 갱신한다(화이트리스트 컬럼만).
+
+        사람이 배제(status='excluded')하면 **같은 UPDATE 문에서** exclusion_reason을 NULL로
+        지운다. 클라이언트가 보낸 값이 아니라 서버 파생 쓰기이므로 화이트리스트의 역할
+        ("사유는 기계만 채운다"의 물리적 강제)은 그대로다. 비어 있는 사유가 곧 "사람 소유"
+        표식이라, 남겨두면 기계가 사람의 배제를 자기 판정으로 오인해 되돌린다(ADR 0006 §6).
+        포함 방향에서는 지우지 않는다 — 지우면 '사람이 되돌림' 칸이 '정상 후보' 칸과 같아져
+        오탐 관측치와 영구 보호가 동시에 사라진다.
+
+        이 메서드는 사람의 PATCH 경로 전용이다(현재 유일 호출자는 CurationService.patch_pair).
+        후속에 추가될 기계 배제 writer는 이 메서드를 재사용하지 말 것 — 재사용하면 기계가
+        자기 자신이 방금 심으려는 exclusion_reason을 같은 문장에서 지우게 된다(자기 무효화).
+        """
         allowed = ("status", "canonical_label")
         cols = [c for c in allowed if c in fields]
         # 방어: 라우터는 model_validator로 검증된 비어있지 않은 fields만 전달(API 경로로는 도달 불가).
         if not cols:
             return
-        set_clause = ", ".join(f"{c} = :{c}" for c in cols)
+        assignments = [f"{c} = :{c}" for c in cols]
+        if fields.get("status") == STATUS_EXCLUDED:
+            assignments.append("exclusion_reason = NULL")
         params = {c: fields[c] for c in cols}
         params["id"] = pair_id
         with connection() as conn:
-            conn.execute(text(f"UPDATE training_pairs SET {set_clause} WHERE id = :id"), params)
+            conn.execute(
+                text(f"UPDATE training_pairs SET {', '.join(assignments)} WHERE id = :id"), params
+            )
 
     def job_exists(self, job_id: int) -> bool:
         """ocr_jobs에 해당 id가 존재하는지 여부."""
@@ -134,4 +151,36 @@ class CurationRepository:
                     "WHERE job_id = :id AND reviewed_at IS NULL"
                 ),
                 {"id": job_id},
+            )
+
+    def list_included_labels(self, job_id: int) -> list[str]:
+        """잡의 included 쌍 정식 라벨을 행순으로 반환한다.
+
+        NULL은 SQL이 거르고 빈 문자열·공백 문자열은 그대로 넘긴다 — 정규화(strip 후
+        빈 값 skip)는 service가 ml/tools/bank_update.partition_valid와 같은 규칙으로 한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            row_index 오름차순 정식 라벨 목록. 대상이 없으면 빈 리스트.
+        """
+        with connection() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT canonical_label FROM training_pairs "
+                    "WHERE job_id = :id AND status = :status AND canonical_label IS NOT NULL "
+                    "ORDER BY row_index ASC, id ASC"
+                ),
+                {"id": job_id, "status": STATUS_INCLUDED},
+            ).scalars()
+            return list(rows)
+
+    def is_job_reviewed(self, job_id: int) -> bool:
+        """잡이 검수완료 상태인지 여부(없는 잡은 False)."""
+        with connection() as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+                ).scalar()
             )

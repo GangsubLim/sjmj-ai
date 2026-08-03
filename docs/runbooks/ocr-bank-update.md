@@ -15,6 +15,46 @@ ADR 0004 게이트에 따라 **`ocr_jobs.curation_reviewed=TRUE`인 잡의 `stat
 미검수 쌍이 전부 통과해 버린다. 반영 전에 큐레이션 페이지에서 대상 잡을 "검수 완료"로 표시한다
 (API: `POST /api/curation/jobs/{job_id}/review`).
 
+> [!IMPORTANT]
+> **이 절은 `BLANK_INK_MAX`가 확정되기 전까지 비활성이다.** 미확정 상태에서 `apply`는
+> DB를 건드리기 전에 `RuntimeError`로 즉시 멈춘다(의도된 fail-fast). 임계 확정 전에는
+> 이 절을 건너뛰고 기존 절차대로 진행한다 — 빈 크롭은 그때까지 **사람이 큐레이션에서
+> 직접 제외**한다. 확정 절차는 Issue #38의 캘리브레이션 PR에 있다.
+
+### 0-1. 빈 크롭 자동 배제 반영 (bank_update 앞 단계)
+
+빈 크롭(품목 크롭에 손글씨 획이 사실상 없는 행)이 학습쌍에 섞이면 그대로 뱅크 오염원이 된다.
+뱅크 갱신 **전에** 자동 배제를 반영한다(ADR 0006 · Issue #38).
+
+```bash
+# 로컬 개발 머신에서 (apps/invoice-ocr/ml)
+uv run python -m tools.blank_crop_report fetch             # training_pairs + 품목 크롭 동기화
+uv run python -m tools.blank_crop_report report             # 잉크율 분포·판정 확인 (눈으로 본다)
+uv run python -m tools.blank_crop_report apply --dry-run    # 계획만 확인 (ssh 없이 종료) — 첫 실전 회차 전 필수
+uv run python -m tools.blank_crop_report apply              # 운영 DB 반영 (미검수 잡만)
+```
+
+- **첫 실전 회차 전에는 반드시 `apply --dry-run`으로 계획(대상·보호·불변·변경 예정·보류
+  건수)을 먼저 확인한다.** `--dry-run`은 ssh로 아무것도 쏘지 않고 계획 요약만 출력하고 끝낸다.
+- `apply`는 **캐시를 만든 호스트와 쓰기 대상(`--host`) 호스트가 다르면 즉시 거부**한다 —
+  조건부 UPDATE의 WHERE에 실리는 seen 상태는 fetch한 DB에서 본 값이라, 다른 DB에서 본 근거로
+  운영 행을 뒤집을 수 있기 때문이다. `--host`를 바꿨다면 `fetch`부터 다시 실행한다.
+- `apply`는 **보류가 1건이라도 있으면 비-0으로 종료**한다. 보류(`crop_missing`/`crop_unreadable`)를
+  해소(크롭 재생성 또는 사람이 배제)하지 않으면 이 단계를 넘어갈 수 없다. 의도적으로 무시하려면
+  `--allow-holds`.
+- 로직이 개선돼 과거 잡을 전수 재판정하려면 `apply --recheck-reviewed`(검수 완료 잡까지
+  대상에 포함해 재판정). 사람 판정은 §불변식(사유가 비어 있으면 사람 소유)이 보호한다.
+- `apply`로 판정이 바뀐 쌍은 `reviewed_at`이 지워지고 그 잡의 검수 표식이 풀린다 —
+  **큐레이션 화면에서 재검수한 뒤** 이 런북의 나머지 단계로 넘어간다.
+- `--cache`가 기존 디렉터리인데 이 도구의 산출물(`pairs.json`/`meta.json`/`crops`/
+  `blank_crop_report.md`)이 하나도 없으면 거부된다 — 남의 디렉터리를 캐시로 잘못 지정하는
+  사고를 막는다.
+- `fetch`는 시작하자마자 캐시 매니페스트를 무효화한다 — 중단되면 `report`/`apply`가 그 캐시로
+  돌 수 없다. 재-`fetch`로 복구한다.
+- 쌍 수가 많을 때(약 1,200쌍 초과) `apply`는 ssh argv 상한(macOS `ARG_MAX`)에 걸려
+  fail-fast하며, 청크 분할 대신 stdin 경유 전환이 필요하다는 안내 메시지가 나온다.
+- 선행: 운영 DB에 `db/migration_009_training_pairs_exclusion_reason.sql`이 적용돼 있어야 한다.
+
 > [!WARNING]
 > **macmini에서 `uv run` / `uv sync`를 절대 실행하지 않는다.**
 > `~/sjmj-ai/apps/invoice-ocr/ml/.venv`는 **운영 ml-worker가 쓰는 바로 그 venv**다
@@ -96,8 +136,37 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
 ```bash
 "$PYTHON_BIN" -m tools.bank_update score \
   --before "$SJMJ_ML_MODELS_DIR/bank.<stamp>.npz.bak" \
-  --after  "$SJMJ_ML_MODELS_DIR/bank.npz"
+  --after  "$SJMJ_ML_MODELS_DIR/bank.npz" \
+  --scope all      # 생략 시 reviewed(검수 완료만)
 ```
+
+`--scope`는 **채점 모집단**이다(위 제외 축 `AXES`와 다른 축이다).
+
+- `reviewed`(기본) — 검수 완료 잡의 `included` 쌍만. 뱅크 갱신 판단용 기존 기준이다.
+- `all` — 검수 여부와 무관하게 크롭이 있고 `canonical_label`이 있는 `included` 쌍 전부.
+  큐레이션 리포트의 era-aware 재평가(Issue #49)가 소비하는 산출물을 만들 때 쓴다. 검수 전
+  잡이 쌓일수록 증분이 커진다(2026-07-30 실측 증분 5쌍).
+
+**`--scope`는 `score`에만 있다.** `plan`의 모집단은 `reviewed` 고정이며 이는 ADR 0004 검수
+게이트다 — `plan`이 미검수 쌍을 뱅크 갱신 대상으로 삼으면 되돌릴 수 없는 뱅크 오염이 된다.
+
+산출물에 `score_meta.json`이 추가된다 — before/after retrieval 지문 · 산출 시각 · scope ·
+`axes` · 표본 수 · `score.jsonl`의 sha256. **큐레이션 리포트는 이 파일을 재평가 유효성의 단일
+게이트로 쓴다**(없으면 `score.jsonl`이 있어도 재평가 없음으로 취급). 쓰기 순서는 jsonl →
+meta이고 둘 다 원자 교체이므로, 중단된 재실행이 남긴 반쪽 산출물은 다이제스트·레코드 수
+불일치로 걸러진다. 또한 **릴리스 배포 후에는 이 단계를 다시 돌린다** — 지문에 배포 코드
+SHA가 들어가므로 배포가 기존 재평가를 stale로 만든다.
+
+> [!WARNING]
+> **머지만으로는 이 단계를 macmini에서 돌릴 수 없다** — 이 기능(era-aware 재평가, Issue #49)의
+> **최초 배포 전에만 해당하는 한정 경고**다. 배포가 끝나면 이 경고는 소거 대상이다. 서버
+> 레포는 `v*` 태그로 checkout된 detached HEAD다 — `--scope all`을 쓰려면 이 기능이 포함된
+> 릴리스가 먼저 배포돼야 하고, 원격 지문 스크립트도 `handwriting.bank_id`를 import할 수
+> 있어야 한다(배포 전에는 로컬 `curation_report fetch`도 같은 이유로 `ImportError`로
+> 실패한다). 배포 순서는 **머지 → 릴리스 태그 → 배포 → macmini 재평가(`score --scope all`) →
+> 로컬 `fetch`/`report`**다. 러너 워크스페이스를 수동 checkout해 앞당기지 않는다(다음 배포와
+> 충돌한다). 이 배포 순서 상세는 `docs/runbooks/ocr-curation-analysis.md`에도 중복 서술하지
+> 않는다 — 이 WARNING이 정본이다.
 
 `score.md`는 **제외 축별로 표 2개**를 낸다. 축은 "채점할 때 뱅크에서 무엇을 빼는가"다.
 같은 쿼리 쌍을 축만 바꿔 채점하므로 표본 수(`n`)는 두 축이 같다 — 축마다 달라지는 것은
@@ -130,7 +199,7 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
   안에서 그 행의 before↔after로 판단한다(peer 행은 축간 비교에 쓰지 않는다, 위 참조). 이
   분모(`peer_n`)는 축마다 달라진다(`invoice` 축이 더 작거나 같다).
 
-산출물: `results/bank_update/score.md`, `score.jsonl`.
+산출물: `results/bank_update/score.md`, `score.jsonl`, `score_meta.json`.
 `score.jsonl` 레코드의 유일키는 `(side, axis, crop_ref)`다 — `crop_ref`만으로 map을 만들면
 축·전후 4벌 중 하나가 조용히 이긴다.
 

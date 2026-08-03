@@ -494,6 +494,9 @@ export const mockCurationAPI = {
         const updated = {
           ...p,
           ...patch,
+          // 서버 파생 쓰기 미러: status='excluded'면 같은 UPDATE에서 exclusion_reason도
+          // NULL로 갱신된다(curation_repository.update_pair, ADR 0006). 포함 방향은 지우지 않는다.
+          ...(patch.status === "excluded" ? { exclusion_reason: null } : {}),
           reviewed_at: p.reviewed_at ?? new Date().toISOString(),
         };
         // PATCH 응답 형태: job_id 포함, top5·uncertain 제외(계약 비대칭 — curation_service.py의 patch_pair 참조).

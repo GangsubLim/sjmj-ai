@@ -11,8 +11,15 @@
 
 모든 명령은 `apps/invoice-ocr/ml`에서 실행한다.
 
+> 선행: 운영 DB에 `db/migration_009_training_pairs_exclusion_reason.sql`이 적용돼 있어야 한다
+> (`fetch`가 `training_pairs.exclusion_reason`을 읽는다).
+
 ```bash
-# 1. 서버에서 최신 데이터 동기화 (training_pairs + result_json + 뱅크 라벨)
+# 0. (선택·권장) macmini에서 재평가 산출 — 현재 뱅크로 다시 retrieval해 지표를 복원한다.
+#    이것을 돌리지 않으면 스탬프 이전 잡은 전부 판정 불가(unevaluable)로 나온다.
+#    절차는 docs/runbooks/ocr-bank-update.md 4단계(--scope all) 참조.
+
+# 1. 서버에서 최신 데이터 동기화 (training_pairs + result_json + 뱅크 라벨 + 현재 지문 + 재평가)
 uv run python -m tools.curation_report fetch
 
 # 2. 분석 리포트 생성 → results/curation/report.md + failures.jsonl
@@ -23,10 +30,66 @@ uv run python -m tools.curation_report pull-images            # 실패 잡 전�
 uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 ```
 
+> [!NOTE]
+> **스탬프가 없거나(`unknown`) 현재 지문과 다른(`stale_bank`) 잡은, 재평가를 돌리지 않는 한
+> `pull-images`가 품목 실패로 고르지 못한다**(정상 동작) — 위 0번 코호트에서 `unevaluable`인
+> 쌍은 **품목 실패로는** 실패 목록에 오르지 않는다(금액 실패로는 오른다 — 아래 0번 참조).
+> 배포 후 새로 추론된 잡은 스탬프가 현재 지문과 같아 `current_bank`가 되므로, 재평가 없이도
+> 품목 실패로 선정된다. 특정 잡을 강제로 확인하려면 `--jobs <job_id...>`를 코호트와 무관하게
+> 명시한다.
+
+> [!NOTE]
+> **이 기능(era-aware 재평가, Issue #49)의 최초 배포 전 한정** — 배포되기 전에는 `fetch`가
+> 서버의 `handwriting.bank_id`를 import하지 못해 `ImportError`로 실패하고(서버에 `handwriting`
+> 패키지는 이미 있고 `bank_id`만 없으므로 `ModuleNotFoundError`가 아니다), macmini
+> `score --scope all`도 같은 이유로 실행할 수 없다. 배포 순서·근거는
+> `docs/runbooks/ocr-bank-update.md` 4단계 WARNING 참조. **배포가 끝나면 이 알림은 소거
+> 대상이다.**
+
+> [!WARNING]
+> **릴리스 배포는 재평가를 무효화한다.** retrieval 지문에는 배포 코드 SHA가 들어간다(전처리·
+> 임베딩·후보 선택 코드가 결과 경로의 일부이고 `deploy.yml`이 배포마다 워커를 재시작한다).
+> 따라서 프론트·문서만 바뀐 릴리스여도 지문이 바뀌어 과거 재평가는 `stale`로 기각되고 과거
+> 잡은 `stale_bank`가 된다 — **배포 후에는 `bank_update score --scope all`을 다시 돌린다.**
+> 이것은 버그가 아니라 정직한 표현이다(코드가 바뀌면 추론 경로가 바뀐다).
+
 ## 리포트 읽는 법 (에이전트 체크리스트)
+
+0. **표본 구성**(핵심 지표 위) — 분모를 먼저 읽는다. 코호트는 그 쌍의 품목 지표를 지금
+   해석할 수 있는지의 판정이며, 근거는 파일 타임스탬프가 아니라 retrieval 지문이다
+   (뱅크 행 + 모델 파일 + 배포 코드 SHA). 워커는 기동 시 뱅크를 1회만 적재하므로 파일
+   mtime은 추론 시점을 말해주지 않는다.
+   - `reevaluated` — 현재 뱅크로 재retrieval한 쌍. **지표 산출 대상.**
+   - `current_bank` — 스탬프가 현재 지문과 같아 운영 추론이 그대로 유효한 쌍. **지표 산출 대상.**
+   - `stale_bank` — 구 retrieval 상태 + 재평가 없음. 판정 불가(`unevaluable`).
+   - `unknown` — 스탬프 이전 잡 + 재평가 없음. 판정 불가.
+   - `no_label` — `canonical_label`이 없어 정답이 없는 쌍. 판정 불가. `final_label`로
+     폴백하지 않는다.
+   - `excluded` — 학습에서 뺀 쌍(해석 비대상). 사람 배제와 기계 자동 배제가 함께 들어가며
+     소유 축 분해는 아래 4번이 낸다.
+
+   판정 불가 표본은 **품목** 지표의 분자·분모에서 빠지고, **품목 실패로는**
+   `failures.jsonl`·`pull-images` 대상에도 들어가지 않는다
+   (`curation_cohort.is_item_evaluable`이 이 코호트를 걸러낸다). 그래서 재평가를 돌리지
+   않은 상태에서는 **품목** 핵심 지표(top-1/top-5)가 `0/0`으로 나올 수 있다 — 수치가
+   사라진 것이 아니라, 그 수치에 애초에 근거가 없었다는 사실이 드러난 것이다.
+
+   **금액 지표·금액 실패·`excluded`는 코호트와 무관하게 그대로 집계·수집된다.**
+   `curation_enrich.summarize`의 `amounts`는 `is_item_evaluable` 필터 없이 `included`
+   전체에서 뽑아 핵심 지표 표의 "금액 일치" 행이 되고, `curation_cohort.is_item_failure`는
+   `is_amount_failure`를 코호트 확인 없이 OR한다. 즉 판정 불가 잡이라도 그 쌍이 금액
+   버킷에서 실패면 `failures.jsonl`에 실리고 그 잡은 `pull-images` 대상이 된다 — 뱅크
+   추가 후보 집계도 마찬가지로 코호트와 무관하게 현재 뱅크 기준으로 돈다.
+
+   "표본 구성" 표 바로 아래에 **재평가 상태 알림** 한 줄이 붙는다(채택 / 재평가 없음 —
+   `no_meta`·기각 사유 등). **현재 지문을 확정하지 못한 상태**(리포트가
+   `현재 retrieval 지문: 미확정`으로 표시)라면 재평가를 돌려도 채택되지 않는다 —
+   먼저 `fetch`를 다시 실행해 지문을 확보한 뒤에 재평가를 시도한다.
 
 1. **핵심 지표** — 이전 리포트와 비교해 top-1/top-5/금액 일치 추이를 확인한다
    (리포트는 `results/curation/`에 덮어써지므로 추이 비교가 필요하면 이전 값을 기록해 둘 것).
+   위 0번의 표본 구성이 그때그때 다를 수 있으므로, 분모가 다른 리포트끼리 수치만 직접
+   비교하지 않는다.
 2. **라벨 버킷** 우선순위:
    - `out_of_bank`: 뱅크에 정답이 없어 구조적으로 못 맞춘 것. **뱅크 추가가 유일한 해결책**
      — 해당 크롭을 `pull-images`로 받아 품질 확인 후 뱅크 갱신 작업으로 잇는다.
@@ -35,6 +98,8 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
      동일 라벨의 필체 변형 부족을 의심하고 크롭을 눈으로 확인한다.
    - `row_missing`: 학습쌍의 crop_ref가 현재 result_json에 없음(재처리 등) — 모델 문제가
      아니라 데이터 정합 문제이므로 성능 해석에서 제외하고 원인을 별도 확인한다.
+   - `unevaluable`: 위 0번 코호트가 판정 불가로 격리한 쌍 — 시점 정합이 안 돼 지금 채점할
+     근거가 없다는 뜻이며, `row_missing`(데이터 정합 문제)과는 관심사가 다르다.
 3. **금액 버킷**:
    - `zero_drift`(0으로 읽음)가 잡 단위로 몰리면 `warp_suspect` 플래그가 붙는다 —
      해당 잡 `warped.png`를 반드시 눈으로 확인. 쿼드 오검출(배경 포함·오프셋)이면
@@ -42,10 +107,13 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
    - `degenerate`(`!!!` 등): MLX-VLM 퇴화 출력 — 재시도 로직 부재가 원인.
    - `misread`: 행 밴드와 손글씨 세로 어긋남(오프바이원) 또는 자릿수 오독 — warp와
      인접 행 금액을 같이 봐야 구분된다.
-4. **excluded** 쌍은 검수자가 학습에서 뺀 것으로, 두 종류를 구분해서 읽는다.
-   - **크롭 불량** — 빈 품목칸 행 검출 등 행검출 이슈의 직접 신호. 개선 대상이다.
-   - **원본에 품목 미기재** — 이미지에 정답이 없는 행(아래 "검수 시 제외 기준").
-     개선 신호가 아니므로 성능 해석에서 제외한다.
+4. **배제 집계** — `excluded`는 사유로 두 축을 가른다.
+   - **기계 자동 배제**(사유 `blank_crop`) — 빈 크롭 가드가 잡은 것. 행검출 이슈의 직접 신호다.
+   - **사람 배제**(사유 없음) — 검수자가 뺀 것. 종전 두 갈래(크롭 불량 / 원본에 품목 미기재)가
+     여기 섞여 있고 사유 선택 수단이 없어 분리되지 않는다(ADR 0004 부채).
+     섞어 세지 않는다 — 기계 배제율은 가드의 계측기, 사람 배제율은 크롭 품질·원본 결손의 신호다.
+5. **오탐 관측치** — `included`인데 사유가 `blank_crop`인 쌍은 사람이 자동 배제를 되돌린 것으로,
+   그 개수가 곧 이 가드의 오탐률 관측치다(ADR 0006).
 
 ## 검수 시 제외 기준
 
@@ -60,14 +128,90 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 자동 판별은 하지 않는다 — 잡 53은 숫자를 잘못 크롭했는데도 top-1 유사도가 0.862로
 적중 평균(0.845)을 웃돌아, 미확신 신호로 걸러지지 않는다.
 
+빈 크롭은 **`BLANK_INK_MAX`가 확정된 뒤에는** 사람이 제외하지 않아도 된다 —
+`tools/blank_crop_report.py apply`가 자동 배제한다. 임계 확정 전까지는 종전대로 사람이
+제외한다. 자동 배제가 틀렸다고 판단되면 큐레이션 화면에서 "포함"으로 되돌린다
+(되돌린 쌍은 재판정에서 영구 보호된다).
+
+## 품목 어휘 발산 진단
+
+큐레이션을 통과한 정식 라벨이 자동완성 사전(`item_suggestions`)에 있는지 본다.
+등록은 검수완료(`POST /api/curation/jobs/{job_id}/review`)와 검수완료된 잡의 쌍 PATCH가
+자동으로 하므로(ADR 0008), **결과가 0행인 것이 기대 상태**다.
+0행이 아니면 아래 원인 표를 위에서부터 확인한다 — **등록 경로 회귀는 원인 중 하나일 뿐이고,
+사람이 사전 항목을 지우거나 이름을 바꾸기만 해도 잔여가 생긴다.**
+
+**실행 위치는 운영 macmini**(`ssh macmini`)의 `mysql` 클라이언트다 — 접속값과 대상 DB명은
+`~/.sjmj-ai/backend.env`의 `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`에서 읽는다
+(DB명 하드코딩 금지 — 런타임/백업 DB 발산 방지).
+
+> 선행: 운영 DB에 `db/migration_010_sync_item_vocabulary.sql`이 적용돼 있어야 한다
+> (미적용이면 기존 발산분이 그대로 보고된다 — 원인 표 첫 행).
+
+<!-- diagnostic-sql -->
+
+```sql
+SELECT REGEXP_REPLACE(COALESCE(tp.canonical_label, ''), '^[[:space:]]+|[[:space:]]+$', '') AS label,
+       COUNT(*) AS pairs
+FROM training_pairs tp
+LEFT JOIN item_suggestions it
+       ON it.item_name = REGEXP_REPLACE(COALESCE(tp.canonical_label, ''),
+                                        '^[[:space:]]+|[[:space:]]+$', '')
+          COLLATE utf8mb4_0900_ai_ci
+JOIN ocr_jobs j ON j.id = tp.job_id AND j.curation_reviewed = 1
+WHERE tp.status = 'included'
+  AND it.id IS NULL
+  AND REGEXP_REPLACE(COALESCE(tp.canonical_label, ''), '^[[:space:]]+|[[:space:]]+$', '') <> ''
+GROUP BY label
+ORDER BY pairs DESC;
+```
+
+> **별칭을 `canonical_label`이 아니라 `label`로 두는 것이 필수다.** MySQL은 `GROUP BY`의 비한정 식별자를 select 별칭보다 **FROM 절 컬럼에서 먼저** 찾는다. 별칭을 `canonical_label`로 두면 `GROUP BY canonical_label`이 원문 컬럼으로 해석되어 공백 변형마다 그룹이 쪼개진다.
+
+| 원인                                                                                                 | 확인 방법                                                                                                                 | 처치                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db/migration_010_sync_item_vocabulary.sql` 미적용 (기존 발산분이 그대로 남음)                       | `SELECT applied_at FROM schema_migrations WHERE filename = 'migration_010_sync_item_vocabulary.sql'` — 행이 없으면 미적용 | `scripts/migrate-db.sh`로 적용한다. 이 잔여는 등록 경로 회귀가 아니라 미적용 상태다                                                                                                           |
+| 사람이 자동 등록분을 사전에서 삭제·개명 (`DELETE`/`PUT /api/items/{id}`)                             | 보고된 라벨이 과거 등록됐던 이름인지, 품목 관리 화면 이력으로 확인                                                        | 의도한 삭제면 그대로 둔다 — 이 잔여는 정상이다. 되살리려면 해당 쌍의 정식 라벨을 큐레이션 화면에서 다시 저장한다(PATCH가 등록 트리거)                                                         |
+| 서비스 밖 writer가 쌍을 `included`로 되돌림 (`apps/invoice-ocr/ml/tools/blank_crop_report.py apply`) | 해당 잡의 `curation_reviewed`와 쌍의 `reviewed_at` 확인                                                                   | `apply`는 되돌린 쌍이 있는 잡을 `curation_reviewed = FALSE`로 함께 되돌리므로 보통 이 진단에 잡히지 않는다. 잡혔다면 그 결합이 끊긴 것 — `blank_crop_report`의 un-review 문장을 먼저 확인한다 |
+| 배포 컷오버 창에서 누락 (migration 적용 ~ 백엔드 재시작 사이의 검수완료)                             | 잡의 검수 시각이 직전 배포 시각대인지 확인                                                                                | 해당 쌍의 정식 라벨을 큐레이션 화면에서 **다시 저장**한다. 검수완료 버튼은 이미 검수된 잡에서 `disabled`이므로 재클릭으로는 복구되지 않는다                                                   |
+| 등록 트리거 회귀                                                                                     | 위 넷이 아니면 이것이다                                                                                                   | `CurationService.mark_reviewed`·`patch_pair`의 등록 경로와 `app/routers/curation.py`의 `ItemRepository` 주입을 점검한다 (ADR 0008, #40)                                                       |
+
+- **`COLLATE`는 목적지 유니크 인덱스의 collation(`utf8mb4_0900_ai_ci`)으로 맞춘다 —
+  방향이 결과를 바꾼다.** 운영은 `training_pairs`(`utf8mb4_unicode_ci`)와
+  `item_suggestions`(`utf8mb4_0900_ai_ci`)의 collation이 갈려 있어, 한쪽에 명시하지 않으면
+  `ERROR 1267`이다. 근거: 등록(`ItemRepository.ensure_exists`의 `ON DUPLICATE KEY UPDATE`)이
+  "이미 있음"을 판정하는 기준이 `item_suggestions.item_name`의 유니크 인덱스이므로,
+  진단도 같은 기준으로 봐야 등록 쪽에서 별개 항목인 발산이 숨지 않는다.
+  PAD SPACE인 `utf8mb4_unicode_ci`로 비교하면 사전에 `'휠 '`(뒤 공백)만 있고 `'휠'`은 없는
+  상태가 0행으로 나온다(실측) — `POST/PUT /api/items`는 `item_name`을 strip하지 않으므로
+  도달 가능한 상태다.
+- **정규화 조건을 빼거나 `TRIM()`으로 바꾸지 않는다.** 등록 쪽(`CurationService._register_label`)은
+  Python `.strip()`으로 정규화한 뒤 빈 값을 건너뛴다. MySQL `TRIM()`은 ASCII 스페이스만 지우므로
+  탭·U+3000이 붙은 라벨에서 등록과 진단이 갈리고, 정상 등록된 라벨이 영구히 발산으로 보고된다.
+  `REGEXP_REPLACE(…, '^[[:space:]]+|[[:space:]]+$', '')`가 그 두 규칙을 일치시킨다.
+  정규식에 `\s`를 쓰지 않는다 — MySQL 리터럴에서 백슬래시가 소비돼 알파벳 `s`를 지운다.
+- 진단 조건은 등록 조건(`CurationService`·`db/migration_010_sync_item_vocabulary.sql`)과
+  **정확히 같아야 한다**. 한쪽만 고치면 0행 불변식이 조용히 깨진다.
+- 이 SQL은 `apps/invoice-ocr/backend/tests/integration/test_item_vocabulary_diagnostic_sql.py`가
+  이 문서에서 직접 읽어 실행한다 — 여기를 고치면 그 테스트가 함께 반응한다.
+  읽는 대상은 앵커 `<!-- diagnostic-sql -->` 바로 다음 sql 펜스이므로, 앵커를 지우거나
+  진단 SQL과 떼어놓지 않는다(다른 예시 SQL을 이 절에 추가하는 것은 안전하다).
+
+`increment_usage_by_name`의 0행 갱신(청구 이름이 사전에 없는 경우)은 이 신호와 다르다.
+실측상 `invoice_items`의 37%가 정상적으로 사전에 없는 이름이라 그 무음은 경보로 쓸 수 없다.
+청구 이름은 자유 텍스트이고 사전 부재는 오류가 아니다(ADR 0008).
+
 ## 개선 작업으로 잇기
 
-| 발견                   | 다음 작업                                                         |
-| ---------------------- | ----------------------------------------------------------------- |
-| out_of_bank 누적       | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`               |
-| warp_suspect 잡        | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계  |
-| in_bank_miss 크롭 잘림 | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조) |
-| degenerate 반복        | read_amount에 퇴화 감지 + 재시도 추가                             |
+| 발견                           | 다음 작업                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| out_of_bank 누적               | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`                                                                      |
+| warp_suspect 잡                | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계                                                         |
+| in_bank_miss 크롭 잘림         | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조)                                                        |
+| degenerate 반복                | read_amount에 퇴화 감지 + 재시도 추가                                                                                    |
+| unknown/stale_bank 다수        | 재평가 실행 — `docs/runbooks/ocr-bank-update.md` 4단계(`--scope all`)                                                    |
+| 재평가 상태가 stale            | 릴리스 배포 후인지 확인 — 배포는 지문을 바꾼다. `score --scope all` 재실행                                               |
+| 품목 어휘 발산 진단이 0행 아님 | 진단 절의 원인 표를 위에서부터 확인 — 사람의 사전 편집 / 서비스 밖 writer / 배포 컷오버 / 등록 경로 회귀 (ADR 0008, #40) |
 
 분석 결과와 개선 결정은 `docs/work/{yyyy-mm}/{yyyy-mm-dd}-{job-slug}/`에 기록한다.
 첫 분석(2026-07-27, 잡 15개·46쌍 기준 top-1 26%)의 상세와 개선 우선순위는

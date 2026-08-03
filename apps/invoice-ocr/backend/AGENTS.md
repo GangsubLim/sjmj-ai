@@ -13,6 +13,7 @@ app/
   db.py            Engine + ContextVar conn 바인딩 (transaction()/connection())
   core/            envelope.py(성공 래핑) · errors.py(AppError) · validators.py(fluent 검증)
   routers/         엔드포인트(sync def, threadpool). slice별 1파일 + ocr
+  schemas/         Pydantic request 모델(전환된 slice만 — ocr.py · curation.py)
   services/        비즈니스 로직 + 트랜잭션 경계. repo는 생성자 주입
   repositories/    데이터 접근. with db.connection()으로 현재 conn 재사용
 tests/

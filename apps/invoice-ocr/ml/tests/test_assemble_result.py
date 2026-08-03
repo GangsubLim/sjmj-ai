@@ -122,3 +122,36 @@ def test_existing_fields_are_untouched_by_the_new_flag():
     assert row["amount_raw"] == "85"
     assert out["supply_sum"] == 85000
     assert out["warp_ok"] is True
+
+
+def test_result_carries_the_retrieval_version_when_given():
+    out = assemble_result_json(1, [_row(0.9)], True, retrieval_version="a1b2c3d4e5f6")
+    assert out["retrieval_version"] == "a1b2c3d4e5f6"
+
+
+def test_retrieval_version_key_is_absent_when_not_given():
+    # 자리표시자("unknown" 등)를 넣으면 서로 다른 retrieval 상태가 한 코호트로 합쳐진다.
+    out = assemble_result_json(1, [_row(0.9)], True)
+    assert "retrieval_version" not in out
+
+
+def test_retrieval_version_key_is_absent_when_blank_or_whitespace():
+    # 빈 문자열/공백은 "값이 있는 지문"이 아니라 그 자체로 자리표시자 코호트가 된다 —
+    # None과 동일하게 키를 만들지 않아야 한다(Issue #49 재발 방지).
+    out_empty = assemble_result_json(1, [_row(0.9)], True, retrieval_version="")
+    out_blank = assemble_result_json(1, [_row(0.9)], True, retrieval_version="   ")
+    assert "retrieval_version" not in out_empty
+    assert "retrieval_version" not in out_blank
+
+
+def test_warp_failure_path_also_carries_the_stamp():
+    # 그 잡의 쌍은 어차피 row_missing이지만, 스탬프 유무가 경로에 따라 갈리면
+    # "왜 이 잡만 unknown인가"라는 해석 불가 상태가 된다(spec §3-A).
+    out = assemble_result_json(7, [], False, retrieval_version="a1b2c3d4e5f6")
+    assert out == {
+        "rows": [],
+        "supply_sum": 0,
+        "warp_ok": False,
+        "item_conf_threshold": ITEM_CONF_THRESHOLD,
+        "retrieval_version": "a1b2c3d4e5f6",
+    }

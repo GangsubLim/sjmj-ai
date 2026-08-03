@@ -1,13 +1,19 @@
 """warp 정합 게이트 — 판정 순수함수 단위테스트(cv2/numpy 무의존)."""
 
 from handwriting.warp_gate import (
+    ENH_MAX_BLUE_ASYMMETRY,
+    ENH_MAX_PITCH_DEV,
+    ENH_MIN_BLUE_RATIO,
+    ENH_MIN_HLINES,
     MAX_BLUE_ASYMMETRY,
     MAX_PITCH_DEV,
     MIN_BLUE_RATIO,
     MIN_HLINES,
     WarpGateMetrics,
+    WarpGateMetricsEnh,
     blue_asymmetry,
     evaluate_warp,
+    evaluate_warp_enh,
 )
 
 # 경계 테스트가 쓰는 '넉넉한' 파랑 비율. MAX_BLUE_ASYMMETRY와 결합돼 있다 —
@@ -158,17 +164,185 @@ def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
     assert (1 - MAX_BLUE_ASYMMETRY) * GOOD_RATIO_FACTOR >= 2
 
 
+# --- evaluate_warp_enh (enh 폴백 판정, cv2/numpy 무의존) ---
+
+# blue_ratio는 마스크 평균이라 도메인이 [0, 1]이다. 확정 ENH_MIN_BLUE_RATIO(=0.0864)에
+# 표준의 GOOD_RATIO_FACTOR(=8)를 곱하면 0.6912로 도메인 안에 넉넉히 들어온다.
+# min(1.0, ...)으로 클램프하지 않는다 — 클램프는 재캘리브가 픽스처를 도메인 밖으로 밀어내는
+# 사건을 조용히 흡수해, 아래 가드 테스트의 `<= 1.0` 경보를 정의상 절대 울리지 않게 만든다
+# (표준 축의 test_asymmetry_boundary_case_stays_above_blue_ratio_floor는 그 경보가 실제로
+# RED를 내는 진짜 가드다). 도메인 이탈은 그 가드 테스트가 RED로 알린다.
+ENH_GOOD_RATIO = ENH_MIN_BLUE_RATIO * GOOD_RATIO_FACTOR
+
+
+def _enh_metrics(**over) -> WarpGateMetricsEnh:
+    base = {
+        "hline_count": ENH_MIN_HLINES + 5,
+        "pitch_dev": ENH_MAX_PITCH_DEV / 2,
+        "blue_ratio_left": ENH_GOOD_RATIO,
+        "blue_ratio_right": ENH_GOOD_RATIO,
+    }
+    return WarpGateMetricsEnh(**{**base, **over})
+
+
+def test_enh_thresholds_only_tighten_the_sealed_axes():
+    # #18의 봉인 규칙(추가 완화 금지, 강화만)이 폴백 경로로 우회되지 않게 실행 가능한
+    # 불변식으로 고정한다(spec §5.1). blue 2종은 마스크가 달라 스케일 비교가 불가능하므로
+    # 이 가드의 대상이 아니다.
+    assert ENH_MIN_HLINES >= MIN_HLINES
+    assert ENH_MAX_PITCH_DEV <= MAX_PITCH_DEV
+
+
+def test_enh_thresholds_are_calibration_pinned():
+    # 캘리브 핀(calibration-2026-08-03.md §6 권고 A · 사람 승인 · Issue #64 · 잡 21 누출).
+    # 위 test_enh_thresholds_only_tighten_the_sealed_axes의 `>= MIN_HLINES` 부등식은
+    # ENH_MIN_HLINES=14(도출식 값)도 허용한다 — 14면 파손 확정 잡 21(캔버스 좌측 ~50%만
+    # 덮은 쿼드 오검출, h=14·pitch=0.043)이 폴백을 누출한다(warp_gate.py:135-141 주석 참조).
+    # 마진 0%·gap 1개 선(#64)이라 가장 깨지기 쉬운 상수이므로 리터럴로 못 박는다.
+    # 의도적 재캘리브면 이 핀도 함께 고쳐라 — 정확히 원하는 동작이다.
+    assert (ENH_MIN_HLINES, ENH_MAX_PITCH_DEV, ENH_MIN_BLUE_RATIO, ENH_MAX_BLUE_ASYMMETRY) == (
+        15,
+        0.1046,
+        0.0864,
+        0.5515,
+    )
+
+
+def test_enh_passes_on_healthy_enh_metrics():
+    assert evaluate_warp_enh(_enh_metrics()) is True
+
+
+def test_enh_rejects_below_hline_floor():
+    assert evaluate_warp_enh(_enh_metrics(hline_count=ENH_MIN_HLINES - 1)) is False
+
+
+def test_enh_accepts_exactly_at_hline_floor():
+    assert evaluate_warp_enh(_enh_metrics(hline_count=ENH_MIN_HLINES)) is True
+
+
+def test_enh_rejects_above_pitch_ceiling():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=ENH_MAX_PITCH_DEV * 2)) is False
+
+
+def test_enh_accepts_exactly_at_pitch_ceiling():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=ENH_MAX_PITCH_DEV)) is True
+
+
+def test_enh_rejects_blue_ratio_below_floor_on_either_side():
+    low = ENH_MIN_BLUE_RATIO / 2
+    # 좌우 동시 low가 먼저다 — 비대칭도가 0이라 실패 사유가 하한 위반으로 격리된다(표준 축의
+    # test_fails_when_grid_globally_sparse와 같은 패턴). 한쪽만 낮추면 비대칭도까지 함께
+    # 위반하므로, 하한 검사 블록을 통째로 지워도 마지막 비대칭 검사가 거부해 테스트가 초록으로
+    # 남는다 — 그 케이스만으로는 하한을 고정하지 못한다.
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=low, blue_ratio_right=low)) is False
+    # 아래 2건은 하한이 좌·우 어느 쪽에도 걸리는지(축 편향 없음) 확인용이다.
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=low)) is False
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_right=low)) is False
+
+
+def test_enh_accepts_exactly_at_blue_ratio_floor():
+    m = _enh_metrics(blue_ratio_left=ENH_MIN_BLUE_RATIO, blue_ratio_right=ENH_MIN_BLUE_RATIO)
+    assert evaluate_warp_enh(m) is True
+
+
+def test_enh_rejects_excessive_asymmetry():
+    left = ENH_GOOD_RATIO
+    right = left * (1 - ENH_MAX_BLUE_ASYMMETRY) * 0.99  # 비대칭만 초과시키고 하한은 지킨다
+    assert right >= ENH_MIN_BLUE_RATIO  # 실패 사유가 비대칭임을 지역적으로 고정
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=left, blue_ratio_right=right)) is False
+
+
+def test_enh_passes_just_inside_asymmetry_limit():
+    # 표준 축의 test_passes_just_inside_asymmetry_limit에 대응하는 통과 방향 경계(마진 1%
+    # 관용구 동일 — 등호 경계 자체는 부동소수 왕복 오차에 취약해 안/밖 쌍으로 표현한다).
+    # 이게 없으면 enh 비대칭 축을 지나는 유일한 케이스가 좌우 완전 대칭인 _enh_metrics()
+    # 기본값(비대칭도 0)뿐이라, ENH_MAX_BLUE_ASYMMETRY가 과도하게 강화되는 변경(예: 절반)을
+    # 아무 테스트도 잡지 못한다.
+    left = ENH_GOOD_RATIO
+    right = left * (1 - ENH_MAX_BLUE_ASYMMETRY * 0.99)
+    assert right >= ENH_MIN_BLUE_RATIO  # 통과 사유가 하한 미달로 뒤바뀌지 않음을 지역적으로 고정
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=left, blue_ratio_right=right)) is True
+
+
+def test_enh_asymmetry_fixture_stays_inside_the_blue_ratio_domain():
+    # 표준 축의 test_asymmetry_boundary_case_stays_above_blue_ratio_floor에 대응하는 enh 가드.
+    # 깨지면 테스트가 아니라 ENH_GOOD_RATIO 정의 또는 ENH_MAX_BLUE_ASYMMETRY를 재검토한다.
+    assert ENH_MIN_BLUE_RATIO < ENH_GOOD_RATIO <= 1.0
+    assert ENH_GOOD_RATIO * (1 - ENH_MAX_BLUE_ASYMMETRY) * 0.99 >= ENH_MIN_BLUE_RATIO
+
+
+def test_enh_is_fail_closed_on_nan_pitch():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=float("nan"))) is False
+
+
+def test_enh_is_fail_closed_on_nan_blue_ratio():
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=float("nan"))) is False
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_right=float("nan"))) is False
+
+
+def test_enh_rejects_the_all_zero_mask_degenerate_case():
+    # blue_mask_enh의 `mx < 1` 조기 반환(전부 0 마스크)은 예외가 아니라 자동 fail이어야 한다
+    # (spec §5.4).
+    assert (
+        evaluate_warp_enh(
+            WarpGateMetricsEnh(
+                hline_count=0, pitch_dev=1.0, blue_ratio_left=0.0, blue_ratio_right=0.0
+            )
+        )
+        is False
+    )
+
+
+def test_evaluate_warp_rejects_enh_metrics_structurally():
+    # Task 4 MEDIUM #2: compute_metrics(enhanced=True)의 결과를 표준 evaluate_warp에 실수로
+    # 넣으면 enh blue_ratio 스케일 때문에 MIN_BLUE_RATIO 바닥이 무조건 충족돼 fail-open이
+    # 된다. 타입을 분리해 이 오배선을 조용한 오판정이 아니라 즉시 TypeError로 닫는다.
+    import pytest
+
+    with pytest.raises(TypeError):
+        evaluate_warp(_enh_metrics())
+
+
+def test_evaluate_warp_enh_rejects_standard_metrics_structurally():
+    # 대칭 가드 — evaluate_warp_enh에 표준(WarpGateMetrics) 지표가 잘못 들어오는 것도 같은
+    # 방식으로 구조적으로 막는다.
+    import pytest
+
+    with pytest.raises(TypeError):
+        evaluate_warp_enh(_metrics())
+
+
 # --- compute_metrics (cv2 글루) ---
 # cv2가 없는 코어 venv에서는 이 절만 스킵된다. 판정 순수함수 테스트는 계속 돈다.
 
 
-def _compute(img):
+def _compute(img, **kw):
     import pytest
 
     pytest.importorskip("cv2", exc_type=ImportError)
     from handwriting.warp_gate import compute_metrics
 
-    return compute_metrics(img)
+    return compute_metrics(img, **kw)
+
+
+def _faint_grid():
+    """(b−r) = 10인 합성 격자 — blue_mask의 `> 10`은 통째로 놓치고 blue_mask_enh만 살린다.
+
+    표준 마스크에서 세 필드가 전부 0이므로, enhanced=True에서 하나라도 0으로 남으면
+    그 필드가 표준 마스크에서 왔다는 뜻이 된다(spec §5.5 — 마스크 출처를 필드 단위로 고정).
+    """
+    import pytest
+
+    pytest.importorskip("cv2", exc_type=ImportError)
+    np = pytest.importorskip("numpy")
+
+    from handwriting.grid_v4 import WARP_H, WARP_W
+
+    img = np.full((WARP_H, WARP_W, 3), 255, np.uint8)
+    for k in range(16):
+        y = 620 + k * 83
+        img[y : y + 28, 0:WARP_W] = (250, 120, 240)  # b=250, r=240 → b−r = 10 (경계 '초과' 미달)
+    return img
 
 
 def test_compute_metrics_on_healthy_grid_passes_gate(make_warped):
@@ -241,25 +415,56 @@ def test_compute_metrics_filters_doubled_lines_from_pitch():
     assert m.pitch_dev <= MAX_PITCH_DEV  # 이중선 gap이 MAD 계산에서 배제돼야 오탐하지 않는다
 
 
-def test_compute_metrics_forces_deterministic_faint_state(make_warped, monkeypatch):
-    # docstring이 "두 함수가 순수함수라 동일 동작"이라 주장했지만 hline_ys는 grid_v4의
-    # 모듈 전역 _FAINT를 읽는다(FaintOn으로 토글). ambient 상태와 무관하게 항상
-    # FaintOn(False)로 고정 호출됨을 spy로 고정한다(spec §3.1: 게이트는 결정론적).
+def test_standard_mask_sees_nothing_in_the_faint_grid():
+    m = _compute(_faint_grid())
+    assert m.hline_count == 0
+    assert m.blue_ratio_left == 0.0
+    assert m.blue_ratio_right == 0.0
+
+
+def test_enhanced_mask_feeds_every_field_of_the_metrics():
+    # 세 필드가 '모두 같은 enh 마스크에서' 나오는지 고정한다. hline만 enh로 갈아끼우고
+    # blue_ratio를 표준으로 남기는 오배선(#16의 FaintOn 부분 회수와 같은 함정)을 잡는다.
+    # 개수는 참고값(이 합성에서 실측 16)일 뿐 단언은 '표준 0 / enh 양수'로 건다 —
+    # morphology 파라미터가 바뀌어도 부서지지 않게.
+    m = _compute(_faint_grid(), enhanced=True)
+    assert m.hline_count > 0
+    assert m.blue_ratio_left > 0.0
+    assert m.blue_ratio_right > 0.0
+
+
+def test_compute_metrics_enhanced_output_is_rejected_by_the_standard_gate(make_warped):
+    # Task 4 MEDIUM #2를 실제 compute_metrics 경계에서 고정한다 — enhanced=True 산출을
+    # evaluate_warp(표준)에 실수로 넣으면 TypeError로 즉시 닫혀야 한다(fail-open 대신).
+    import pytest
+
+    m = _compute(make_warped(), enhanced=True)
+    assert isinstance(m, WarpGateMetricsEnh)
+    with pytest.raises(TypeError):
+        evaluate_warp(m)
+
+
+def test_compute_metrics_is_independent_of_ambient_faint_state():
+    # FaintOn을 경유하지 않으므로 ambient _FAINT와 무관하게 같은 값이 나오고,
+    # 전역 상태를 변경하지도 않는다(spec §5.2·§5.4 — 전역 mutation 0). make_warped()의
+    # 정상 격자(표준·enh 마스크가 둘 다 16선)는 이 가드에 못 쓴다 — hline_ys(조건부
+    # FaintOn 로직)로 되돌아가는 회귀가 있어도 두 마스크의 선 개수가 같아 ambient
+    # _FAINT값과 무관하게 결과가 같아지므로 검출력이 없다(리뷰 H1). _faint_grid()는
+    # 표준 마스크 0선/enh 16선으로 갈라져 있어, hline_ys 경유 시 ambient _FAINT에 따라
+    # 값이 달라지는 회귀를 실제로 잡는다.
+    # ⚠️ 순서 주의 — _faint_grid()가 먼저다. grid_v4는 모듈 최상단에서 cv2/numpy를 import하므로,
+    # `import handwriting.grid_v4`가 앞서면 _faint_grid() 안의 importorskip보다 먼저 실행돼
+    # 코어(pillow만) venv에서 이 테스트가 skip이 아니라 ModuleNotFoundError로 실패한다
+    # (위 절 머리말이 선언한 "cv2 없는 코어 venv에서는 이 절만 스킵된다" 계약 위반).
+    img = _faint_grid()
+
     import handwriting.grid_v4 as grid_v4
 
-    seen_faint_states = []
-    original_hline_ys = grid_v4.hline_ys
-
-    def spy(warped):
-        seen_faint_states.append(grid_v4._FAINT)
-        return original_hline_ys(warped)
-
-    monkeypatch.setattr(grid_v4, "hline_ys", spy)
-
     with grid_v4.FaintOn(True):
-        _compute(make_warped())
-
-    assert seen_faint_states == [False]
+        inside = _compute(img)
+        assert grid_v4._FAINT is True  # 게이트가 전역을 되돌려놓지 않았음을 확인
+    assert inside == _compute(img)
+    assert grid_v4._FAINT is False
 
 
 def test_compute_metrics_clamps_nan_pitch_dev_to_worst(make_warped, monkeypatch):

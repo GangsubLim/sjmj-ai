@@ -5,17 +5,33 @@
 
 from pathlib import Path
 
+from app import db
 from app.config import crop_dir
 from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
+from app.schemas.curation import STATUS_INCLUDED
+
+
+def _normalize_label(label: str | None) -> str:
+    """정식 라벨을 등록 기준 형태로 정규화한다(없으면 빈 문자열).
+
+    정규화 규칙은 ml/tools/bank_update.partition_valid가 뱅크에 넣을 라벨을 고르는
+    규칙과 같다 — strip 후 빈 문자열이면 등록 대상이 아니다.
+    """
+    return (label or "").strip()
 
 
 class CurationService:
     """큐레이션 도메인 서비스."""
 
-    def __init__(self, repo=None):
-        """저장소를 주입받아 초기화한다(미지정 시 기본 구현)."""
+    def __init__(self, repo=None, item_repo=None, *, transaction=None):
+        """저장소와 트랜잭션 컨텍스트를 주입받아 초기화한다(미지정 시 기본 구현).
+
+        item_repo는 InvoiceService와 같은 형태의 생성자 주입이다 — 라우터가 넘긴다.
+        """
         self.repo = repo or CurationRepository()
+        self.item_repo = item_repo
+        self._transaction = transaction or db.transaction
 
     def list_jobs(self, page: int, limit: int) -> tuple[list[dict], int]:
         """검수 큐(페이지)를 조회하고 표시용 타입으로 정규화한다."""
@@ -61,6 +77,7 @@ class CurationService:
                     "canonical_label": p["canonical_label"],
                     "supply": p["supply"],
                     "status": p["status"],
+                    "exclusion_reason": p["exclusion_reason"],
                     "reviewed_at": p["reviewed_at"],
                     "top5": row.get("item_top5") or [],
                     # item_conf_threshold 도입 이전 잡은 플래그가 없다 → 확신(하위호환).
@@ -77,11 +94,22 @@ class CurationService:
         }
 
     def patch_pair(self, pair_id: int, fields: dict) -> dict:
-        """학습쌍을 부분 갱신하고 갱신된 쌍을 반환한다. 없으면 404."""
+        """학습쌍을 부분 갱신하고 갱신된 쌍을 반환한다. 없으면 404.
+
+        갱신 결과가 included이고 그 쌍이 속한 잡이 이미 검수완료면 정식 라벨을 자동완성
+        사전에 등록한다(ADR 0008). 검수완료 버튼은 이미 검수된 잡에서 disabled이므로,
+        이 경로가 없으면 "검수완료 → 나중에 라벨 수정"이 등록 트리거를 다시 걸 수 없다.
+        검수 중인 잡은 등록하지 않는다 — 라벨 입력 도중의 중간값이 사전에 새지 않게 한다.
+        """
         if self.repo.find_pair(pair_id) is None:
             not_found("학습쌍을 찾을 수 없습니다.")
-        self.repo.update_pair(pair_id, fields)
-        updated = self.repo.find_pair(pair_id)
+        with self._transaction():
+            self.repo.update_pair(pair_id, fields)
+            updated = self.repo.find_pair(pair_id)
+            if updated["status"] == STATUS_INCLUDED and self.repo.is_job_reviewed(
+                int(updated["job_id"])
+            ):
+                self._register_label(updated["canonical_label"])
         return {
             "id": int(updated["id"]),
             "crop_ref": updated["crop_ref"],
@@ -92,14 +120,24 @@ class CurationService:
             "canonical_label": updated["canonical_label"],
             "supply": updated["supply"],
             "status": updated["status"],
+            "exclusion_reason": updated["exclusion_reason"],
             "reviewed_at": updated["reviewed_at"],
         }
 
     def mark_reviewed(self, job_id: int) -> dict:
-        """잡을 검수완료로 표시한다. 없으면 404. 멱등."""
+        """잡을 검수완료로 표시한다. 없으면 404. 멱등.
+
+        그 잡의 included 정식 라벨은 자동완성 사전에 등록된다(ADR 0008 단방향 정합).
+        """
         if not self.repo.job_exists(job_id):
             not_found("OCR 잡을 찾을 수 없습니다.")
-        self.repo.mark_reviewed(job_id)
+        with self._transaction():
+            self.repo.mark_reviewed(job_id)
+            # dedup은 정규화 후에 한다 — 원본 기준이면 "휠"과 " 휠 "가 각각 살아남아
+            # 같은 ensure_exists("휠")를 두 번 발행한다(락 위생 목적이 무너진다).
+            labels = (_normalize_label(x) for x in self.repo.list_included_labels(job_id))
+            for label in dict.fromkeys(labels):
+                self._register_label(label)
         return {"job_id": job_id, "curation_reviewed": True}
 
     def original_image(self, job_id: int) -> str:
@@ -119,3 +157,15 @@ class CurationService:
         if not path.is_file():
             not_found("워프 이미지가 없습니다.")
         return str(path)
+
+    def _register_label(self, label: str | None) -> None:
+        """정규화한 정식 라벨을 자동완성 사전에 등록한다(빈 값은 건너뛴다).
+
+        canonical_label은 nullable이라 None이 실제로 도달한다(patch_pair 경로) —
+        _normalize_label이 그 경계를 함께 흡수한다.
+        """
+        if self.item_repo is None:
+            return
+        name = _normalize_label(label)
+        if name:
+            self.item_repo.ensure_exists(name)

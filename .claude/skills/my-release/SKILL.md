@@ -3,7 +3,7 @@ name: my-release
 description: |
   sjmj-ai 전용 릴리스 워크플로우 — 루트 VERSION(진실원, config.py:APP_VERSION과 동기) bump,
   CHANGELOG 작성, release/vX.Y.Z 브랜치 PR 생성, CI watch, merge, 태그 push(= macmini 자동 배포
-  트리거), GitHub Release 생성, devel 재동기화까지 9단계를 안내한다. "릴리스", "release",
+  트리거), 배포 확인, GitHub Release 생성, main 기반 devel 재생성까지 9단계를 안내한다. "릴리스", "release",
   "버전 올리자", "vX.Y.Z 내자", "patch/minor/major bump", "배포 준비", "changelog 쓰자",
   "태깅", "배포하자" 등 버전 발행·배포 맥락에서 사용. 단순 "빌드"·"테스트"만이면 트리거 금지.
 ---
@@ -21,13 +21,13 @@ CHANGELOG 헤더 + release 브랜치 생성을 수행한다. 배포는 **`vX.Y.Z
 > - 외부 노출은 `tailscale serve --https=8443`(영속, 배포와 무관하게 상시 유지).
 > - 패키지 version 필드 동기 안 함 — 진실원은 루트 `VERSION` + `config.py:APP_VERSION` 둘뿐. `scripts/sync-version.sh`가 함께 갱신.
 > - 모노레포 경로 `apps/invoice-ocr/{backend,frontend}`.
-> - **`deleteBranchOnMerge=false`** — PR merge 시 head 브랜치가 자동 삭제되지 **않는다**. `release/vX.Y.Z`는 merge 후 수동 정리.
+> - **`deleteBranchOnMerge=true`** — PR merge 시 head 브랜치가 원격에서 **자동 삭제된다**. devel→main PR을 merge하면 `origin/devel`도 사라지므로, **배포 성공 후 main 기반으로 devel을 재생성**한다(Step 9). `release/vX.Y.Z`도 원격에서는 자동 삭제되고 로컬 브랜치만 남는다.
 
 ## 릴리스 흐름 개요
 
 ```
-devel 작업 → main PR merge → release.sh(VERSION+APP_VERSION bump+CHANGELOG+release 브랜치)
-  → release PR → CI → merge → 태그 push(배포) → devel 동기화 → GitHub Release
+devel 작업 → main PR merge(= origin/devel 삭제됨) → release.sh(VERSION+APP_VERSION bump+CHANGELOG+release 브랜치)
+  → release PR → CI → merge → 태그 push(배포) → 배포 확인 → GitHub Release → main 기반 devel 재생성
 ```
 
 ## Step 1: 사전 확인
@@ -172,12 +172,12 @@ gh pr checks $PR_NUM --watch --interval 10
   ```bash
   gh pr merge <PR번호> --merge
   ```
-  > `deleteBranchOnMerge=false`라 `release/vX.Y.Z`가 원격에 남는다. 정리: `git push origin :release/vX.Y.Z` (선택).
+  > `deleteBranchOnMerge=true`라 `origin/release/vX.Y.Z`는 merge와 함께 사라진다. 로컬 브랜치만 누적되므로 정리는 로컬에서: `git branch -d release/vX.Y.Z` (선택).
 - **fail**: 사용자에게 보고 후 승인 대기. 임의 merge 금지.
 
 ## Step 6: 태그 부여 → 배포 트리거
 
-> ⚡ `git push origin vX.Y.Z` 실행 즉시 `deploy.yml`이 돌며 **배포가 시작된다**. 이후 Step 7~8은 배포와 병렬.
+> ⚡ `git push origin vX.Y.Z` 실행 즉시 `deploy.yml`이 돌며 **배포가 시작된다**. 다음 단계는 그 결과를 지켜보는 것이다.
 
 ```bash
 git checkout main && git pull origin main
@@ -185,36 +185,7 @@ git tag vX.Y.Z "$(git rev-parse HEAD)"
 git push origin vX.Y.Z   # ← 이 시점에 deploy.yml 자동 실행
 ```
 
-## Step 7: devel 동기화
-
-```bash
-git checkout devel
-git merge main
-git push origin devel
-```
-
-> sjmj-ai는 `origin/devel`이 자동 삭제되지 않으므로 `-u` 불필요.
->
-> conflict(드묾) 시 **`git reset --hard main` 전에 반드시 `git log main..devel --oneline`이 빈 결과인지 확인**한다. 비어 있으면(devel ⊆ main) reset이 안전하다:
->
-> ```bash
-> git log main..devel --oneline   # 결과 있으면 reset 금지 — 그 커밋이 사라진다
-> # 빈 결과일 때만:
-> git reset --hard main && git push --force-with-lease origin devel
-> ```
->
-> 결과가 비어 있지 않으면(devel에 main 미병합 커밋 존재) reset 대신 `git merge main`으로 conflict를 직접 resolve한다.
-
-## Step 8: GitHub Release 생성
-
-```bash
-VER=$(cat VERSION)
-RELEASE_NOTES=$(awk "/^## \[v${VER}\]/{f=1;next} f&&/^## \[/{exit} f" CHANGELOG.md)
-gh release create "v${VER}" --title "v${VER}" --notes "$RELEASE_NOTES"
-# 자동 커밋/PR 목록을 원하면 --notes 대신 --generate-notes 단독 사용(둘 동시 사용 시 본문 중복).
-```
-
-## Step 9: 배포 확인
+## Step 7: 배포 확인
 
 태그 push(Step 6)로 트리거된 배포 상태 확인:
 
@@ -235,6 +206,36 @@ gh run watch <run-id>
 >
 > **첫 배포 전제** — macmini에 다음이 준비돼 있어야 성공한다: self-hosted runner(`[self-hosted, macmini]`) 온라인, 운영 repo 경로 `/Users/submini/sjmj-ai`, env 파일 `/Users/submini/.sjmj-ai/backend.env`(DB\_\* 포함), LaunchAgent plist 등록. 미비 시 backup/sync/build/health 단계에서 실패한다.
 
+> **배포가 실패했으면 Step 8~9로 넘어가지 않는다.** deploy.yml이 이전 SHA로 자동 rollback해 운영은 복구되지만 git의 main·태그는 그대로 남는다. 원인을 고쳐 재배포(태그 재발행 또는 `workflow_dispatch`)한 뒤에 Release 발행과 devel 재생성을 진행한다 — 검증되지 않은 main을 devel의 새 기점으로 삼지 않는다.
+
+## Step 8: GitHub Release 생성
+
+```bash
+VER=$(cat VERSION)
+RELEASE_NOTES=$(awk "/^## \[v${VER}\]/{f=1;next} f&&/^## \[/{exit} f" CHANGELOG.md)
+gh release create "v${VER}" --title "v${VER}" --notes "$RELEASE_NOTES"
+# 자동 커밋/PR 목록을 원하면 --notes 대신 --generate-notes 단독 사용(둘 동시 사용 시 본문 중복).
+```
+
+## Step 9: devel 재생성 (main 기반)
+
+Step 1의 devel→main PR이 merge될 때 `deleteBranchOnMerge=true`로 **`origin/devel`은 이미 삭제됐다**. 로컬 devel을 push해 되살리지 말고, **배포가 검증된 `origin/main`을 기점으로 재생성**한다 — 로컬 devel에 남아 있던 미푸시 커밋이 조용히 섞여 들어가는 경로를 없애기 위해서다.
+
+```bash
+git fetch origin --prune
+
+# 유실 가드: 결과가 있으면 재생성 금지 — 로컬 devel에만 있는 커밋이다
+git log origin/main..devel --oneline
+
+# 빈 결과일 때만:
+git checkout -B devel origin/main
+git push -u origin devel
+```
+
+> **가드에 결과가 나오면** 그 커밋은 릴리스에 포함되지 않은 로컬 작업이다. 재생성으로 날리지 말고 별도 브랜치로 옮겨(`git branch wip/<slug> devel`) 다음 사이클의 devel→main PR로 정식 반영한다. 옮긴 뒤 위 가드를 다시 통과시키고 재생성한다.
+>
+> 검증: `git rev-parse devel origin/devel origin/main`의 세 SHA가 모두 같아야 한다.
+
 ## gh auth 주의
 
 리모트는 `GangsubLim` 계정 소유. 실행 전 활성 계정 확인:
@@ -249,7 +250,7 @@ gh auth switch --user GangsubLim   # 다른 계정이 활성이면
 1. main에서 `hotfix/vX.Y.Z` 브랜치 생성, 수정+테스트
 2. main으로 PR → merge
 3. `git checkout main && git pull && scripts/release.sh patch`
-4. release PR → merge → 태그 push(배포) → devel 동기화
+4. release PR → merge → 태그 push(배포) → 배포 확인 → main 기반 devel 재생성(Step 9)
 
 ## 트러블슈팅
 
@@ -263,4 +264,5 @@ gh auth switch --user GangsubLim   # 다른 계정이 활성이면
 | CI가 계속 "no checks"     | CI 워크플로우의 `on.pull_request.branches`(main, devel) 확인                                 |
 | deploy.yml 실패           | `gh run view <run-id> --log-failed`로 원인 확인. 첫 배포면 macmini 경로/env/runner 준비 점검 |
 | 백업 실패(`backup-db.sh`) | `/Users/submini/.sjmj-ai/backend.env`에 `DB_NAME=sjmj` 및 `DB_*` 항목 확인                   |
-| release/\* 브랜치 누적    | 자동 삭제 안 됨. `git push origin :release/vX.Y.Z` + `git branch -d release/vX.Y.Z`          |
+| release/\* 브랜치 누적    | 원격은 merge 시 자동 삭제됨. 로컬만 정리: `git branch -d release/vX.Y.Z`                     |
+| `origin/devel`이 없음     | 정상 — devel→main PR merge 시 자동 삭제된다. Step 9의 main 기반 재생성으로 되살린다          |

@@ -23,8 +23,14 @@ import subprocess
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal, get_args
+
+# 모델 파일명은 bank_id가 진실원이다(M4) — 소비자가 각자 리터럴을 들면 한쪽만 바뀔 때
+# 지문 입력과 적재 대상이 어긋난다. bank_id는 stdlib 전용이라 최상위 import가 코어
+# paddle-free 규약을 깨지 않는다(무거운 cv2/torch만 함수 본문 지연 import).
+from handwriting.bank_id import MODEL_FILENAME
 
 ML_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_OUT = ML_ROOT / "results" / "bank_update"
@@ -43,12 +49,52 @@ def is_crop_ref(key: str) -> bool:
     return bool(CROP_REF_RE.fullmatch(key))
 
 
+def _is_included(pair: dict) -> bool:
+    """쌍의 status가 included인지 판정한다(migration_008 기본값 술어의 단일 진실원).
+
+    안전 관련 술어라 select_desired·select_scoped 양쪽에서 반드시 이 함수를 통해야
+    한다 — 문자열 리터럴을 각자 들고 있으면 한쪽만 갱신되는 드리프트가 모집단
+    오염으로 이어진다.
+    """
+    return pair["status"] == "included"
+
+
 def select_desired(pairs: list[dict], reviewed_job_ids: set[int]) -> list[dict]:
     """ADR 0004 게이트 — 검수 완료 잡의 included 쌍만 뱅크 대상으로 남긴다.
 
     status 기본값이 included(migration_008)라 status만 보면 미검수 쌍이 전부 통과한다.
     """
-    return [p for p in pairs if p["job_id"] in reviewed_job_ids and p["status"] == "included"]
+    return [p for p in pairs if p["job_id"] in reviewed_job_ids and _is_included(p)]
+
+
+# 모집단 축(spec §3-B). AXES(제외 축)와 다른 축이며 CLI 플래그는 score에만 붙는다.
+# Scope가 닫힌 집합의 진실원 — SCOPES는 get_args로 그로부터 도출해 둘이 구조적으로
+# 드리프트할 수 없다(새 scope를 추가하려면 Literal부터 고쳐야 SCOPES도 따라온다).
+Scope = Literal["reviewed", "all"]
+SCOPES = get_args(Scope)
+# plan 경로의 모집단은 reviewed 고정 — ADR 0004 검수 게이트다. 상수로 못 박아 args가
+# 우연히 흘러들어오지 못하게 한다(누수의 결과는 되돌리기 어려운 뱅크 오염이다).
+PLAN_SCOPE: Scope = "reviewed"
+
+
+def select_scoped(pairs: list[dict], reviewed_job_ids: set[int], scope: Scope) -> list[dict]:
+    """모집단 축에 따라 included 쌍을 고른다 — 분기를 명시하고 끝에서 던진다(_axis_excluded 관용구).
+
+    Args:
+        pairs: training_pairs 전량.
+        reviewed_job_ids: 검수 완료 잡 id 집합.
+        scope: "reviewed"(ADR 0004 게이트 적용) 또는 "all"(검수 여부 무관, 채점 전용).
+
+    Raises:
+        ValueError: 분기가 배선되지 않은 scope(미지의 이름 · SCOPES에만 추가된 이름 모두).
+            `scope not in SCOPES`만 걸러 reviewed로 흘려보내면, 새 scope가 reviewed 숫자를
+            다른 이름표로 달고 조용히 산출된다.
+    """
+    if scope == "reviewed":
+        return select_desired(pairs, reviewed_job_ids)
+    if scope == "all":
+        return [p for p in pairs if _is_included(p)]
+    raise ValueError(f"미지의 모집단 scope {scope!r} — 분기가 배선되지 않았다(SCOPES={SCOPES})")
 
 
 def bank_current_map(*, labs: list[str], keys: list[str]) -> dict[str, str]:
@@ -381,11 +427,26 @@ AXIS_TITLES = {
 }
 
 
-def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
+# 모집단 scope의 사람용 설명. score.md는 파일명·표 형식이 scope와 무관하게 같으므로 두 실행
+# 결과가 섞이면 본문 말고는 구분할 근거가 없다. 미배선 scope는 KeyError로 즉시 드러난다
+# (select_scoped와 같은 관용구 — 이름만 늘면 조용히 좁게 읽히는 리포트가 나온다).
+SCOPE_LABELS = {
+    "reviewed": "검수 완료 잡의 included 쌍만(ADR 0004 게이트 — 뱅크 갱신 대상과 같은 모집단)",
+    "all": "검수 여부 무관 included 쌍 전체(채점 전용 — 뱅크 갱신 대상이 아니다)",
+}
+
+
+def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict, *, scope: str) -> str:
     """(side, axis) → 요약 맵을 제외 축별 표로 렌더한다(표마다 before/after 2열 유지).
 
     4열(crop_ref before/after · invoice before/after) 한 표로 만들지 않는다 — 읽는 사람이
     비교해야 할 축은 before↔after이지 crop_ref↔invoice가 아니다(spec §4).
+
+    scope는 필수 인자다 — 기본값을 두면 --scope all 결과가 reviewed로 표기된 리포트를
+    낸다(score_meta.json에만 남은 scope는 사람이 md를 읽을 때 보이지 않는다).
+
+    Raises:
+        KeyError: SCOPE_LABELS에 배선되지 않은 scope.
     """
     rows = [
         # 두 축이 같은 값이다(in_bank은 제외와 무관하게 label in labs). "self 포함"은 축이
@@ -401,8 +462,8 @@ def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
         "# 뱅크 증분 갱신 전/후 비교",
         "",
         f"- 뱅크 크기: {meta.get('bank_before', '?')} → {meta.get('bank_after', '?')}",
-        f"- 채점 대상(desired 쌍): {summaries[('after', AXES[0])]['n']}건 · "
-        "동일 채점기로 before/after 산출",
+        f"- 모집단 scope: {scope} — {SCOPE_LABELS[scope]}",
+        f"- 채점 대상: {summaries[('after', AXES[0])]['n']}건 · 동일 채점기로 before/after 산출",
         "- 표본 수는 두 축이 같다(같은 쿼리 쌍을 제외 축만 바꿔 채점). 축마다 달라지는 것은",
         "  후보에서 빠지는 뱅크 항목이며, 그 여파가 peer 분모에 드러난다.",
     ]
@@ -425,6 +486,31 @@ def render_score_md(summaries: dict[tuple[str, str], dict], meta: dict) -> str:
         "커버리지 행으로 판단하고 retrieval 개선은 peer 존재 한정 행으로 판단한다.",
     ]
     return "\n".join(lines) + "\n"
+
+
+def score_meta(
+    *,
+    generated_at: str,
+    scope: str,
+    n_pairs: int,
+    fingerprints: dict[str, str | None],
+    score_jsonl_sha256: str,
+) -> dict:
+    """재평가 산출물의 유효성 게이트 메타를 만든다(리포트가 §3-C에서 대조한다).
+
+    axes를 단수 axis가 아니라 목록으로 적는 이유: 산출물은 항상 두 축을 함께 담으므로
+    단수로 적으면 나머지 한 축이 없는 것처럼 읽힌다. n_pairs는 축과 무관하다(같은 쿼리 쌍을
+    두 축으로 채점하므로 분모가 같다). 레코드 수는 n_pairs × 2 × len(axes)로 리포트가 직접
+    계산해 대조하므로 여기 중복 기록하지 않는다.
+    """
+    return {
+        "generated_at": generated_at,
+        "scope": scope,
+        "axes": list(AXES),
+        "n_pairs": n_pairs,
+        "retrieval_version": fingerprints,
+        "score_jsonl_sha256": score_jsonl_sha256,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -645,8 +731,8 @@ def _mysql(backend_env: str, sql: str) -> str:
 
 
 def fetch_pairs(backend_env: str) -> list[dict]:
-    """training_pairs 전량을 조회한다(파서는 curation_report와 공유 — 컬럼 계약 단일화)."""
-    from tools.curation_report import PAIRS_SQL, parse_pairs_tsv
+    """training_pairs 전량을 조회한다(SQL·파서는 큐레이션 도구와 공유 — 컬럼 계약 단일화)."""
+    from tools.curation_enrich import PAIRS_SQL, parse_pairs_tsv
 
     return parse_pairs_tsv(_mysql(backend_env, PAIRS_SQL))
 
@@ -669,7 +755,7 @@ def prod_embed_fn(models_dir):
         from handwriting import infer_photo as ip
 
         device = "cpu"  # ADR 0002 — MPS/MLX 동시 사용 회피
-        model = ip.load_model_from(Path(models_dir) / "ft_prod.pt", device)
+        model = ip.load_model_from(Path(models_dir) / MODEL_FILENAME, device)
         crops = []
         for p in paths:
             img = cv2.imread(str(p))
@@ -686,8 +772,11 @@ def prod_embed_fn(models_dir):
 # ---------------------------------------------------------------------------
 
 
-def _desired_pairs(backend_env: str) -> tuple[list[dict], list[dict]]:
-    """검수 게이트 통과 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
+def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dict]]:
+    """모집단 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
+
+    scope는 호출자가 명시한다 — 기본값을 두지 않는다. 기본값이 있으면 plan 경로가 실수로
+    넓은 모집단을 물려받는 경로가 생긴다(ADR 0004).
 
     M3: crop_ref 형식 게이트를 라벨 게이트보다 먼저 적용한다 — 둘 다 뱅크에 넣을 수
     없는 사유이므로 같은 invalid 목록에 합류시켜, 형식 불량 쌍이 plan.jsonl까지
@@ -695,22 +784,48 @@ def _desired_pairs(backend_env: str) -> tuple[list[dict], list[dict]]:
     """
     pairs = fetch_pairs(backend_env)
     reviewed = fetch_reviewed_job_ids(backend_env)
-    desired = select_desired(pairs, reviewed)
+    desired = select_scoped(pairs, reviewed, scope)
     crop_ref_ok, bad_crop_ref = partition_crop_ref(desired)
     valid, invalid = partition_valid(crop_ref_ok)
     return valid, invalid + bad_crop_ref
 
 
-def _write_jsonl(path: Path, rows: list[dict]) -> None:
+def _atomic_write_text(path: Path, text: str) -> None:
+    """tmp에 쓰고 rename한다(save_bank_atomic의 기존 관용구).
+
+    부분 기록된 산출물이 유효한 것처럼 읽히는 것을 막는다 — 중단된 재실행이 새 score.jsonl과
+    이전 meta를 짝지으면, 같은 뱅크로 재채점하는 흔한 경우엔 지문이 일치해 stale 방어도
+    이를 못 잡는다(spec §3-B).
+
+    encoding은 명시한다 — 산출물에는 한글 라벨이 그대로 들어가고 소비자(큐레이션 리포트)는
+    utf-8로 읽는다. 로케일 기본 인코딩에 맡기면 LANG이 비정상인 셸(launchd·CI)에서 산출이
+    UnicodeEncodeError로 죽거나 같은 데이터가 다른 바이트로 기록돼, 바이트 다이제스트인
+    score_jsonl_sha256이 환경 차이를 데이터 변경으로 오판한다.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
+
+
+def _write_jsonl(path: Path, rows: list[dict]) -> None:
+    # 직렬화를 먼저 끝내므로 실패 시 기존 파일이 그대로 남는다.
+    _atomic_write_text(path, "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
+
+
+def _write_json(path: Path, obj: dict) -> None:
+    _atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=1) + "\n")
 
 
 def cmd_plan(args) -> None:
     """desired 대비 뱅크 diff를 계산해 plan.jsonl과 요약을 낸다."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     bank_path = Path(require_env("SJMJ_ML_MODELS_DIR")) / "bank.npz"
-    valid, invalid = _desired_pairs(args.backend_env)
+    valid, invalid = _desired_pairs(args.backend_env, PLAN_SCOPE)
 
     _, labs, _, keys = load_bank(bank_path)
     desired = {p["crop_ref"]: p["canonical_label"] for p in valid}
@@ -773,7 +888,10 @@ def cmd_apply(args) -> None:
     """plan.jsonl대로 뱅크를 sync한다(백업 자동 생성 · 제거는 --yes 필요)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
-    records = [json.loads(ln) for ln in args.plan.read_text().splitlines() if ln.strip()]
+    # 쓰기(_atomic_write_text)가 utf-8 고정이므로 읽기도 명시한다 — 짝이 어긋나면 한글
+    # 라벨이 로케일에 따라 다르게 디코딩돼 뱅크에 깨진 라벨이 들어간다.
+    plan_text = args.plan.read_text(encoding="utf-8")
+    records = [json.loads(ln) for ln in plan_text.splitlines() if ln.strip()]
     require_removal_confirmation(records, confirmed=args.yes)
     summary = apply_sync(models_dir / "bank.npz", records, crops_root, prod_embed_fn(models_dir))
     print(
@@ -803,11 +921,81 @@ def _axis_excluded(axis: str, keys: list[str], invs: list[str], self_ref: str) -
     raise ValueError(f"미지의 제외 축 {axis!r} — 분기가 배선되지 않았다(AXES={AXES})")
 
 
+def _side_fingerprints(models_dir: Path, bank_arrays: dict[str, tuple]) -> dict[str, str | None]:
+    """before/after 뱅크의 retrieval 지문을 계산한다.
+
+    모델 다이제스트·코드 SHA는 side와 무관하므로 1회만 계산해 공유한다 — ft_prod.pt는
+    347MB이고 sha256이 수 초다.
+    """
+    from handwriting import bank_id
+
+    model_digest = bank_id.file_digest(models_dir / MODEL_FILENAME)
+    code_sha = bank_id.code_version()
+    return {
+        side: (
+            None
+            if code_sha is None
+            else bank_id.retrieval_fingerprint(
+                bank_id.bank_rows(keys, labs, emb), model_digest, code_sha
+            )
+        )
+        for side, (keys, labs, emb) in bank_arrays.items()
+    }
+
+
+def _write_score_artifacts(
+    *,
+    out: Path,
+    summaries: dict[tuple[str, str], dict],
+    meta: dict[str, int],
+    per_pair: dict[tuple[str, str], list[dict]],
+    scope: str,
+    n_pairs: int,
+    fingerprints: dict[str, str | None],
+) -> tuple[str, Path, Path, Path]:
+    """score.md·score.jsonl·score_meta.json을 계약된 순서로 쓴다(meta는 항상 마지막).
+
+    §4 산출물 계약 — score.jsonl의 유일키는 (side, axis, crop_ref). meta를 마지막에 쓰는
+    이유는 _atomic_write_text 문서 참조 — 중단된 재실행이 새 jsonl과 이전 meta를 짝짓는
+    것을 막는다(같은 뱅크 재채점 시 지문이 일치해 stale 방어도 이를 못 잡는 경우의 방어).
+
+    Returns:
+        (md, score_md_path, score_jsonl_path, score_meta_path) — 호출부가 출력에 쓴다.
+    """
+    from handwriting import bank_id
+
+    md = render_score_md(summaries, meta, scope=scope)
+    md_path = out / "score.md"
+    _atomic_write_text(md_path, md)
+    score_path = out / "score.jsonl"
+    _write_jsonl(
+        score_path,
+        [
+            {"side": side, "axis": axis, **r}
+            for side in ("before", "after")
+            for axis in AXES
+            for r in per_pair[(side, axis)]
+        ],
+    )
+    meta_path = out / "score_meta.json"
+    _write_json(
+        meta_path,
+        score_meta(
+            generated_at=datetime.now(UTC).astimezone().isoformat(timespec="seconds"),
+            scope=scope,
+            n_pairs=n_pairs,
+            fingerprints=fingerprints,
+            score_jsonl_sha256=bank_id.file_digest(score_path),
+        ),
+    )
+    return md, md_path, score_path, meta_path
+
+
 def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
-    valid, _ = _desired_pairs(args.backend_env)
+    valid, _ = _desired_pairs(args.backend_env, args.scope)
     # 크롭이 없는 쌍은 임베딩할 수 없으므로 채점 대상에서 뺀다(뱅크 항목은 그대로 둔다).
     valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
     queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
@@ -815,6 +1003,7 @@ def cmd_score(args) -> None:
     summaries: dict[tuple[str, str], dict] = {}
     per_pair: dict[tuple[str, str], list[dict]] = {}
     meta: dict[str, int] = {}
+    bank_arrays: dict[str, tuple] = {}
     for side, path in (("before", args.before), ("after", args.after)):
         emb, labs, invs, keys = load_bank(path)
         # 4배열 길이 정합 — 분리 전 topk_excluding_self(커밋 cb9b1c7)가 sims/labs/keys를
@@ -837,22 +1026,19 @@ def cmd_score(args) -> None:
             summaries[(side, axis)] = score_summary(recs)
             per_pair[(side, axis)] = recs
         meta[f"bank_{side}"] = len(keys)
+        bank_arrays[side] = (keys, labs, emb)
 
-    md = render_score_md(summaries, meta)
-    args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "score.md").write_text(md)
-    # §4 산출물 계약 — 유일키는 (side, axis, crop_ref). 세 키가 모든 레코드에 있어야 한다.
-    _write_jsonl(
-        args.out / "score.jsonl",
-        [
-            {"side": side, "axis": axis, **r}
-            for side in ("before", "after")
-            for axis in AXES
-            for r in per_pair[(side, axis)]
-        ],
+    md, md_path, score_path, meta_path = _write_score_artifacts(
+        out=args.out,
+        summaries=summaries,
+        meta=meta,
+        per_pair=per_pair,
+        scope=args.scope,
+        n_pairs=len(valid),
+        fingerprints=_side_fingerprints(models_dir, bank_arrays),
     )
     print(md)
-    print(f"저장: {args.out / 'score.md'}\n저장: {args.out / 'score.jsonl'}")
+    print(f"저장: {md_path}\n저장: {score_path}\n저장: {meta_path}")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -879,6 +1065,12 @@ def main(argv: list[str] | None = None) -> None:
     p_score = sub.add_parser("score", parents=[common], help="before/after 뱅크 동일 채점기 비교")
     p_score.add_argument("--before", type=Path, required=True, help="갱신 전 뱅크(.npz.bak)")
     p_score.add_argument("--after", type=Path, required=True, help="갱신 후 뱅크(bank.npz)")
+    p_score.add_argument(
+        "--scope",
+        choices=list(SCOPES),
+        default="reviewed",
+        help="채점 모집단 — reviewed(검수 완료만, 기본) | all(미검수 포함, 채점 전용)",
+    )
     args = ap.parse_args(argv)
 
     {"plan": cmd_plan, "apply": cmd_apply, "score": cmd_score}[args.cmd](args)

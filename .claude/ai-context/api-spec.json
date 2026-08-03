@@ -401,7 +401,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label)",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 갱신 결과가 included이고 검수완료된 잡의 쌍이면 정식 라벨을 자동완성 사전에 등록)",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
@@ -411,7 +411,7 @@
       {
         "method": "POST",
         "path": "/api/curation/jobs/{job_id}/review",
-        "summary": "잡 검수 완료(멱등)",
+        "summary": "잡 검수 완료(멱등; included 정식 라벨을 자동완성 사전에 등록)",
         "auth": "public",
         "req": null,
         "res": "{job_id, curation_reviewed}",
@@ -2365,6 +2365,7 @@
     "/api/curation/pairs/{id}": {
       "patch": {
         "summary": "쌍 큐레이션 — status 또는 canonical_label 갱신(Pydantic 검증)",
+        "description": "status를 'excluded'로 갱신하면 서버가 같은 UPDATE에서 exclusion_reason을 NULL로 함께 적용한다(사람 판정이 기계 배제 사유를 덮어씀, ADR 0006). exclusion_reason 자체는 요청 화이트리스트(status/canonical_label) 밖이라 클라이언트가 값을 보낼 수 없다 — 오직 서버(자동 배제 파이프라인)만 채운다. 갱신 결과가 included이고 그 쌍이 속한 잡이 이미 curation_reviewed면 정식 라벨(strip 후 비어 있지 않을 때)을 item_suggestions에 등록한다(default_unit='EA', 이미 있으면 무변경 — ADR 0008 단방향 정합). 검수 중인 잡의 PATCH는 등록하지 않는다.",
         "tags": ["curation"],
         "parameters": [
           {
@@ -2433,7 +2434,7 @@
     },
     "/api/curation/jobs/{job_id}/review": {
       "post": {
-        "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 멱등)",
+        "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 멱등; included 정식 라벨을 item_suggestions에 등록 — ADR 0008)",
         "tags": ["curation"],
         "parameters": [
           {
@@ -3343,6 +3344,10 @@
           "item_conf_threshold": {
             "type": "number",
             "description": "rows[].item_uncertain 판정에 쓰인 top1 유사도 임계값. 플래그 도입(Issue #22) 이전 잡에는 없다."
+          },
+          "retrieval_version": {
+            "type": "string",
+            "description": "추론에 쓰인 retrieval artifact 지문(품목 뱅크 행 + 모델 파일 + 배포 코드 SHA의 sha256 앞 12자). 큐레이션 분석이 '어느 retrieval 상태로 추론된 잡인가'를 판정하는 근거다. 스탬프 도입(Issue #49) 이전 잡에는 없으며, 워커가 지문을 얻지 못한 경우에도 키를 넣지 않는다."
           }
         }
       },
@@ -3560,6 +3565,12 @@
           "status": {
             "type": "string",
             "enum": ["included", "excluded"]
+          },
+          "exclusion_reason": {
+            "type": "string",
+            "enum": ["blank_crop", null],
+            "nullable": true,
+            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400."
           },
           "reviewed_at": {
             "type": "string",

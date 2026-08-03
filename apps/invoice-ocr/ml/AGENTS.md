@@ -8,7 +8,7 @@
 | ---------------------- | -------------------------- | ------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **SP1 본 파이프라인**  | `ocr_poc/`                 | git-tracked · 테스트됨 · production              | 숫자 셀 OCR 수직 슬라이스. 어댑터 뒤에 실모델(PaddleOCR 3.x)                                                                                                   |
 | **배포 추론 (손글씨)** | `worker/` + `handwriting/` | git-tracked · **production (macmini ml-worker)** | `worker.main`(launchd 상시 실행)이 `handwriting.infer_photo`/`infer_job`로 추론. CD `deploy.yml`이 재시작. `handwriting/`는 실험이 아니라 **배포된 추론 경로** |
-| **SP2 스파이크**       | `report/sp2_spike/`        | **gitignore · 로컬 전용 · 실험**                 | 손글씨 VLM 인식(Qwen3-VL) + 작성자-특화 품목 인식(few-shot). 현재 브랜치 작업                                                                                  |
+| **SP2 스파이크**       | `report/sp2_spike/`        | **gitignore · 로컬 전용 · 실험**                 | 손글씨 VLM 인식(Qwen3-VL) + 작성자-특화 품목 인식(few-shot). 본선 미통합                                                                                       |
 
 - SP2 결과·방향 spec: `docs/work/2026-06/2026-06-25-sp2-handwriting-recognizer-findings/spec.md` (로컬 전용 — git 비추적, fresh clone에는 없을 수 있음).
 - **SP2 코드는 본 파이프라인이 아니다.** 스파이크 스크립트(`report/sp2_spike/**`)는 gitignore된 실험물이라 `ocr_poc/`의 production 규약(테스트·불변성)을 따르지 않는다. SP2 산출을 본선에 올릴 땐 `RecognizerAdapter` 뒤로 통합한다(spec §8-8).
@@ -22,8 +22,15 @@ worker/         배포된 ml-worker (worker.main — macmini launchd 상시 실�
 tests/          pytest. test_*.py — ocr_poc/* 1:1 대응 (+ handwriting 추론 테스트)
 tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필요)
                 remote.py — 원격(macmini) ssh/mysql 글루 공통화 (curation_report·warp_gate_report 공유)
-                curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
+                cache_sync.py — 원격 산출물 → 로컬 캐시 동기화 공통 글루 (blank_crop_report·warp_gate_report 공유)
+                curation_report.py — 배포 서버 큐레이션 학습쌍 정확도 분석 (fetch 글루·CLI, stdlib·ssh, docs/runbooks/ocr-curation-analysis.md)
+                curation_render.py — 위 리포트의 렌더 계층 (마크다운 조립, 순수함수만)
+                curation_enrich.py — 위 리포트의 분석 계층 (TSV 파싱·버킷 귀속·진실원 조인·집계, 순수함수만)
+                curation_cohort.py — 위 리포트의 시점 정합 판정 계층 (코호트·평가 가능성 술어·재평가 게이트, 순수함수만)
                 warp_gate_report.py — warp 정합 게이트 캘리브레이션 (전 잡 warped.png 지표·판정 전수, cv2 필요)
+                blank_crop_report.py — 빈 크롭 자동 배제 리포트 + 운영 DB 반영 (report/apply 분리, ADR 0006)
+                blank_crop_calib.py — 위 도구의 캘리브레이션 계층 (상태 어휘·라벨 manifest·마진·렌더, 순수함수만)
+                bank_update.py — 큐레이션 학습쌍 기반 품목 뱅크(bank.npz) 증분 갱신 (멱등 sync, macmini 실행, docs/runbooks/ocr-bank-update.md)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore

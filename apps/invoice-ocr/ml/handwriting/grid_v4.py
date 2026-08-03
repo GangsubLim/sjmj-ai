@@ -119,7 +119,12 @@ def warp(bgr, quad):
     return cv2.warpPerspective(bgr, cv2.getPerspectiveTransform(quad, dst), (WARP_W, WARP_H))
 
 
-def _hlines_from_mask(m):
+def hlines_from_mask(m):
+    """이진 마스크에서 전체 표를 가로지르는 수평선의 y들을 뽑는다.
+
+    warp_gate.compute_metrics가 마스크 축을 직접 갈아끼우기 위해 public이다 — 게이트는
+    hline_ys의 조건부 FaintOn 로직(축 혼합)을 경유하지 않는다.
+    """
     horiz = cv2.morphologyEx(
         m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (WARP_W // 3, 1))
     )
@@ -144,10 +149,10 @@ def hline_ys(warped):
     FaintOn 블록 안에서만(흐림 회수) 대비향상 마스크를 쓰되, 그게 DATA_Y 내 선을 더 줄 때만
     채택한다(아니면 표준).
     """
-    ys = _hlines_from_mask(blue_mask(warped))
+    ys = hlines_from_mask(blue_mask(warped))
     if _FAINT:
         in_data = [y for y in ys if DATA_Y[0] - 40 <= y <= DATA_Y[1] + 40]
-        ys2 = _hlines_from_mask(blue_mask_enh(warped))
+        ys2 = hlines_from_mask(blue_mask_enh(warped))
         in_data2 = [y for y in ys2 if DATA_Y[0] - 40 <= y <= DATA_Y[1] + 40]
         if len(in_data2) > len(in_data):
             return ys2

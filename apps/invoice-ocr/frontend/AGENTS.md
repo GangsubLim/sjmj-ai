@@ -9,14 +9,16 @@ React 19 + Vite + Tailwind v4 + shadcn. modern API(구조화 envelope)에 붙는
 ```
 src/
   main.tsx         엔트리
-  app/             라우트 단위 페이지(list / edit / companies / items / settings / sales-performance)
-  components/      도메인별(invoice / company / item / sales-performance / settings / layout) + ui/(shadcn, 34개)
+  app/             라우트 단위 페이지(list / edit / companies / items / settings / sales-performance / curation)
+  components/      도메인별(invoice / company / item / sales-performance / settings / ocr / curation / layout) + ui/(shadcn)
   hooks/           use-*.ts (데이터 페칭·UI). *.test.ts 코로케이트
   services/api.ts  axios 클라이언트(modern 경로·USE_MOCK 토글)의 단일 진입점
   stores/          zustand(settings-store 등)
   types/           도메인 타입(invoice/company/item/sales-record/salesperson/settings/ocr/api)
   utils/           calculations / calendar / formatters / validators / clipboard (+ *.test.ts)
   mocks/           VITE_USE_MOCK=true일 때 쓰는 가짜 API 데이터
+  data/            정적 데이터(suggestions.ts)
+  test/            vitest setup.ts + 전역 테스트
   lib/utils.ts     cn() 등 shadcn 유틸
   styles/          globals.css + invoice-document.css
 tests/e2e/         playwright (라이브 백엔드 필요)

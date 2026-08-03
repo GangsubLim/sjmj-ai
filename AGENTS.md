@@ -15,7 +15,9 @@ apps/invoice-ocr/
   ml/         수기 OCR 파이프라인 (SP1)
 db/           운영 MySQL 스키마 + migration_*.sql (Phase 1A 이전 + ML 이음새)
 deploy/       launchd plist 템플릿 + backend.env.example
-scripts/      release / sync-version / run-backend / backup-db / install-launchagent(-ml-worker) / run-ml-worker / db-verify
+scripts/      release / sync-version / run-backend / backup-db / install-launchagent(-ml-worker) / run-ml-worker / db-verify / migrate-db / kslim-sync-diff
+.claude/      ai-context/api-spec.json(엔드포인트 SSoT) + rules/(언어별·공통 규약, 자동 주입)
+CONTEXT.md    도메인 단일 컨텍스트(용어·업무 규칙)
 docs/adr/     아키텍처 결정 기록(ADR, tracked)
 docs/agents/  에이전트 운영 가이드(issue-tracker/triage-labels/domain, tracked)
 docs/runbooks/  운영 런북(tracked)
@@ -81,7 +83,7 @@ API 동작은 env로 제어: `VITE_API_URL`(`/api`), `VITE_USE_MOCK`. dev는 vit
 
 `app/config.py`의 `Settings`(pydantic-settings)는 환경변수 경계 검증. 빈 비밀번호(`""`)도 유효값으로 존중. `APP_VERSION` 상수는 루트 `VERSION`과 동기되어야 한다(아래 릴리스 참조, `test_version_sync.py`가 검증).
 
-신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records/ocr — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
+신규 도메인(슬라이스)을 추가할 때는 기존 slice — invoices/companies/items/settings/salespeople/sales_records/ocr/curation — 의 router+service+repository 4종 패턴과 `tests/{contract,unit,integration}/` 3종 테스트 구조를 그대로 따른다.
 
 **목표 컨벤션(점진 전환 중).** 슬라이스를 신규 추가·수정할 때 그 범위를 실용적 FastAPI 관용구로 끌어올린다(빅뱅 아님). 유지: `sync def`+threadpool·SQLAlchemy Core raw `text()`·응답 envelope shape. 전환: free-form `dict = Body(...)` → Pydantic request 모델, fluent `Validator` → Pydantic 검증, 검증 메시지 문자열 자유화. **외부 계약 불변식**(아래)을 지키는 한 내부 구현은 자유다. 근거·전환 절차는 `docs/work/2026-06/2026-06-30-fastapi-convention-modernization/spec.md`(로컬 전용 — fresh clone에는 없을 수 있음, 없으면 이 절만 따른다).
 

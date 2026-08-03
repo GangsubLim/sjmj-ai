@@ -6,8 +6,12 @@ from sqlalchemy import text
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
-    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환."""
+def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목"):
+    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환.
+
+    canonical을 넘기면 final_label('품목')과 정식 라벨을 벌릴 수 있다 — 두 값이 같으면
+    "정식 라벨을 등록한다"와 "final_label을 등록한다"를 단언으로 구분할 수 없다.
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -22,9 +26,9 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
                 text(
                     "INSERT INTO training_pairs "
                     "(crop_ref, job_id, row_index, final_label, canonical_label, supply, status, reviewed_at) "
-                    f"VALUES (:r, :j, :i, '품목', '품목', 1000, 'included', {stamped})"
+                    f"VALUES (:r, :j, :i, '품목', :c, 1000, 'included', {stamped})"
                 ),
-                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i},
+                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i, "c": canonical},
             )
     return job_id
 
@@ -187,6 +191,40 @@ def _first_pair_id(engine, job_id):
         ).scalar()
 
 
+def _set_exclusion(engine, pair_id, *, status, reason):
+    """기계 판정 상태를 직접 심는다(API로는 사유를 쓸 수 없으므로 SQL로 시드)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE training_pairs SET status = :s, exclusion_reason = :r WHERE id = :id"),
+            {"s": status, "r": reason, "id": pair_id},
+        )
+
+
+def test_job_detail_pairs_include_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["pairs"][0]["exclusion_reason"] == "blank_crop"
+
+
+def test_job_detail_pair_exclusion_reason_is_null_by_default(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.json()["data"]["pairs"][0]["exclusion_reason"] is None
+
+
+def test_patch_pair_response_includes_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명"})
+    assert res.status_code == 200
+    # 라벨만 고치는 PATCH는 사유를 건드리지 않는다.
+    assert res.json()["data"]["exclusion_reason"] == "blank_crop"
+
+
 def test_patch_pair_updates_canonical_label(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
@@ -285,6 +323,64 @@ def test_patch_pair_updates_status_preserves_canonical_label(client, db_conn):
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "excluded"
     assert res.json()["data"]["canonical_label"] == "품목"
+
+
+def _reason_in_db(engine, pair_id):
+    """응답 echo가 아니라 DB 실값으로 사유를 읽는다(화이트리스트 실검증)."""
+    with engine.begin() as conn:
+        return conn.execute(
+            text("SELECT exclusion_reason FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+
+
+def test_patch_pair_ignores_client_sent_exclusion_reason(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # status는 included 유지 + 사유를 심으려는 시도 — 사유는 무시된다(기계만 채운다).
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "included", "exclusion_reason": "blank_crop"},
+    )
+    assert res.status_code == 200
+    assert res.json()["data"]["exclusion_reason"] is None
+
+
+def test_patch_pair_client_sent_reason_cannot_forge_machine_exclusion(client, db_conn):
+    # Arrange — 사유가 비어 있는 정상 후보 (included, NULL)
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    # Act — 배제하면서 기계 사유를 함께 밀어넣으려는 시도(위험 방향)
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "excluded", "exclusion_reason": "blank_crop"},
+    )
+    # Assert — 사유는 NULL로 남아 '사람이 배제'로 기록된다. 여기서 사유가 심어지면
+    # 사람의 배제가 기계 배제로 위조돼 이후 기계가 사람 판정을 되돌린다(ADR 0006 §6).
+    assert res.status_code == 200
+    assert _reason_in_db(db_conn, pid) is None
+
+
+def test_patch_pair_client_sent_reason_does_not_overwrite_machine_reason(client, db_conn):
+    # Arrange — 기계가 심은 사유가 있는 상태
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
+    # Act — 포함으로 되돌리면서 사유를 클라이언트 값으로 덮으려는 시도
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"status": "included", "exclusion_reason": "hacked"},
+    )
+    # Assert — 화이트리스트가 클라이언트 사유를 버리고, 포함 방향은 사유를 지우지도 않는다.
+    assert res.status_code == 200
+    assert _reason_in_db(db_conn, pid) == "blank_crop"
+
+
+def test_patch_pair_with_only_exclusion_reason_is_400(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"exclusion_reason": "blank_crop"})
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 # ── POST /api/curation/jobs/{job_id}/review ────────────────────────────────
@@ -439,3 +535,54 @@ def test_image_blocks_path_traversal_via_kind(client, db_conn, _data_dir, tmp_pa
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
     assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
+
+
+# ── 정식 라벨 → 자동완성 사전 등록 배선(#40 spec §3.4) ──────────────────────
+
+
+def _suggestion_names(engine) -> list[str]:
+    with engine.begin() as conn:
+        return list(conn.execute(text("SELECT item_name FROM item_suggestions")).scalars())
+
+
+def test_review_registers_included_labels_end_to_end(client, db_conn):
+    """라우터가 ItemRepository를 실제로 주입했는지 — 배선 회귀 방어선.
+
+    시드의 final_label('품목')과 canonical_label('정식품목')을 벌려, 사전에 들어가는
+    값이 사람이 확정한 정식 라벨임을 단언한다(둘이 같으면 구분 불가).
+    """
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1, canonical="정식품목")
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "curation_reviewed": True}}
+    names = _suggestion_names(db_conn)
+    assert "정식품목" in names
+    assert "품목" not in names  # final_label은 등록 대상이 아니다
+
+
+def test_review_is_idempotent_for_the_dictionary(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    first = client.post(f"/api/curation/jobs/{job_id}/review")
+    second = client.post(f"/api/curation/jobs/{job_id}/review")
+    # 2차 호출도 200이어야 한다 — ensure_exists가 평범한 INSERT로 회귀하면 여기서 깨진다.
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert _suggestion_names(db_conn).count("품목") == 1
+
+
+def test_patch_pair_registers_only_after_job_reviewed(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+
+    # 검수 중 — 등록되지 않는다.
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수중라벨"})
+    assert res.status_code == 200
+    assert "검수중라벨" not in _suggestion_names(db_conn)
+
+    # 검수완료 후 라벨 수정 — 등록된다.
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "검수후라벨"
+    assert "검수후라벨" in _suggestion_names(db_conn)

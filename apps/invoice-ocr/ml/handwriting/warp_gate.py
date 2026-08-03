@@ -49,7 +49,24 @@ WORST_PITCH_DEV = 1.0
 
 @dataclass(frozen=True)
 class WarpGateMetrics:
-    """워프 결과의 격자 정합 지표 4종(전부 유한값)."""
+    """표준(blue_mask) 격자 정합 지표 4종(전부 유한값)."""
+
+    hline_count: int
+    pitch_dev: float
+    blue_ratio_left: float
+    blue_ratio_right: float
+
+
+@dataclass(frozen=True)
+class WarpGateMetricsEnh:
+    """enh(blue_mask_enh) 격자 정합 지표 4종 — 필드는 WarpGateMetrics와 동일하지만 별개 타입이다.
+
+    Issue #60 Task 4 MEDIUM #2: `compute_metrics(w, enhanced=True)`의 결과를 표준
+    `evaluate_warp`에 넣으면 enh blue_ratio가 표준 대비 약 9배라 MIN_BLUE_RATIO 바닥이
+    무조건 충족돼 fail-open이 된다. 두 축을 같은 dataclass로 두면 이 오배선이 타입
+    수준에서 전혀 드러나지 않는다 — 별개 타입으로 두고 `evaluate_warp`/`evaluate_warp_enh`
+    양쪽에 isinstance 가드를 걸어 축 혼입을 조용히 통과시키지 않고 즉시 TypeError로 닫는다.
+    """
 
     hline_count: int
     pitch_dev: float
@@ -66,7 +83,17 @@ def blue_asymmetry(left: float, right: float) -> float:
 
 
 def evaluate_warp(metrics: WarpGateMetrics) -> bool:
-    """워프가 전표 격자와 정합하는지 판정한다. False면 warp_ok를 강등한다."""
+    """워프가 전표 격자와 정합하는지 판정한다. False면 warp_ok를 강등한다.
+
+    Raises:
+        TypeError: `metrics`가 `WarpGateMetricsEnh`이면 즉시 거부한다(Task 4 MEDIUM #2) —
+            enh 지표는 스케일이 달라 표준 임계를 무조건 통과시키는 fail-open이 된다.
+    """
+    if isinstance(metrics, WarpGateMetricsEnh):
+        raise TypeError(
+            "evaluate_warp()에 enh 지표(WarpGateMetricsEnh)가 들어왔다 — evaluate_warp_enh()를 써야 "
+            "한다. enh blue_ratio는 표준 대비 스케일이 달라 MIN_BLUE_RATIO를 무조건 통과시킨다."
+        )
     if metrics.hline_count < MIN_HLINES:
         return False
     # NaN 입력에도 실패로 닫히도록 `>`/`<` 대신 `not (<=)`/`not (>=)`를 쓴다 — NaN 비교는
@@ -84,18 +111,94 @@ def evaluate_warp(metrics: WarpGateMetrics) -> bool:
     return blue_asymmetry(metrics.blue_ratio_left, metrics.blue_ratio_right) <= MAX_BLUE_ASYMMETRY
 
 
-def compute_metrics(warped_bgr) -> WarpGateMetrics:
+# ── enh 폴백 임계 ────────────────────────────────────────────────────────
+# 표준 마스크 판정이 실패했을 때만 쓰는 2단 폴백의 임계(Issue #60). 지표 4종이 전부 같은
+# blue_mask에서 파생돼 청색 채도 하나가 3지표를 동시에 무너뜨리는 문제(정상 전표 5회 연속
+# 강등, 잡 59~63)를 마스크 축 추가로 푼다 — 임계 완화가 아니다.
+# 2026-08-03 원본 62장 전량 재워프 실측으로 확정. 근거 리포트:
+# docs/work/2026-07/2026-07-31-warp-gate-enh-fallback/calibration-2026-08-03.md (로컬 전용)
+# 도출식(§4, M은 정상군 여유 마진율):
+#   ENH_MIN_HLINES         = max(MIN_HLINES,       floor(정상최악_hline × (1 − M)))
+#   ENH_MAX_PITCH_DEV      = min(MAX_PITCH_DEV,     round(정상최악_pitch × (1 + M), 4))
+#   ENH_MIN_BLUE_RATIO     = round(정상최악_bluemin × (1 − M), 4)
+#   ENH_MAX_BLUE_ASYMMETRY = round(정상최악_asym   × (1 + M), 4)
+# 축별 선정 규칙이 다르다(spec §5.1):
+#   · hline_count·pitch_dev — enh는 선을 더 뽑으므로 자연히 상향한다. 표준 임계보다 느슨해질
+#     수 없다(max/min 클램프). #18의 "추가 완화 금지, 강화만" 봉인이 폴백으로 우회되지
+#     않게 하는 장치이며, test_enh_thresholds_only_tighten_the_sealed_axes가 실행으로 고정한다.
+#   · blue_ratio 2종 — 마스크가 바뀌면 값의 의미 자체가 달라져 동일 스케일 비교가 불가능하다.
+#     enh 스케일에서 M=0.165(규칙 도출값) 기준으로 재캘리브했다. 단, calibration-2026-08-03.md
+#     §4.2 실측상 blue_ratio_min·blue_asym 2종은 육안 후 라벨(파손 7건)에서 정상군과 분포가
+#     겹쳐 전 모집단 비구속(단독 판별력 없음)이다 — 판정은 hline_count·pitch_dev가 싣는다.
+#     그래도 제외하지 않고 유지한다(§6 권고 C 미채택, plan 선정 규칙: 겹치는 지표도 게이트에서
+#     빼지 않는다).
+# ⚠️ ENH_MIN_HLINES=15는 M=0.165 규칙 도출값(14)이 아니다. 14면 육안 파손 확정 잡 21이
+#    폴백을 누출한다(잡 21은 전표가 캔버스 좌측 ~50%만 덮은 쿼드 오검출인데 h=14·pitch=0.043로
+#    enh 지표가 정상처럼 보인다 — calibration-2026-08-03.md §4.2). 15면 오강등 8건(59~63·65~67)
+#    전량 구제 + 파손 7건(17·21·24·29·30·31·39) 전량 차단이 성립한다. 잡 45(h=15) 대비 마진이
+#    0%라 #18의 15~18% 마진 규칙 예외이며, 사람이 명시 승인했다(calibration-2026-08-03.md §6
+#    권고 A, 2026-08-03). 근본 해결(캔버스 점유율 등 신규 축 도입)은 Issue #64로 분리했다 —
+#    이 예외는 #64가 닫히기 전까지의 임시 방어선이다.
+# 교차검증 축은 반드시 enh 기준 pitch_dev다 — 표준 기준으로 걸면 잡 63이 pitch_dev=1.0
+# (선 부족의 종속 결과)이라 오강등 회수 자체가 무산된다.
+ENH_MIN_HLINES = 15  # 규칙 도출값 14 아님 — #64 참조, 위 주석의 마진 예외 승인 사유
+ENH_MAX_PITCH_DEV = 0.1046  # M=0.165
+ENH_MIN_BLUE_RATIO = 0.0864  # M=0.165 · 전 모집단 비구속(판별력 없음, 위 주석 참조)
+ENH_MAX_BLUE_ASYMMETRY = 0.5515  # M=0.165 · 전 모집단 비구속(판별력 없음, 위 주석 참조)
+
+
+def evaluate_warp_enh(metrics: WarpGateMetricsEnh) -> bool:
+    """Enh 마스크로 재측정한 지표로 폴백 판정한다(표준 판정 실패 시에만 호출된다).
+
+    NaN 안전 관용구(`not (<=)` / `not (>=)`)는 evaluate_warp와 동일하다 — NaN 비교가 항상
+    False라 `>`/`<`였다면 NaN이 fail-open으로 통과한다.
+
+    Raises:
+        TypeError: `metrics`가 `WarpGateMetricsEnh`가 아니면 즉시 거부한다(Task 4 MEDIUM #2의
+            대칭 가드) — 표준 지표를 잘못 넣으면 축 혼입이 조용히 넘어가는 대신 즉시 드러난다.
+    """
+    if not isinstance(metrics, WarpGateMetricsEnh):
+        raise TypeError(
+            "evaluate_warp_enh()는 WarpGateMetricsEnh만 받는다 — compute_metrics(enhanced=True)의 "
+            "결과를 써야 한다."
+        )
+    if metrics.hline_count < ENH_MIN_HLINES:
+        return False
+    if not (metrics.pitch_dev <= ENH_MAX_PITCH_DEV):
+        return False
+    if not (
+        metrics.blue_ratio_left >= ENH_MIN_BLUE_RATIO
+        and metrics.blue_ratio_right >= ENH_MIN_BLUE_RATIO
+    ):
+        return False
+    return (
+        blue_asymmetry(metrics.blue_ratio_left, metrics.blue_ratio_right) <= ENH_MAX_BLUE_ASYMMETRY
+    )
+
+
+def compute_metrics(warped_bgr, *, enhanced: bool = False) -> WarpGateMetrics | WarpGateMetricsEnh:
     """워프된 BGR(WARP_W×WARP_H)에서 게이트 지표 4종을 뽑는다(cv2 글루).
 
-    기존 격자 함수만 재사용한다 — grid_v4.hline_ys(FaintOn(False)로 명시 고정: 흐림 회수를
-    켜지 않아야 게이트 판정이 결정론적이다), grid_v4.blue_mask, canon.global_pitch.
-    global_pitch는 운영 행검출(infer_photo.extract_rows_for_job)과 **동일 호출**을 써서
-    게이트가 다운스트림이 실제로 쓸 피치를 검증하게 한다. 선이 14개 미만이면 global_pitch가
-    양식 공칭 피치(83.0)를 돌려주므로, 그때 pitch_dev는 '공칭 대비 편차'가 된다.
+    기존 격자 함수만 재사용한다 — grid_v4.hlines_from_mask, grid_v4.blue_mask(또는
+    blue_mask_enh), canon.global_pitch. global_pitch는 운영 행검출
+    (infer_photo.extract_rows_for_job)과 **동일 호출**을 써서 게이트가 다운스트림이 실제로 쓸
+    피치를 검증하게 한다. 선이 14개 미만이면 global_pitch가 양식 공칭 피치(83.0)를 돌려주므로,
+    그때 pitch_dev는 '공칭 대비 편차'가 된다.
+
+    grid_v4.hline_ys가 아니라 hlines_from_mask(mask_fn(w))를 직접 부른다. hline_ys의
+    FaintOn 경로는 "enh가 DATA_Y 안에서 선을 더 줄 때만 채택"이라는 **조건부** 로직이라
+    폴백에 쓰면 축이 혼합되고, _FAINT는 모듈 전역 mutation이다. 여기서는 전역 상태를
+    읽지도 쓰지도 않는다(결정론).
 
     ⚠️ 여기의 handwriting.canon/grid_v4는 infer_photo가 쓰는 top-level canon/grid_v4와 다른
-       모듈 객체다(canon이 sys.path.insert로 top-level import를 한다). 모듈 전역 상태(_FAINT)를
-       공유하지 않으므로, 위 FaintOn(False) 고정이 게이트와 운영의 결정론을 각자 보장한다.
+       모듈 객체다(canon이 sys.path.insert로 top-level import를 한다) — 아래 테스트가
+       단언하는 `_FAINT`도 이 모듈 전용이다.
+
+    Args:
+        warped_bgr: 워프·deskew된 BGR 이미지.
+        enhanced: True면 대비향상 마스크(blue_mask_enh)로 **네 지표 전부**를 재측정한다
+            (Issue #60 2단 폴백). 마스크를 한 번만 만들어 hline과 blue_ratio가 같은 축에서
+            나오도록 강제한다 — 축이 섞이면 '일관 재측정'이라는 폴백의 전제가 깨진다.
 
     Raises:
         ValueError: `warped_bgr`가 `(WARP_H, WARP_W)` 크기가 아닐 때. 크기가 다른 입력은
@@ -105,14 +208,21 @@ def compute_metrics(warped_bgr) -> WarpGateMetrics:
     import numpy as np
 
     from handwriting.canon import global_pitch
-    from handwriting.grid_v4 import DATA_Y, WARP_H, WARP_W, FaintOn, blue_mask, hline_ys
+    from handwriting.grid_v4 import (
+        DATA_Y,
+        WARP_H,
+        WARP_W,
+        blue_mask,
+        blue_mask_enh,
+        hlines_from_mask,
+    )
 
     if warped_bgr.shape[:2] != (WARP_H, WARP_W):
         raise ValueError(f"warped_bgr must be {WARP_H}x{WARP_W}, got {warped_bgr.shape[:2]}")
 
     y0, y1 = DATA_Y
-    with FaintOn(False):
-        ys = sorted(y for y in hline_ys(warped_bgr) if y0 - 40 <= y <= y1 + 40)
+    mask = (blue_mask_enh if enhanced else blue_mask)(warped_bgr)
+    ys = sorted(y for y in hlines_from_mask(mask) if y0 - 40 <= y <= y1 + 40)
     if len(ys) >= 2:
         # 이중선(간격<40px) gap은 MAD 계산에서 배제한다 — 원시 gap 전량으로 MAD를 재면
         # 정상 행검출인 이중검출 전표를 오탐한다. 하한 40px는 기존 이중선 배제 선례
@@ -134,9 +244,12 @@ def compute_metrics(warped_bgr) -> WarpGateMetrics:
     else:
         pitch_dev = WORST_PITCH_DEV
 
-    band = blue_mask(warped_bgr)[y0:y1] > 0
+    band = mask[y0:y1] > 0
     half = WARP_W // 2
-    return WarpGateMetrics(
+    # enhanced=True는 WarpGateMetricsEnh를 낸다(Task 4 MEDIUM #2) — 표준 evaluate_warp에
+    # 잘못 흘러들면 isinstance 가드가 즉시 TypeError로 거부한다.
+    cls = WarpGateMetricsEnh if enhanced else WarpGateMetrics
+    return cls(
         hline_count=len(ys),
         pitch_dev=pitch_dev,
         blue_ratio_left=float(band[:, :half].mean()),
