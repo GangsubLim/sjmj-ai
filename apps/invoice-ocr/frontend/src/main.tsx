@@ -16,6 +16,10 @@ const SettingsPage = lazy(() => import("@/app/settings/page"));
 const SalesPerformancePage = lazy(() => import("@/app/sales-performance/page"));
 const CurationQueuePage = lazy(() => import("@/app/curation/page"));
 const CurationJobPage = lazy(() => import("@/app/curation/[jobId]/page"));
+const UnconfirmedJobsPage = lazy(() => import("@/app/curation/pending/page"));
+const UnconfirmedJobDetailPage = lazy(
+  () => import("@/app/curation/pending/[jobId]/page"),
+);
 
 const LazyFallback = (
   <div className="flex min-h-dvh items-center justify-center text-sm text-gray-400">
@@ -68,6 +72,22 @@ const router = createBrowserRouter([
         element: (
           <Suspense fallback={LazyFallback}>
             <CurationQueuePage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "/curation/pending",
+        element: (
+          <Suspense fallback={LazyFallback}>
+            <UnconfirmedJobsPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "/curation/pending/:jobId",
+        element: (
+          <Suspense fallback={LazyFallback}>
+            <UnconfirmedJobDetailPage />
           </Suspense>
         ),
       },

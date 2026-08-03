@@ -339,6 +339,16 @@
         "source": "app/routers/sales_records.py"
       },
       {
+        "method": "GET",
+        "path": "/api/ocr/jobs",
+        "summary": "확정 전(미확정) 잡 관측 목록 — invoice_id·ocr_corrections·training_pairs 모두 없는 잡을 최신순 페이지 조회. observation_status 배지 8종(pending/running/failed/no_result/no_warp/demoted/no_rows/unconfirmed). 읽기 전용(ADR 0009). limit 상한 100, page 상한 1000000000(범위 밖은 400이 아니라 clamp)",
+        "auth": "public",
+        "req": null,
+        "res": "OcrJobObservation",
+        "router": "ocr",
+        "source": "app/routers/ocr.py"
+      },
+      {
         "method": "POST",
         "path": "/api/ocr/jobs",
         "summary": "Upload photo + enqueue OCR job (201; multipart photo field; filename suffix must be .jpg/.jpeg/.png else 400 VALIDATION_ERROR; saves to $SJMJ_DATA_DIR/ocr_uploads as uuid4().hex + lowercased suffix)",
@@ -490,6 +500,7 @@
       "OcrJobCreate": ["POST /api/ocr/jobs"],
       "OcrJobAck": ["POST /api/ocr/jobs"],
       "OcrJobStatus": ["GET /api/ocr/jobs/{id}"],
+      "OcrJobObservation": ["GET /api/ocr/jobs"],
       "OcrResult": ["GET /api/ocr/jobs/{id}"],
       "OcrResultRow": ["GET /api/ocr/jobs/{id}"],
       "OcrConfirmRequest": ["POST /api/ocr/jobs/{id}/confirm"],
@@ -2027,6 +2038,58 @@
       }
     },
     "/api/ocr/jobs": {
+      "get": {
+        "tags": ["ocr"],
+        "summary": "확정 전(미확정) 잡 관측 목록(페이지네이션, 읽기 전용)",
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "범위 밖 값은 400이 아니라 clamp된다(1..1000000000).",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 1000000000
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "범위 밖 값은 400이 아니라 clamp된다(1..100).",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "미확정 잡 목록",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/OcrJobObservation"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
       "post": {
         "tags": ["ocr"],
         "summary": "Upload photo + enqueue OCR job",
@@ -3321,6 +3384,33 @@
             "nullable": true,
             "description": "status=failed 일 때 포함"
           }
+        }
+      },
+      "OcrJobObservation": {
+        "type": "object",
+        "properties": {
+          "job_id": { "type": "integer" },
+          "observation_status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "failed",
+              "no_result",
+              "no_warp",
+              "demoted",
+              "no_rows",
+              "unconfirmed"
+            ],
+            "description": "관측 상태 배지. warped.png 파일 존재 여부로 demoted(있음)와 no_warp(없음)를 가른다(데이터 루트 오설정으로 파일을 볼 수 없으면 500이 아니라 no_warp로 닫고 경고 로그를 남긴다 — 읽기 전용 진단 화면이 죽지 않게). result_json이 계약(warp_ok boolean·rows array)을 벗어나면 no_result로 닫힌다"
+          },
+          "row_count": {
+            "type": "integer",
+            "nullable": true,
+            "description": "rows가 배열일 때만 정수. 추론 미완·계약 위반은 null(0행 검출과 다른 사실)"
+          },
+          "error": { "type": "string", "nullable": true },
+          "created_at": { "type": "string", "format": "date-time" }
         }
       },
       "OcrResult": {

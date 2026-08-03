@@ -20,6 +20,14 @@ router = APIRouter()
 # 이어질 수 있다(품질 리뷰 재현). ge=0으로 음수도 함께 400으로 흡수한다.
 _MAX_CROP_ROW = 9999
 
+# 목록 페이지 크기 상한. curation 라우터의 _LIMIT_MAX와 같은 값·같은 이유(payload 상한).
+_LIMIT_MAX = 100
+
+# 목록 페이지 번호 상한. 상한 없이 offset=(page-1)*limit을 계산하면 거대 page 값이 MySQL
+# BIGINT 범위를 넘겨 1064 SQL 문법 오류 + SQL 전문 노출로 500이 샌다(품질 리뷰 재현). 정상
+# 사용 범위를 크게 상회하는 값이므로 400이 아니라 기존 clamp 의미론 그대로 무음 clamp한다.
+_PAGE_MAX = 1_000_000_000
+
 
 def _service() -> OcrService:
     return OcrService()
@@ -30,6 +38,18 @@ def create_job(photo: UploadFile = File(...)):
     """업로드한 사진으로 OCR 잡을 생성한다."""
     content = photo.file.read()  # SpooledTemporaryFile 동기 읽기
     return envelope.created(_service().create_job(content, photo.filename or ""))
+
+
+@router.get("/ocr/jobs")
+def list_unconfirmed_jobs(page: int = 1, limit: int = 20):
+    """확정 전(미확정) OCR 잡 목록을 관측용으로 페이지 조회한다(읽기 전용 — ADR 0009)."""
+    page = max(1, min(_PAGE_MAX, page))
+    limit = max(1, min(_LIMIT_MAX, limit))
+    jobs, total = _service().list_unconfirmed(page, limit)
+    total_pages = (total + limit - 1) // limit if total else 1
+    return envelope.list_response(
+        jobs, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
+    )
 
 
 @router.get("/ocr/jobs/{id}")

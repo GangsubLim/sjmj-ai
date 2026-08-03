@@ -43,7 +43,14 @@ test("큐 → 드릴다운(라벨/제외) → 검수완료 → 큐에서 검수�
   ).toBeVisible();
 });
 
-test("이미지 mock 불가 → 워프 placeholder degrade", async ({ page }) => {
-  await page.goto("/curation/127"); // warp_ok=false 시드.
-  await expect(page.getByText("워프 산출 없음")).toBeVisible();
+test("워프 미산출 잡 → 워프 이미지 404 시 placeholder로 폴백", async ({
+  page,
+}) => {
+  await page.goto("/curation/127"); // warp_ok=false 시드 — 워프 산출 파일이 없다.
+  // JobImagePanel은 warp_ok로 분기하지 않고 항상 img를 렌더한 뒤, 로드 실패(404) 시
+  // onError로 src를 data:image/svg+xml placeholder로 교체한다(코로케이트 단위
+  // 테스트: components/curation/JobImagePanel.test.tsx).
+  const warped = page.getByAltText("워프 전표");
+  await expect(warped).toBeVisible();
+  await expect(warped).toHaveAttribute("src", /^data:image\/svg\+xml/);
 });
