@@ -5,6 +5,19 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.8.0] — 2026-08-04
+
+검수를 시작하기 전 단계의 인식 잡을 목록으로 훑어보고, 어디까지 잘 처리됐는지 확인할 수 있다 ([#68](https://github.com/GangsubLim/sjmj-ai/pull/68)).
+
+### Added
+
+- 아직 확정하지 않은 인식 잡을 한 화면에서 모아 보고, 각 잡이 어느 단계에서 멈췄는지 배지로 확인한다 ([#68](https://github.com/GangsubLim/sjmj-ai/pull/68))
+- 개별 잡을 열어 원본·보정 이미지와 인식된 행을 읽기 전용으로 살펴본다 — 이 화면의 어떤 조작도 잡·학습쌍·명세서를 바꾸지 않는다 ([#68](https://github.com/GangsubLim/sjmj-ai/pull/68))
+
+### Changed
+
+- 보정 이미지가 없는 잡에서도 이미지 영역이 빈 화면으로 남지 않고 안내 자리표시를 보여준다 ([#68](https://github.com/GangsubLim/sjmj-ai/pull/68))
+
 ## [v0.7.0] — 2026-08-03
 
 멀쩡한 전표가 "정합 실패"로 잘못 강등되던 문제를 회수하고, 새로 등록한 품목 이름이 인식 사전에 자동으로 반영되게 한다 ([#65](https://github.com/GangsubLim/sjmj-ai/pull/65), [#62](https://github.com/GangsubLim/sjmj-ai/pull/62)).
