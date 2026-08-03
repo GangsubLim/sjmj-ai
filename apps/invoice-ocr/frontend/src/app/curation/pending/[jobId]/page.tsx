@@ -12,6 +12,16 @@ import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 const CROP_PLACEHOLDER = placeholderSvg(240, 48);
 const handleImageError = fallbackToPlaceholder(CROP_PLACEHOLDER);
 
+// 404(그 잡이 없다)와 그 외 실패(네트워크·500·데이터 루트 오설정 A6)를 갈라야 한다 —
+// 관측 도구가 운영 장애를 "데이터 없음"으로 오진하면 안 된다.
+// (use-curation-job.ts:20 errorMessage와 같은 관용구)
+function fetchErrorMessage(e: unknown): string {
+  if (axios.isAxiosError(e) && e.response?.status === 404) {
+    return "잡을 찾을 수 없습니다";
+  }
+  return e instanceof Error ? e.message : "잡을 불러올 수 없습니다";
+}
+
 // 확정 전 상세는 확정 후 상세(app/curation/[jobId])와 파일부터 분리한다 —
 // ADR 0009의 관문/비관문 경계를 코드 경계로 남긴다. 여기에는 조작이 하나도 없다.
 export default function UnconfirmedJobDetailPage() {
@@ -39,16 +49,7 @@ export default function UnconfirmedJobDetailPage() {
       setJob(res.data);
     } catch (e) {
       if (myId !== reqId.current) return;
-      // 404(그 잡이 없다)와 그 외 실패(네트워크·500·데이터 루트 오설정 A6)를 갈라야 한다 —
-      // 관측 도구가 운영 장애를 "데이터 없음"으로 오진하면 안 된다.
-      // (use-add-new-item.ts:15-17, invoice-form.tsx:397과 같은 관용구)
-      setError(
-        axios.isAxiosError(e) && e.response?.status === 404
-          ? "잡을 찾을 수 없습니다"
-          : e instanceof Error
-            ? e.message
-            : "잡을 불러올 수 없습니다",
-      );
+      setError(fetchErrorMessage(e));
     } finally {
       if (myId === reqId.current) setLoading(false);
     }
@@ -87,8 +88,11 @@ export default function UnconfirmedJobDetailPage() {
   // 보장되지 않는다 — 배열 여부만이 아니라 **원소까지** 런타임에 닫는다
   // (curation_service.py:63-65가 백엔드에서 쓰는 것과 같은 관용구: 배열 + isinstance(r, dict)).
   const rawRows: unknown = job.result?.rows;
+  // row_index는 크롭 URL(ocrCropUrl)과 alt에 그대로 들어가므로 숫자까지 확인한다 —
+  // 빠지거나 문자열이면 /crop/undefined를 요청하고 "undefined행 크롭"을 읽어준다.
   const rows = (Array.isArray(rawRows) ? rawRows : []).filter(
-    (r): r is OcrResultRow => typeof r === "object" && r !== null,
+    (r): r is OcrResultRow =>
+      typeof r === "object" && r !== null && typeof r.row_index === "number",
   );
 
   return (
@@ -118,7 +122,7 @@ export default function UnconfirmedJobDetailPage() {
           {rows.length === 0 && (
             <p className="text-muted-foreground text-sm">초안 행이 없습니다</p>
           )}
-          {rows.map((row, i) => {
+          {rows.map((row) => {
             const candidates = (
               Array.isArray(row.item_top5) ? row.item_top5 : []
             ).filter(
@@ -130,7 +134,7 @@ export default function UnconfirmedJobDetailPage() {
             );
             return (
               <div
-                key={typeof row.row_index === "number" ? row.row_index : i}
+                key={row.row_index}
                 className="flex items-center gap-3 border-b py-2"
               >
                 <img

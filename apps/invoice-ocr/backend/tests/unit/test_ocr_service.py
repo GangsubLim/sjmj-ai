@@ -232,6 +232,22 @@ def test_list_unconfirmed_translates_page_to_offset(tmp_path, monkeypatch):
     assert total == 0
 
 
+def test_list_unconfirmed_passes_through_repo_total_not_page_size(tmp_path, monkeypatch):
+    """total은 repo의 전체 건수를 그대로 통과시킨다 — 현재 페이지 길이가 아니다.
+
+    다른 테스트는 전부 total == len(rows)라 둘을 구별하지 못한다. 라우터가 이 값으로
+    totalPages를 계산하므로(routers/ocr.py:49), len(jobs)로 대체되면 뒤 페이지가 남았는데도
+    목록이 1페이지로 무너진다.
+    """
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    service = OcrService(repo=_FakeUnconfirmedRepo([_raw(1)], total=57))
+
+    jobs, total = service.list_unconfirmed(1, 20)
+
+    assert len(jobs) == 1
+    assert total == 57
+
+
 def test_list_unconfirmed_marks_unconfirmed_and_keeps_row_count(tmp_path, monkeypatch):
     monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
     service = OcrService(repo=_FakeUnconfirmedRepo([_raw(7)]))
@@ -244,6 +260,10 @@ def test_list_unconfirmed_marks_unconfirmed_and_keeps_row_count(tmp_path, monkey
     assert jobs[0]["row_count"] == 3
     assert jobs[0]["error"] is None
     assert jobs[0]["created_at"] == "2026-08-01T09:00:00"
+    # 이 dict는 envelope.list_response로 그대로 응답 body가 된다 — 키 집합이 곧 API 표면이다.
+    # 개별 키만 단정하면 관측 원값(warp_ok·rows_type·raw error)이나 파일 경로가 덧붙는
+    # 변경이 조용히 새어 나간다(confirm seam 테스트의 set(...) 패턴과 같은 방어).
+    assert set(jobs[0]) == {"job_id", "observation_status", "row_count", "error", "created_at"}
 
 
 def test_list_unconfirmed_splits_demoted_from_no_warp_by_warped_file(tmp_path, monkeypatch):

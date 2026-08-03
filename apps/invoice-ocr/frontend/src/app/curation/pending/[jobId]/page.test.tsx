@@ -137,6 +137,38 @@ describe("UnconfirmedJobDetailPage", () => {
     expect(screen.getAllByText("후보 없음")).toHaveLength(2);
   });
 
+  it("row_index가 숫자가 아닌 행은 undefined 크롭을 요청하지 않는다", async () => {
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          // 워커가 쓴 외부 데이터 — row_index가 없거나 문자열일 수 있다.
+          rows: [
+            { item_top5: [], supply: 1 },
+            { row_index: "1", item_top5: [], supply: 2 },
+            { row_index: 2, item_top5: [], supply: 3 },
+          ],
+          supply_sum: 6,
+          warp_ok: true,
+        },
+      },
+    } as unknown as Awaited<ReturnType<typeof ocrAPI.getJob>>);
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByAltText("2행 크롭")).toBeInTheDocument(),
+    );
+    expect(screen.queryByAltText("undefined행 크롭")).not.toBeInTheDocument();
+    expect(screen.queryByAltText("1행 크롭")).not.toBeInTheDocument();
+    const crops = screen
+      .getAllByRole("img")
+      .map((img) => img.getAttribute("src") ?? "");
+    expect(crops.some((src) => src.includes("/crop/undefined"))).toBe(false);
+  });
+
   it("supply를 CurationPairRow와 같은 천단위 구분 기호로 그린다", async () => {
     mockGetJob.mockResolvedValue({
       success: true,

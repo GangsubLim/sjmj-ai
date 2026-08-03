@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 
 from app.repositories.ocr_repository import OcrRepository
-from app.routers.ocr import _MAX_CROP_ROW
+from app.routers.ocr import _MAX_CROP_ROW, _PAGE_MAX
 from tests.fixtures import test_data as td
 
 pytestmark = pytest.mark.usefixtures("db_conn")
@@ -576,10 +576,19 @@ def test_list_unconfirmed_jobs_returns_empty_list_when_none(client):
 
 @pytest.mark.parametrize("requested,expected", [(0, 1), (-5, 1), (101, 100), (500, 100), (50, 50)])
 def test_list_unconfirmed_jobs_clamps_limit(client, requested, expected):
+    repo = OcrRepository()
+    for i in range(2):
+        repo.insert_job(f"/{i}.jpg")
+
     r = client.get(f"/api/ocr/jobs?limit={requested}")
 
     assert r.status_code == 200
-    assert r.json()["pagination"]["limit"] == expected
+    body = r.json()
+    assert body["pagination"]["limit"] == expected
+    # 메타 에코가 아니라 유효 LIMIT를 고정한다 — 라우터가 clamp 결과를 응답 메타에만 쓰고
+    # 원본 limit을 service로 넘기면 limit=0이 LIMIT 0이 되어 목록이 항상 빈다.
+    # (상한 clamp 101/500→100은 2건짜리 표본으로는 갈리지 않는다 — 메타 단언이 유일한 방어.)
+    assert len(body["data"]) == min(expected, 2)
 
 
 @pytest.mark.parametrize("requested,expected", [(0, 1), (-1, 1), (2, 2)])
@@ -610,12 +619,17 @@ def test_list_unconfirmed_jobs_clamps_absurdly_large_page_without_500(client):
     상한을 넘는 page는 400이 아니라 clamp된다 — 무음 clamp 의미론(spec 확정, 기존
     test_list_unconfirmed_jobs_clamps_page의 page=0→1 고정과 동일 계열)을 그대로 유지한다.
     """
+    OcrRepository().insert_job("/a.jpg")
+
     r = client.get("/api/ocr/jobs?page=99999999999999999999999")
 
     assert r.status_code == 200
     body = r.json()
+    # clamp 목표는 _PAGE_MAX다. 상한(<=)만 보면 page가 1로 무너지는 회귀도 통과한다 —
+    # 그러면 offset이 0이 되어 아래 잡이 딸려 나온다. 두 단언이 함께 그 회귀를 막는다.
+    assert body["pagination"]["page"] == _PAGE_MAX
     assert body["data"] == []
-    assert body["pagination"]["page"] <= 1_000_000_000
+    assert body["pagination"]["total"] == 1
 
 
 def test_list_unconfirmed_jobs_rejects_non_numeric_limit_with_400(client):

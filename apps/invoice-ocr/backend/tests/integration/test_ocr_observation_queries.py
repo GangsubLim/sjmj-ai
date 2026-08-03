@@ -254,6 +254,38 @@ def test_training_pairs_alone_excludes_job_without_corrections():
     assert rows == []
 
 
+def test_invoice_id_alone_excludes_job_without_corrections_or_pairs():
+    """invoice_id만 연결된 잡도 제외돼야 한다 — predicate 단독 고정 테스트.
+
+    confirm을 거치지 않고 link_invoice로만 명세서에 붙은 잡(migration 백필 이력)이다.
+    ocr_corrections·training_pairs가 둘 다 비어 있으므로 j.invoice_id IS NULL만이 이 잡을
+    막는다. 이 단독 케이스가 없으면 세 predicate 중 invoice_id만 지워도 전 테스트가 통과한다.
+    """
+    repo = OcrRepository()
+    job_id = repo.insert_job("/a.jpg")
+    repo.update_result(job_id, "done", {"rows": [], "supply_sum": 0, "warp_ok": True})
+    assert repo.link_invoice(job_id, InvoiceRepository().insert(td.invoice())) == 1
+
+    with connection() as conn:
+        assert (
+            conn.execute(
+                text("SELECT COUNT(*) FROM ocr_corrections WHERE job_id = :j"), {"j": job_id}
+            ).scalar()
+            == 0
+        ), "이 테스트의 전제(교정 이력 없음)가 깨졌습니다"
+        assert (
+            conn.execute(
+                text("SELECT COUNT(*) FROM training_pairs WHERE job_id = :j"), {"j": job_id}
+            ).scalar()
+            == 0
+        ), "이 테스트의 전제(학습쌍 없음)가 깨졌습니다"
+
+    rows, total = repo.list_unconfirmed(20, 0)
+
+    assert total == 0
+    assert rows == []
+
+
 def test_non_boolean_warp_ok_and_object_rows_are_extracted_verbatim():
     repo = OcrRepository()
     job_id = repo.insert_job("/weird.jpg")

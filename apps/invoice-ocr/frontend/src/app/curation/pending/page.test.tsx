@@ -64,6 +64,25 @@ describe("UnconfirmedJobsPage", () => {
     expect(screen.getAllByText("08-01 09:00").length).toBeGreaterThan(0);
   });
 
+  it("모르는 관측 상태 코드는 빈 칸이 아니라 코드 그대로 그린다", async () => {
+    mockGetJobs.mockResolvedValue(
+      listResponse([
+        summary({
+          job_id: 41,
+          // 백엔드가 9번째 코드를 추가해도 관측 축이 조용히 사라지면 안 된다.
+          observation_status:
+            "quarantined" as UnconfirmedJobSummary["observation_status"],
+        }),
+      ]),
+    );
+
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("quarantined")).toBeInTheDocument(),
+    );
+  });
+
   it("row_count가 null이면 0이 아니라 —로 그린다", async () => {
     mockGetJobs.mockResolvedValue(
       listResponse([

@@ -3402,7 +3402,7 @@
               "no_rows",
               "unconfirmed"
             ],
-            "description": "관측 상태 배지. warped.png 파일 존재 여부로 demoted(있음)와 no_warp(없음)를 가른다. result_json이 계약(warp_ok boolean·rows array)을 벗어나면 no_result로 닫힌다"
+            "description": "관측 상태 배지. warped.png 파일 존재 여부로 demoted(있음)와 no_warp(없음)를 가른다(데이터 루트 오설정으로 파일을 볼 수 없으면 500이 아니라 no_warp로 닫고 경고 로그를 남긴다 — 읽기 전용 진단 화면이 죽지 않게). result_json이 계약(warp_ok boolean·rows array)을 벗어나면 no_result로 닫힌다"
           },
           "row_count": {
             "type": "integer",

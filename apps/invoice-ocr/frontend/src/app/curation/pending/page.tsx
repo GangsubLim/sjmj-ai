@@ -116,8 +116,16 @@ export default function UnconfirmedJobsPage() {
                   </button>
                 </td>
                 <td>
-                  <span className={BADGE_CLASSES[job.observation_status]}>
-                    {BADGE_LABELS[job.observation_status]}
+                  {/* 코드 체계의 진실원은 백엔드다(types/observation.ts는 미러). 9번째 코드가
+                      생겨도 이 페이지의 유일한 정보 축이 빈 칸으로 사라지지 않게 코드를 그대로 보인다. */}
+                  <span
+                    className={
+                      BADGE_CLASSES[job.observation_status] ??
+                      "text-muted-foreground"
+                    }
+                  >
+                    {BADGE_LABELS[job.observation_status] ??
+                      job.observation_status}
                   </span>
                   {job.error !== null && (
                     <span className="text-muted-foreground ml-2 text-xs">

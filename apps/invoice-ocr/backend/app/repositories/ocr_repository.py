@@ -131,6 +131,13 @@ class OcrRepository:
         따라서 row_count는 그 자체로 신뢰할 수 없고 rows_type='ARRAY'일 때만 의미가 있다 —
         판정은 service/순수함수가 하고 repo는 원값을 그대로 올려 보낸다.
 
+        error도 같은 계열의 함정을 CASE WHEN으로 닫는다: JSON_UNQUOTE(JSON_EXTRACT(...))는
+        값이 JSON null이면 SQL NULL이 아니라 문자열 'null'을 준다(MySQL 9.6.0 실측 — SQL NULL은
+        키 부재·result_json IS NULL일 때만). 이 방어가 없으면 error="null"이 service의
+        `error is not None` 분기를 통과해 실패 사유로 "null"이 화면에 뜬다.
+        JSON_VALUE는 한 줄로 같은 일을 하지만 기본 RETURNING CHAR(512) + NULL ON ERROR라
+        512자 넘는 실패 사유를 조용히 NULL로 만든다(실측) — 그래서 쓰지 않는다.
+
         Args:
             limit: 페이지 크기(라우터에서 1..100으로 clamp된 값).
             offset: 건너뛸 행 수.
@@ -143,7 +150,8 @@ class OcrRepository:
             "JSON_TYPE(JSON_EXTRACT(j.result_json, '$.rows')) AS rows_type, "
             "JSON_LENGTH(j.result_json, '$.rows') AS row_count, "
             "JSON_UNQUOTE(JSON_EXTRACT(j.result_json, '$.warp_ok')) AS warp_ok, "
-            "JSON_UNQUOTE(JSON_EXTRACT(j.result_json, '$.error')) AS error "
+            "CASE WHEN JSON_TYPE(JSON_EXTRACT(j.result_json, '$.error')) = 'NULL' THEN NULL "
+            "ELSE JSON_UNQUOTE(JSON_EXTRACT(j.result_json, '$.error')) END AS error "
             "FROM ocr_jobs j " + _UNCONFIRMED_WHERE + "ORDER BY j.created_at DESC, j.id DESC "
             "LIMIT :limit OFFSET :offset"
         )

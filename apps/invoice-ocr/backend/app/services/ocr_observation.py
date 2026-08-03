@@ -22,7 +22,8 @@ OBSERVATION_NO_WARP = "no_warp"
 OBSERVATION_DEMOTED = "demoted"
 # 격자는 맞았는데 행이 안 잡혔다.
 OBSERVATION_NO_ROWS = "no_rows"
-# 기계는 성공, 사람이 확정 안 함.
+# 기계는 성공, 사람이 확정 안 함. 뒷문장("확정 안 함")은 입력이 아니라 호출자 계약이다 —
+# derive_observation_status의 호출 계약 항목 참조.
 OBSERVATION_UNCONFIRMED = "unconfirmed"
 
 OBSERVATION_STATUSES = frozenset(
@@ -57,6 +58,12 @@ def derive_observation_status(
     has_warped: bool,
 ) -> str:
     """관측 상태 배지를 판정한다. 어떤 입력 조합도 OBSERVATION_STATUSES 안으로 닫힌다.
+
+    호출 계약: 미확정 잡만 넘긴다. 확정 여부는 인자에 없고 여집합 쿼리
+    (ocr_repository._UNCONFIRMED_WHERE)가 이미 걸러준 전제로 UNCONFIRMED를 낸다 —
+    확정된 잡을 넘기면 '미확정' 배지가 조용히 붙는다. 다른 경로에서 재사용하려면
+    그 경로도 같은 여집합을 통과시키거나, 이 함수 밖에서 확정 잡을 먼저 걷어내야 한다.
+    (확정 여부를 인자로 받지 않는 이유: 배지 결정표를 warp/rows 신호만으로 닫아 두기 위함.)
 
     Args:
         status: ocr_jobs.status 값(신뢰할 수 없는 임의 문자열일 수 있다).

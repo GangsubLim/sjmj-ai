@@ -36,6 +36,25 @@ def test_derives_eight_badges(status, warp_ok, rows_type, row_count, has_warped,
     )
 
 
+# warp_ok="true" 분기는 has_warped에 의존하지 않는다. warped.png는 false 분기에서만
+# 강등/워프 없음을 가르는 신호다(ocr_observation 모듈 docstring). 위 8종 표는 true 분기를
+# has_warped=True로만 덮으므로, 이 독립성을 따로 고정하지 않으면 rows 검사 앞에
+# `if not has_warped: return NO_WARP`을 넣는 회귀 — 정상 잡의 무더기 오강등 — 이 새어 나간다.
+@pytest.mark.parametrize("row_count,expected", [(0, "no_rows"), (12, "unconfirmed")])
+@pytest.mark.parametrize("has_warped", [True, False])
+def test_true_warp_ok_branch_ignores_has_warped(row_count, expected, has_warped):
+    assert (
+        derive_observation_status(
+            status="done",
+            warp_ok="true",
+            rows_type="ARRAY",
+            row_count=row_count,
+            has_warped=has_warped,
+        )
+        == expected
+    )
+
+
 # 계약 위반 입력 — 전부 no_result로 닫혀야 한다(정상으로 보이지 않게).
 @pytest.mark.parametrize(
     "warp_ok",
@@ -119,6 +138,25 @@ def test_unknown_status_closes_to_no_result(status):
         )
         == "no_result"
     )
+
+
+def test_observation_statuses_is_exactly_the_eight_spec_badges():
+    """배지 어휘를 spec 표와 철자 단위로 고정한다 — 코드 문자열 자체가 계약이다(프론트가 분기).
+
+    아래 전수 테스트는 "8종에 속한다"만 보므로 어휘가 9종으로 늘거나 하나가 빠져도 통과한다.
+    개수와 철자는 여기서만 못 박힌다.
+    """
+    assert set(OBSERVATION_STATUSES) == {
+        "pending",
+        "running",
+        "failed",
+        "no_result",
+        "no_warp",
+        "demoted",
+        "no_rows",
+        "unconfirmed",
+    }
+    assert len(OBSERVATION_STATUSES) == 8
 
 
 def test_every_input_combination_closes_to_one_of_eight():
