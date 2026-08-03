@@ -83,7 +83,7 @@ export default function UnconfirmedJobDetailPage() {
     );
   }
 
-  // GET /ocr/jobs/{id}는 result_json을 그대로 반환하고(ocr_service.py:96) OcrResult.rows는
+  // GET /ocr/jobs/{id}는 result_json을 그대로 반환하고(OcrService.get_job) OcrResult.rows는
   // 필수 배열·item_top5는 필수 객체 배열이라 단정하지만, 워커가 쓴 외부 데이터라 어느 층도
   // 보장되지 않는다 — 배열 여부만이 아니라 **원소까지** 런타임에 닫는다
   // (curation_service.py:63-65가 백엔드에서 쓰는 것과 같은 관용구: 배열 + isinstance(r, dict)).
@@ -98,7 +98,7 @@ export default function UnconfirmedJobDetailPage() {
   return (
     <PageContainer className="py-4">
       {/* 이 라우트는 미확정 여부를 검사하지 않는다 — GET /ocr/jobs/{id}가 invoice_id·correction
-          존재를 주지 않고(ocr_service.py:86-97), 상세용 엔드포인트 추가는 spec.md:93이 금지한다.
+          존재를 주지 않고(OcrService.get_job), 상세용 엔드포인트 추가는 spec.md:93이 금지한다.
           그래서 확정 여부를 주장하지 않는 중립 표현을 쓴다(읽기 전용은 이 페이지의 구조적 사실이라 유지). */}
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">
