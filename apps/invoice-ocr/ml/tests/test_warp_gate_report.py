@@ -1,41 +1,10 @@
 """tools.warp_gate_report 순수 계층 단위테스트(ssh/cv2 비의존, 합성 데이터만)."""
 
 import json
-from dataclasses import fields
 
 import pytest
 
-from handwriting.warp_gate import WarpGateMetrics  # stdlib만 쓰는 모듈이라 코어 venv에서도 안전
-from tools.warp_gate_report import (
-    METRIC_KEYS,
-    evaluate_cached,
-    job_status,
-    main,
-    parse_job_rows_tsv,
-    render_gate_report,
-    summarize_gate,
-)
-
-
-def _rec(job_id=1, status="gate_target", gate_pass=True, suspect=False, prev=True):
-    return {
-        "job_id": job_id,
-        "status": status,
-        "prev_warp_ok": prev,
-        "suspect": suspect,
-        "metrics": (
-            None
-            if status != "gate_target"
-            else {
-                "hline_count": 15,
-                "pitch_dev": 0.02,
-                "blue_ratio_left": 0.031,
-                "blue_ratio_right": 0.030,
-            }
-        ),
-        "gate_pass": gate_pass if status == "gate_target" else None,
-    }
-
+from tools.warp_gate_report import main, parse_job_rows_tsv
 
 # --- TSV 파싱 ---
 
@@ -105,239 +74,6 @@ def test_parse_job_rows_tsv_rejects_image_path_with_embedded_tab():
         parse_job_rows_tsv(text)
 
 
-# --- 분모 분류 ---
-
-
-def test_job_status_gate_target_when_warped_png_exists():
-    assert job_status(True, has_warped=True) == "gate_target"
-    assert job_status(None, has_warped=True) == "gate_target"
-    # warp_ok=False라도 warped.png가 남아 있으면 gate_target이다 — 이전에 게이트가
-    # 강등시킨 잡도 (임계 재캘리브 등으로) 재평가 대상에 포함돼야 한다는 뜻이다.
-    # has_warped가 warp_ok보다 우선하는 분기 순서를 고정한다.
-    assert job_status(False, has_warped=True) == "gate_target"
-
-
-def test_job_status_quad_missing_when_no_warp_and_already_false():
-    assert job_status(False, has_warped=False) == "quad_missing"
-
-
-def test_job_status_warp_missing_when_no_image_but_claimed_ok():
-    assert job_status(True, has_warped=False) == "warp_missing"
-    assert job_status(None, has_warped=False) == "warp_missing"
-
-
-# --- 집계 ---
-
-
-def test_summarize_gate_counts_denominator_and_outcomes():
-    recs = [
-        _rec(1),
-        _rec(2),
-        _rec(34, gate_pass=False, suspect=True),
-        _rec(39, gate_pass=False, suspect=True),
-        _rec(40, gate_pass=False),  # 정상 잡인데 실패 = 회귀 후보
-        _rec(50, status="quad_missing", prev=False),
-        _rec(51, status="warp_missing"),
-    ]
-    s = summarize_gate(recs)
-    assert s["n_total"] == 7
-    assert s["n_gate_target"] == 5
-    assert s["n_quad_missing"] == 1
-    assert s["n_warp_missing"] == 1
-    assert s["n_pass"] == 2
-    assert s["n_fail"] == 3
-    assert s["n_suspect_demoted"] == 2  # 잡 34·39 강등 성공
-    assert s["regressions"] == [40]  # 무회귀 분모에서 실패한 잡
-
-
-def test_summarize_gate_regressions_empty_when_only_suspects_fail():
-    s = summarize_gate([_rec(1), _rec(39, gate_pass=False, suspect=True)])
-    assert s["regressions"] == []
-
-
-def test_summarize_gate_excludes_never_true_jobs_from_regressions():
-    # result_json이 NULL이었거나 이미 warp_ok=false였던 잡은 '무회귀' 판단 대상이 아니다.
-    recs = [
-        _rec(1),
-        _rec(60, gate_pass=False, prev=None),
-        _rec(61, gate_pass=False, prev=False),
-    ]
-    s = summarize_gate(recs)
-    assert s["regressions"] == []
-    assert s["unknown_fail"] == [60, 61]
-    assert s["n_prev_true"] == 1
-
-
-def test_metric_margins_reports_separation_for_each_metric():
-    normal = _rec(1)
-    weak = _rec(34, gate_pass=False, suspect=True)
-    weak["metrics"] = {
-        "hline_count": 6,
-        "pitch_dev": 0.52,
-        "blue_ratio_left": 0.010,
-        "blue_ratio_right": 0.0,
-    }
-    m = summarize_gate([normal, weak])["margins"]
-    assert m["hline_count"]["worst_normal"] == 15
-    assert m["hline_count"]["best_suspect"] == 6
-    assert m["hline_count"]["gap"] == 9
-    assert m["pitch_dev"]["gap"] > 0  # 작을수록 좋은 지표는 방향이 반대
-
-
-def test_summarize_gate_regression_denominator_excludes_suspects():
-    # 무회귀 문장의 분모는 regressions(분자)와 같은 집합이어야 한다 — suspect를 포함하는
-    # n_prev_true를 분모로 쓰면 분자·분모가 다른 집합이라 무회귀 주장이 성립하지 않는다.
-    recs = [_rec(1), _rec(34, gate_pass=False, suspect=True), _rec(40, gate_pass=False)]
-    s = summarize_gate(recs)
-    assert s["n_prev_true"] == 3  # 원시 집계는 suspect 포함(그대로 유지)
-    assert s["n_regression_denom"] == 2
-    assert s["regressions"] == [40]
-
-
-def test_metric_keys_track_dto_fields_plus_derived():
-    # 원시 지표는 DTO에서 파생한다 — WarpGateMetrics에 필드가 늘면 표가 자동으로 따라간다.
-    raw = tuple(f.name for f in fields(WarpGateMetrics))
-    assert METRIC_KEYS[: len(raw)] == raw
-    assert set(METRIC_KEYS) - set(raw) == {"blue_ratio_min", "blue_asym"}
-
-
-def test_metric_margins_covers_gate_predicate_metrics():
-    # 게이트는 원시 L·R 각각이 아니라 min(L,R)과 좌우 비대칭도를 검사한다(③·④ 규칙).
-    normal = _rec(1)
-    weak = _rec(39, gate_pass=False, suspect=True)
-    weak["metrics"] = {
-        "hline_count": 12,
-        "pitch_dev": 0.30,
-        "blue_ratio_left": 0.033,  # 좌측만 멀쩡 — 원시 L만 보면 정상군과 겹쳐 분리가 안 된다
-        "blue_ratio_right": 0.0,
-    }
-    m = summarize_gate([normal, weak])["margins"]
-    assert m["blue_ratio_left"]["gap"] < 0  # 원시 L 단독으로는 분리 실패
-    assert m["blue_ratio_min"]["worst_normal"] == 0.030
-    assert m["blue_ratio_min"]["best_suspect"] == 0.0
-    assert m["blue_ratio_min"]["gap"] > 0
-    # blue_asym은 작을수록 좋은 지표 — 의심군 최선값이 1.0(한쪽 전무)이라 gap이 양수다.
-    assert m["blue_asym"]["best_suspect"] == pytest.approx(1.0)
-    assert m["blue_asym"]["gap"] > 0
-
-
-def test_summarize_gate_counts_unreadable_warps():
-    s = summarize_gate([_rec(1), _rec(70, status="warp_unreadable")])
-    assert s["n_unreadable"] == 1
-    assert s["n_gate_target"] == 1
-
-
-# --- 렌더 ---
-
-
-def test_render_gate_report_contains_denominator_and_job_table():
-    md = render_gate_report(
-        [_rec(1), _rec(39, gate_pass=False, suspect=True), _rec(50, status="quad_missing")],
-        {"fetched_at": "2026-07-27T00:00:00", "host": "macmini"},
-    )
-    assert "게이트 평가 대상" in md
-    assert "quad_missing" in md
-    assert "hline" in md
-    assert "| 39 |" in md
-    assert "회귀" in md
-    assert "분리 마진" in md
-
-
-def test_render_gate_report_denominator_identity_includes_unreadable():
-    # 항등식이 성립해야 한다 — warp_unreadable 항이 빠지면 산술이 깨져 리포트가 자기모순이다.
-    recs = [
-        _rec(1),
-        _rec(50, status="quad_missing", prev=False),
-        _rec(51, status="warp_missing"),
-        _rec(70, status="warp_unreadable"),
-    ]
-    md = render_gate_report(recs, {})
-    assert (
-        "전체 잡 4 = 게이트 평가 대상 1 + quad_missing 1 + warp_missing 1 + warp_unreadable 1" in md
-    )
-
-
-def test_render_gate_report_regression_sentence_uses_suspect_free_denominator():
-    # suspect 34는 이전 warp_ok=true지만 무회귀 분모가 아니다 — 분모는 1이어야 한다.
-    md = render_gate_report([_rec(1), _rec(34, gate_pass=False, suspect=True)], {})
-    assert "정상 잡(suspect 제외) 1 중 실패(회귀): 없음" in md
-
-
-def test_render_gate_report_warns_when_cached_warped_count_mismatches():
-    # fetch가 센 warped 수와 이미지가 있는 잡 수가 어긋나면 stale 캐시다.
-    md = render_gate_report([_rec(1)], {"n_warped": 3})
-    assert "캐시 불일치" in md
-
-
-def test_render_gate_report_has_no_cache_warning_when_counts_match():
-    md = render_gate_report([_rec(1), _rec(70, status="warp_unreadable")], {"n_warped": 2})
-    assert "캐시 불일치" not in md
-
-
-def test_render_gate_report_reports_suspect_request_coverage():
-    md = render_gate_report(
-        [_rec(1), _rec(34, gate_pass=False, suspect=True)], {"suspects": [34, 999]}
-    )
-    assert "요청 suspect 2건 중 평가 대상 1건" in md
-    assert "999" in md  # jobs에 없는 id는 경고로 드러난다(오타·다른 서버)
-
-
-def test_render_gate_report_marks_suspect_in_excluded_list():
-    md = render_gate_report([_rec(38, status="warp_missing", suspect=True)], {"suspects": [38]})
-    assert "job 38: warp_missing" in md
-    assert "suspect 요청됨" in md
-
-
-def test_render_gate_report_footnotes_zero_baseline_margin():
-    # 정상군 blue_asym 최악값이 0이면 마진% 분모가 1.0으로 대체된다 — 백분율이 아님을 밝힌다.
-    normal = _rec(1)
-    normal["metrics"] = {**normal["metrics"], "blue_ratio_left": 0.03, "blue_ratio_right": 0.03}
-    weak = _rec(39, gate_pass=False, suspect=True)
-    weak["metrics"] = {**weak["metrics"], "blue_ratio_left": 0.03, "blue_ratio_right": 0.0}
-    md = render_gate_report([normal, weak], {})
-    assert "마진% 분모를 1.0으로 대체" in md
-
-
-# --- 평가 경로 (imread 주입 — Fake 어댑터 관례) ---
-
-
-def _write_cache(cache, jobs, *, warped_ids=()):
-    """fetch가 만드는 캐시 레이아웃을 합성한다(warped.png는 빈 파일 — 내용은 Fake가 준다)."""
-    (cache / "jobs.json").write_text(json.dumps(jobs))
-    (cache / "meta.json").write_text(json.dumps({"host": "h", "n_warped": len(warped_ids)}))
-    for job_id in warped_ids:
-        job_dir = cache / "warped" / f"job-{job_id}"
-        job_dir.mkdir(parents=True)
-        (job_dir / "warped.png").write_bytes(b"")
-    return cache
-
-
-def test_evaluate_cached_demotes_unreadable_image(tmp_path):
-    # imread가 None을 주면(손상·권한) 전수 리포트를 죽이지 않고 분모 밖으로 강등한다.
-    cache = _write_cache(tmp_path, [{"job_id": 1, "warp_ok": True}], warped_ids=(1,))
-    recs = evaluate_cached(cache, set(), imread=lambda _path: None)
-    assert recs[0]["status"] == "warp_unreadable"
-    assert recs[0]["metrics"] is None
-    assert recs[0]["gate_pass"] is None
-
-
-def test_evaluate_cached_marks_requested_suspects(tmp_path):
-    jobs = [{"job_id": 1, "warp_ok": True}, {"job_id": 34, "warp_ok": True}]
-    cache = _write_cache(tmp_path, jobs, warped_ids=(34,))
-    recs = evaluate_cached(cache, {34}, imread=lambda _path: None)
-    assert [r["suspect"] for r in recs] == [False, True]
-
-
-def test_evaluate_cached_wires_gate_verdict_from_metrics(tmp_path, make_warped):
-    # 정상 합성 워프 → compute_metrics → evaluate_warp 배선이 record에 실리는지 고정한다.
-    cache = _write_cache(tmp_path, [{"job_id": 1, "warp_ok": True}], warped_ids=(1,))
-    warped = make_warped()
-    recs = evaluate_cached(cache, set(), imread=lambda _path: warped)
-    assert recs[0]["status"] == "gate_target"
-    assert recs[0]["gate_pass"] is True
-    assert recs[0]["metrics"]["hline_count"] == 16
-
-
 # --- CLI ---
 
 
@@ -346,6 +82,245 @@ def test_report_without_cache_exits_with_fetch_guidance(tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         main(["--cache", str(tmp_path), "report"])
     assert "fetch" in str(excinfo.value)
+
+
+# --- 재워프 기준 평가·리포트(Task 6) ---
+
+
+def _seed_cache(tmp_path, *, jobs=None):
+    """`evaluate_rewarped`/`report` CLI 테스트용 최소 캐시 시드 — jobs.json+meta.json+pairs.json.
+
+    fetch가 만드는 캐시 레이아웃 중 report가 참조하는 최소 부분만 합성한다 — 원본
+    사진(uploads/)·warped.png는 개별 테스트가 필요할 때 따로 만든다.
+    """
+    if jobs is None:
+        jobs = [{"job_id": 1, "warp_ok": True, "image_path": None}]
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "jobs.json").write_text(json.dumps(jobs))
+    (tmp_path / "meta.json").write_text(json.dumps({"host": "h", "fetched_at": "t"}))
+    (tmp_path / "pairs.json").write_text(json.dumps([]))
+    return tmp_path
+
+
+def test_evaluate_rewarped_marks_jobs_without_an_image_path(tmp_path):
+    # ocr_jobs.image_path는 nullable이다 — 조인이 조용히 밀리면 전 잡이 정상처럼 보인다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": None}])
+    recs = wgr.evaluate_rewarped(tmp_path, labels={})
+    assert recs[0]["status"] == wgr.STATUS_UPLOAD_MISSING
+    assert recs[0]["metrics"] is None
+
+
+def test_evaluate_rewarped_resolves_uploads_by_basename(tmp_path, monkeypatch):
+    # jobs.json의 image_path는 macmini 절대경로다 — 로컬 캐시에는 basename으로만 존재한다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path,
+        jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/remote/data/ocr_uploads/ab12.jpg"}],
+    )
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "ab12.jpg").write_bytes(b"x")
+    seen = []
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: (seen.append(p), ("ok", object()))[1])
+    monkeypatch.setattr(wgr, "job_metrics", lambda w: {"std": {}, "enh": {}})
+    wgr.evaluate_rewarped(tmp_path, labels={})
+    assert seen[0].name == "ab12.jpg"
+    assert seen[0].parent == tmp_path / "uploads"
+
+
+def test_evaluate_rewarped_demotes_path_traversal_image_path_without_raising(tmp_path):
+    # image_path는 DB VARCHAR(512) 자유형이라 신뢰할 수 없다 — basename이 '..'/'.'로
+    # 붕괴하는 입력은 uploads/ 밖을 가리킬 수 있다(M3). 예외로 전수 리포트를 죽이면 앞선
+    # fetch 비용(원본 사진 171MB tar)이 날아간다 — 그 잡 하나만 분모 밖으로 강등한다
+    # (warp_gate_rows.rewarp_job의 "예외를 던지지 않는다" 계약과 동일).
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/a/b/.."}])
+    recs = wgr.evaluate_rewarped(tmp_path, labels={})
+    assert recs[0]["status"] == wgr.STATUS_INVALID_IMAGE_PATH
+    assert recs[0]["metrics"] is None
+    assert recs[0]["stored_metrics"] is None
+
+
+def test_evaluate_rewarped_fills_stored_metrics_only_when_the_warped_png_exists(
+    tmp_path, monkeypatch
+):
+    # 저장 워프 대조표(spec §4.1 참고 축)의 입력이다 — 없으면 None이어야 '차이 없음'과 구분된다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/a.jpg"}]
+    )
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "a.jpg").write_bytes(b"x")
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: ("ok", object()))
+    monkeypatch.setattr(wgr, "job_metrics", lambda w: {"std": {}, "enh": {}})
+    assert wgr.evaluate_rewarped(tmp_path, labels={})[0]["stored_metrics"] is None
+
+
+def test_evaluate_rewarped_fills_stored_metrics_and_feeds_drift_when_warped_png_is_readable(
+    tmp_path, monkeypatch
+):
+    # _stored_metrics가 항상 None을 돌려줘도 위 테스트(warped.png 없음)는 못 잡는다(H4) — 이
+    # 경로가 죽으면 #18 승계 라벨 무효 잡의 육안 편입(spec §4.1)이 조용히 0건이 된다. 여기서는
+    # warped.png를 실제로 만들고 compute_metrics를 주입해 stored_metrics가 채워지는 경로와
+    # 그 값이 stored_vs_rewarp의 drift 행까지 흘러가는 경로를 함께 고정한다.
+    cv2 = pytest.importorskip("cv2", exc_type=ImportError)
+    from handwriting.warp_gate import WarpGateMetrics
+    from tools import warp_gate_calib
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/a.jpg"}]
+    )
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "a.jpg").write_bytes(b"x")
+    warped_dir = tmp_path / "warped" / "job-1"
+    warped_dir.mkdir(parents=True)
+    (warped_dir / "warped.png").write_bytes(b"fake-png")
+
+    stored = WarpGateMetrics(
+        hline_count=6, pitch_dev=0.30, blue_ratio_left=0.0, blue_ratio_right=0.0
+    )
+    monkeypatch.setattr(cv2, "imread", lambda path: object())
+    monkeypatch.setattr("handwriting.warp_gate.compute_metrics", lambda img: stored)
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: ("ok", object()))
+    monkeypatch.setattr(
+        wgr,
+        "job_metrics",
+        lambda w: {
+            "std": {
+                "hline_count": 17,
+                "pitch_dev": 0.02,
+                "blue_ratio_left": 0.2,
+                "blue_ratio_right": 0.2,
+            },
+            "enh": {
+                "hline_count": 20,
+                "pitch_dev": 0.03,
+                "blue_ratio_left": 0.3,
+                "blue_ratio_right": 0.3,
+            },
+        },
+    )
+
+    recs = wgr.evaluate_rewarped(tmp_path, labels={})
+    assert recs[0]["stored_metrics"] == {
+        "hline_count": 6,
+        "pitch_dev": 0.30,
+        "blue_ratio_left": 0.0,
+        "blue_ratio_right": 0.0,
+    }
+    drift = warp_gate_calib.stored_vs_rewarp(recs)
+    assert drift and drift[0]["job_id"] == 1
+    assert drift[0]["hline_count"] == {"rewarp": 17, "stored": 6}
+
+
+def test_evaluate_rewarped_wires_suspect_and_unlabeled_sets_to_record_labels(tmp_path):
+    # labels의 suspects/unlabeled 키가 서로 바뀌면(H3) 파손군·미라벨군이 뒤집혀 마진표가
+    # 통째로 반전되는데 기존 evaluate_rewarped 테스트는 전부 labels={}였다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path,
+        jobs=[
+            {"job_id": 1, "warp_ok": True, "image_path": None},
+            {"job_id": 2, "warp_ok": True, "image_path": None},
+            {"job_id": 3, "warp_ok": True, "image_path": None},
+        ],
+    )
+    recs = wgr.evaluate_rewarped(tmp_path, labels={"suspects": {2}, "unlabeled": {3}})
+    labels = {r["job_id"]: r["label"] for r in recs}
+    assert labels == {1: "normal", 2: "suspect", 3: "unlabeled"}
+
+
+def test_evaluate_rewarped_leaves_metrics_none_when_rewarp_fails(tmp_path, monkeypatch):
+    # `metrics = job_metrics(warped) if status == STATUS_OK else None`가 무조건 채워져도
+    # 기존 테스트가 못 잡는다(M4) — 재워프 실패 잡의 record 형태를 고정한다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/a.jpg"}]
+    )
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "a.jpg").write_bytes(b"x")
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: ("quad_missing", None))
+    recs = wgr.evaluate_rewarped(tmp_path, labels={})
+    assert recs[0]["status"] == "quad_missing"
+    assert recs[0]["metrics"] is None
+
+
+def test_report_writes_machine_readable_metrics_next_to_the_markdown(tmp_path, monkeypatch):
+    # Phase 1의 임계 도출은 62잡 × 8지표를 손으로 읽는 것이 아니라 이 JSON을 계산해서 한다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path)  # jobs.json + meta.json + pairs.json 최소 시드(파일 상단 헬퍼)
+    monkeypatch.setattr(wgr, "evaluate_rewarped", lambda cache, labels: [])
+    wgr.main(["--cache", str(tmp_path), "report", "--suspect", "24", "--unlabeled", "5"])
+
+    assert (tmp_path / "warp_gate_report.md").exists()
+    assert json.loads((tmp_path / "warp_gate_metrics.json").read_text()) == []
+
+
+def test_report_excludes_jobs_above_max_job_id_from_metrics(tmp_path, monkeypatch):
+    # 캘리브 도중 생긴 신규 잡이 검증 없이 정상군 최악값을 움직이면 임계 근거가 오염된다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path)
+    std = {"hline_count": 17, "pitch_dev": 0.02, "blue_ratio_left": 0.2, "blue_ratio_right": 0.2}
+    enh = {"hline_count": 20, "pitch_dev": 0.03, "blue_ratio_left": 0.3, "blue_ratio_right": 0.3}
+    monkeypatch.setattr(
+        wgr,
+        "evaluate_rewarped",
+        lambda cache, labels: [
+            {
+                "job_id": 50,
+                "label": "normal",
+                "prev_warp_ok": True,
+                "status": "ok",
+                "metrics": {"std": std, "enh": enh},
+                "stored_metrics": None,
+            },
+            {
+                "job_id": 63,  # 상한과 정확히 같은 id — 포함(<=)돼야 한다
+                "label": "normal",
+                "prev_warp_ok": True,
+                "status": "ok",
+                "metrics": {"std": std, "enh": enh},
+                "stored_metrics": None,
+            },
+            {
+                "job_id": 64,
+                "label": "normal",
+                "prev_warp_ok": True,
+                "status": "ok",
+                "metrics": {"std": std, "enh": enh},
+                "stored_metrics": None,
+            },
+        ],
+    )
+    wgr.main(["--cache", str(tmp_path), "report", "--max-job-id", "63"])
+    metrics = json.loads((tmp_path / "warp_gate_metrics.json").read_text())
+    assert [m["job_id"] for m in metrics] == [50, 63]
+
+
+def test_report_cli_wires_suspect_and_unlabeled_args_into_labels(tmp_path, monkeypatch):
+    # CLI → evaluate_rewarped 배선이 무단언이었다(H3) — --suspect/--unlabeled가 정확히
+    # labels dict에 실리는지 인자 캡처로 확인한다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path)
+    seen = {}
+
+    def fake_evaluate(cache, labels):
+        seen["labels"] = labels
+        return []
+
+    monkeypatch.setattr(wgr, "evaluate_rewarped", fake_evaluate)
+    wgr.main(["--cache", str(tmp_path), "report", "--suspect", "24", "38", "--unlabeled", "2", "3"])
+    assert seen["labels"] == {"suspects": {24, 38}, "unlabeled": {2, 3}}
 
 
 # --- 원격 루트 파라미터화 + 원본 사진·학습쌍 동기화 (Task 3) ---
