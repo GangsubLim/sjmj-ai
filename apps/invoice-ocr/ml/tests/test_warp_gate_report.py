@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from tools.warp_gate_report import main, parse_job_rows_tsv
+from tools.warp_gate_report import main, parse_job_rows_tsv, parse_warp_pairs_tsv
 
 # --- TSV 파싱 ---
 
@@ -72,6 +72,23 @@ def test_parse_job_rows_tsv_rejects_image_path_with_embedded_tab():
     text = "id\twarp_ok\timage_path\n6\ttrue\t/data/ocr_uploads/a\tb.jpg\n"
     with pytest.raises(ValueError, match="열"):
         parse_job_rows_tsv(text)
+
+
+def test_parse_warp_pairs_tsv_keeps_only_the_columns_pair_rows_uses():
+    # pair_rows(warp_gate_calib)가 쓰는 열은 job_id/row_index/status뿐이다(#63로 갈라진
+    # curation_enrich.parse_pairs_tsv의 11열과 달리 이 파서는 그 3열만 안다).
+    text = "job_id\trow_index\tstatus\n1\t0\tincluded\n1\t1\texcluded\n"
+    assert parse_warp_pairs_tsv(text) == [
+        {"job_id": 1, "row_index": 0, "status": "included"},
+        {"job_id": 1, "row_index": 1, "status": "excluded"},
+    ]
+
+
+def test_parse_warp_pairs_tsv_rejects_row_with_wrong_column_count():
+    # 자매 파서 parse_job_rows_tsv와 같은 계약 — 열이 조용히 밀리면 이 커밋의 임계 확정
+    # 근거인 pairs 축 전체가 왜곡되므로 fail-fast해야 한다.
+    with pytest.raises(ValueError):
+        parse_warp_pairs_tsv("job_id\trow_index\tstatus\n1\t0\n")
 
 
 # --- CLI ---
@@ -395,13 +412,8 @@ def test_fetch_all_syncs_uploads_and_pairs_alongside_warped(tmp_path, monkeypatc
         dest.mkdir(parents=True, exist_ok=True)
         return []
 
-    # training_pairs TSV는 PAIR_COLS(curation_enrich.py) 전체 열을 갖춰야 parse_pairs_tsv가
-    # 파싱한다 — 부분 열만 주면 zip(strict=True)가 KeyError로 죽는다.
-    pairs_tsv = (
-        "id\tcrop_ref\tjob_id\trow_index\tdraft_label\tfinal_label\tcanonical_label\t"
-        "supply\tstatus\texclusion_reason\treviewed_at\n"
-        "1\tjob-1/row-0\t1\t0\tNULL\tNULL\tNULL\tNULL\tincluded\tNULL\tNULL\n"
-    )
+    # warp 하네스(pair_rows)가 쓰는 열은 job_id/row_index/status 3개뿐이다 — 최소 TSV.
+    pairs_tsv = "job_id\trow_index\tstatus\n1\t0\tincluded\n"
     monkeypatch.setattr(wgr, "sync_remote_files", fake_sync)
     monkeypatch.setattr(
         wgr,
@@ -418,7 +430,71 @@ def test_fetch_all_syncs_uploads_and_pairs_alongside_warped(tmp_path, monkeypatc
     assert ("ocr_crops", wgr.WARPED_GLOB, None) in calls
     assert ("ocr_uploads", wgr.UPLOADS_GLOB, wgr.UPLOADS_TIMEOUT_S) in calls
     assert meta["n_uploads"] == 0
-    assert json.loads((tmp_path / wgr.PAIRS_NAME).read_text())[0]["crop_ref"] == "job-1/row-0"
+    assert json.loads((tmp_path / wgr.PAIRS_NAME).read_text()) == [
+        {"job_id": 1, "row_index": 0, "status": "included"}
+    ]
+
+
+def test_fetch_all_warns_when_pairs_axis_population_is_empty(tmp_path, monkeypatch, capsys):
+    # ②-a(pairs) 모집단이 0이면 파서가 조용히 []를 돌려주고 _render_pair_impact가 "변화
+    # 0건"이라는 거짓 초록을 낸다 — n_warped/n_uploads와 같은 모양의 경고가 필요하다
+    # (Task 7이 crop-identity 축에 세운 MIN_OK_RATIO 침묵 붕괴 가드와 동일한 실패 모양).
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(
+        wgr,
+        "sync_remote_files",
+        lambda host, worker_env, *, pattern, dest, root="ocr_crops", **kw: (
+            dest.mkdir(parents=True, exist_ok=True),
+            [{"job_id": 1}],
+        )[1],
+    )
+    monkeypatch.setattr(
+        wgr,
+        "run_ssh",
+        lambda host, script, **kw: (
+            b"id\twarp_ok\timage_path\n1\ttrue\t/d/ocr_uploads/a.jpg\n"
+            if "ocr_jobs" in script
+            else b"job_id\trow_index\tstatus\n"
+        ),
+    )
+
+    wgr.fetch_all("h", "/b", "/w", tmp_path)
+
+    out = capsys.readouterr().out
+    assert "pairs" in out or "학습쌍" in out
+
+
+def test_fetch_all_pairs_query_does_not_request_exclusion_reason(tmp_path, monkeypatch):
+    # #63: exclusion_reason(migration_009)은 어떤 v* 태그에도 포함된 적이 없어 운영 DB에
+    # 없다. warp 하네스가 쓰지도 않는 이 열을 curation_enrich.PAIRS_SQL(11열) 재사용으로
+    # 요청하면 "Unknown column 'exclusion_reason'"로 fetch 전체가 죽는다(#60에서 실측).
+    from tools import warp_gate_report as wgr
+
+    seen_scripts = []
+
+    def fake_run_ssh(host, script, **kw):
+        seen_scripts.append(script)
+        if "ocr_jobs" in script:
+            return b"id\twarp_ok\timage_path\n1\ttrue\t/d/ocr_uploads/a.jpg\n"
+        return b"job_id\trow_index\tstatus\n1\t0\tincluded\n"
+
+    monkeypatch.setattr(wgr, "run_ssh", fake_run_ssh)
+    monkeypatch.setattr(
+        wgr,
+        "sync_remote_files",
+        lambda host, worker_env, *, pattern, dest, root="ocr_crops", **kw: (
+            dest.mkdir(parents=True, exist_ok=True),
+            [],
+        )[1],
+    )
+
+    wgr.fetch_all("h", "/b", "/w", tmp_path)
+
+    pairs_script = next(s for s in seen_scripts if "training_pairs" in s)
+    assert wgr.WARP_PAIRS_SQL in pairs_script
+    assert "exclusion_reason" not in pairs_script
+    assert "crop_ref" not in pairs_script
 
 
 # --- crop-identity CLI (Task 7) ---

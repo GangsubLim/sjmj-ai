@@ -26,7 +26,6 @@ from tools.cache_sync import (
     sync_remote_files,
     write_manifest,
 )
-from tools.curation_enrich import PAIRS_SQL, parse_pairs_tsv
 from tools.remote import (
     ENV_BACKEND_ENV,
     ENV_SSH_HOST,
@@ -69,6 +68,13 @@ UPLOADS_TIMEOUT_S = 3600.0  # 원본 사진 171MB tar 전송 — run_ssh 기본 
 # 오염 여지가 다시 생겼다. 로컬 JSON 파싱(=파싱 실패를 None으로 삼키던 자리)은 여전히 없고,
 # 열 수 검사(parse_job_rows_tsv)가 조용한 밀림 대신 즉시 ValueError로 실패시킨다.
 JOBS_SQL = "SELECT id, result_json->>'$.warp_ok', image_path FROM ocr_jobs ORDER BY id"
+
+# warp 하네스(warp_gate_calib.pair_rows)가 실제로 쓰는 training_pairs 열은 job_id/row_index/
+# status 3개뿐이다. curation_enrich.PAIRS_SQL(11열, exclusion_reason 포함)을 재사용하면 어느
+# v* 태그에도 배포된 적 없는 열(exclusion_reason, migration_009 — #63) 하나 때문에 fetch 전체가
+# 운영 DB에서 "Unknown column" 오류로 죽는다(#60 작업 중 실측). curation_enrich 쪽 SQL/파서는
+# 다른 소비자(curation_report 등)가 쓰므로 건드리지 않고, warp 전용으로 최소 열만 새로 둔다.
+WARP_PAIRS_SQL = "SELECT job_id, row_index, status FROM training_pairs ORDER BY job_id, row_index"
 
 STATUS_INVALID_IMAGE_PATH = "invalid_image_path"  # image_path가 uploads/ 밖을 가리키는 시도
 
@@ -124,6 +130,28 @@ def parse_job_rows_tsv(text: str) -> list[dict]:
     return out
 
 
+def parse_warp_pairs_tsv(text: str) -> list[dict]:
+    """mysql --batch TSV(job_id, row_index, status)를 pair_rows가 쓰는 최소 dict로 파싱한다.
+
+    Raises:
+        ValueError: 열 수가 헤더와 다를 때. 조용히 밀리면 ②-a(pairs) 모집단 자체가 왜곡된다.
+    """
+    lines = text.strip().split("\n")
+    header = lines[0].split("\t")
+    out = []
+    for ln in lines[1:]:
+        if not ln.strip():
+            continue
+        cells = ln.split("\t")
+        if len(cells) != len(header):
+            raise ValueError(f"pairs TSV 열 수가 {len(header)}이 아니다({len(cells)}): {ln!r}")
+        d = dict(zip(header, cells, strict=True))
+        out.append(
+            {"job_id": int(d["job_id"]), "row_index": int(d["row_index"]), "status": d["status"]}
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # ssh fetch 글루 (원격 접속 — 단위테스트 비대상)
 # ---------------------------------------------------------------------------
@@ -138,7 +166,9 @@ def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict
     invalidate_manifest(cache, JOBS_NAME)
     (cache / PAIRS_NAME).unlink(missing_ok=True)
     jobs = parse_job_rows_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
-    pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
+    pairs = parse_warp_pairs_tsv(
+        run_ssh(host, mysql_script(backend_env, WARP_PAIRS_SQL, raw=False)).decode()
+    )
     warped = sync_remote_files(host, worker_env, pattern=WARPED_GLOB, dest=cache / "warped")
     uploads = sync_remote_files(
         host,
@@ -171,6 +201,12 @@ def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict
             f"⚠️  잡 {meta['n_jobs']}건인데 원본 사진이 0건이다 — "
             f"SJMJ_DATA_DIR/{UPLOADS_ROOT}({host}:{worker_env})를 확인할 것. "
             "재워프(주 기준) 산출이 전부 upload_missing이 된다."
+        )
+    if meta["n_jobs"] > 0 and meta["n_pairs"] == 0:
+        print(
+            f"⚠️  잡 {meta['n_jobs']}건인데 학습쌍(training_pairs)이 0건이다 — "
+            f"{host}:{backend_env}의 DB 접속을 확인할 것. pairs 축(②-a) 영향 리포트가 "
+            "빈 모집단을 '변화 0건'으로 조용히 낸다."
         )
     return meta
 
