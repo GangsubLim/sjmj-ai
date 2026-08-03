@@ -346,3 +346,101 @@ def test_report_without_cache_exits_with_fetch_guidance(tmp_path):
     with pytest.raises(SystemExit) as excinfo:
         main(["--cache", str(tmp_path), "report"])
     assert "fetch" in str(excinfo.value)
+
+
+# --- 원격 루트 파라미터화 + 원본 사진·학습쌍 동기화 (Task 3) ---
+
+
+def _empty_tar() -> bytes:
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w"):
+        pass
+    return buf.getvalue()
+
+
+def test_sync_remote_files_reads_from_the_requested_remote_root(tmp_path, monkeypatch):
+    # 원본 사진은 ocr_crops가 아니라 ocr_uploads에 있다 — 루트가 고정이면 주 기준(재워프)이
+    # 아예 성립하지 않는다.
+    from tools import cache_sync
+
+    seen = []
+
+    def fake_run_ssh(host, script, **kw):
+        seen.append(script)
+        return b"a.jpg\n" if "ls -d" in script else _empty_tar()
+
+    monkeypatch.setattr(cache_sync, "run_ssh", fake_run_ssh)
+    cache_sync.sync_remote_files(
+        "h", "/e", pattern="*", dest=tmp_path / "uploads", root="ocr_uploads"
+    )
+
+    assert any("ocr_uploads" in s for s in seen)
+    assert not any("ocr_crops" in s for s in seen)
+
+
+def test_sync_remote_files_defaults_to_the_crops_root(tmp_path, monkeypatch):
+    # 기존 호출자(blank_crop_report·기존 warped 동기화)의 동작은 무변경이어야 한다.
+    from tools import cache_sync
+
+    seen = []
+    monkeypatch.setattr(
+        cache_sync, "run_ssh", lambda host, script, **kw: seen.append(script) or b""
+    )
+    cache_sync.remote_file_list("h", "/e", "job-*/warped.png")
+
+    assert "ocr_crops" in seen[0]
+
+
+def test_sync_remote_files_forwards_the_timeout_to_run_ssh(tmp_path, monkeypatch):
+    # 171MB tar가 run_ssh 기본 600초를 넘기면 Phase 0 전체가 막힌다(R6).
+    from tools import cache_sync
+
+    seen = []
+    monkeypatch.setattr(
+        cache_sync,
+        "run_ssh",
+        lambda host, script, **kw: seen.append(kw.get("timeout")) or b"",
+    )
+    cache_sync.remote_file_list("h", "/e", "*", root="ocr_uploads", timeout=3600.0)
+    assert seen == [3600.0]
+
+
+def test_fetch_all_syncs_uploads_and_pairs_alongside_warped(tmp_path, monkeypatch):
+    # 주 기준(원본 재워프)과 축 ②-a 모집단(학습쌍)이 한 fetch로 갖춰져야 한다 —
+    # 두 번 나뉘면 캐시 시점이 어긋나 '같은 시점 산출' 전제가 깨진다.
+    from tools import warp_gate_report as wgr
+
+    calls = []
+
+    def fake_sync(host, worker_env, *, pattern, dest, root="ocr_crops", **kw):
+        calls.append((root, pattern, kw.get("timeout")))
+        dest.mkdir(parents=True, exist_ok=True)
+        return []
+
+    # training_pairs TSV는 PAIR_COLS(curation_enrich.py) 전체 열을 갖춰야 parse_pairs_tsv가
+    # 파싱한다 — 부분 열만 주면 zip(strict=True)가 KeyError로 죽는다.
+    pairs_tsv = (
+        "id\tcrop_ref\tjob_id\trow_index\tdraft_label\tfinal_label\tcanonical_label\t"
+        "supply\tstatus\texclusion_reason\treviewed_at\n"
+        "1\tjob-1/row-0\t1\t0\tNULL\tNULL\tNULL\tNULL\tincluded\tNULL\tNULL\n"
+    )
+    monkeypatch.setattr(wgr, "sync_remote_files", fake_sync)
+    monkeypatch.setattr(
+        wgr,
+        "run_ssh",
+        lambda host, script, **kw: (
+            b"id\twarp_ok\timage_path\n1\ttrue\t/d/ocr_uploads/a.jpg\n"
+            if "ocr_jobs" in script
+            else pairs_tsv.encode()
+        ),
+    )
+
+    meta = wgr.fetch_all("h", "/b", "/w", tmp_path)
+
+    assert ("ocr_crops", wgr.WARPED_GLOB, None) in calls
+    assert ("ocr_uploads", wgr.UPLOADS_GLOB, wgr.UPLOADS_TIMEOUT_S) in calls
+    assert meta["n_uploads"] == 0
+    assert json.loads((tmp_path / wgr.PAIRS_NAME).read_text())[0]["crop_ref"] == "job-1/row-0"

@@ -1,14 +1,15 @@
 """warp 정합 게이트 캘리브레이션 리포트 도구.
 
-배포 서버(macmini)의 **전체** ocr_jobs와 잡별 warped.png를 동기화해, 게이트 지표 4종과
-판정을 전수 산출한다. 임계 선정 근거·무회귀(acceptance 3) 입증·향후 임계 재조정에 쓴다.
+배포 서버(macmini)의 **전체** ocr_jobs와 잡별 warped.png·원본 사진(uploads)·학습쌍(pairs)을
+동기화해, 게이트 지표 4종과 판정을 전수 산출한다. 임계 선정 근거·무회귀(acceptance 3) 입증·
+향후 임계 재조정에 쓴다.
 
 curation_report의 fetch는 training_pairs가 있는 잡만 조회하므로(50잡 중 15잡) 여기서는
 자체 전수 fetch를 쓴다. 원격 접속값은 tools.remote의 env 관례를 그대로 재사용하며
 데이터 루트는 원격 worker env의 SJMJ_DATA_DIR에서 읽는다(하드코딩 금지).
 
 Usage:
-    uv run python -m tools.warp_gate_report fetch                      # 전 잡 + warped.png 동기화
+    uv run python -m tools.warp_gate_report fetch                      # 전 잡 + uploads/pairs/warped.png 동기화
     uv run python -m tools.warp_gate_report report --suspect 34 38 39  # 지표·판정 일람 md
 """
 
@@ -25,6 +26,7 @@ from tools.cache_sync import (
     sync_remote_files,
     write_manifest,
 )
+from tools.curation_enrich import PAIRS_SQL, parse_pairs_tsv
 from tools.remote import (
     ENV_BACKEND_ENV,
     ENV_SSH_HOST,
@@ -39,6 +41,10 @@ DEFAULT_CACHE = ML_ROOT / "results" / "warp_gate"
 
 JOBS_NAME = "jobs.json"
 WARPED_GLOB = "job-*/warped.png"
+UPLOADS_ROOT = "ocr_uploads"
+UPLOADS_GLOB = "*"
+PAIRS_NAME = "pairs.json"
+UPLOADS_TIMEOUT_S = 3600.0  # 원본 사진 171MB tar 전송 — run_ssh 기본 600초로는 부족할 수 있다
 
 # 전수 조회 — result_json 통째가 아니라 warp_ok 한 값만 서버에서 뽑는다. warp_ok 값 자체는
 # true/false/NULL뿐이라 경계 오염 여지가 없지만, 자유형 image_path(VARCHAR(512))가 업로드
@@ -303,21 +309,47 @@ def render_gate_report(records: list[dict], meta: dict) -> str:
 
 
 def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict:
-    """전체 ocr_jobs 목록과 잡별 warped.png를 캐시로 동기화한다."""
+    """전체 ocr_jobs·training_pairs와 원본 사진(주 기준)·warped.png(참고 축)를 동기화한다."""
     cache.mkdir(parents=True, exist_ok=True)
     # 중단 시 '빈(또는 반쪽) warped + 옛 meta'라는 하이브리드 캐시가 남지 않도록 먼저
     # 무효화한다 — 남으면 report가 옛 잡 목록으로 성공하고 옛 fetched_at을 동기화 시각으로
     # 찍는다. 이 도구의 산출은 게이트 임계의 근거다(blank_crop_report.fetch_all과 동일).
     invalidate_manifest(cache, JOBS_NAME)
+    (cache / PAIRS_NAME).unlink(missing_ok=True)
     jobs = parse_job_rows_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
-    names = sync_remote_files(host, worker_env, pattern=WARPED_GLOB, dest=cache / "warped")
+    pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
+    warped = sync_remote_files(host, worker_env, pattern=WARPED_GLOB, dest=cache / "warped")
+    uploads = sync_remote_files(
+        host,
+        worker_env,
+        pattern=UPLOADS_GLOB,
+        dest=cache / "uploads",
+        root=UPLOADS_ROOT,
+        timeout=UPLOADS_TIMEOUT_S,
+    )
+    (cache / PAIRS_NAME).write_text(json.dumps(pairs, ensure_ascii=False, indent=1))
     meta = write_manifest(
-        cache, JOBS_NAME, jobs, host=host, counts={"n_jobs": len(jobs), "n_warped": len(names)}
+        cache,
+        JOBS_NAME,
+        jobs,
+        host=host,
+        counts={
+            "n_jobs": len(jobs),
+            "n_warped": len(warped),
+            "n_uploads": len(uploads),
+            "n_pairs": len(pairs),
+        },
     )
     if meta["n_jobs"] > 0 and meta["n_warped"] == 0:
         print(
             f"⚠️  잡 {meta['n_jobs']}건인데 warped.png가 0건이다 — "
             f"SJMJ_DATA_DIR({host}:{worker_env})를 확인할 것. 리포트는 전 잡을 warp_missing으로 찍는다."
+        )
+    if meta["n_jobs"] > 0 and meta["n_uploads"] == 0:
+        print(
+            f"⚠️  잡 {meta['n_jobs']}건인데 원본 사진이 0건이다 — "
+            f"SJMJ_DATA_DIR/{UPLOADS_ROOT}({host}:{worker_env})를 확인할 것. "
+            "재워프(주 기준) 산출이 전부 upload_missing이 된다."
         )
     return meta
 
@@ -374,14 +406,19 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--host", default=env_or(ENV_SSH_HOST), help="ssh 호스트(별칭)")
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help="로컬 캐시 디렉터리")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="전체 ocr_jobs + warped.png 동기화")
+    sub.add_parser(
+        "fetch", help="전체 ocr_jobs + 원본 사진(uploads) + 학습쌍(pairs) + warped.png 동기화"
+    )
     p_rep = sub.add_parser("report", help="캐시 평가 → warp_gate_report.md")
     p_rep.add_argument("--suspect", type=int, nargs="*", default=[], help="warp 의심 잡 id")
     args = ap.parse_args(argv)
 
     if args.cmd == "fetch":
         meta = fetch_all(args.host, env_or(ENV_BACKEND_ENV), env_or(ENV_WORKER_ENV), args.cache)
-        print(f"동기화 완료 → {args.cache} (잡 {meta['n_jobs']} · warped {meta['n_warped']})")
+        print(
+            f"동기화 완료 → {args.cache} (잡 {meta['n_jobs']} · warped {meta['n_warped']} · "
+            f"uploads {meta['n_uploads']} · pairs {meta['n_pairs']})"
+        )
         return
 
     meta = load_cache_meta(args.cache, JOBS_NAME, tool="warp_gate_report")
