@@ -13,6 +13,7 @@ from app.repositories.items_repository import ItemRepository
 from app.repositories.ocr_repository import OcrRepository
 from app.services.invoice_service import InvoiceService
 from app.services.ocr_correction import build_correction, build_training_pairs
+from app.services.ocr_observation import derive_observation_status
 
 
 def _upload_root() -> Path:
@@ -30,6 +31,10 @@ _CONTROL_CHAR = re.compile(r"[\x00-\x1F\x7F]")
 # invoice_items에 대응 컬럼이 없는 OCR/UI 전용 필드 — invoice 생성 payload에서 걷어낸다.
 # (repository가 명시 컬럼만 읽어 SQL에는 닿지 않지만, 경계를 코드로 드러내 둔다.)
 _NON_INVOICE_ITEM_KEYS = frozenset({"crop_ref", "label_source"})
+
+# status == "failed"인데 실패 사유가 없을 때(worker가 error를 못 남긴 경우)의 폴백 문구.
+# get_job(단건 조회)과 _observe(목록 관측)가 동일 문구를 공유한다.
+_DEFAULT_FAILURE_MESSAGE = "추론 실패"
 
 
 def _validated_suffix(filename: str) -> str:
@@ -91,7 +96,7 @@ class OcrService:
         out = {"id": job["id"], "status": job["status"]}
         result = job.get("result_json")
         if job["status"] == "failed":
-            out["error"] = (result or {}).get("error", "추론 실패")
+            out["error"] = (result or {}).get("error", _DEFAULT_FAILURE_MESSAGE)
         elif result is not None:
             out["result"] = result
         return out
@@ -147,3 +152,46 @@ class OcrService:
         if not path.is_file():
             not_found("crop 이미지가 없습니다.")
         return str(path)
+
+    def list_unconfirmed(self, page: int, limit: int) -> tuple[list[dict], int]:
+        """미확정 잡을 페이지 조회하고 관측 상태 배지를 붙여 반환한다(읽기 전용).
+
+        Args:
+            page: 1-base 페이지 번호(라우터에서 clamp된 값).
+            limit: 페이지 크기(라우터에서 1..100으로 clamp된 값).
+
+        Returns:
+            (관측용 잡 dict 리스트, 전체 건수).
+        """
+        offset = (page - 1) * limit
+        rows, total = self.repo.list_unconfirmed(limit, offset)
+        return [self._observe(r) for r in rows], total
+
+    def _observe(self, row: dict) -> dict:
+        """DB 행을 관측용 표시 타입으로 정규화한다(warped.png 존재 여부만 FS에서 채운다).
+
+        row_count는 rows가 배열일 때만 정수다 — 추론 미완·계약 위반에서는 None으로 내보내
+        화면이 "0행 검출"과 "아직 모름"을 갈라 그릴 수 있게 한다.
+        """
+        job_id = int(row["job_id"])
+        rows_type = row["rows_type"]
+        raw_count = row["row_count"]
+        row_count = int(raw_count) if rows_type == "ARRAY" and raw_count is not None else None
+        error = row["error"]
+        # 페이지당 최대 limit(<=100)회 stat. 게이트 지표 없이 강등/워프 없음을 가르는 유일한 신호다.
+        has_warped = (crop_dir(job_id) / "warped.png").is_file()
+        if row["status"] == "failed" and error is None:
+            error = _DEFAULT_FAILURE_MESSAGE
+        return {
+            "job_id": job_id,
+            "observation_status": derive_observation_status(
+                status=row["status"],
+                warp_ok=row["warp_ok"],
+                rows_type=rows_type,
+                row_count=row_count,
+                has_warped=has_warped,
+            ),
+            "row_count": row_count,
+            "error": str(error) if error is not None else None,
+            "created_at": row["created_at"],
+        }
