@@ -87,9 +87,7 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
     assert (tmp_path / "warped.png").exists()  # 진단용 워프는 남긴다
     assert not (tmp_path / "row-0.png").exists()
     logged = capsys.readouterr().out
-    assert (
-        "[warp-gate] job=7 demoted metrics=" in logged
-    )  # 강등 원인을 로그만으로 재구성 가능해야 함
+    assert "[warp-gate] job=7 demoted std=" in logged  # 강등 원인을 로그만으로 재구성 가능해야 함
     assert (
         "thresholds=" in logged
     )  # 재캘리브 후에도 과거 로그 라인을 그 시점 기준으로 해석 가능해야 함
@@ -179,3 +177,68 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_failure_path(
 
     assert out["warp_ok"] is False
     assert "retrieval_version" not in out
+
+
+# ── enh 마스크 2단 폴백(Issue #60) ────────────────────────────────────────
+# 옅은 파랑 격자 — b−r=10이라 표준 blue_mask는 격자를 통째로 놓치고 blue_mask_enh만 살린다.
+# 잡 59~63 오강등(정상 전표가 청색 채도 하나로 강등된 사건)의 합성 재현이다.
+FAINT_BLUE = (250, 120, 240)
+
+
+def test_enhanced_metrics_are_not_computed_when_the_standard_gate_passes(
+    monkeypatch, make_warped, capsys
+):
+    # 분기 닫힘 — 표준 통과 잡은 폴백 분기에 진입조차 하지 않아야 한다. 진입하면 정상 잡
+    # 전량에 enh 측정 비용이 붙고 pass→pass 지표 동일성 전제도 흔들린다.
+    import handwriting.infer_job as ij
+
+    seen = []
+    original = ij.compute_metrics
+
+    def spy(w, **kw):
+        seen.append(kw.get("enhanced", False))
+        return original(w, **kw)
+
+    monkeypatch.setattr(ij, "compute_metrics", spy)
+
+    assert ij._warp_gate_passes(make_warped(), job_id=1) is True
+    assert seen == [False]
+    assert "[warp-gate]" not in capsys.readouterr().out
+
+
+def test_faint_sheet_is_rescued_by_the_enhanced_mask(make_warped, capsys):
+    import handwriting.infer_job as ij
+
+    assert ij._warp_gate_passes(make_warped(color=FAINT_BLUE), job_id=59) is True
+    out = capsys.readouterr().out
+    assert "rescued-by-enh" in out
+    assert "job=59" in out
+
+
+def test_broken_warp_is_demoted_with_both_metric_sets_in_the_log(make_warped, capsys):
+    # 두 벌 다 로그에 실려야 배포 후 로그만 보고 어느 축에서 걸렸는지 판별할 수 있다.
+    import handwriting.infer_job as ij
+
+    assert ij._warp_gate_passes(make_warped(n_lines=0), job_id=24) is False
+    out = capsys.readouterr().out
+    assert "demoted" in out
+    assert "std=WarpGateMetrics(" in out
+    assert "enh=WarpGateMetricsEnh(" in out
+    assert "enh_thresholds=" in out
+
+
+def test_enhanced_metrics_are_computed_at_most_once(monkeypatch, make_warped):
+    # 재귀·루프 없음 — enh 측정은 표준 실패 시 정확히 1회다.
+    import handwriting.infer_job as ij
+
+    seen = []
+    original = ij.compute_metrics
+
+    def spy(w, **kw):
+        seen.append(kw.get("enhanced", False))
+        return original(w, **kw)
+
+    monkeypatch.setattr(ij, "compute_metrics", spy)
+
+    ij._warp_gate_passes(make_warped(n_lines=0), job_id=24)
+    assert seen == [False, True]
