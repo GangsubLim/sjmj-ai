@@ -146,6 +146,50 @@ def test_axis_margins_falls_back_margin_pct_denominator_when_worst_normal_is_zer
     assert m["margin_pct"] == pytest.approx(30.0)
 
 
+def _blue_rec(job_id, label, left, right):
+    """좌우 파랑 비율이 서로 다른 레코드.
+
+    `_rec`는 좌우를 같은 값으로 고정해 blue_ratio_min의 min↔max 뒤바뀜도, blue_asym의
+    상수 0 뭉갬도 구분하지 못한다 — 파생 지표의 값 자체를 단언하려면 좌우가 달라야 한다.
+    """
+    base = _rec(job_id, label)
+    std = {**base["metrics"]["std"], "blue_ratio_left": left, "blue_ratio_right": right}
+    return {**base, "metrics": {**base["metrics"], "std": std}}
+
+
+def test_axis_margins_derives_blue_ratio_min_from_the_weaker_side():
+    # blue_ratio_min은 게이트 술어가 실제로 보는 축이다 — min이 max로 뒤집히면 분리 마진이
+    # 낙관적으로 읽힌다. 정상 (0.5, 0.3) → 0.3, 파손 (0.2, 0.1) → 0.1.
+    records = [_blue_rec(50, LABEL_NORMAL, 0.5, 0.3), _blue_rec(24, LABEL_SUSPECT, 0.2, 0.1)]
+    m = axis_margins(records, "std")["blue_ratio_min"]
+    assert m["worst_normal"] == pytest.approx(0.3)
+    assert m["best_suspect"] == pytest.approx(0.1)
+
+
+def test_axis_margins_derives_blue_asymmetry_from_both_sides():
+    # blue_asym이 상수 0으로 뭉개져도 좌우가 같은 픽스처에서는 아무 테스트도 못 잡는다.
+    # 정상 (0.5, 0.3) → 0.4(작을수록 좋으므로 정상군 최악값), 파손 (0.2, 0.1) → 0.5.
+    records = [_blue_rec(50, LABEL_NORMAL, 0.5, 0.3), _blue_rec(24, LABEL_SUSPECT, 0.2, 0.1)]
+    m = axis_margins(records, "std")["blue_asym"]
+    assert m["worst_normal"] == pytest.approx(0.4)
+    assert m["best_suspect"] == pytest.approx(0.5)
+
+
+def test_every_metric_key_declares_a_margin_direction():
+    # RAW_METRIC_KEYS는 DTO 필드에서 자동 파생되는데 방향 집합만 수동 리터럴이다 — DTO에
+    # 필드가 늘면 METRIC_KEYS는 따라가지만 방향은 '작을수록 좋다'로 조용히 기본값 처리돼
+    # _margins가 worst_normal/best_suspect를 반대로 고르고 gap 부호까지 뒤집힌다.
+    # 프로덕션에 로드 시점 예외를 배선하는 대신, 방향 누락을 여기서 RED로 드러낸다.
+    from tools.warp_gate_calib import HIGHER_IS_BETTER
+
+    lower_is_better = {"pitch_dev", "blue_asym"}
+
+    assert HIGHER_IS_BETTER & lower_is_better == set(), "한 지표가 두 방향을 동시에 가진다"
+    assert HIGHER_IS_BETTER | lower_is_better == set(METRIC_KEYS), (
+        "방향이 정해지지 않은 지표가 있다"
+    )
+
+
 def test_metric_keys_track_dto_fields_plus_derived():
     # 원시 지표는 DTO에서 파생한다 — WarpGateMetrics에 필드가 늘면 표가 자동으로 따라간다.
     raw = tuple(f.name for f in fields(WarpGateMetrics))
@@ -185,17 +229,6 @@ def test_stored_vs_rewarp_still_flags_float_drift_beyond_tolerance():
     assert rows and rows[0]["pitch_dev"] == {"rewarp": 0.05, "stored": 0.02}
 
 
-def test_axis_margins_ignores_jobs_above_the_snapshot_bound():
-    # 캘리브 도중 생긴 신규 잡이 검증 없이 정상군 최악값을 움직이면 임계 근거가 오염된다.
-    records = [
-        _rec(50, LABEL_NORMAL, enh_hline=20),
-        _rec(64, LABEL_NORMAL, enh_hline=3),
-        _rec(24, LABEL_SUSPECT, enh_hline=6),
-    ]
-    m = axis_margins([r for r in records if r["job_id"] <= 63], "enh")
-    assert m["hline_count"]["worst_normal"] == 20
-
-
 # --- flip 4분류(Task 12) ---
 
 
@@ -220,6 +253,21 @@ def test_classify_flip_marks_rescue_when_only_enh_passes():
 
     enh_good = _m(ENH_MIN_HLINES + 3, ENH_MAX_PITCH_DEV / 2, ENH_MIN_BLUE_RATIO * 3)
     assert classify_flip({"std": _m(0, 1.0, 0.0), "enh": enh_good}) == "fail→pass"
+
+
+def test_classify_flip_judges_the_enh_axis_by_enh_thresholds_not_the_standard_ones():
+    # 위 픽스처 enh_good은 표준 임계도 전부 통과하는 값이라, enh 축을 표준 술어로 판정하는
+    # 오배선(evaluate_warp_enh → evaluate_warp)이 기존 테스트 전량에서 생존한다. 이는
+    # handwriting.warp_gate가 타입 분리로 막으려던 fail-open과 같은 실패 모드인데 리포트 쪽
+    # 복제 경로에는 그 가드가 없다 — 표준은 통과하지만 enh는 실패하는 밴드를 enh 축에 놓아
+    # 오배선이 fail→pass로 새는 것을 막는다.
+    from handwriting.warp_gate import ENH_MIN_HLINES, MAX_PITCH_DEV, MIN_BLUE_RATIO, MIN_HLINES
+
+    # 재캘리브로 두 임계가 붙어 밴드가 사라지면 이 테스트가 원인을 먼저 말하게 한다.
+    assert MIN_HLINES <= ENH_MIN_HLINES - 1, "표준 통과·enh 실패 밴드가 존재하지 않는다"
+    enh_only_fails = _m(ENH_MIN_HLINES - 1, MAX_PITCH_DEV / 2, MIN_BLUE_RATIO * 3)
+
+    assert classify_flip({"std": _m(0, 1.0, 0.0), "enh": enh_only_fails}) == "fail→fail"
 
 
 def test_classify_flip_marks_double_failure():
@@ -563,6 +611,36 @@ def test_changed_pairs_reports_every_row_of_a_job_that_vanished_entirely():
 
     before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["a", "b"]}}
     assert changed_pairs(before, {}, {(23, 0), (23, 1)})["vanished"] == [(23, 0), (23, 1)]
+
+
+def test_changed_pairs_rejects_a_snapshot_entry_without_crop_sha():
+    # --baseline은 사용자가 지정하는 외부 JSON이다(_job_key와 같은 이유로 신뢰 불가) —
+    # 스키마가 어긋나면 맥락 없는 IndexError/KeyError 대신 무엇이 잘못됐는지 말해야 한다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20]]}}
+    with pytest.raises(ValueError, match="crop_sha"):
+        changed_pairs(before, {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}, {(23, 0)})
+
+
+def test_changed_pairs_rejects_a_snapshot_entry_whose_arrays_disagree_in_length():
+    # boxes 2행 / crop_sha 1행이면 row_index 1에서 crop_sha만 IndexError로 터진다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["aa"]}}
+    after = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["aa", "bb"]}}
+    with pytest.raises(ValueError, match="길이"):
+        changed_pairs(before, after, {(23, 1)})
+
+
+def test_changed_pairs_rejects_a_snapshot_entry_without_boxes():
+    # `.get("boxes", [])`로 흡수하면 boxes가 통째로 빠진 항목의 included 행 전부가
+    # vanished도 moved도 아닌 채 조용히 스킵돼 '변화 0건'으로 보고된다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"crop_sha": ["aa"]}}
+    with pytest.raises(ValueError, match="boxes"):
+        changed_pairs(before, {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}, {(23, 0)})
 
 
 def test_changed_pairs_orders_rows_deterministically():

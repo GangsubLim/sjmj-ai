@@ -402,6 +402,30 @@ def snapshot_diff(before: dict, after: dict) -> dict:
     }
 
 
+def _snapshot_entry(snap: dict, key: str) -> dict | None:
+    """스냅샷에서 잡 항목을 꺼낸다. 항목이 없으면 None, 스키마가 어긋나면 ValueError.
+
+    `--baseline`은 사용자가 지정하는 외부 JSON이라 신뢰할 수 없다(`_job_key`와 같은 이유) —
+    `.get("boxes", [])`로 흡수하면 boxes가 통째로 빠진 항목의 included 행 전부가 vanished도
+    moved도 아닌 채 조용히 스킵돼 '변화 0건'으로 보고된다.
+
+    Raises:
+        ValueError: 항목에 `boxes`·`crop_sha` 키가 없거나 두 길이가 다를 때.
+    """
+    entry = snap.get(key)
+    if entry is None:
+        return None
+    missing = {"boxes", "crop_sha"} - entry.keys()
+    if missing:
+        raise ValueError(f"crop-identity 스냅샷 항목 {key!r}에 {sorted(missing)} 키가 없다")
+    if len(entry["boxes"]) != len(entry["crop_sha"]):
+        raise ValueError(
+            f"crop-identity 스냅샷 항목 {key!r}의 boxes({len(entry['boxes'])})와 "
+            f"crop_sha({len(entry['crop_sha'])}) 길이가 다르다"
+        )
+    return entry
+
+
 def changed_pairs(before: dict, after: dict, pairs: set[tuple[int, int]]) -> dict:
     """included (job_id, row_index)를 재워프 전후로 대조한다.
 
@@ -414,14 +438,17 @@ def changed_pairs(before: dict, after: dict, pairs: set[tuple[int, int]]) -> dic
         학습쌍 행을 **없앤** 회귀가 "변화 0건"으로 보고된다.
         before에 없는 행은 대조 기준이 없어 어느 쪽에도 넣지 않는다(잡 단위 added는
         snapshot_diff가 본다).
+
+    Raises:
+        ValueError: 스냅샷 항목의 스키마가 어긋날 때(`_snapshot_entry` 계약).
     """
     moved, vanished = [], []
     for job_id, row_index in sorted(pairs):
-        b = before.get(str(job_id))
-        if b is None or row_index >= len(b.get("boxes", [])):
+        b = _snapshot_entry(before, str(job_id))
+        if b is None or row_index >= len(b["boxes"]):
             continue
-        a = after.get(str(job_id))
-        if a is None or row_index >= len(a.get("boxes", [])):
+        a = _snapshot_entry(after, str(job_id))
+        if a is None or row_index >= len(a["boxes"]):
             vanished.append((job_id, row_index))
             continue
         if (

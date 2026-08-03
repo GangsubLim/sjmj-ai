@@ -92,10 +92,13 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
 
     # "thresholds=" 단독 단언은 "enh_thresholds="의 부분문자열이라 표준 임계 블록이 통째로
     # 지워지거나 enh 값으로 치환돼도 통과한다(M2) — 표준·enh 블록을 각자 앵커로 구분한다.
-    assert (
-        f"min_hlines={MIN_HLINES}" in logged
-    )  # 재캘리브 후에도 과거 로그를 그 시점 기준으로 해석 가능해야 함
-    assert f"min_hlines={ENH_MIN_HLINES}" in logged
+    # 앵커에 블록 접두사(선행 공백 포함)를 넣는다: `min_hlines=<값>`만 쓰면 두 단언이 값이
+    # 다르다는 우연에만 기댄다. ENH_MIN_HLINES = max(MIN_HLINES, floor(...)) 도출식상 두 값이
+    # 같아지는 재캘리브가 설계상 정상 도달 가능하고, 그 순간 두 단언이 같은 부분문자열로
+    # 붕괴해 "표준 블록이 통째로 지워져도 통과"라는 M2 변이가 되살아난다.
+    # 재캘리브 후에도 과거 로그를 그 시점 기준으로 해석 가능해야 하므로 값도 함께 고정한다.
+    assert f" thresholds=(min_hlines={MIN_HLINES}," in logged
+    assert f" enh_thresholds=(min_hlines={ENH_MIN_HLINES}," in logged
 
 
 def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
@@ -265,12 +268,42 @@ def test_warp_gate_logs_flush_immediately_on_rescue_and_demote(monkeypatch, make
     calls = []
 
     def spy(*args, **kwargs):
-        calls.append(kwargs)
+        calls.append((args, kwargs))
 
     monkeypatch.setattr("builtins.print", spy)
 
     assert ij._warp_gate_passes(make_warped(color=FAINT_BLUE), job_id=59) is True  # rescue 경로
     assert ij._warp_gate_passes(make_warped(n_lines=0), job_id=24) is False  # demote 경로
 
-    assert len(calls) == 2
-    assert all(kwargs.get("flush") is True for kwargs in calls)
+    # args까지 모아 `[warp-gate]` 라인만 걸러 단언한다. 전체 print 개수를 고정하면 (1) 그 두
+    # 번이 실제로 구제·강등 라인이었는지 확인할 수단이 없고 (2) 경유하는 grid_v4/canon에
+    # 무관한 진단 print가 하나만 늘어도 flush와 무관한 이유로 RED가 된다.
+    gate_calls = [
+        kwargs
+        for args, kwargs in calls
+        if args and isinstance(args[0], str) and args[0].startswith("[warp-gate]")
+    ]
+    assert len(gate_calls) == 2  # 구제 1 + 강등 1
+    assert all(kwargs.get("flush") is True for kwargs in gate_calls)
+
+
+def test_rescued_faint_sheet_reaches_row_extraction_through_infer_job(
+    monkeypatch, tmp_path, make_warped
+):
+    # 위 폴백 테스트 4종은 전부 private _warp_gate_passes만 직접 불러 True/로그까지만 본다 —
+    # 구제된 워프가 실제로 warp_ok=True로 직렬화되고 extract_rows_for_job·크롭 저장까지
+    # 도달하는지는 아무 테스트도 고정하지 않는다. 호출부에 표준 판정 재확인 같은 조건이
+    # 덧붙어 구제가 무력화돼도 신규 테스트는 전부 초록이다. 통과 경로의
+    # test_gate_pass_keeps_existing_row_extraction과 같은 강도로 사용자 가시 계약을 건다.
+    from handwriting.infer_job import infer_job
+
+    calls = []
+    _install_fake_infer_photo(monkeypatch, make_warped(color=FAINT_BLUE), calls)
+
+    out = infer_job("ignored.jpg", _models(), tmp_path, 59)
+
+    assert out["warp_ok"] is True
+    assert calls == ["extract_rows_for_job"]
+    assert out["rows"][0]["crop_ref"] == "job-59/row-0"
+    assert out["supply_sum"] == 364000
+    assert (tmp_path / "row-0.png").exists()

@@ -314,6 +314,11 @@ def _dump_crop_pngs(out_dir: Path, job_id: int, warped, boxes: list[list[int]]) 
 
     job_dir = out_dir / f"job-{job_id}"
     job_dir.mkdir(parents=True, exist_ok=True)
+    # 덮어쓰기만 하면 이전 회차의 new행이 더 많았을 때 row-5..N이 살아남아, 축 ②-b의 유일한
+    # 육안 근거가 '이번 산출 + 옛 산출' 혼합이 된다(cache_sync.reset_dir가 stale 산출을
+    # 막는 것과 같은 이유). 지우는 범위는 이 도구가 만든 row-*.png뿐이다.
+    for stale in job_dir.glob("row-*.png"):
+        stale.unlink()
     for i, box in enumerate(boxes):
         cv2.imwrite(str(job_dir / f"row-{i}.png"), item_crop(warped, box))
 
@@ -387,14 +392,16 @@ def _load_baseline(path: Path) -> dict:
 
 
 def _render_pair_impact(before: dict, snapshot: dict, pairs_path: Path) -> list[str]:
-    """included 학습쌍(축 ②-a) 행 단위 영향 절을 렌더한다. pairs 캐시가 없으면 빈 목록."""
+    """included 학습쌍(축 ②-a) 행 단위 영향 절을 렌더한다. pairs 캐시가 없으면 미검증 경고."""
+    lines = ["", "## included 학습쌍 영향", ""]
     if not pairs_path.exists():
-        return []
+        # 절을 통째로 빼면 "검증했더니 변화 0건"과 "아예 못 봤다"가 리포트에서 구분되지
+        # 않는다 — fetch_all이 pairs 0건에 경고를 찍는 것과 같은 이유다.
+        return [*lines, f"⚠️  pairs 캐시 없음({pairs_path}) — fetch를 다시 실행할 것(축 ②-a 미검증)"]
     pairs = json.loads(pairs_path.read_text())
     rows = changed_pairs(before, snapshot, pair_rows(pairs))
     affected = [(j, i, "moved") for j, i in rows["moved"]]
     affected += [(j, i, "vanished") for j, i in rows["vanished"]]
-    lines = ["", "## included 학습쌍 영향", ""]
     if not affected:
         return [*lines, "변화 0건"]
     return [
@@ -403,6 +410,24 @@ def _render_pair_impact(before: dict, snapshot: dict, pairs_path: Path) -> list[
         "| --- | --- | --- |",
         *(f"| {j} | {i} | {s} |" for j, i, s in affected),
     ]
+
+
+def _warn_unresolved_labels(records: list[dict], labels: dict) -> None:
+    """jobs.json에 없는 `--suspect`/`--unlabeled` id를 stdout에 경고한다.
+
+    오타나 다른 서버 캐시로 파손군 id가 한 건 빠지면 그 잡이 정상군에 남아 정상군 최악값과
+    분리 마진이 오염된다 — 조용히 무시되면 임계 근거가 왜곡된 사실조차 드러나지 않는다.
+    리포트 생성 자체는 계속한다(앞선 fetch 비용을 날리지 않는다).
+
+    Args:
+        records: `evaluate_rewarped` 산출 — 전 잡 1:1이므로 jobs.json을 다시 읽지 않는다.
+        labels: `{"suspects": {job_id, ...}, "unlabeled": {job_id, ...}}`.
+    """
+    unresolved = sorted((labels["suspects"] | labels["unlabeled"]) - {r["job_id"] for r in records})
+    if unresolved:
+        print(
+            f"⚠️  jobs.json에 없는 라벨 id {unresolved} — 오타이거나 다른 서버 캐시다(라벨 미반영)"
+        )
 
 
 def _run_crop_identity(args) -> None:
@@ -418,12 +443,15 @@ def _run_crop_identity(args) -> None:
     # 모집단 검사를 통과한 스냅샷만 파일로 남긴다 — 쓸 수 없는 스냅샷이 디스크에 남으면
     # 그것이 다음 실행의 --baseline이 돼 게이트가 조용히 초록이 된다.
     _check_snapshot_population(stats)
+    # 베이스라인을 **쓰기 전에** 읽는다 — `--out`과 `--baseline`이 같은 경로면(스냅샷을
+    # 갱신하며 직전 값과 대조하는 자연스러운 호출) 순서가 뒤집힐 때 방금 쓴 파일을
+    # 베이스라인으로 읽어 diff가 항상 비고 게이트가 무조건 초록이 된다.
+    before = _load_baseline(args.baseline) if args.baseline is not None else None
     args.out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=1))
     if args.baseline is None:
         print(f"저장: {args.out}")
         return
 
-    before = _load_baseline(args.baseline)
     diff = snapshot_diff(before, snapshot)
     lines = [
         "## crop-identity 대조",
@@ -482,6 +510,7 @@ def main(argv: list[str] | None = None) -> None:
     meta = load_cache_meta(args.cache, JOBS_NAME, tool="warp_gate_report")
     labels = {"suspects": set(args.suspect), "unlabeled": set(args.unlabeled)}
     records = evaluate_rewarped(args.cache, labels)
+    _warn_unresolved_labels(records, labels)
     if args.max_job_id is not None:
         records = [r for r in records if r["job_id"] <= args.max_job_id]
     margins = {"std": axis_margins(records, "std"), "enh": axis_margins(records, "enh")}

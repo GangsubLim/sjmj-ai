@@ -86,8 +86,9 @@ def test_parse_warp_pairs_tsv_keeps_only_the_columns_pair_rows_uses():
 
 def test_parse_warp_pairs_tsv_rejects_row_with_wrong_column_count():
     # 자매 파서 parse_job_rows_tsv와 같은 계약 — 열이 조용히 밀리면 이 커밋의 임계 확정
-    # 근거인 pairs 축 전체가 왜곡되므로 fail-fast해야 한다.
-    with pytest.raises(ValueError):
+    # 근거인 pairs 축 전체가 왜곡되므로 fail-fast해야 한다. match 없이 두면 다음 줄
+    # `zip(..., strict=True)`가 내는 같은 타입의 ValueError로도 통과해 명시 가드가 무고정이 된다.
+    with pytest.raises(ValueError, match="열 수"):
         parse_warp_pairs_tsv("job_id\trow_index\tstatus\n1\t0\n")
 
 
@@ -235,6 +236,31 @@ def test_evaluate_rewarped_fills_stored_metrics_and_feeds_drift_when_warped_png_
     assert drift[0]["hline_count"] == {"rewarp": 17, "stored": 6}
 
 
+def test_evaluate_rewarped_leaves_stored_metrics_none_when_the_warped_png_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    # warped.png는 있는데 imread가 None(손상·권한)을 주는 경로 — 어느 테스트도 밟지 않아
+    # '읽을 수 없는 저장 워프'와 '저장 워프 없음'이 둘 다 stored_metrics=None으로 합쳐지는
+    # 사실이 무고정이었다. compute_metrics까지 흘러가면 cv2가 None에서 터진다.
+    cv2 = pytest.importorskip("cv2", exc_type=ImportError)
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(
+        tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/a.jpg"}]
+    )
+    (tmp_path / "uploads").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "uploads" / "a.jpg").write_bytes(b"x")
+    warped_dir = tmp_path / "warped" / "job-1"
+    warped_dir.mkdir(parents=True)
+    (warped_dir / "warped.png").write_bytes(b"not-a-png")
+
+    monkeypatch.setattr(cv2, "imread", lambda path: None)
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: ("ok", object()))
+    monkeypatch.setattr(wgr, "job_metrics", lambda w: {"std": {}, "enh": {}})
+
+    assert wgr.evaluate_rewarped(tmp_path, labels={})[0]["stored_metrics"] is None
+
+
 def test_evaluate_rewarped_wires_suspect_and_unlabeled_sets_to_record_labels(tmp_path):
     # labels의 suspects/unlabeled 키가 서로 바뀌면(H3) 파손군·미라벨군이 뒤집혀 마진표가
     # 통째로 반전되는데 기존 evaluate_rewarped 테스트는 전부 labels={}였다.
@@ -340,6 +366,30 @@ def test_report_cli_wires_suspect_and_unlabeled_args_into_labels(tmp_path, monke
     assert seen["labels"] == {"suspects": {24, 38}, "unlabeled": {2, 3}}
 
 
+def test_report_warns_about_label_ids_that_are_not_in_the_fetched_jobs(tmp_path, capsys):
+    # 오타나 다른 서버 캐시로 파손군 id가 한 건 빠지면 그 잡이 정상군에 남아 정상군 최악값과
+    # 분리 마진이 오염된다 — 조용히 무시되면 임계 근거가 왜곡된 사실조차 드러나지 않는다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": None}])
+    wgr.main(["--cache", str(tmp_path), "report", "--suspect", "1", "99", "--unlabeled", "77"])
+
+    out = capsys.readouterr().out
+    assert "라벨 id" in out
+    assert "77" in out
+    assert "99" in out
+
+
+def test_report_does_not_warn_when_every_label_id_resolves(tmp_path, capsys):
+    # 경고가 무조건 찍히면 위 테스트가 통과해도 아무 신호도 주지 못한다.
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path, jobs=[{"job_id": 1, "warp_ok": True, "image_path": None}])
+    wgr.main(["--cache", str(tmp_path), "report", "--suspect", "1"])
+
+    assert "라벨 id" not in capsys.readouterr().out
+
+
 # --- 원격 루트 파라미터화 + 원본 사진·학습쌍 동기화 (Task 3) ---
 
 
@@ -373,31 +423,46 @@ def test_sync_remote_files_reads_from_the_requested_remote_root(tmp_path, monkey
     assert not any("ocr_crops" in s for s in seen)
 
 
+def _record_ssh_calls(seen):
+    """ls·tar 두 스크립트를 구분해 응답하는 run_ssh 대역 — `(script, timeout)`을 seen에 쌓는다."""
+
+    def _run(host, script, **kw):
+        seen.append((script, kw.get("timeout")))
+        return b"a.jpg\n" if "ls -d" in script else _empty_tar()
+
+    return _run
+
+
 def test_sync_remote_files_defaults_to_the_crops_root(tmp_path, monkeypatch):
     # 기존 호출자(blank_crop_report·기존 warped 동기화)의 동작은 무변경이어야 한다.
     from tools import cache_sync
 
     seen = []
-    monkeypatch.setattr(
-        cache_sync, "run_ssh", lambda host, script, **kw: seen.append(script) or b""
-    )
-    cache_sync.remote_file_list("h", "/e", "job-*/warped.png")
+    monkeypatch.setattr(cache_sync, "run_ssh", _record_ssh_calls(seen))
+    cache_sync.sync_remote_files("h", "/e", pattern="job-*/warped.png", dest=tmp_path / "warped")
 
-    assert "ocr_crops" in seen[0]
+    assert len(seen) == 2, "ls와 tar 두 ssh 호출이 모두 일어나야 한다"
+    assert all("ocr_crops" in s for s, _ in seen)
 
 
-def test_sync_remote_files_forwards_the_timeout_to_run_ssh(tmp_path, monkeypatch):
-    # 171MB tar가 run_ssh 기본 600초를 넘기면 Phase 0 전체가 막힌다(R6).
+def test_sync_remote_files_forwards_the_timeout_to_both_ssh_calls(tmp_path, monkeypatch):
+    # 171MB tar가 run_ssh 기본 600초를 넘기면 Phase 0 전체가 막힌다(R6). ls 호출만 보면
+    # 정작 전송이 일어나는 tar 호출의 timeout이 무고정으로 남는다.
     from tools import cache_sync
 
     seen = []
-    monkeypatch.setattr(
-        cache_sync,
-        "run_ssh",
-        lambda host, script, **kw: seen.append(kw.get("timeout")) or b"",
+    monkeypatch.setattr(cache_sync, "run_ssh", _record_ssh_calls(seen))
+    cache_sync.sync_remote_files(
+        "h",
+        "/e",
+        pattern="*",
+        dest=tmp_path / "uploads",
+        root="ocr_uploads",
+        timeout=3600.0,
     )
-    cache_sync.remote_file_list("h", "/e", "*", root="ocr_uploads", timeout=3600.0)
-    assert seen == [3600.0]
+
+    assert [t for _, t in seen] == [3600.0, 3600.0]
+    assert all("ocr_uploads" in s for s, _ in seen)
 
 
 def test_fetch_all_syncs_uploads_and_pairs_alongside_warped(tmp_path, monkeypatch):
@@ -575,6 +640,36 @@ def test_crop_identity_exits_zero_when_nothing_moved(tmp_path, monkeypatch):
     wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before)))
 
 
+def test_crop_identity_still_compares_when_out_and_baseline_are_the_same_path(
+    tmp_path, monkeypatch
+):
+    # 스냅샷을 갱신하며 직전 값과 대조하려는 자연스러운 호출이다 — 새 스냅샷을 먼저 쓰고
+    # 나중에 베이스라인을 읽으면 방금 쓴 파일을 읽어 diff가 항상 비고 게이트가 무조건
+    # 초록이 된다(MIN_OK_RATIO가 막으려는 침묵 붕괴와 같은 실패 모양).
+    from tools import warp_gate_report as wgr
+
+    snap_path = tmp_path / "snap.json"
+    snap_path.write_text(json.dumps({"59": {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}}))
+    monkeypatch.setattr(
+        wgr,
+        "collect_crop_identity",
+        _fake_collect({"59": {"n_new": 5, "boxes": [[10, 21]], "crop_sha": ["aa"]}}),
+    )
+    with pytest.raises(SystemExit) as e:
+        wgr.main(
+            [
+                "--cache",
+                str(tmp_path),
+                "crop-identity",
+                "--out",
+                str(snap_path),
+                "--baseline",
+                str(snap_path),
+            ]
+        )
+    assert e.value.code == 1
+
+
 def test_crop_identity_writes_snapshot_and_prints_storage_path_without_baseline(
     tmp_path, monkeypatch
 ):
@@ -681,6 +776,26 @@ def test_crop_identity_reports_no_pair_changes_when_none_moved(tmp_path, monkeyp
     assert "변화 0건" in capsys.readouterr().out
 
 
+def test_crop_identity_flags_the_pairs_axis_as_unverified_when_the_cache_is_missing(
+    tmp_path, monkeypatch, capsys
+):
+    # pairs 캐시가 없을 때 절을 통째로 지우면 "검증했더니 변화 0건"과 "아예 못 봤다"가
+    # 리포트에서 구분되지 않는다(fetch_all이 pairs 0건에 경고를 찍는 것과 같은 이유).
+    from tools import warp_gate_report as wgr
+
+    snap = {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(snap))
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect(snap))
+
+    wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before_path)))
+
+    out = capsys.readouterr().out
+    assert "## included 학습쌍 영향" in out
+    assert "미검증" in out
+    assert "변화 0건" not in out
+
+
 # --- crop-identity 모집단 건전성 게이트 ---
 
 
@@ -729,6 +844,23 @@ def test_crop_identity_exits_nonzero_when_too_few_jobs_could_be_rewarped(tmp_pat
         wgr.main(_crop_identity_argv(tmp_path))
 
     assert "하한" in str(e.value)
+
+
+def test_crop_identity_accepts_a_population_exactly_at_the_ratio_floor(tmp_path, monkeypatch):
+    # 하한은 엄격 미만(`ratio < MIN_OK_RATIO`)이다 — `<=`로 새면 경계 모집단이 근거 없이 막힌다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(
+        wgr,
+        "collect_crop_identity",
+        _fake_collect(
+            {str(i): _snapshot() for i in range(5)}, total=10, skipped={"upload_missing": 5}
+        ),
+    )
+
+    wgr.main(_crop_identity_argv(tmp_path))
+
+    assert json.loads((tmp_path / "after.json").read_text()).keys() == {"0", "1", "2", "3", "4"}
 
 
 # --- crop-identity 수집기(재워프 순회) ---
@@ -835,6 +967,25 @@ def test_dump_crop_pngs_writes_exactly_the_pixels_that_were_hashed(tmp_path):
     assert [p.name for p in saved] == ["row-0.png", "row-1.png"]
     for path, box in zip(saved, boxes, strict=True):
         assert np.array_equal(cv2.imread(str(path)), item_crop(warped, box))
+
+
+def test_dump_crop_pngs_removes_leftover_rows_from_a_previous_run(tmp_path):
+    # 덮어쓰기만 하면 이전 회차의 new행이 더 많았을 때 row-5..N이 살아남아, 축 ②-b의 유일한
+    # 육안 근거가 '이번 산출 + 옛 산출' 혼합이 된다.
+    cv2 = pytest.importorskip("cv2", exc_type=ImportError)
+    np = pytest.importorskip("numpy")
+    from handwriting.grid_v4 import WARP_W
+    from tools import warp_gate_report as wgr
+
+    warped = np.zeros((40, WARP_W, 3), np.uint8)
+    wgr._dump_crop_pngs(tmp_path, 7, warped, [[0, 10], [20, 30], [30, 39]])
+    assert (tmp_path / "job-7" / "row-2.png").exists()
+
+    wgr._dump_crop_pngs(tmp_path, 7, warped, [[0, 10]])
+
+    saved = sorted(p.name for p in (tmp_path / "job-7").glob("row-*.png"))
+    assert saved == ["row-0.png"]
+    assert cv2.imread(str(tmp_path / "job-7" / "row-0.png")) is not None
 
 
 def test_crop_identity_dumps_crops_within_the_single_rewarp_pass(tmp_path, monkeypatch):

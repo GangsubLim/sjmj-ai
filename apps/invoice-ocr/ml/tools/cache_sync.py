@@ -34,15 +34,24 @@ def remote_file_list(
     root: str = "ocr_crops",
     timeout: float | None = None,
 ) -> list[str]:
-    """원격 데이터 루트(`$SJMJ_DATA_DIR/{root}`)에서 pattern에 맞는 산출 목록을 받는다."""
+    """원격 데이터 루트(`$SJMJ_DATA_DIR/{root}`)에서 pattern에 맞는 산출 목록을 받는다.
+
+    Args:
+        root: 원격 데이터 루트 하위 디렉터리(`ocr_crops`/`ocr_uploads`). 코드 상수만
+            들어온다 — 운영자 입력이 아니므로 CLI로 노출하지 않는다.
+        pattern: 원격 셸이 확장할 glob. 확장이 목적이므로 quote하지 않는다.
+    """
     # `cd X && ls ... || true`는 cd 실패까지 exit 0으로 덮어 '빈 목록'을 정상 반환한다 —
     # 그러면 fetch는 0건으로 성공하고 리포트는 전 건을 '없음'으로 태연히 찍는다.
     # 디렉터리 존재를 먼저 단언해 run_ssh()가 예외를 던지게 한다.
+    # root는 원격 셸 스크립트에 보간되므로 quote한다 — 아래 ls 산출 파일명을 quote하는 것과
+    # 같은 방어선이다(이중따옴표 안이면 `$`·백틱이 원격에서 확장된다).
+    root_q = shlex.quote(root)
     script = (
         f"{source_env(worker_env)}"
-        f'[ -d "$SJMJ_DATA_DIR/{root}" ] || '
-        f'{{ echo "{root} 없음: $SJMJ_DATA_DIR" >&2; exit 3; }}; '
-        f'cd "$SJMJ_DATA_DIR/{root}"; ls -d {pattern} 2>/dev/null || true'
+        f'[ -d "$SJMJ_DATA_DIR"/{root_q} ] || '
+        f'{{ echo {root_q} "없음: $SJMJ_DATA_DIR" >&2; exit 3; }}; '
+        f'cd "$SJMJ_DATA_DIR"/{root_q}; ls -d {pattern} 2>/dev/null || true'
     )
     kw = {} if timeout is None else {"timeout": timeout}
     return [ln for ln in run_ssh(host, script, **kw).decode().split("\n") if ln.strip()]
@@ -118,7 +127,9 @@ def sync_remote_files(
         # 빈 목록이면 원격 tar가 인자 없이 죽는다 — 호출자의 fetch 경고가 대신 말한다.
         # 파일명은 원격 ls 산출이지만 원격 셸에 다시 들어가므로 방어적으로 quote한다.
         args = " ".join(shlex.quote(n) for n in names)
-        tar_script = f'{source_env(worker_env)}tar -C "$SJMJ_DATA_DIR/{root}" -cf - {args}'
+        tar_script = (
+            f'{source_env(worker_env)}tar -C "$SJMJ_DATA_DIR"/{shlex.quote(root)} -cf - {args}'
+        )
         kw = {} if timeout is None else {"timeout": timeout}
         with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script, **kw))) as tf:
             tf.extractall(dest, filter="data")

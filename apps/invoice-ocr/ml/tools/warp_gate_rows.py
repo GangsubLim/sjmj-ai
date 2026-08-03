@@ -25,6 +25,9 @@ STATUS_OK = "ok"
 STATUS_UPLOAD_MISSING = "upload_missing"
 STATUS_UPLOAD_UNREADABLE = "upload_unreadable"
 STATUS_QUAD_MISSING = "quad_missing"
+# rewarp(=cv2 글루 전량) 자체가 터진 잡. quad 미검출(정상적인 '못 찾았다')과 구분해야
+# 원본이 병리적인 잡을 리포트에서 골라낼 수 있다 — 뭉뚱그리면 진단 신호가 사라진다.
+STATUS_REWARP_FAILED = "rewarp_failed"
 
 # 품목칸 크롭의 좌우 여유(px) — infer_photo.extract_rows_for_job의 `x1 - 4 : x2 + 4`와 같은 값.
 ITEM_CROP_PAD = 4
@@ -73,7 +76,20 @@ def rewarp_job(path, *, loader=None):
         # DecompressionBombError는 Exception 직계라 OSError로 안 잡힌다 — 초대형 업로드
         # 1장이 있어도 전수 리포트가 중간에 죽지 않게 하려면 반드시 여기 포함해야 한다.
         return STATUS_UPLOAD_UNREADABLE, None
-    w = rewarp(bgr)
+    if bgr is None:
+        # cv2.imread 관용구 로더는 디코딩 실패를 예외가 아니라 None으로 알린다(같은 레포
+        # blank_crop_calib.py가 이미 인정한 실패 모드) — 그대로 rewarp에 흘리면 위 계약이
+        # loader 구현체에 따라 샌다.
+        return STATUS_UPLOAD_UNREADABLE, None
+    import cv2
+
+    try:
+        w = rewarp(bgr)
+    except cv2.error:
+        # rewarp는 전부 cv2 글루다 — 병리적 원본 1장의 cv2.error가 전수 순회를 통째로
+        # 중단시키면 이 계약이 막으려던 시나리오 그 자체가 된다. 광범위한 예외 삼킴이
+        # 아니라 cv2.error만 잡아 그 잡 하나를 분모 밖으로 강등한다.
+        return STATUS_REWARP_FAILED, None
     if w is None:
         return STATUS_QUAD_MISSING, None
     return STATUS_OK, w

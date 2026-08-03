@@ -166,12 +166,13 @@ def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
 
 # --- evaluate_warp_enh (enh 폴백 판정, cv2/numpy 무의존) ---
 
-# blue_ratio는 마스크 평균이라 도메인이 [0, 1]이다. enh 마스크는 표준보다 훨씬 넓게 잡혀
-# ENH_MIN_BLUE_RATIO가 0.2~0.3 수준이 되므로(실측 enh blue_ratio 0.3353), 표준의
-# GOOD_RATIO_FACTOR(=8)를 그대로 곱하면 1.9~2.4로 물리적으로 불가능한 픽스처가 된다.
-# 기존 test_asymmetry_boundary_case_stays_above_blue_ratio_floor가 표준 축에 대해
-# GOOD_RATIO <= 1.0을 이미 강제하고 있다 — enh 축에도 같은 가드를 둔다.
-ENH_GOOD_RATIO = min(1.0, ENH_MIN_BLUE_RATIO * GOOD_RATIO_FACTOR)
+# blue_ratio는 마스크 평균이라 도메인이 [0, 1]이다. 확정 ENH_MIN_BLUE_RATIO(=0.0864)에
+# 표준의 GOOD_RATIO_FACTOR(=8)를 곱하면 0.6912로 도메인 안에 넉넉히 들어온다.
+# min(1.0, ...)으로 클램프하지 않는다 — 클램프는 재캘리브가 픽스처를 도메인 밖으로 밀어내는
+# 사건을 조용히 흡수해, 아래 가드 테스트의 `<= 1.0` 경보를 정의상 절대 울리지 않게 만든다
+# (표준 축의 test_asymmetry_boundary_case_stays_above_blue_ratio_floor는 그 경보가 실제로
+# RED를 내는 진짜 가드다). 도메인 이탈은 그 가드 테스트가 RED로 알린다.
+ENH_GOOD_RATIO = ENH_MIN_BLUE_RATIO * GOOD_RATIO_FACTOR
 
 
 def _enh_metrics(**over) -> WarpGateMetricsEnh:
@@ -229,6 +230,12 @@ def test_enh_accepts_exactly_at_pitch_ceiling():
 
 def test_enh_rejects_blue_ratio_below_floor_on_either_side():
     low = ENH_MIN_BLUE_RATIO / 2
+    # 좌우 동시 low가 먼저다 — 비대칭도가 0이라 실패 사유가 하한 위반으로 격리된다(표준 축의
+    # test_fails_when_grid_globally_sparse와 같은 패턴). 한쪽만 낮추면 비대칭도까지 함께
+    # 위반하므로, 하한 검사 블록을 통째로 지워도 마지막 비대칭 검사가 거부해 테스트가 초록으로
+    # 남는다 — 그 케이스만으로는 하한을 고정하지 못한다.
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=low, blue_ratio_right=low)) is False
+    # 아래 2건은 하한이 좌·우 어느 쪽에도 걸리는지(축 편향 없음) 확인용이다.
     assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=low)) is False
     assert evaluate_warp_enh(_enh_metrics(blue_ratio_right=low)) is False
 
@@ -243,6 +250,18 @@ def test_enh_rejects_excessive_asymmetry():
     right = left * (1 - ENH_MAX_BLUE_ASYMMETRY) * 0.99  # 비대칭만 초과시키고 하한은 지킨다
     assert right >= ENH_MIN_BLUE_RATIO  # 실패 사유가 비대칭임을 지역적으로 고정
     assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=left, blue_ratio_right=right)) is False
+
+
+def test_enh_passes_just_inside_asymmetry_limit():
+    # 표준 축의 test_passes_just_inside_asymmetry_limit에 대응하는 통과 방향 경계(마진 1%
+    # 관용구 동일 — 등호 경계 자체는 부동소수 왕복 오차에 취약해 안/밖 쌍으로 표현한다).
+    # 이게 없으면 enh 비대칭 축을 지나는 유일한 케이스가 좌우 완전 대칭인 _enh_metrics()
+    # 기본값(비대칭도 0)뿐이라, ENH_MAX_BLUE_ASYMMETRY가 과도하게 강화되는 변경(예: 절반)을
+    # 아무 테스트도 잡지 못한다.
+    left = ENH_GOOD_RATIO
+    right = left * (1 - ENH_MAX_BLUE_ASYMMETRY * 0.99)
+    assert right >= ENH_MIN_BLUE_RATIO  # 통과 사유가 하한 미달로 뒤바뀌지 않음을 지역적으로 고정
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=left, blue_ratio_right=right)) is True
 
 
 def test_enh_asymmetry_fixture_stays_inside_the_blue_ratio_domain():
@@ -433,9 +452,14 @@ def test_compute_metrics_is_independent_of_ambient_faint_state():
     # _FAINT값과 무관하게 결과가 같아지므로 검출력이 없다(리뷰 H1). _faint_grid()는
     # 표준 마스크 0선/enh 16선으로 갈라져 있어, hline_ys 경유 시 ambient _FAINT에 따라
     # 값이 달라지는 회귀를 실제로 잡는다.
+    # ⚠️ 순서 주의 — _faint_grid()가 먼저다. grid_v4는 모듈 최상단에서 cv2/numpy를 import하므로,
+    # `import handwriting.grid_v4`가 앞서면 _faint_grid() 안의 importorskip보다 먼저 실행돼
+    # 코어(pillow만) venv에서 이 테스트가 skip이 아니라 ModuleNotFoundError로 실패한다
+    # (위 절 머리말이 선언한 "cv2 없는 코어 venv에서는 이 절만 스킵된다" 계약 위반).
+    img = _faint_grid()
+
     import handwriting.grid_v4 as grid_v4
 
-    img = _faint_grid()
     with grid_v4.FaintOn(True):
         inside = _compute(img)
         assert grid_v4._FAINT is True  # 게이트가 전역을 되돌려놓지 않았음을 확인

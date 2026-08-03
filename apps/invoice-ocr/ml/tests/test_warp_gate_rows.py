@@ -10,6 +10,7 @@ np = pytest.importorskip("numpy")
 from tools.warp_gate_rows import (  # noqa: E402
     STATUS_OK,
     STATUS_QUAD_MISSING,
+    STATUS_REWARP_FAILED,
     STATUS_UPLOAD_MISSING,
     STATUS_UPLOAD_UNREADABLE,
     job_metrics,
@@ -100,6 +101,39 @@ def test_rewarp_job_reports_unreadable_upload_on_decompression_bomb(tmp_path, mo
     assert warped is None
 
 
+def test_rewarp_job_reports_unreadable_upload_when_the_loader_returns_none(tmp_path):
+    # cv2.imread 관용구 로더는 디코딩 실패를 예외가 아니라 None으로 알린다(같은 레포
+    # tools/blank_crop_calib.py가 이미 인정한 실패 모드) — None을 그대로 rewarp에 흘리면
+    # "예외를 던지지 않는다"는 rewarp_job의 계약이 loader 구현체에 따라 샌다.
+    stub = tmp_path / "photo.jpg"
+    stub.write_bytes(b"stand-in bytes, the injected loader ignores this")
+
+    status, warped = rewarp_job(stub, loader=lambda _path: None)
+    assert status == STATUS_UPLOAD_UNREADABLE
+    assert warped is None
+
+
+def test_rewarp_job_degrades_when_the_warp_pipeline_itself_raises(tmp_path, monkeypatch):
+    # rewarp는 전부 cv2 글루(form_quad_robust·warp·deskew_angle·rotate)다 — 병리적 원본
+    # 1장의 cv2.error가 try 밖에 있으면 62잡 전수 순회가 통째로 중단되고 앞서 치른 원본
+    # 사진 fetch 비용까지 날아간다. 이 계약이 막으려던 시나리오 그 자체다.
+    import cv2
+
+    import tools.warp_gate_rows as rows
+
+    stub = tmp_path / "photo.jpg"
+    stub.write_bytes(b"stand-in bytes, the injected loader ignores this")
+
+    def _boom(_bgr):
+        raise cv2.error("synthetic cv2 failure")
+
+    monkeypatch.setattr(rows, "rewarp", _boom)
+
+    status, warped = rows.rewarp_job(stub, loader=lambda _path: np.zeros((10, 10, 3), np.uint8))
+    assert status == STATUS_REWARP_FAILED
+    assert warped is None
+
+
 def test_rewarp_job_reports_quad_missing_when_the_sheet_has_no_form(tmp_path):
     # monkeypatch로 _form_quad를 대신하지 않는다 — 실측: 흰 배경만 있는 이미지에서
     # form_quad_robust는 실제로 None을 반환한다. 이 경로가 운영과 동일한 quad 검출을
@@ -167,21 +201,29 @@ def test_job_metrics_enh_axis_uses_the_enhanced_mask_not_std(make_warped):
 def test_replicate_rows_reproduces_bands_and_crops_without_any_model(make_warped):
     # 워프 경로와 크롭 경계 산출은 전부 cv2/numpy 전용이다 — Fake read_fn만 있으면
     # 밴드 수·new 수·크롭 좌표가 모델 없이 재현된다(spec §2).
+    # 격자선뿐인 make_warped() 기본 입력은 모든 밴드가 empty로 분류돼 n_new가 0이 되고,
+    # 그러면 아래 길이 일치는 0 == 0 == 0, all(...)은 빈 리스트 위 vacuous True다 —
+    # 손글씨 행을 하나 넣고 n_new > 0을 먼저 못박아 공허 통과를 막는다.
     from tools.warp_gate_rows import replicate_rows
 
-    snap = replicate_rows(make_warped())
+    snap = replicate_rows(_with_one_handwritten_row(make_warped()))
     assert snap["n_bands"] > 0
+    assert snap["n_new"] > 0
     assert len(snap["boxes"]) == snap["n_new"] == len(snap["crop_sha"])
     assert all(len(b) == 2 and b[1] > b[0] for b in snap["boxes"])
 
 
 def test_replicate_rows_is_deterministic(make_warped):
     # 잡 59~63은 업로드 md5가 같은 한 장의 사진이다 — 다섯 산출이 서로 완전히 일치해야
-    # 하며(spec §4.3), 그 전제는 이 함수의 결정론이다.
+    # 하며(spec §4.3), 그 전제는 이 함수의 결정론이다. 격자선뿐인 입력으로는 비교되는 것이
+    # 정수 두 개뿐이라 정작 그 근거인 크롭 해시 경로가 한 번도 실행되지 않는다.
     from tools.warp_gate_rows import replicate_rows
 
-    img = make_warped()
-    assert replicate_rows(img) == replicate_rows(img)
+    img = _with_one_handwritten_row(make_warped())
+
+    snap = replicate_rows(img)
+    assert snap["crop_sha"], "해시 경로가 실행되지 않으면 결정론 비교가 공허하다"
+    assert snap == replicate_rows(img)
 
 
 def test_crop_digest_distinguishes_pixel_content():
@@ -414,3 +456,17 @@ def test_replicate_rows_filters_hline_ys_with_the_same_window_as_extract_rows_fo
 
     assert "40" in shape, "가드가 볼 창 상수가 사라졌다"
     assert _hline_filter_shape(_HARNESS_SRC) == shape
+
+
+def test_item_crop_pad_matches_the_padding_baked_into_extract_rows_for_job():
+    # 운영 pad는 infer_photo의 인라인 슬라이스에 리터럴로 남아 있고, 하네스는 ITEM_CROP_PAD를
+    # 따로 들고 있다 — 두 값을 대조하는 곳이 주석뿐이라 운영이 4→6으로 바뀌면 스냅샷이
+    # 운영과 다른 픽셀을 해시하는데도 위 AST 가드 3종은 전부 초록으로 남는다.
+    # ast.unparse가 공백·포맷을 정규화하므로 운영 쪽 포매팅 변화에는 견딘다.
+    import ast
+
+    from tools.warp_gate_rows import ITEM_CROP_PAD
+
+    prod = ast.unparse(_function_def(_PROD_SRC))
+
+    assert f"x1 - {ITEM_CROP_PAD}:x2 + {ITEM_CROP_PAD}" in prod
