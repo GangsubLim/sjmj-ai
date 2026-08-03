@@ -531,3 +531,46 @@ def test_image_blocks_path_traversal_via_kind(client, db_conn, _data_dir, tmp_pa
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
     assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
+
+
+# ── 정식 라벨 → 자동완성 사전 등록 배선(#40 spec §3.4) ──────────────────────
+
+
+def _suggestion_names(engine) -> list[str]:
+    with engine.begin() as conn:
+        return list(conn.execute(text("SELECT item_name FROM item_suggestions")).scalars())
+
+
+def test_review_registers_included_labels_end_to_end(client, db_conn):
+    """라우터가 ItemRepository를 실제로 주입했는지 — 배선 회귀 방어선."""
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "curation_reviewed": True}}
+    assert "품목" in _suggestion_names(db_conn)
+
+
+def test_review_is_idempotent_for_the_dictionary(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    assert _suggestion_names(db_conn).count("품목") == 1
+
+
+def test_patch_pair_registers_only_after_job_reviewed(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+
+    # 검수 중 — 등록되지 않는다.
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수중라벨"})
+    assert res.status_code == 200
+    assert "검수중라벨" not in _suggestion_names(db_conn)
+
+    # 검수완료 후 라벨 수정 — 등록된다.
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "검수후라벨"
+    assert "검수후라벨" in _suggestion_names(db_conn)
