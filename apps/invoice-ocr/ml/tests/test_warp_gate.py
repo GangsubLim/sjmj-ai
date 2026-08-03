@@ -1,13 +1,19 @@
 """warp 정합 게이트 — 판정 순수함수 단위테스트(cv2/numpy 무의존)."""
 
 from handwriting.warp_gate import (
+    ENH_MAX_BLUE_ASYMMETRY,
+    ENH_MAX_PITCH_DEV,
+    ENH_MIN_BLUE_RATIO,
+    ENH_MIN_HLINES,
     MAX_BLUE_ASYMMETRY,
     MAX_PITCH_DEV,
     MIN_BLUE_RATIO,
     MIN_HLINES,
     WarpGateMetrics,
+    WarpGateMetricsEnh,
     blue_asymmetry,
     evaluate_warp,
+    evaluate_warp_enh,
 )
 
 # 경계 테스트가 쓰는 '넉넉한' 파랑 비율. MAX_BLUE_ASYMMETRY와 결합돼 있다 —
@@ -158,6 +164,120 @@ def test_asymmetry_boundary_case_stays_above_blue_ratio_floor():
     assert (1 - MAX_BLUE_ASYMMETRY) * GOOD_RATIO_FACTOR >= 2
 
 
+# --- evaluate_warp_enh (enh 폴백 판정, cv2/numpy 무의존) ---
+
+# blue_ratio는 마스크 평균이라 도메인이 [0, 1]이다. enh 마스크는 표준보다 훨씬 넓게 잡혀
+# ENH_MIN_BLUE_RATIO가 0.2~0.3 수준이 되므로(실측 enh blue_ratio 0.3353), 표준의
+# GOOD_RATIO_FACTOR(=8)를 그대로 곱하면 1.9~2.4로 물리적으로 불가능한 픽스처가 된다.
+# 기존 test_asymmetry_boundary_case_stays_above_blue_ratio_floor가 표준 축에 대해
+# GOOD_RATIO <= 1.0을 이미 강제하고 있다 — enh 축에도 같은 가드를 둔다.
+ENH_GOOD_RATIO = min(1.0, ENH_MIN_BLUE_RATIO * GOOD_RATIO_FACTOR)
+
+
+def _enh_metrics(**over) -> WarpGateMetricsEnh:
+    base = {
+        "hline_count": ENH_MIN_HLINES + 5,
+        "pitch_dev": ENH_MAX_PITCH_DEV / 2,
+        "blue_ratio_left": ENH_GOOD_RATIO,
+        "blue_ratio_right": ENH_GOOD_RATIO,
+    }
+    return WarpGateMetricsEnh(**{**base, **over})
+
+
+def test_enh_thresholds_only_tighten_the_sealed_axes():
+    # #18의 봉인 규칙(추가 완화 금지, 강화만)이 폴백 경로로 우회되지 않게 실행 가능한
+    # 불변식으로 고정한다(spec §5.1). blue 2종은 마스크가 달라 스케일 비교가 불가능하므로
+    # 이 가드의 대상이 아니다.
+    assert ENH_MIN_HLINES >= MIN_HLINES
+    assert ENH_MAX_PITCH_DEV <= MAX_PITCH_DEV
+
+
+def test_enh_passes_on_healthy_enh_metrics():
+    assert evaluate_warp_enh(_enh_metrics()) is True
+
+
+def test_enh_rejects_below_hline_floor():
+    assert evaluate_warp_enh(_enh_metrics(hline_count=ENH_MIN_HLINES - 1)) is False
+
+
+def test_enh_accepts_exactly_at_hline_floor():
+    assert evaluate_warp_enh(_enh_metrics(hline_count=ENH_MIN_HLINES)) is True
+
+
+def test_enh_rejects_above_pitch_ceiling():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=ENH_MAX_PITCH_DEV * 2)) is False
+
+
+def test_enh_accepts_exactly_at_pitch_ceiling():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=ENH_MAX_PITCH_DEV)) is True
+
+
+def test_enh_rejects_blue_ratio_below_floor_on_either_side():
+    low = ENH_MIN_BLUE_RATIO / 2
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=low)) is False
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_right=low)) is False
+
+
+def test_enh_accepts_exactly_at_blue_ratio_floor():
+    m = _enh_metrics(blue_ratio_left=ENH_MIN_BLUE_RATIO, blue_ratio_right=ENH_MIN_BLUE_RATIO)
+    assert evaluate_warp_enh(m) is True
+
+
+def test_enh_rejects_excessive_asymmetry():
+    left = ENH_GOOD_RATIO
+    right = left * (1 - ENH_MAX_BLUE_ASYMMETRY) * 0.99  # 비대칭만 초과시키고 하한은 지킨다
+    assert right >= ENH_MIN_BLUE_RATIO  # 실패 사유가 비대칭임을 지역적으로 고정
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=left, blue_ratio_right=right)) is False
+
+
+def test_enh_asymmetry_fixture_stays_inside_the_blue_ratio_domain():
+    # 표준 축의 test_asymmetry_boundary_case_stays_above_blue_ratio_floor에 대응하는 enh 가드.
+    # 깨지면 테스트가 아니라 ENH_GOOD_RATIO 정의 또는 ENH_MAX_BLUE_ASYMMETRY를 재검토한다.
+    assert ENH_MIN_BLUE_RATIO < ENH_GOOD_RATIO <= 1.0
+    assert ENH_GOOD_RATIO * (1 - ENH_MAX_BLUE_ASYMMETRY) * 0.99 >= ENH_MIN_BLUE_RATIO
+
+
+def test_enh_is_fail_closed_on_nan_pitch():
+    assert evaluate_warp_enh(_enh_metrics(pitch_dev=float("nan"))) is False
+
+
+def test_enh_is_fail_closed_on_nan_blue_ratio():
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_left=float("nan"))) is False
+    assert evaluate_warp_enh(_enh_metrics(blue_ratio_right=float("nan"))) is False
+
+
+def test_enh_rejects_the_all_zero_mask_degenerate_case():
+    # blue_mask_enh의 `mx < 1` 조기 반환(전부 0 마스크)은 예외가 아니라 자동 fail이어야 한다
+    # (spec §5.4).
+    assert (
+        evaluate_warp_enh(
+            WarpGateMetricsEnh(
+                hline_count=0, pitch_dev=1.0, blue_ratio_left=0.0, blue_ratio_right=0.0
+            )
+        )
+        is False
+    )
+
+
+def test_evaluate_warp_rejects_enh_metrics_structurally():
+    # Task 4 MEDIUM #2: compute_metrics(enhanced=True)의 결과를 표준 evaluate_warp에 실수로
+    # 넣으면 enh blue_ratio 스케일 때문에 MIN_BLUE_RATIO 바닥이 무조건 충족돼 fail-open이
+    # 된다. 타입을 분리해 이 오배선을 조용한 오판정이 아니라 즉시 TypeError로 닫는다.
+    import pytest
+
+    with pytest.raises(TypeError):
+        evaluate_warp(_enh_metrics())
+
+
+def test_evaluate_warp_enh_rejects_standard_metrics_structurally():
+    # 대칭 가드 — evaluate_warp_enh에 표준(WarpGateMetrics) 지표가 잘못 들어오는 것도 같은
+    # 방식으로 구조적으로 막는다.
+    import pytest
+
+    with pytest.raises(TypeError):
+        evaluate_warp_enh(_metrics())
+
+
 # --- compute_metrics (cv2 글루) ---
 # cv2가 없는 코어 venv에서는 이 절만 스킵된다. 판정 순수함수 테스트는 계속 돈다.
 
@@ -277,6 +397,17 @@ def test_enhanced_mask_feeds_every_field_of_the_metrics():
     assert m.hline_count > 0
     assert m.blue_ratio_left > 0.0
     assert m.blue_ratio_right > 0.0
+
+
+def test_compute_metrics_enhanced_output_is_rejected_by_the_standard_gate(make_warped):
+    # Task 4 MEDIUM #2를 실제 compute_metrics 경계에서 고정한다 — enhanced=True 산출을
+    # evaluate_warp(표준)에 실수로 넣으면 TypeError로 즉시 닫혀야 한다(fail-open 대신).
+    import pytest
+
+    m = _compute(make_warped(), enhanced=True)
+    assert isinstance(m, WarpGateMetricsEnh)
+    with pytest.raises(TypeError):
+        evaluate_warp(m)
 
 
 def test_compute_metrics_is_independent_of_ambient_faint_state():
