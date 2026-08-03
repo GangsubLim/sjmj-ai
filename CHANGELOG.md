@@ -5,6 +5,29 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.7.0] — 2026-08-03
+
+멀쩡한 전표가 "정합 실패"로 잘못 강등되던 문제를 회수하고, 새로 등록한 품목 이름이 인식 사전에 자동으로 반영되게 한다 ([#65](https://github.com/GangsubLim/sjmj-ai/pull/65), [#62](https://github.com/GangsubLim/sjmj-ai/pull/62)).
+
+### Added
+
+- 검수에서 확정한 정식 품목명이 자동완성 사전에 그대로 등록돼, 품목 목록과 인식 어휘가 따로 놀지 않는다 ([#62](https://github.com/GangsubLim/sjmj-ai/pull/62))
+- 손글씨가 없는 빈 칸을 자동으로 걸러내 학습 대상에서 제외하고, 사람이 뺀 것과 기계가 뺀 것을 구분해 기록한다 ([#59](https://github.com/GangsubLim/sjmj-ai/pull/59))
+- 인식 정확도 리포트가 각 결과가 어느 시점의 사전으로 뽑힌 것인지 함께 기록해, 개선 전후를 같은 기준으로 비교한다 ([#58](https://github.com/GangsubLim/sjmj-ai/pull/58))
+
+### Fixed
+
+- 인쇄가 흐리거나 청색이 옅은 정상 전표가 "표 정합 실패"로 잘못 강등되던 문제 해소 — 격자 검출에 2단 폴백을 둔다 ([#65](https://github.com/GangsubLim/sjmj-ai/pull/65))
+
+### Changed
+
+- 처리 관측 용어 4종과 재처리 라벨 승계·품목 어휘 정합 기준을 결정 기록으로 명문화 (fc3e7d0, 6f38779)
+- ML 파이프라인 README를 배포 추론 트랙 기준으로 현행화 (1c46946)
+
+### Removed
+
+- 사용하지 않던 SP0 플레이스홀더 디렉터리 `packages/`·`worker/` 제거 (91073b2)
+
 ## [v0.6.0] — 2026-07-30
 
 배포하면 열려 있던 화면이 저절로 새 버전으로 바뀌고, 인식 정확도 수치가 실제 실력을 반영하도록 바로잡았다 ([#55](https://github.com/GangsubLim/sjmj-ai/pull/55), [#54](https://github.com/GangsubLim/sjmj-ai/pull/54)).
