@@ -192,6 +192,21 @@ def test_enh_thresholds_only_tighten_the_sealed_axes():
     assert ENH_MAX_PITCH_DEV <= MAX_PITCH_DEV
 
 
+def test_enh_thresholds_are_calibration_pinned():
+    # 캘리브 핀(calibration-2026-08-03.md §6 권고 A · 사람 승인 · Issue #64 · 잡 21 누출).
+    # 위 test_enh_thresholds_only_tighten_the_sealed_axes의 `>= MIN_HLINES` 부등식은
+    # ENH_MIN_HLINES=14(도출식 값)도 허용한다 — 14면 파손 확정 잡 21(캔버스 좌측 ~50%만
+    # 덮은 쿼드 오검출, h=14·pitch=0.043)이 폴백을 누출한다(warp_gate.py:135-141 주석 참조).
+    # 마진 0%·gap 1개 선(#64)이라 가장 깨지기 쉬운 상수이므로 리터럴로 못 박는다.
+    # 의도적 재캘리브면 이 핀도 함께 고쳐라 — 정확히 원하는 동작이다.
+    assert (ENH_MIN_HLINES, ENH_MAX_PITCH_DEV, ENH_MIN_BLUE_RATIO, ENH_MAX_BLUE_ASYMMETRY) == (
+        15,
+        0.1046,
+        0.0864,
+        0.5515,
+    )
+
+
 def test_enh_passes_on_healthy_enh_metrics():
     assert evaluate_warp_enh(_enh_metrics()) is True
 

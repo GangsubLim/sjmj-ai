@@ -88,9 +88,14 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
     assert not (tmp_path / "row-0.png").exists()
     logged = capsys.readouterr().out
     assert "[warp-gate] job=7 demoted std=" in logged  # 강등 원인을 로그만으로 재구성 가능해야 함
+    from handwriting.warp_gate import ENH_MIN_HLINES, MIN_HLINES
+
+    # "thresholds=" 단독 단언은 "enh_thresholds="의 부분문자열이라 표준 임계 블록이 통째로
+    # 지워지거나 enh 값으로 치환돼도 통과한다(M2) — 표준·enh 블록을 각자 앵커로 구분한다.
     assert (
-        "thresholds=" in logged
-    )  # 재캘리브 후에도 과거 로그 라인을 그 시점 기준으로 해석 가능해야 함
+        f"min_hlines={MIN_HLINES}" in logged
+    )  # 재캘리브 후에도 과거 로그를 그 시점 기준으로 해석 가능해야 함
+    assert f"min_hlines={ENH_MIN_HLINES}" in logged
 
 
 def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
@@ -213,6 +218,12 @@ def test_faint_sheet_is_rescued_by_the_enhanced_mask(make_warped, capsys):
     out = capsys.readouterr().out
     assert "rescued-by-enh" in out
     assert "job=59" in out
+    # 강등 로그(:225-227)와 미러링 — 구제 경로도 진단에 필요한 지표 두 벌을 실제로 싣는지
+    # 실행으로 고정한다(M1). 과거엔 "rescued-by-enh"/"job=59"만 단언해 std=·enh=·
+    # _thresholds_text() 3종을 각각 제거해도 생존했다.
+    assert "std=WarpGateMetrics(" in out
+    assert "enh=WarpGateMetricsEnh(" in out
+    assert "enh_thresholds=" in out
 
 
 def test_broken_warp_is_demoted_with_both_metric_sets_in_the_log(make_warped, capsys):
@@ -242,3 +253,24 @@ def test_enhanced_metrics_are_computed_at_most_once(monkeypatch, make_warped):
 
     ij._warp_gate_passes(make_warped(n_lines=0), job_id=24)
     assert seen == [False, True]
+
+
+def test_warp_gate_logs_flush_immediately_on_rescue_and_demote(monkeypatch, make_warped):
+    # _warp_gate_passes docstring이 "flush=True 필수(launchd 상시 폴링 프로세스 — 파일
+    # 리다이렉트 시 블록 버퍼링에 걸리면 로그가 한참 뒤에야 보인다)"라고 선언한 성질을
+    # 실행으로 고정한다(M3). capsys는 블록 버퍼링을 재현 못 하지만
+    # `monkeypatch.setattr("builtins.print", spy)`는 kwargs를 그대로 잡는다.
+    import handwriting.infer_job as ij
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append(kwargs)
+
+    monkeypatch.setattr("builtins.print", spy)
+
+    assert ij._warp_gate_passes(make_warped(color=FAINT_BLUE), job_id=59) is True  # rescue 경로
+    assert ij._warp_gate_passes(make_warped(n_lines=0), job_id=24) is False  # demote 경로
+
+    assert len(calls) == 2
+    assert all(kwargs.get("flush") is True for kwargs in calls)
