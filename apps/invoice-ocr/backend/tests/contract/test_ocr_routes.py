@@ -538,3 +538,101 @@ def test_crop_row_upper_bound_is_inclusive_at_max(client):
     over = client.get(f"/api/ocr/jobs/{job_id}/crop/{_MAX_CROP_ROW + 1}")
     assert over.status_code == 400
     assert over.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+# ── GET /api/ocr/jobs (미확정 잡 관측 목록) ─────────────────────────────────
+
+
+def test_list_unconfirmed_jobs_returns_success_envelope_with_pagination(client):
+    repo = OcrRepository()
+    job_id = repo.insert_job("/a.jpg")
+    repo.update_result(
+        job_id, "done", {"rows": [{"row_index": 0}], "supply_sum": 0, "warp_ok": True}
+    )
+
+    r = client.get("/api/ocr/jobs")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    assert isinstance(body["data"], list)
+    assert body["data"][0]["job_id"] == job_id
+    assert body["data"][0]["observation_status"] == "unconfirmed"
+    assert body["data"][0]["row_count"] == 1
+    assert body["data"][0]["error"] is None
+    assert "created_at" in body["data"][0]
+    assert body["pagination"] == {"page": 1, "limit": 20, "total": 1, "totalPages": 1}
+
+
+def test_list_unconfirmed_jobs_returns_empty_list_when_none(client):
+    r = client.get("/api/ocr/jobs")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"] == []
+    assert body["pagination"]["total"] == 0
+    assert body["pagination"]["totalPages"] == 1
+
+
+@pytest.mark.parametrize("requested,expected", [(0, 1), (-5, 1), (101, 100), (500, 100), (50, 50)])
+def test_list_unconfirmed_jobs_clamps_limit(client, requested, expected):
+    r = client.get(f"/api/ocr/jobs?limit={requested}")
+
+    assert r.status_code == 200
+    assert r.json()["pagination"]["limit"] == expected
+
+
+@pytest.mark.parametrize("requested,expected", [(0, 1), (-1, 1), (2, 2)])
+def test_list_unconfirmed_jobs_clamps_page(client, requested, expected):
+    r = client.get(f"/api/ocr/jobs?page={requested}")
+
+    assert r.status_code == 200
+    assert r.json()["pagination"]["page"] == expected
+
+
+def test_list_unconfirmed_jobs_paginates_newest_first(client):
+    repo = OcrRepository()
+    first = repo.insert_job("/a.jpg")
+    second = repo.insert_job("/b.jpg")
+
+    page1 = client.get("/api/ocr/jobs?page=1&limit=1").json()
+    page2 = client.get("/api/ocr/jobs?page=2&limit=1").json()
+
+    assert [j["job_id"] for j in page1["data"]] == [second]
+    assert [j["job_id"] for j in page2["data"]] == [first]
+    assert page1["pagination"]["totalPages"] == 2
+
+
+def test_list_unconfirmed_jobs_clamps_absurdly_large_page_without_500(client):
+    """page 상한 부재로 offset=(page-1)*limit이 MySQL BIGINT 범위를 넘겨 500 + SQL 전문
+    노출을 재현·회귀 방지한다(품질 리뷰 재현, `?page=99999999999999999999999`).
+
+    상한을 넘는 page는 400이 아니라 clamp된다 — 무음 clamp 의미론(spec 확정, 기존
+    test_list_unconfirmed_jobs_clamps_page의 page=0→1 고정과 동일 계열)을 그대로 유지한다.
+    """
+    r = client.get("/api/ocr/jobs?page=99999999999999999999999")
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["data"] == []
+    assert body["pagination"]["page"] <= 1_000_000_000
+
+
+def test_list_unconfirmed_jobs_rejects_non_numeric_limit_with_400(client):
+    r = client.get("/api/ocr/jobs?limit=abc")
+
+    assert r.status_code == 400
+    body = r.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "query.limit" in body["error"]["details"]
+
+
+def test_get_job_by_id_still_resolves_after_list_route_added(client):
+    # /ocr/jobs 와 /ocr/jobs/{id} 가 서로를 가리지 않는지 고정한다.
+    job_id = OcrRepository().insert_job("/a.jpg")
+
+    r = client.get(f"/api/ocr/jobs/{job_id}")
+
+    assert r.status_code == 200
+    assert r.json()["data"]["id"] == job_id
