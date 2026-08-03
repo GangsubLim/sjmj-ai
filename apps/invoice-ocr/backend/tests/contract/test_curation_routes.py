@@ -6,8 +6,12 @@ from sqlalchemy import text
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
-    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환."""
+def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목"):
+    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환.
+
+    canonical을 넘기면 final_label('품목')과 정식 라벨을 벌릴 수 있다 — 두 값이 같으면
+    "정식 라벨을 등록한다"와 "final_label을 등록한다"를 단언으로 구분할 수 없다.
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -22,9 +26,9 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
                 text(
                     "INSERT INTO training_pairs "
                     "(crop_ref, job_id, row_index, final_label, canonical_label, supply, status, reviewed_at) "
-                    f"VALUES (:r, :j, :i, '품목', '품목', 1000, 'included', {stamped})"
+                    f"VALUES (:r, :j, :i, '품목', :c, 1000, 'included', {stamped})"
                 ),
-                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i},
+                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i, "c": canonical},
             )
     return job_id
 
@@ -531,3 +535,54 @@ def test_image_blocks_path_traversal_via_kind(client, db_conn, _data_dir, tmp_pa
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
     assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
+
+
+# ── 정식 라벨 → 자동완성 사전 등록 배선(#40 spec §3.4) ──────────────────────
+
+
+def _suggestion_names(engine) -> list[str]:
+    with engine.begin() as conn:
+        return list(conn.execute(text("SELECT item_name FROM item_suggestions")).scalars())
+
+
+def test_review_registers_included_labels_end_to_end(client, db_conn):
+    """라우터가 ItemRepository를 실제로 주입했는지 — 배선 회귀 방어선.
+
+    시드의 final_label('품목')과 canonical_label('정식품목')을 벌려, 사전에 들어가는
+    값이 사람이 확정한 정식 라벨임을 단언한다(둘이 같으면 구분 불가).
+    """
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1, canonical="정식품목")
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "curation_reviewed": True}}
+    names = _suggestion_names(db_conn)
+    assert "정식품목" in names
+    assert "품목" not in names  # final_label은 등록 대상이 아니다
+
+
+def test_review_is_idempotent_for_the_dictionary(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    first = client.post(f"/api/curation/jobs/{job_id}/review")
+    second = client.post(f"/api/curation/jobs/{job_id}/review")
+    # 2차 호출도 200이어야 한다 — ensure_exists가 평범한 INSERT로 회귀하면 여기서 깨진다.
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert _suggestion_names(db_conn).count("품목") == 1
+
+
+def test_patch_pair_registers_only_after_job_reviewed(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+
+    # 검수 중 — 등록되지 않는다.
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수중라벨"})
+    assert res.status_code == 200
+    assert "검수중라벨" not in _suggestion_names(db_conn)
+
+    # 검수완료 후 라벨 수정 — 등록된다.
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
+    assert res.status_code == 200
+    assert res.json()["data"]["canonical_label"] == "검수후라벨"
+    assert "검수후라벨" in _suggestion_names(db_conn)

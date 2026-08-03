@@ -1,4 +1,5 @@
 import pytest
+from sqlalchemy.exc import DatabaseError
 
 from app.repositories.items_repository import ItemRepository
 from tests.fixtures import items_data as td
@@ -135,3 +136,64 @@ def test_increment_usage_by_name_accumulates():
     repo.increment_usage_by_name("품목누적사용테스트")
     repo.increment_usage_by_name("품목누적사용테스트")
     assert repo.find_by_id(new_id)["usage_count"] == 2
+
+
+# ── ensure_exists — 정식 라벨 단방향 등록(ADR 0008, #40) ────────────────────
+
+
+def test_ensure_exists_registers_missing_name():
+    """없는 이름은 default_unit='EA'로 등록된다(반환값 없음 — 테이블 조회로 단언)."""
+    repo = ItemRepository()
+
+    repo.ensure_exists("배선수리")
+
+    rows = repo.find_all(_filters(q="배선수리"))
+    assert len(rows) == 1
+    assert rows[0]["item_name"] == "배선수리"
+    assert rows[0]["default_unit"] == "EA"
+    assert rows[0]["default_unit_price"] == 0
+    assert rows[0]["usage_count"] == 0
+    assert rows[0]["category"] is None
+    assert rows[0]["last_used"] is None
+
+
+def test_ensure_exists_returns_none():
+    """rowcount가 신규(1)와 중복(1)을 구분하지 못하므로 반환값을 두지 않는다(spec §3.1)."""
+    assert ItemRepository().ensure_exists("휠") is None
+
+
+def test_ensure_exists_is_idempotent_and_preserves_existing_row():
+    """재호출은 행을 늘리지 않고 기존 행의 **모든 컬럼**을 그대로 둔다.
+
+    일부 컬럼만 골라 단언하면 ON DUPLICATE KEY UPDATE가 나머지(default_unit_price·notes)를
+    건드리도록 바뀌어도 통과한다 — 행 전체 동등성으로 닫는다.
+    """
+    repo = ItemRepository()
+    repo.insert(td.item({"item_name": "라이닝1조", "category": "부품", "default_unit": "SET"}))
+    repo.increment_usage_by_name("라이닝1조")
+    before = repo.find_all(_filters(q="라이닝1조"))[0]
+    # 대조군 사전 조건 — 기본값과 구분되는 상태에서 출발해야 보존 단언이 공허하지 않다.
+    assert before["usage_count"] == 1
+    assert before["last_used"] is not None
+    assert (before["category"], before["default_unit"]) == ("부품", "SET")
+
+    repo.ensure_exists("라이닝1조")
+
+    rows = repo.find_all(_filters(q="라이닝1조"))
+    assert len(rows) == 1
+    assert rows[0] == before  # id·단가·비고까지 포함한 행 전체가 그대로
+
+
+def test_ensure_exists_propagates_length_overflow_instead_of_swallowing():
+    """길이 초과는 예외로 전파돼야 한다 — INSERT IGNORE 배제 근거의 행동 고정(spec §3.1).
+
+    `INSERT IGNORE`로 바꾸면 STRICT_TRANS_TABLES에서도 이 에러가 경고로 낮아져,
+    200자로 잘린 이름이 조용히 사전에 등록된다(호출자는 성공으로 본다).
+    """
+    too_long = "가" * 201  # item_suggestions.item_name VARCHAR(200)
+
+    with pytest.raises(DatabaseError):
+        ItemRepository().ensure_exists(too_long)
+
+    # 잘린 이름이 남지 않았음까지 본다 — IGNORE 뮤턴트가 남기는 흔적이 바로 이것이다.
+    assert ItemRepository().find_all(_filters(q="가" * 200)) == []

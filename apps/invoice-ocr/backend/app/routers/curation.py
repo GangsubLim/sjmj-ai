@@ -10,6 +10,7 @@ from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
 from app.core import envelope
+from app.repositories.items_repository import ItemRepository
 from app.schemas.curation import CurationPairPatch
 from app.services.curation_service import CurationService
 
@@ -27,7 +28,8 @@ _LIMIT_MAX = 100
 
 
 def _service() -> CurationService:
-    return CurationService()
+    # 검수완료·검수완료 잡의 쌍 PATCH 시 정식 라벨을 자동완성 사전에 등록(부수효과 — ADR 0008)
+    return CurationService(item_repo=ItemRepository())
 
 
 @router.get("/curation/jobs")
