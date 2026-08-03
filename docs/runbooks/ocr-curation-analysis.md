@@ -133,16 +133,85 @@ uv run python -m tools.curation_report pull-images --jobs 39 44 --originals
 제외한다. 자동 배제가 틀렸다고 판단되면 큐레이션 화면에서 "포함"으로 되돌린다
 (되돌린 쌍은 재판정에서 영구 보호된다).
 
+## 품목 어휘 발산 진단
+
+큐레이션을 통과한 정식 라벨이 자동완성 사전(`item_suggestions`)에 있는지 본다.
+등록은 검수완료(`POST /api/curation/jobs/{job_id}/review`)와 검수완료된 잡의 쌍 PATCH가
+자동으로 하므로(ADR 0008), **결과가 0행인 것이 기대 상태**다.
+0행이 아니면 아래 원인 표를 위에서부터 확인한다 — **등록 경로 회귀는 원인 중 하나일 뿐이고,
+사람이 사전 항목을 지우거나 이름을 바꾸기만 해도 잔여가 생긴다.**
+
+**실행 위치는 운영 macmini**(`ssh macmini`)의 `mysql` 클라이언트다 — 접속값과 대상 DB명은
+`~/.sjmj-ai/backend.env`의 `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASS`에서 읽는다
+(DB명 하드코딩 금지 — 런타임/백업 DB 발산 방지).
+
+> 선행: 운영 DB에 `db/migration_010_sync_item_vocabulary.sql`이 적용돼 있어야 한다
+> (미적용이면 기존 발산분이 그대로 보고된다 — 원인 표 첫 행).
+
+<!-- diagnostic-sql -->
+
+```sql
+SELECT REGEXP_REPLACE(COALESCE(tp.canonical_label, ''), '^[[:space:]]+|[[:space:]]+$', '') AS label,
+       COUNT(*) AS pairs
+FROM training_pairs tp
+LEFT JOIN item_suggestions it
+       ON it.item_name = REGEXP_REPLACE(COALESCE(tp.canonical_label, ''),
+                                        '^[[:space:]]+|[[:space:]]+$', '')
+          COLLATE utf8mb4_0900_ai_ci
+JOIN ocr_jobs j ON j.id = tp.job_id AND j.curation_reviewed = 1
+WHERE tp.status = 'included'
+  AND it.id IS NULL
+  AND REGEXP_REPLACE(COALESCE(tp.canonical_label, ''), '^[[:space:]]+|[[:space:]]+$', '') <> ''
+GROUP BY label
+ORDER BY pairs DESC;
+```
+
+> **별칭을 `canonical_label`이 아니라 `label`로 두는 것이 필수다.** MySQL은 `GROUP BY`의 비한정 식별자를 select 별칭보다 **FROM 절 컬럼에서 먼저** 찾는다. 별칭을 `canonical_label`로 두면 `GROUP BY canonical_label`이 원문 컬럼으로 해석되어 공백 변형마다 그룹이 쪼개진다.
+
+| 원인                                                                                                 | 확인 방법                                                                                                                 | 처치                                                                                                                                                                                          |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `db/migration_010_sync_item_vocabulary.sql` 미적용 (기존 발산분이 그대로 남음)                       | `SELECT applied_at FROM schema_migrations WHERE filename = 'migration_010_sync_item_vocabulary.sql'` — 행이 없으면 미적용 | `scripts/migrate-db.sh`로 적용한다. 이 잔여는 등록 경로 회귀가 아니라 미적용 상태다                                                                                                           |
+| 사람이 자동 등록분을 사전에서 삭제·개명 (`DELETE`/`PUT /api/items/{id}`)                             | 보고된 라벨이 과거 등록됐던 이름인지, 품목 관리 화면 이력으로 확인                                                        | 의도한 삭제면 그대로 둔다 — 이 잔여는 정상이다. 되살리려면 해당 쌍의 정식 라벨을 큐레이션 화면에서 다시 저장한다(PATCH가 등록 트리거)                                                         |
+| 서비스 밖 writer가 쌍을 `included`로 되돌림 (`apps/invoice-ocr/ml/tools/blank_crop_report.py apply`) | 해당 잡의 `curation_reviewed`와 쌍의 `reviewed_at` 확인                                                                   | `apply`는 되돌린 쌍이 있는 잡을 `curation_reviewed = FALSE`로 함께 되돌리므로 보통 이 진단에 잡히지 않는다. 잡혔다면 그 결합이 끊긴 것 — `blank_crop_report`의 un-review 문장을 먼저 확인한다 |
+| 배포 컷오버 창에서 누락 (migration 적용 ~ 백엔드 재시작 사이의 검수완료)                             | 잡의 검수 시각이 직전 배포 시각대인지 확인                                                                                | 해당 쌍의 정식 라벨을 큐레이션 화면에서 **다시 저장**한다. 검수완료 버튼은 이미 검수된 잡에서 `disabled`이므로 재클릭으로는 복구되지 않는다                                                   |
+| 등록 트리거 회귀                                                                                     | 위 넷이 아니면 이것이다                                                                                                   | `CurationService.mark_reviewed`·`patch_pair`의 등록 경로와 `app/routers/curation.py`의 `ItemRepository` 주입을 점검한다 (ADR 0008, #40)                                                       |
+
+- **`COLLATE`는 목적지 유니크 인덱스의 collation(`utf8mb4_0900_ai_ci`)으로 맞춘다 —
+  방향이 결과를 바꾼다.** 운영은 `training_pairs`(`utf8mb4_unicode_ci`)와
+  `item_suggestions`(`utf8mb4_0900_ai_ci`)의 collation이 갈려 있어, 한쪽에 명시하지 않으면
+  `ERROR 1267`이다. 근거: 등록(`ItemRepository.ensure_exists`의 `ON DUPLICATE KEY UPDATE`)이
+  "이미 있음"을 판정하는 기준이 `item_suggestions.item_name`의 유니크 인덱스이므로,
+  진단도 같은 기준으로 봐야 등록 쪽에서 별개 항목인 발산이 숨지 않는다.
+  PAD SPACE인 `utf8mb4_unicode_ci`로 비교하면 사전에 `'휠 '`(뒤 공백)만 있고 `'휠'`은 없는
+  상태가 0행으로 나온다(실측) — `POST/PUT /api/items`는 `item_name`을 strip하지 않으므로
+  도달 가능한 상태다.
+- **정규화 조건을 빼거나 `TRIM()`으로 바꾸지 않는다.** 등록 쪽(`CurationService._register_label`)은
+  Python `.strip()`으로 정규화한 뒤 빈 값을 건너뛴다. MySQL `TRIM()`은 ASCII 스페이스만 지우므로
+  탭·U+3000이 붙은 라벨에서 등록과 진단이 갈리고, 정상 등록된 라벨이 영구히 발산으로 보고된다.
+  `REGEXP_REPLACE(…, '^[[:space:]]+|[[:space:]]+$', '')`가 그 두 규칙을 일치시킨다.
+  정규식에 `\s`를 쓰지 않는다 — MySQL 리터럴에서 백슬래시가 소비돼 알파벳 `s`를 지운다.
+- 진단 조건은 등록 조건(`CurationService`·`db/migration_010_sync_item_vocabulary.sql`)과
+  **정확히 같아야 한다**. 한쪽만 고치면 0행 불변식이 조용히 깨진다.
+- 이 SQL은 `apps/invoice-ocr/backend/tests/integration/test_item_vocabulary_diagnostic_sql.py`가
+  이 문서에서 직접 읽어 실행한다 — 여기를 고치면 그 테스트가 함께 반응한다.
+  읽는 대상은 앵커 `<!-- diagnostic-sql -->` 바로 다음 sql 펜스이므로, 앵커를 지우거나
+  진단 SQL과 떼어놓지 않는다(다른 예시 SQL을 이 절에 추가하는 것은 안전하다).
+
+`increment_usage_by_name`의 0행 갱신(청구 이름이 사전에 없는 경우)은 이 신호와 다르다.
+실측상 `invoice_items`의 37%가 정상적으로 사전에 없는 이름이라 그 무음은 경보로 쓸 수 없다.
+청구 이름은 자유 텍스트이고 사전 부재는 오류가 아니다(ADR 0008).
+
 ## 개선 작업으로 잇기
 
-| 발견                    | 다음 작업                                                                  |
-| ----------------------- | -------------------------------------------------------------------------- |
-| out_of_bank 누적        | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`                        |
-| warp_suspect 잡         | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계           |
-| in_bank_miss 크롭 잘림  | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조)          |
-| degenerate 반복         | read_amount에 퇴화 감지 + 재시도 추가                                      |
-| unknown/stale_bank 다수 | 재평가 실행 — `docs/runbooks/ocr-bank-update.md` 4단계(`--scope all`)      |
-| 재평가 상태가 stale     | 릴리스 배포 후인지 확인 — 배포는 지문을 바꾼다. `score --scope all` 재실행 |
+| 발견                           | 다음 작업                                                                                                                |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
+| out_of_bank 누적               | 뱅크 증분 갱신 — `docs/runbooks/ocr-bank-update.md`                                                                      |
+| warp_suspect 잡                | rectify.form_quad_robust 실패 사례로 등록, warp 검증 게이트 설계                                                         |
+| in_bank_miss 크롭 잘림         | `_crop_diagnose_viz.py`로 경계 재검증 (우측 확장은 ADR 0005 참조)                                                        |
+| degenerate 반복                | read_amount에 퇴화 감지 + 재시도 추가                                                                                    |
+| unknown/stale_bank 다수        | 재평가 실행 — `docs/runbooks/ocr-bank-update.md` 4단계(`--scope all`)                                                    |
+| 재평가 상태가 stale            | 릴리스 배포 후인지 확인 — 배포는 지문을 바꾼다. `score --scope all` 재실행                                               |
+| 품목 어휘 발산 진단이 0행 아님 | 진단 절의 원인 표를 위에서부터 확인 — 사람의 사전 편집 / 서비스 밖 writer / 배포 컷오버 / 등록 경로 회귀 (ADR 0008, #40) |
 
 분석 결과와 개선 결정은 `docs/work/{yyyy-mm}/{yyyy-mm-dd}-{job-slug}/`에 기록한다.
 첫 분석(2026-07-27, 잡 15개·46쌍 기준 top-1 26%)의 상세와 개선 우선순위는
