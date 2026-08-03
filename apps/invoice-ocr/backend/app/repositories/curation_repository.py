@@ -5,7 +5,7 @@ import json
 from sqlalchemy import text
 
 from app.db import connection
-from app.schemas.curation import STATUS_EXCLUDED
+from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
@@ -151,4 +151,36 @@ class CurationRepository:
                     "WHERE job_id = :id AND reviewed_at IS NULL"
                 ),
                 {"id": job_id},
+            )
+
+    def list_included_labels(self, job_id: int) -> list[str]:
+        """잡의 included 쌍 정식 라벨을 행순으로 반환한다.
+
+        NULL은 SQL이 거르고 빈 문자열·공백 문자열은 그대로 넘긴다 — 정규화(strip 후
+        빈 값 skip)는 service가 ml/tools/bank_update.partition_valid와 같은 규칙으로 한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            row_index 오름차순 정식 라벨 목록. 대상이 없으면 빈 리스트.
+        """
+        with connection() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT canonical_label FROM training_pairs "
+                    "WHERE job_id = :id AND status = :status AND canonical_label IS NOT NULL "
+                    "ORDER BY row_index ASC, id ASC"
+                ),
+                {"id": job_id, "status": STATUS_INCLUDED},
+            ).scalars()
+            return list(rows)
+
+    def is_job_reviewed(self, job_id: int) -> bool:
+        """잡이 검수완료 상태인지 여부(없는 잡은 False)."""
+        with connection() as conn:
+            return bool(
+                conn.execute(
+                    text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+                ).scalar()
             )

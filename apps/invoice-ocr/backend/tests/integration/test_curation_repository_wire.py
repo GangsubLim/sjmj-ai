@@ -58,3 +58,25 @@ def test_update_pair_excluded_check_uses_shared_status_excluded_constant(monkeyp
     # 상수를 참조했다면 "다른값" != "excluded"라 사유가 지워지지 않아야 한다.
     # (하드코딩된 리터럴 비교였다면 monkeypatch와 무관하게 항상 지워진다.)
     assert _reason(db_conn, pair_id) == "blank_crop"
+
+
+def test_list_included_labels_uses_shared_status_included_constant(monkeypatch, db_conn):
+    """list_included_labels의 WHERE status 필터가 공유 STATUS_INCLUDED 상수를 참조하는지 검증한다."""
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/t.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs (crop_ref, job_id, row_index, final_label, "
+                "canonical_label, status) VALUES (:r, :j, 0, '품목', '품목', 'included')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id},
+        )
+
+    # 양성 대조 — 실제 상수값이면 라벨이 반환된다.
+    assert CurationRepository().list_included_labels(job_id) == ["품목"]
+
+    monkeypatch.setattr(curation_repository, "STATUS_INCLUDED", "다른값")
+
+    # 상수를 참조했다면 "다른값" != "included"라 매칭이 사라져 빈 리스트가 반환돼야 한다.
+    assert CurationRepository().list_included_labels(job_id) == []
