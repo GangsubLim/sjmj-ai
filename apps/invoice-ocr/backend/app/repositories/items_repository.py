@@ -84,6 +84,33 @@ class ItemRepository:
             )
             return int(result.lastrowid)
 
+    def ensure_exists(self, item_name: str) -> None:
+        """품목명이 사전에 없으면 등록한다(있으면 아무것도 하지 않는다).
+
+        INSERT IGNORE를 쓰지 않는다 — IGNORE는 UNIQUE 충돌 외의 에러(길이 초과 등)까지
+        경고로 낮춰 삼킨다. "충돌만 무시한다"는 의도를 SQL이 그대로 말하게 둔다.
+        ON DUPLICATE KEY UPDATE의 id는 테이블명으로 한정한다 — db/migration_010의
+        INSERT … SELECT는 소스 테이블에도 id가 있어 한정 없으면 ERROR 1052로 죽는다.
+        같은 관용구를 쓰면 그 함정을 매번 다시 판단하지 않아도 된다(migration_008도 같은 형태).
+
+        반환값을 두지 않는 이유: 이 문장의 rowcount는 신규·중복을 구분하지 못한다
+        (CLIENT_FOUND_ROWS 조건에서 둘 다 1). 기존 repository 관용구인 rowcount > 0을
+        그대로 쓰면 중복도 신규로 보고된다. 호출자가 모두 반환값을 쓰지 않으므로
+        우회(lastrowid 판정)를 남기는 대신 반환값을 없앤다(#40 spec §3.1).
+
+        Args:
+            item_name: 등록할 품목명. 호출자가 정규화(strip)한 비어 있지 않은 값이어야 한다.
+        """
+        with connection() as conn:
+            conn.execute(
+                text("""
+                INSERT INTO item_suggestions (item_name, default_unit)
+                VALUES (:name, 'EA')
+                ON DUPLICATE KEY UPDATE item_suggestions.id = item_suggestions.id
+            """),
+                {"name": item_name},
+            )
+
     def update(self, id: int, data: dict) -> bool:
         """품목을 수정하고 변경 여부를 반환한다."""
         with connection() as conn:

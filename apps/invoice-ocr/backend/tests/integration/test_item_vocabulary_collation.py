@@ -13,6 +13,8 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
+from app.repositories.items_repository import ItemRepository
+
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
@@ -57,3 +59,54 @@ def test_bare_join_across_the_two_tables_fails_with_1267(db_conn):
             )
         )
     assert excinfo.value.orig.args[0] == 1267
+
+
+def _seed_included_pair(engine, label):
+    """검수완료 잡 + included 쌍 1건을 심고 job_id를 반환한다."""
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) "
+                "VALUES ('done', '/c.jpg', 1)"
+            )
+        )
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs "
+                "(crop_ref, job_id, row_index, final_label, canonical_label, status) "
+                "VALUES (:r, :j, 0, :l, :l, 'included')"
+            ),
+            {"r": f"job-{job_id}/row-0", "j": job_id, "l": label},
+        )
+    return job_id
+
+
+def test_registered_label_is_findable_across_the_collation_boundary(db_conn):
+    """unicode_ci 테이블에서 읽은 라벨을 0900_ai_ci 테이블에 등록하고 명시 COLLATE로 다시 찾는다.
+
+    경계를 실제로 넘는 것은 마지막 검증 SELECT의 명시 COLLATE 조인 하나뿐이다 —
+    ensure_exists의 INSERT는 bind 파라미터라 값이 대상 컬럼 collation으로 강제되고,
+    collation이 어떻든 ERROR 1267이 날 수 없다. 이 테스트가 고정하는 것은 "등록 경로가
+    경계를 가로지른다"가 아니라 "등록된 라벨을 명시 COLLATE 조인으로 되찾을 수 있다"이며,
+    그 조인이 진단 SQL·마이그레이션이 쓰는 것과 같은 형태다.
+    """
+    job_id = _seed_included_pair(db_conn, "중고")
+    with db_conn.begin() as conn:
+        label = conn.execute(
+            text("SELECT canonical_label FROM training_pairs WHERE job_id = :j"), {"j": job_id}
+        ).scalar()
+
+    ItemRepository().ensure_exists(label)
+
+    with db_conn.begin() as conn:
+        found = conn.execute(
+            text(
+                "SELECT it.id FROM training_pairs tp "
+                "JOIN item_suggestions it "
+                "  ON it.item_name = tp.canonical_label COLLATE utf8mb4_0900_ai_ci "
+                "WHERE tp.job_id = :j"
+            ),
+            {"j": job_id},
+        ).scalar()
+    assert found is not None
