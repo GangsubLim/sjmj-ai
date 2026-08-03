@@ -253,3 +253,128 @@ def test_render_rewarp_report_footnotes_zero_baseline_margin():
     margins = {"std": axis_margins(records, "std"), "enh": {}}
     md = render_rewarp_report(records, margins, [], {})
     assert "마진% 분모를 1.0으로 대체" in md
+
+
+# --- crop-identity 스냅샷 대조(Task 7) ---
+
+
+def test_snapshot_diff_flags_jobs_whose_crops_moved():
+    from tools.warp_gate_calib import snapshot_diff
+
+    before = {"59": {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    after = {"59": {"n_new": 5, "boxes": [[10, 21]], "crop_sha": ["aa"]}}
+    assert snapshot_diff(before, after)["changed"] == ["59"]
+
+
+def test_snapshot_diff_is_empty_when_nothing_moved():
+    from tools.warp_gate_calib import snapshot_diff
+
+    snap = {"57": {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    assert snapshot_diff(snap, dict(snap)) == {"changed": [], "missing": [], "added": []}
+
+
+def test_snapshot_diff_reports_jobs_that_appeared_or_vanished():
+    from tools.warp_gate_calib import snapshot_diff
+
+    d = snapshot_diff({"1": {"n_new": 1}}, {"2": {"n_new": 1}})
+    assert d["missing"] == ["1"]
+    assert d["added"] == ["2"]
+
+
+def test_snapshot_diff_orders_jobs_numerically_not_lexically():
+    # 산출 순서가 실행마다 흔들리면 리포트 diff를 사람이 읽을 수 없다 — 잡 10이 잡 9보다
+    # 앞서는 사전순 정렬로 되돌아가는 회귀를 고정한다.
+    from tools.warp_gate_calib import snapshot_diff
+
+    assert snapshot_diff({}, {"10": {}, "9": {}})["added"] == ["9", "10"]
+
+
+def test_snapshot_diff_rejects_a_snapshot_key_that_is_not_a_job_id():
+    # --baseline은 사용자가 지정하는 외부 파일이다 — 키가 숫자가 아니면 int()가 맨
+    # 스택트레이스로 죽는 대신 무엇이 잘못됐는지 말해야 한다.
+    from tools.warp_gate_calib import snapshot_diff
+
+    with pytest.raises(ValueError, match="job_id"):
+        snapshot_diff({"job-1": {}}, {})
+
+
+def test_snapshot_diff_ignores_crop_ink_drift():
+    # crop_ink는 축 ②-b의 진단 신호이지 identity가 아니다 — 로컬과 macmini의 부동소수
+    # 1 ULP 차이로 DoD 4 게이트가 빨개지면 안 된다.
+    from tools.warp_gate_calib import snapshot_diff
+
+    before = {"59": {"boxes": [[10, 20]], "crop_sha": ["aa"], "crop_ink": [0.1234567890123]}}
+    after = {"59": {"boxes": [[10, 20]], "crop_sha": ["aa"], "crop_ink": [0.1234567890124]}}
+    assert snapshot_diff(before, after)["changed"] == []
+
+
+def test_pair_rows_keeps_only_included_pairs():
+    # 축 ②-a의 모집단은 included 44건이다(excluded 14건은 학습에 안 쓰인다).
+    from tools.warp_gate_calib import pair_rows
+
+    pairs = [
+        {"crop_ref": "job-23/row-0", "job_id": 23, "row_index": 0, "status": "included"},
+        {"crop_ref": "job-23/row-1", "job_id": 23, "row_index": 1, "status": "excluded"},
+    ]
+    assert pair_rows(pairs) == {(23, 0)}
+
+
+def test_changed_pairs_reports_only_included_rows_that_moved():
+    from tools.warp_gate_calib import changed_pairs, pair_rows
+
+    before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["aa", "bb"]}}
+    after = {"23": {"boxes": [[10, 20], [31, 41]], "crop_sha": ["aa", "cc"]}}
+    pairs = [
+        {"job_id": 23, "row_index": 0, "status": "included"},
+        {"job_id": 23, "row_index": 1, "status": "included"},
+    ]
+    assert changed_pairs(before, after, pair_rows(pairs)) == {"moved": [(23, 1)], "vanished": []}
+
+
+def test_changed_pairs_flags_a_row_when_only_the_box_moved_but_the_hash_did_not():
+    # boxes만 밀리고 crop_sha가 우연히 같아도 움직인 것으로 봐야 한다 — moved 판정이
+    # (박스 변화) and (해시 변화)로 바뀌면 한쪽만 변한 케이스를 놓친다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    after = {"23": {"boxes": [[11, 21]], "crop_sha": ["aa"]}}
+    assert changed_pairs(before, after, {(23, 0)})["moved"] == [(23, 0)]
+
+
+def test_changed_pairs_flags_a_row_when_only_the_crop_hash_moved():
+    # 박스는 그대로인데 픽셀만 바뀐 경우 = 폴백이 워프 자체를 바꿨을 때의 시나리오이고,
+    # 그것이 crop_sha가 스냅샷에 있는 이유다 — 해시 비교가 빠져도 박스 축 테스트는 초록이다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    after = {"23": {"boxes": [[10, 20]], "crop_sha": ["zz"]}}
+    assert changed_pairs(before, after, {(23, 0)})["moved"] == [(23, 0)]
+
+
+def test_changed_pairs_reports_a_row_that_the_after_snapshot_no_longer_has():
+    # before 3행 → after 1행. 조용히 건너뛰면 폴백이 included 학습쌍 행을 **없앤** 회귀가
+    # "변화 0건"으로 보고된다(축 ②-a의 침묵 붕괴).
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20], [30, 40], [50, 60]], "crop_sha": ["a", "b", "c"]}}
+    after = {"23": {"boxes": [[10, 20]], "crop_sha": ["a"]}}
+    result = changed_pairs(before, after, {(23, 0), (23, 1), (23, 2)})
+    assert result == {"moved": [], "vanished": [(23, 1), (23, 2)]}
+
+
+def test_changed_pairs_reports_every_row_of_a_job_that_vanished_entirely():
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["a", "b"]}}
+    assert changed_pairs(before, {}, {(23, 0), (23, 1)})["vanished"] == [(23, 0), (23, 1)]
+
+
+def test_changed_pairs_orders_rows_deterministically():
+    # set 순회 순서에 산출이 끌려가면 같은 입력에서도 리포트 행 순서가 실행마다 달라진다.
+    from tools.warp_gate_calib import changed_pairs
+
+    before = {str(j): {"boxes": [[10, 20]] * 3, "crop_sha": ["a"] * 3} for j in (4, 7, 23)}
+    after = {str(j): {"boxes": [[11, 21]] * 3, "crop_sha": ["a"] * 3} for j in (4, 7, 23)}
+    pairs = {(23, 1), (7, 0), (23, 0), (4, 2)}  # 실측: 이 set의 순회 순서는 정렬 순서가 아니다
+
+    assert changed_pairs(before, after, pairs)["moved"] == [(4, 2), (7, 0), (23, 0), (23, 1)]

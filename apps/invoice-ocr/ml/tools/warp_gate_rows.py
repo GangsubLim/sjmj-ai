@@ -1,12 +1,17 @@
-"""warp 게이트 회귀 하네스의 cv2 글루 — 원본 재워프(구현됨) + 행·크롭 재현(예정, Task 6/7).
+"""warp 게이트 회귀 하네스의 cv2 글루 — 원본 재워프 + 행·크롭 재현.
 
 주 기준은 저장 warped.png가 아니라 원본 사진 전량 재워프다(spec §4.1) — 저장분은 처리 시점
 코드의 산출이고 그 뒤로 grid_v4·infer_photo가 여러 번 바뀌었다. 게이트가 검증해야 할 대상은
 '운영이 앞으로 실제로 낼 워프'다.
 
-이 모듈은 모델 무의존이다 — 지금 들어 있는 재워프 경로는 전부 cv2/numpy 전용이다.
-(예정) 크롭 경계 산출, block_amounts의 new행 선별 술어, Fake read_fn 주입으로 밴드 수·
-new 수·크롭 좌표까지 모델 없이 재현하는 것은 아직 이 파일에 없다(Task 6/7에서 추가된다).
+이 모듈은 모델 무의존이다 — 재워프 경로도, `replicate_rows`가 재현하는 크롭 경계 산출 경로도
+전부 cv2/numpy 전용이다. `replicate_rows`는 `handwriting.infer_photo.extract_rows_for_job`에서
+모델 의존 구간(임베딩·금액 전사)만 뺀 접두를 그대로 옮겨 적은 것이다(아래 함수 docstring 참조).
+
+⚠️ `hline_ys`는 `handwriting.grid_v4` 모듈 전역 `_FAINT`(기본 False)를 읽는다. `infer_photo`는
+`sys.path` 트릭으로 `grid_v4`를 별도 모듈 객체로 다시 import하지만(위 경고 참조), 양쪽 모두
+`_FAINT`의 초기값은 False이고 이 하네스는 `FaintOn`을 쓰지 않으므로 ambient False로 돈다 —
+운영 `infer_photo`와 동일 조건이다.
 
 ⚠️ 기본 loader(`handwriting.dataset_build.load_bgr_path`)를 import하면 그 모듈이 로드
 시점 부작용으로 `sys.path`에 report/sp2_spike·handwriting 경로를 끼워 넣는다
@@ -20,6 +25,13 @@ STATUS_OK = "ok"
 STATUS_UPLOAD_MISSING = "upload_missing"
 STATUS_UPLOAD_UNREADABLE = "upload_unreadable"
 STATUS_QUAD_MISSING = "quad_missing"
+
+# 품목칸 크롭의 좌우 여유(px) — infer_photo.extract_rows_for_job의 `x1 - 4 : x2 + 4`와 같은 값.
+ITEM_CROP_PAD = 4
+# 잉크로 세는 밝기 상한(BGR 채널 최대값). 이 값 '미만'인 픽셀만 어두운 것으로 본다.
+CROP_INK_MAX_LEVEL = 120
+# crop_sha에 남기는 16진 문자 수 — 스냅샷 JSON 크기와 충돌 확률의 절충(64비트).
+CROP_DIGEST_CHARS = 16
 
 
 def _form_quad(bgr):
@@ -74,4 +86,81 @@ def job_metrics(warped) -> dict:
     return {
         "std": asdict(compute_metrics(warped)),
         "enh": asdict(compute_metrics(warped, enhanced=True)),
+    }
+
+
+def _fake_read(_row):
+    """금액 전사 대역 — block_amounts의 new행 선별은 build_proposal 분류만 보므로 값은 무의미하다."""
+    return None, ""
+
+
+def item_crop(warped, box):
+    """new행 하나의 품목칸 크롭(ITEM_X ± ITEM_CROP_PAD)을 돌려준다.
+
+    해시(`replicate_rows`)와 육안검수 PNG 덤프(`warp_gate_report._dump_crop_pngs`)가 이 함수
+    하나만 쓴다 — 기하를 각자 소유하면 '해시한 픽셀'과 '눈으로 본 PNG'가 조용히 갈라진다.
+
+    Args:
+        warped: 재워프된 BGR 배열.
+        box: new행의 `[y0, y1]`(`replicate_rows`의 boxes 항목).
+    """
+    from handwriting.rows import ITEM_X
+
+    x1, x2 = ITEM_X
+    return warped[box[0] : box[1], x1 - ITEM_CROP_PAD : x2 + ITEM_CROP_PAD]
+
+
+def crop_digest(crop) -> str:
+    """크롭의 sha256 앞 CROP_DIGEST_CHARS자. shape·dtype을 픽셀과 함께 해시한다.
+
+    바이트열만 해시하면 같은 픽셀 수의 다른 shape(예: (6,2,3) vs (4,3,3))가 같은 값이 돼
+    크롭 경계가 밀린 것을 '무변경'으로 보고한다. 슬라이스(비연속 view)를 그대로 받아도 안전하다.
+    """
+    import hashlib
+
+    import numpy as np
+
+    arr = np.ascontiguousarray(crop)
+    h = hashlib.sha256(f"{arr.shape}|{arr.dtype}|".encode())
+    h.update(arr.tobytes())
+    return h.hexdigest()[:CROP_DIGEST_CHARS]
+
+
+def crop_ink(crop) -> float:
+    """크롭의 잉크 비율 — 채널 최대값이 CROP_INK_MAX_LEVEL 미만인 픽셀의 비율(축 ②-b 신호)."""
+    return float((crop.max(2) < CROP_INK_MAX_LEVEL).mean())
+
+
+def replicate_rows(warped) -> dict:
+    """워프 → 밴드·new행·크롭 좌표/해시를 모델 없이 재현한다(infer_photo.extract_rows_for_job 대응).
+
+    extract_rows_for_job에서 embed_crops(torch)만 뺀 접두다 — infer_photo는 모듈 최상단
+    torch import 때문에 여기서 import할 수 없어 호출 순서를 그대로 옮겨 적는다. 드리프트는
+    tests/test_warp_gate_rows.py의 AST 배선 가드가 잡는다.
+    """
+    from handwriting.canon import global_pitch
+    from handwriting.grid_v4 import DATA_Y, hline_ys
+    from handwriting.group import block_amounts, build_proposal
+    from handwriting.grouping import AMT_MIN, ITEM_MIN, PAD
+    from handwriting.rows import band_features, detect_grid_rows
+
+    y0, y1 = DATA_Y
+    ys = [y for y in hline_ys(warped) if y0 - 40 <= y <= y1 + 40]
+    pitch = global_pitch({"x": ys})
+    bands = detect_grid_rows(warped, pitch)
+    item_inks, amt_inks, stroke_rows = band_features(warped, bands)
+    prop = build_proposal(
+        bands, item_inks, amt_inks, stroke_rows, [], item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD
+    )
+    news, _amounts = block_amounts(prop.rows, _fake_read)
+    boxes = [[int(r.box[0]), int(r.box[1])] for r in news]
+    crops = [item_crop(warped, b) for b in boxes]
+    return {
+        "n_bands": len(bands),
+        "n_new": len(news),
+        "boxes": boxes,
+        "crop_sha": [crop_digest(c) for c in crops],
+        # 크롭이 '비어있지 않은지'의 정량 신호(축 ②-b). identity가 아니라 진단 신호다 —
+        # 무변경 판정(warp_gate_calib.snapshot_diff)은 이 값을 비교에서 뺀다.
+        "crop_ink": [crop_ink(c) for c in crops],
     }

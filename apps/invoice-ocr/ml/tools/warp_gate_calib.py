@@ -224,3 +224,87 @@ def render_rewarp_report(records: list[dict], margins: dict, drift: list[dict], 
     else:
         lines.append("- 없음")
     return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# crop-identity 스냅샷 대조 (Task 7)
+# ---------------------------------------------------------------------------
+
+
+# identity 비교에서 빼는 진단 전용 키. crop_ink는 축 ②-b의 신호(크롭이 비었는지)일 뿐
+# 무변경 판정 대상이 아니다 — float을 identity에 넣으면 로컬과 macmini의 1 ULP 차이만으로
+# DoD 4 게이트가 빨개진다.
+DIAGNOSTIC_KEYS = frozenset({"crop_ink"})
+
+
+def pair_rows(pairs: list[dict]) -> set[tuple[int, int]]:
+    """included 학습쌍의 (job_id, row_index) 집합 — 축 ②-a 모집단."""
+    return {(p["job_id"], p["row_index"]) for p in pairs if p["status"] == "included"}
+
+
+def _identity(entry: dict) -> dict:
+    """스냅샷 항목에서 진단 전용 키를 뺀 identity 부분."""
+    return {k: v for k, v in entry.items() if k not in DIAGNOSTIC_KEYS}
+
+
+def _job_key(key: str) -> int:
+    """스냅샷 키(job_id 문자열)를 정렬용 정수로 바꾼다.
+
+    `--baseline`은 사용자가 지정하는 외부 JSON이라 키를 신뢰할 수 없다 — 맨 int() 예외 대신
+    무엇이 잘못됐는지 말한다.
+
+    Raises:
+        ValueError: 키가 job_id 숫자 문자열이 아닐 때.
+    """
+    try:
+        return int(key)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"crop-identity 스냅샷 키가 job_id 숫자가 아니다: {key!r}") from e
+
+
+def snapshot_diff(before: dict, after: dict) -> dict:
+    """crop-identity 스냅샷 두 벌을 비교한다(키는 job_id 문자열).
+
+    잡 순서는 사전순이 아니라 job_id 숫자순으로 고정한다 — 산출 순서가 흔들리면 리포트
+    diff를 사람이 읽을 수 없다.
+    """
+    keys = sorted(set(before) | set(after), key=_job_key)
+    return {
+        "changed": [
+            k
+            for k in keys
+            if k in before and k in after and _identity(before[k]) != _identity(after[k])
+        ],
+        "missing": [k for k in keys if k not in after],
+        "added": [k for k in keys if k not in before],
+    }
+
+
+def changed_pairs(before: dict, after: dict, pairs: set[tuple[int, int]]) -> dict:
+    """included (job_id, row_index)를 재워프 전후로 대조한다.
+
+    spec §4.3 ②-a가 요구하는 것은 잡 단위가 아니라 행 단위 무변경이다 — snapshot_diff의
+    잡 단위 changed만으로는 "그 잡의 어느 행이 움직였는지"를 알 수 없다.
+
+    Returns:
+        `{"moved": [...], "vanished": [...]}`. vanished는 after 스냅샷에 그 행 자체가 없는
+        경우다(잡이 통째로 빠졌거나 new행 수가 줄었다). 조용히 건너뛰면 폴백이 included
+        학습쌍 행을 **없앤** 회귀가 "변화 0건"으로 보고된다.
+        before에 없는 행은 대조 기준이 없어 어느 쪽에도 넣지 않는다(잡 단위 added는
+        snapshot_diff가 본다).
+    """
+    moved, vanished = [], []
+    for job_id, row_index in sorted(pairs):
+        b = before.get(str(job_id))
+        if b is None or row_index >= len(b.get("boxes", [])):
+            continue
+        a = after.get(str(job_id))
+        if a is None or row_index >= len(a.get("boxes", [])):
+            vanished.append((job_id, row_index))
+            continue
+        if (
+            b["boxes"][row_index] != a["boxes"][row_index]
+            or b["crop_sha"][row_index] != a["crop_sha"][row_index]
+        ):
+            moved.append((job_id, row_index))
+    return {"moved": moved, "vanished": vanished}

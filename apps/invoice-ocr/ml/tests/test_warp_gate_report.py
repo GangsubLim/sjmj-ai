@@ -419,3 +419,393 @@ def test_fetch_all_syncs_uploads_and_pairs_alongside_warped(tmp_path, monkeypatc
     assert ("ocr_uploads", wgr.UPLOADS_GLOB, wgr.UPLOADS_TIMEOUT_S) in calls
     assert meta["n_uploads"] == 0
     assert json.loads((tmp_path / wgr.PAIRS_NAME).read_text())[0]["crop_ref"] == "job-1/row-0"
+
+
+# --- crop-identity CLI (Task 7) ---
+
+
+def _snapshot(n=1):
+    """replicate_rows 출력 shape의 최소 합성값."""
+    return {
+        "n_bands": 12,
+        "n_new": n,
+        "boxes": [[0, 10]] * n,
+        "crop_sha": ["a"] * n,
+        "crop_ink": [0.1] * n,
+    }
+
+
+def _fake_collect(snapshot, *, ok=None, total=None, skipped=None):
+    """collect_crop_identity 대역 — (스냅샷, 모집단 통계) 튜플 계약을 그대로 흉내낸다."""
+    ok = len(snapshot) if ok is None else ok
+    stats = {"total": ok if total is None else total, "ok": ok, "skipped": skipped or {}}
+
+    def _collect(cache, jobs=None, dump_dir=None):
+        _collect.seen = {"cache": cache, "jobs": jobs, "dump_dir": dump_dir}
+        return dict(snapshot), stats
+
+    _collect.seen = {}
+    return _collect
+
+
+def _crop_identity_argv(tmp_path, *extra):
+    return [
+        "--cache",
+        str(tmp_path),
+        "crop-identity",
+        "--out",
+        str(tmp_path / "after.json"),
+        *extra,
+    ]
+
+
+def test_crop_identity_exits_nonzero_when_a_snapshot_changed(tmp_path, monkeypatch):
+    # 이 exit code가 DoD 4의 유일한 기계 게이트다 — 오배선되면 DoD 4가 조용히 통과한다.
+    from tools import warp_gate_report as wgr
+
+    before = tmp_path / "before.json"
+    before.write_text(json.dumps({"59": {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}}))
+    monkeypatch.setattr(
+        wgr,
+        "collect_crop_identity",
+        _fake_collect({"59": {"n_new": 5, "boxes": [[10, 21]], "crop_sha": ["aa"]}}),
+    )
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before)))
+    assert e.value.code == 1
+
+
+def test_crop_identity_exits_nonzero_when_a_job_vanished_from_the_snapshot(tmp_path, monkeypatch):
+    # 잡이 통째로 사라지는 재워프 회귀가 게이트의 다른 한 축이다 — exit 조건에서 missing이
+    # 빠지면 그 축이 조용히 무고정 상태가 된다.
+    from tools import warp_gate_report as wgr
+
+    entry = {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}
+    before = tmp_path / "before.json"
+    before.write_text(json.dumps({"59": entry, "60": entry}))
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({"60": entry}))
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before)))
+    assert e.value.code == 1
+
+
+def test_crop_identity_exits_zero_when_nothing_moved(tmp_path, monkeypatch):
+    from tools import warp_gate_report as wgr
+
+    snap = {"59": {"n_new": 5, "boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    before = tmp_path / "before.json"
+    before.write_text(json.dumps(snap))
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect(snap))
+    wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before)))
+
+
+def test_crop_identity_writes_snapshot_and_prints_storage_path_without_baseline(
+    tmp_path, monkeypatch
+):
+    # exit code 테스트 2건은 collect_crop_identity를 대역으로 바꿔 --out 실제 기록 여부를
+    # 검증하지 못한다 — 여기서 파일 내용을 직접 확인해 그 배선을 고정한다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({"1": _snapshot(0)}))
+    out = tmp_path / "snap.json"
+    wgr.main(["--cache", str(tmp_path), "crop-identity", "--out", str(out)])
+    assert json.loads(out.read_text()) == {"1": _snapshot(0)}
+
+
+def test_crop_identity_forwards_the_jobs_filter_to_collect(tmp_path, monkeypatch):
+    # --jobs가 collect_crop_identity로 안 전달되면 축 ②-b의 대상 좁히기(fail→pass 전환 잡
+    # 전용 실행)가 조용히 전 잡 실행이 된다.
+    from tools import warp_gate_report as wgr
+
+    collect = _fake_collect({"59": _snapshot()})
+    monkeypatch.setattr(wgr, "collect_crop_identity", collect)
+    wgr.main(_crop_identity_argv(tmp_path, "--jobs", "59", "60"))
+    assert collect.seen["jobs"] == [59, 60]
+
+
+def test_crop_identity_rejects_a_jobs_flag_without_any_id(tmp_path, monkeypatch):
+    # nargs="*"였을 때 `--jobs`만 주면 조용히 전 잡 실행이 됐다 — 대상을 좁히려던 의도와 정반대다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({"59": _snapshot()}))
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path, "--jobs"))
+    assert e.value.code == 2
+
+
+def test_crop_identity_reports_changed_included_pairs_when_pairs_json_present(
+    tmp_path, monkeypatch, capsys
+):
+    # spec §4.3 ②-a가 요구하는 것은 잡 단위가 아니라 행 단위 무변경이다 — 이 절이 DoD 4의
+    # 직접 증거이므로 changed 잡의 행 인덱스가 실제로 대조표에 찍히는지 고정한다.
+    from tools import warp_gate_report as wgr
+
+    before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["aa", "bb"]}}
+    after = {"23": {"boxes": [[10, 20], [31, 41]], "crop_sha": ["aa", "cc"]}}
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(before))
+    (tmp_path / wgr.PAIRS_NAME).write_text(
+        json.dumps(
+            [
+                {"job_id": 23, "row_index": 0, "status": "included"},
+                {"job_id": 23, "row_index": 1, "status": "included"},
+            ]
+        )
+    )
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect(after))
+
+    with pytest.raises(SystemExit):
+        wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before_path)))
+
+    out = capsys.readouterr().out
+    assert "| 23 | 1 | moved |" in out
+    assert "변화 0건" not in out
+
+
+def test_crop_identity_reports_included_pairs_that_vanished(tmp_path, monkeypatch, capsys):
+    # 폴백이 학습쌍 행을 **없앤** 경우 — 조용히 건너뛰면 "변화 0건"이 찍혀 축 ②-a가 무너진
+    # 사실이 리포트에서 사라진다.
+    from tools import warp_gate_report as wgr
+
+    before = {"23": {"boxes": [[10, 20], [30, 40]], "crop_sha": ["aa", "bb"]}}
+    after = {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(before))
+    (tmp_path / wgr.PAIRS_NAME).write_text(
+        json.dumps(
+            [
+                {"job_id": 23, "row_index": 0, "status": "included"},
+                {"job_id": 23, "row_index": 1, "status": "included"},
+            ]
+        )
+    )
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect(after))
+
+    with pytest.raises(SystemExit):
+        wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before_path)))
+
+    out = capsys.readouterr().out
+    assert "| 23 | 1 | vanished |" in out
+    assert "변화 0건" not in out
+
+
+def test_crop_identity_reports_no_pair_changes_when_none_moved(tmp_path, monkeypatch, capsys):
+    from tools import warp_gate_report as wgr
+
+    snap = {"23": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    before_path = tmp_path / "before.json"
+    before_path.write_text(json.dumps(snap))
+    (tmp_path / wgr.PAIRS_NAME).write_text(
+        json.dumps([{"job_id": 23, "row_index": 0, "status": "included"}])
+    )
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect(snap))
+
+    wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(before_path)))
+
+    assert "변화 0건" in capsys.readouterr().out
+
+
+# --- crop-identity 모집단 건전성 게이트 ---
+
+
+def test_crop_identity_prints_the_population_and_skip_counts(tmp_path, monkeypatch, capsys):
+    # 모집단을 안 찍으면 '변화 0건'이 '정말 안 변했다'인지 '아무것도 못 봤다'인지 구분되지 않는다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(
+        wgr,
+        "collect_crop_identity",
+        _fake_collect({"1": _snapshot(), "2": _snapshot()}, total=3, skipped={"quad_missing": 1}),
+    )
+    wgr.main(_crop_identity_argv(tmp_path))
+
+    out = capsys.readouterr().out
+    assert "대상 잡 3" in out
+    assert "ok 2" in out
+    assert "quad_missing 1" in out
+
+
+def test_crop_identity_exits_nonzero_when_the_snapshot_is_empty(tmp_path, monkeypatch):
+    # uploads 캐시가 비었거나 fetch가 반쪽인 상태로 1차 실행하면 {} 베이스라인이 저장되고,
+    # 2차에서 실측이 나와도 전부 added로만 분류돼 게이트가 exit 0 + "변화 0건"을 낸다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({}, ok=0, total=62))
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path))
+
+    assert "비었" in str(e.value)
+    leftover = tmp_path / "after.json"
+    assert not leftover.exists(), "쓸 수 없는 스냅샷을 베이스라인으로 남기면 안 된다"
+
+
+def test_crop_identity_exits_nonzero_when_too_few_jobs_could_be_rewarped(tmp_path, monkeypatch):
+    # 부분 fetch(사진 일부만 동기화)도 같은 침묵 붕괴를 만든다 — 비어 있지 않아도 모집단이
+    # 얇으면 베이스라인으로 쓸 수 없다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(
+        wgr,
+        "collect_crop_identity",
+        _fake_collect({"1": _snapshot()}, total=10, skipped={"upload_missing": 9}),
+    )
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path))
+
+    assert "하한" in str(e.value)
+
+
+# --- crop-identity 수집기(재워프 순회) ---
+
+
+def _ok_rewarp_cache(tmp_path, monkeypatch, jobs, *, snapshot=None, warped=None):
+    """jobs.json을 시드하고 재워프·행재현을 대역으로 바꾼다 — 수집기 자체를 직접 부르기 위한 준비."""
+    from tools import warp_gate_report as wgr
+
+    _seed_cache(tmp_path, jobs=jobs)
+    monkeypatch.setattr(
+        wgr,
+        "rewarp_job",
+        lambda p, **kw: (
+            (wgr.STATUS_OK, warped if warped is not None else object())
+            if p.name == "ok.jpg"
+            else ("quad_missing", None)
+        ),
+    )
+    monkeypatch.setattr(wgr, "replicate_rows", lambda w: snapshot or _snapshot())
+    return wgr
+
+
+def test_collect_crop_identity_keys_the_snapshot_by_job_id_string(tmp_path, monkeypatch):
+    # 키가 int로 새면 --baseline JSON(키는 항상 문자열)과 대조했을 때 전 잡이 missing+added로
+    # 갈라져 게이트가 통째로 무의미해진다.
+    wgr = _ok_rewarp_cache(
+        tmp_path,
+        monkeypatch,
+        [{"job_id": 59, "warp_ok": True, "image_path": "/r/ocr_uploads/ok.jpg"}],
+    )
+
+    snapshot, stats = wgr.collect_crop_identity(tmp_path)
+
+    assert list(snapshot) == ["59"]
+    assert snapshot["59"] == _snapshot()
+    assert stats == {"total": 1, "ok": 1, "skipped": {}}
+
+
+def test_collect_crop_identity_visits_only_the_requested_jobs(tmp_path, monkeypatch):
+    # --jobs를 순회가 무시하면 전 잡을 재워프하고도 아무도 모른다(전달만 보는 CLI 테스트로는
+    # 못 잡는다).
+    wgr = _ok_rewarp_cache(
+        tmp_path,
+        monkeypatch,
+        [
+            {"job_id": 59, "warp_ok": True, "image_path": "/r/ocr_uploads/ok.jpg"},
+            {"job_id": 60, "warp_ok": True, "image_path": "/r/ocr_uploads/ok.jpg"},
+        ],
+    )
+
+    snapshot, stats = wgr.collect_crop_identity(tmp_path, jobs=[60])
+
+    assert list(snapshot) == ["60"]
+    assert stats["total"] == 1
+
+
+def test_collect_crop_identity_skips_and_counts_every_job_it_cannot_rewarp(tmp_path, monkeypatch):
+    # 재워프 실패·사진 없음·경로 탈출을 전부 침묵 스킵하면 얇은 스냅샷과 건강한 스냅샷이
+    # 구분되지 않는다 — 사유별로 세어 돌려줘야 게이트가 판단할 수 있다.
+    wgr = _ok_rewarp_cache(
+        tmp_path,
+        monkeypatch,
+        [
+            {"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/ok.jpg"},
+            {"job_id": 2, "warp_ok": True, "image_path": "/r/ocr_uploads/broken.jpg"},
+            {"job_id": 3, "warp_ok": True, "image_path": None},
+            {"job_id": 4, "warp_ok": True, "image_path": "/a/b/.."},
+        ],
+    )
+
+    snapshot, stats = wgr.collect_crop_identity(tmp_path)
+
+    assert list(snapshot) == ["1"]
+    assert stats == {
+        "total": 4,
+        "ok": 1,
+        "skipped": {
+            "quad_missing": 1,
+            wgr.STATUS_UPLOAD_MISSING: 1,
+            wgr.STATUS_INVALID_IMAGE_PATH: 1,
+        },
+    }
+
+
+# --- 육안검수 크롭 덤프 ---
+
+
+def test_dump_crop_pngs_writes_exactly_the_pixels_that_were_hashed(tmp_path):
+    # 덤프가 크롭 기하를 따로 소유하면 '해시한 것'과 '눈으로 본 것'이 갈라진다 —
+    # 축 ②-b의 육안 근거가 조용히 다른 픽셀을 보여주게 된다.
+    cv2 = pytest.importorskip("cv2", exc_type=ImportError)
+    np = pytest.importorskip("numpy")
+    from handwriting.grid_v4 import WARP_W
+    from tools import warp_gate_report as wgr
+    from tools.warp_gate_rows import item_crop
+
+    warped = np.random.default_rng(0).integers(0, 256, (40, WARP_W, 3), dtype=np.uint8)
+    boxes = [[0, 10], [20, 30]]
+
+    wgr._dump_crop_pngs(tmp_path, 7, warped, boxes)
+
+    saved = sorted((tmp_path / "job-7").glob("row-*.png"))
+    assert [p.name for p in saved] == ["row-0.png", "row-1.png"]
+    for path, box in zip(saved, boxes, strict=True):
+        assert np.array_equal(cv2.imread(str(path)), item_crop(warped, box))
+
+
+def test_crop_identity_dumps_crops_within_the_single_rewarp_pass(tmp_path, monkeypatch):
+    # 덤프가 자기 순회를 다시 돌면 62잡 재워프 비용이 두 배가 되고, 두 순회의 스킵 술어가
+    # 갈라지면 해시한 모집단과 눈으로 보는 모집단이 조용히 달라진다.
+    pytest.importorskip("cv2", exc_type=ImportError)
+    np = pytest.importorskip("numpy")
+    from handwriting.grid_v4 import WARP_W
+
+    wgr = _ok_rewarp_cache(
+        tmp_path,
+        monkeypatch,
+        [{"job_id": 1, "warp_ok": True, "image_path": "/r/ocr_uploads/ok.jpg"}],
+        warped=np.zeros((40, WARP_W, 3), np.uint8),
+    )
+    seen = []
+    inner = wgr.rewarp_job
+    monkeypatch.setattr(wgr, "rewarp_job", lambda p, **kw: (seen.append(p), inner(p, **kw))[1])
+
+    dump_dir = tmp_path / "dump"
+    wgr.main(_crop_identity_argv(tmp_path, "--dump-crops", str(dump_dir)))
+
+    assert len(seen) == 1
+    assert (dump_dir / "job-1" / "row-0.png").exists()
+
+
+# --- CLI 입력 오류 메시지 ---
+
+
+def test_crop_identity_explains_a_missing_out_directory(tmp_path, monkeypatch):
+    # 같은 모듈 _upload_path는 친절한 메시지를 내는데 여기만 맨 트레이스백이었다.
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({"1": _snapshot()}))
+    with pytest.raises(SystemExit) as e:
+        wgr.main(
+            ["--cache", str(tmp_path), "crop-identity", "--out", str(tmp_path / "no" / "s.json")]
+        )
+
+    assert "--out" in str(e.value)
+
+
+def test_crop_identity_explains_a_missing_baseline_file(tmp_path, monkeypatch):
+    from tools import warp_gate_report as wgr
+
+    monkeypatch.setattr(wgr, "collect_crop_identity", _fake_collect({"1": _snapshot()}))
+    with pytest.raises(SystemExit) as e:
+        wgr.main(_crop_identity_argv(tmp_path, "--baseline", str(tmp_path / "nope.json")))
+
+    assert "베이스라인" in str(e.value)
