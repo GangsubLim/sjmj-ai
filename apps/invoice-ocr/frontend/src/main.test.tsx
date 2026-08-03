@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { useCurationJobs } from "@/hooks/use-curation-jobs";
 import { useCurationJob } from "@/hooks/use-curation-job";
 import { useUnconfirmedJobs } from "@/hooks/use-unconfirmed-jobs";
+import { ocrAPI } from "@/services/api";
 import type { CurationJobDetail } from "@/types/curation";
 
 vi.mock("@/hooks/use-curation-jobs", () => ({ useCurationJobs: vi.fn() }));
@@ -11,6 +12,14 @@ vi.mock("@/hooks/use-curation-job", () => ({ useCurationJob: vi.fn() }));
 vi.mock("@/hooks/use-unconfirmed-jobs", () => ({
   useUnconfirmedJobs: vi.fn(),
 }));
+// 주의: 확정 전 상세는 훅이 아니라 ocrAPI를 직접 부른다. 이 vi.mock은 파일 전역이라
+// "@/services/api"를 통째로 대체하면 같은 파일의 /curation/42 테스트가 렌더하는
+// app/curation/[jobId]/page.tsx의 curationImageUrl(...)이 undefined 호출로 죽는다.
+// → 반드시 원본을 스프레드하고 필요한 것만 덮는다.
+vi.mock("@/services/api", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/services/api")>();
+  return { ...actual, ocrAPI: { ...actual.ocrAPI, getJob: vi.fn() } };
+});
 
 const mockUseCurationJobs = vi.mocked(useCurationJobs);
 const mockUseCurationJob = vi.mocked(useCurationJob);
@@ -105,5 +114,19 @@ describe("main.tsx 라우트 등록 (/curation, /curation/:jobId)", () => {
         screen.getByRole("heading", { name: "확정 전 잡 관측" }),
       ).toBeInTheDocument(),
     );
+  });
+
+  it("/curation/pending/:jobId 경로에서 jobId로 관측 상세를 렌더한다", async () => {
+    vi.mocked(ocrAPI.getJob).mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: { rows: [], supply_sum: 0, warp_ok: true },
+      },
+    });
+    await bootMainAt("/curation/pending/42");
+    await waitFor(() => expect(screen.getByText(/잡 #42/)).toBeInTheDocument());
+    expect(vi.mocked(ocrAPI.getJob)).toHaveBeenCalledWith(42);
   });
 });
