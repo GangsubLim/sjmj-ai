@@ -30,13 +30,19 @@ def make_warped():
     (바닥값 3은 MIN_BLUE_RATIO가 훨씬 작을 때만 적용됨).
     n_lines는 유도하지 않는다: y_start=620·pitch=83에서 DATA_Y 창에 들어가는 선은 최대 17개라
     MIN_HLINES에서 유도하면 임계가 14 이상일 때 그린 선과 검출 선 개수가 어긋난다(실측 확인).
+
+    color(기본 BGR 255,120,40=강한 파랑)로 선 색을 바꿀 수 있다 — 옅은 파랑(b−r=10 등
+    표준 마스크 임계 경계값)으로 enh 축 전용 입력을 만들 때 격자 좌표(y_start/pitch/
+    thickness)는 그대로 재사용하려는 호출자를 위한 것.
     """
     pytest.importorskip("cv2", exc_type=ImportError)
     np = pytest.importorskip("numpy")
 
     from handwriting.grid_v4 import DATA_Y, WARP_H, WARP_W
 
-    def _make(*, n_lines=16, pitch=83, y_start=620, x_end=WARP_W, thickness=None):
+    def _make(
+        *, n_lines=16, pitch=83, y_start=620, x_end=WARP_W, thickness=None, color=(255, 120, 40)
+    ):
         if thickness is None:
             span = DATA_Y[1] - DATA_Y[0]
             thickness = max(
@@ -45,7 +51,7 @@ def make_warped():
         img = np.full((WARP_H, WARP_W, 3), 255, np.uint8)
         for k in range(n_lines):
             y = y_start + k * pitch
-            img[y : y + thickness, 0:x_end] = (255, 120, 40)
+            img[y : y + thickness, 0:x_end] = color
         return img
 
     return _make

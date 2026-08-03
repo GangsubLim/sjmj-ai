@@ -87,12 +87,18 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
     assert (tmp_path / "warped.png").exists()  # 진단용 워프는 남긴다
     assert not (tmp_path / "row-0.png").exists()
     logged = capsys.readouterr().out
-    assert (
-        "[warp-gate] job=7 demoted metrics=" in logged
-    )  # 강등 원인을 로그만으로 재구성 가능해야 함
-    assert (
-        "thresholds=" in logged
-    )  # 재캘리브 후에도 과거 로그 라인을 그 시점 기준으로 해석 가능해야 함
+    assert "[warp-gate] job=7 demoted std=" in logged  # 강등 원인을 로그만으로 재구성 가능해야 함
+    from handwriting.warp_gate import ENH_MIN_HLINES, MIN_HLINES
+
+    # "thresholds=" 단독 단언은 "enh_thresholds="의 부분문자열이라 표준 임계 블록이 통째로
+    # 지워지거나 enh 값으로 치환돼도 통과한다(M2) — 표준·enh 블록을 각자 앵커로 구분한다.
+    # 앵커에 블록 접두사(선행 공백 포함)를 넣는다: `min_hlines=<값>`만 쓰면 두 단언이 값이
+    # 다르다는 우연에만 기댄다. ENH_MIN_HLINES = max(MIN_HLINES, floor(...)) 도출식상 두 값이
+    # 같아지는 재캘리브가 설계상 정상 도달 가능하고, 그 순간 두 단언이 같은 부분문자열로
+    # 붕괴해 "표준 블록이 통째로 지워져도 통과"라는 M2 변이가 되살아난다.
+    # 재캘리브 후에도 과거 로그를 그 시점 기준으로 해석 가능해야 하므로 값도 함께 고정한다.
+    assert f" thresholds=(min_hlines={MIN_HLINES}," in logged
+    assert f" enh_thresholds=(min_hlines={ENH_MIN_HLINES}," in logged
 
 
 def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
@@ -179,3 +185,125 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_failure_path(
 
     assert out["warp_ok"] is False
     assert "retrieval_version" not in out
+
+
+# ── enh 마스크 2단 폴백(Issue #60) ────────────────────────────────────────
+# 옅은 파랑 격자 — b−r=10이라 표준 blue_mask는 격자를 통째로 놓치고 blue_mask_enh만 살린다.
+# 잡 59~63 오강등(정상 전표가 청색 채도 하나로 강등된 사건)의 합성 재현이다.
+FAINT_BLUE = (250, 120, 240)
+
+
+def test_enhanced_metrics_are_not_computed_when_the_standard_gate_passes(
+    monkeypatch, make_warped, capsys
+):
+    # 분기 닫힘 — 표준 통과 잡은 폴백 분기에 진입조차 하지 않아야 한다. 진입하면 정상 잡
+    # 전량에 enh 측정 비용이 붙고 pass→pass 지표 동일성 전제도 흔들린다.
+    import handwriting.infer_job as ij
+
+    seen = []
+    original = ij.compute_metrics
+
+    def spy(w, **kw):
+        seen.append(kw.get("enhanced", False))
+        return original(w, **kw)
+
+    monkeypatch.setattr(ij, "compute_metrics", spy)
+
+    assert ij._warp_gate_passes(make_warped(), job_id=1) is True
+    assert seen == [False]
+    assert "[warp-gate]" not in capsys.readouterr().out
+
+
+def test_faint_sheet_is_rescued_by_the_enhanced_mask(make_warped, capsys):
+    import handwriting.infer_job as ij
+
+    assert ij._warp_gate_passes(make_warped(color=FAINT_BLUE), job_id=59) is True
+    out = capsys.readouterr().out
+    assert "rescued-by-enh" in out
+    assert "job=59" in out
+    # 강등 로그(:225-227)와 미러링 — 구제 경로도 진단에 필요한 지표 두 벌을 실제로 싣는지
+    # 실행으로 고정한다(M1). 과거엔 "rescued-by-enh"/"job=59"만 단언해 std=·enh=·
+    # _thresholds_text() 3종을 각각 제거해도 생존했다.
+    assert "std=WarpGateMetrics(" in out
+    assert "enh=WarpGateMetricsEnh(" in out
+    assert "enh_thresholds=" in out
+
+
+def test_broken_warp_is_demoted_with_both_metric_sets_in_the_log(make_warped, capsys):
+    # 두 벌 다 로그에 실려야 배포 후 로그만 보고 어느 축에서 걸렸는지 판별할 수 있다.
+    import handwriting.infer_job as ij
+
+    assert ij._warp_gate_passes(make_warped(n_lines=0), job_id=24) is False
+    out = capsys.readouterr().out
+    assert "demoted" in out
+    assert "std=WarpGateMetrics(" in out
+    assert "enh=WarpGateMetricsEnh(" in out
+    assert "enh_thresholds=" in out
+
+
+def test_enhanced_metrics_are_computed_at_most_once(monkeypatch, make_warped):
+    # 재귀·루프 없음 — enh 측정은 표준 실패 시 정확히 1회다.
+    import handwriting.infer_job as ij
+
+    seen = []
+    original = ij.compute_metrics
+
+    def spy(w, **kw):
+        seen.append(kw.get("enhanced", False))
+        return original(w, **kw)
+
+    monkeypatch.setattr(ij, "compute_metrics", spy)
+
+    ij._warp_gate_passes(make_warped(n_lines=0), job_id=24)
+    assert seen == [False, True]
+
+
+def test_warp_gate_logs_flush_immediately_on_rescue_and_demote(monkeypatch, make_warped):
+    # _warp_gate_passes docstring이 "flush=True 필수(launchd 상시 폴링 프로세스 — 파일
+    # 리다이렉트 시 블록 버퍼링에 걸리면 로그가 한참 뒤에야 보인다)"라고 선언한 성질을
+    # 실행으로 고정한다(M3). capsys는 블록 버퍼링을 재현 못 하지만
+    # `monkeypatch.setattr("builtins.print", spy)`는 kwargs를 그대로 잡는다.
+    import handwriting.infer_job as ij
+
+    calls = []
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr("builtins.print", spy)
+
+    assert ij._warp_gate_passes(make_warped(color=FAINT_BLUE), job_id=59) is True  # rescue 경로
+    assert ij._warp_gate_passes(make_warped(n_lines=0), job_id=24) is False  # demote 경로
+
+    # args까지 모아 `[warp-gate]` 라인만 걸러 단언한다. 전체 print 개수를 고정하면 (1) 그 두
+    # 번이 실제로 구제·강등 라인이었는지 확인할 수단이 없고 (2) 경유하는 grid_v4/canon에
+    # 무관한 진단 print가 하나만 늘어도 flush와 무관한 이유로 RED가 된다.
+    gate_calls = [
+        kwargs
+        for args, kwargs in calls
+        if args and isinstance(args[0], str) and args[0].startswith("[warp-gate]")
+    ]
+    assert len(gate_calls) == 2  # 구제 1 + 강등 1
+    assert all(kwargs.get("flush") is True for kwargs in gate_calls)
+
+
+def test_rescued_faint_sheet_reaches_row_extraction_through_infer_job(
+    monkeypatch, tmp_path, make_warped
+):
+    # 위 폴백 테스트 4종은 전부 private _warp_gate_passes만 직접 불러 True/로그까지만 본다 —
+    # 구제된 워프가 실제로 warp_ok=True로 직렬화되고 extract_rows_for_job·크롭 저장까지
+    # 도달하는지는 아무 테스트도 고정하지 않는다. 호출부에 표준 판정 재확인 같은 조건이
+    # 덧붙어 구제가 무력화돼도 신규 테스트는 전부 초록이다. 통과 경로의
+    # test_gate_pass_keeps_existing_row_extraction과 같은 강도로 사용자 가시 계약을 건다.
+    from handwriting.infer_job import infer_job
+
+    calls = []
+    _install_fake_infer_photo(monkeypatch, make_warped(color=FAINT_BLUE), calls)
+
+    out = infer_job("ignored.jpg", _models(), tmp_path, 59)
+
+    assert out["warp_ok"] is True
+    assert calls == ["extract_rows_for_job"]
+    assert out["rows"][0]["crop_ref"] == "job-59/row-0"
+    assert out["supply_sum"] == 364000
+    assert (tmp_path / "row-0.png").exists()

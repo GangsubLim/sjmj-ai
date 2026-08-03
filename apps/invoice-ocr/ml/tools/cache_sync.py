@@ -26,18 +26,35 @@ class CacheError(RuntimeError):
     """로컬 캐시를 안전하게 갈아끼울 수 없는 상태(삭제 실패·심볼릭 링크 등)."""
 
 
-def remote_file_list(host: str, worker_env: str, pattern: str) -> list[str]:
-    """원격 crop 루트(`$SJMJ_DATA_DIR/ocr_crops`)에서 pattern에 맞는 산출 목록을 받는다."""
+def remote_file_list(
+    host: str,
+    worker_env: str,
+    pattern: str,
+    *,
+    root: str = "ocr_crops",
+    timeout: float | None = None,
+) -> list[str]:
+    """원격 데이터 루트(`$SJMJ_DATA_DIR/{root}`)에서 pattern에 맞는 산출 목록을 받는다.
+
+    Args:
+        root: 원격 데이터 루트 하위 디렉터리(`ocr_crops`/`ocr_uploads`). 코드 상수만
+            들어온다 — 운영자 입력이 아니므로 CLI로 노출하지 않는다.
+        pattern: 원격 셸이 확장할 glob. 확장이 목적이므로 quote하지 않는다.
+    """
     # `cd X && ls ... || true`는 cd 실패까지 exit 0으로 덮어 '빈 목록'을 정상 반환한다 —
     # 그러면 fetch는 0건으로 성공하고 리포트는 전 건을 '없음'으로 태연히 찍는다.
     # 디렉터리 존재를 먼저 단언해 run_ssh()가 예외를 던지게 한다.
+    # root는 원격 셸 스크립트에 보간되므로 quote한다 — 아래 ls 산출 파일명을 quote하는 것과
+    # 같은 방어선이다(이중따옴표 안이면 `$`·백틱이 원격에서 확장된다).
+    root_q = shlex.quote(root)
     script = (
         f"{source_env(worker_env)}"
-        '[ -d "$SJMJ_DATA_DIR/ocr_crops" ] || '
-        '{ echo "ocr_crops 없음: $SJMJ_DATA_DIR" >&2; exit 3; }; '
-        f'cd "$SJMJ_DATA_DIR/ocr_crops"; ls -d {pattern} 2>/dev/null || true'
+        f'[ -d "$SJMJ_DATA_DIR"/{root_q} ] || '
+        f'{{ echo {root_q} "없음: $SJMJ_DATA_DIR" >&2; exit 3; }}; '
+        f'cd "$SJMJ_DATA_DIR"/{root_q}; ls -d {pattern} 2>/dev/null || true'
     )
-    return [ln for ln in run_ssh(host, script).decode().split("\n") if ln.strip()]
+    kw = {} if timeout is None else {"timeout": timeout}
+    return [ln for ln in run_ssh(host, script, **kw).decode().split("\n") if ln.strip()]
 
 
 def invalidate_manifest(cache: Path, data_name: str) -> None:
@@ -77,7 +94,15 @@ def reset_dir(path: Path) -> None:
     path.mkdir(parents=True)
 
 
-def sync_remote_files(host: str, worker_env: str, *, pattern: str, dest: Path) -> list[str]:
+def sync_remote_files(
+    host: str,
+    worker_env: str,
+    *,
+    pattern: str,
+    dest: Path,
+    root: str = "ocr_crops",
+    timeout: float | None = None,
+) -> list[str]:
     """원격 목록을 받아 dest를 통째로 갈아끼운다.
 
     이전 fetch 산출을 남겨두면 원격에서 사라지거나 재처리된 잡의 옛 산출이 그대로 평가돼
@@ -87,17 +112,26 @@ def sync_remote_files(host: str, worker_env: str, *, pattern: str, dest: Path) -
     호출자가 찍는 건수는 **원격 ls 개수**라 로컬 추출이 반쪽이어도 성공처럼 보인다 —
     추출 후 로컬 파일 수를 세어 어긋나면 경고한다.
 
+    Args:
+        root: 원격 데이터 루트 하위 디렉터리(`ocr_crops`/`ocr_uploads`). 코드 상수만
+            들어온다 — 운영자 입력이 아니므로 CLI로 노출하지 않는다.
+        timeout: `run_ssh` 타임아웃(초). `None`이면 `run_ssh` 기본값(600초)을 쓴다 —
+            원본 사진 tar처럼 대용량 전송에만 늘려서 넘긴다.
+
     Returns:
         원격 ls가 돌려준 파일 목록.
     """
-    names = remote_file_list(host, worker_env, pattern)
+    names = remote_file_list(host, worker_env, pattern, root=root, timeout=timeout)
     reset_dir(dest)
     if names:
         # 빈 목록이면 원격 tar가 인자 없이 죽는다 — 호출자의 fetch 경고가 대신 말한다.
         # 파일명은 원격 ls 산출이지만 원격 셸에 다시 들어가므로 방어적으로 quote한다.
         args = " ".join(shlex.quote(n) for n in names)
-        tar_script = f'{source_env(worker_env)}tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {args}'
-        with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script))) as tf:
+        tar_script = (
+            f'{source_env(worker_env)}tar -C "$SJMJ_DATA_DIR"/{shlex.quote(root)} -cf - {args}'
+        )
+        kw = {} if timeout is None else {"timeout": timeout}
+        with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script, **kw))) as tf:
             tf.extractall(dest, filter="data")
     n_local = sum(1 for p in dest.rglob("*") if p.is_file())
     if n_local != len(names):
