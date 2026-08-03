@@ -32,6 +32,8 @@ def _statements(sql: str) -> list[str]:
     주석을 먼저 걷어내는 이유: 마이그레이션 헤더의 ROLLBACK 안내는 SQL 예시를 담아
     주석 안에 세미콜론이 있다(migration_009 참조). 그대로 split하면 주석 조각이
     실행 가능한 문장으로 오인된다.
+
+    나눈 문장은 _apply가 드라이버 커서에 파라미터 없이 그대로 넘긴다 — 이유는 _apply 참조.
     """
     body = "\n".join(
         line
@@ -42,9 +44,21 @@ def _statements(sql: str) -> list[str]:
 
 
 def _apply(engine) -> None:
+    """마이그레이션 문장들을 실제 러너와 같은 방식 — 파라미터 없는 원문 — 으로 실행한다.
+
+    드라이버 커서에 직접 넣는 이유: 마이그레이션 SQL은 파라미터가 없는 완성된 문장이므로,
+    중간 계층이 문자열을 해석하면 운영(`mysql < file`)과 오차가 생긴다. 실측(로컬):
+      - `text(stmt)`          : `'(주):삼정'`의 `:삼정`을 bind 파라미터로 잡아 실패.
+                                (`%`는 통과 — SQLAlchemy가 이스케이프해 준다.)
+      - `exec_driver_sql(stmt)`: 빈 파라미터를 함께 넘겨 pymysql(paramstyle=format)이
+                                `%`-포맷을 돌리므로 `LIKE '%foo%'`에서 실패.
+      - 드라이버 커서 + args 생략: pymysql이 포맷을 아예 건너뛰어 둘 다 통과.
+    셋 다 운영에서는 멀쩡한 SQL이므로, 앞의 둘은 테스트만 죽는 false RED다.
+    """
     with engine.begin() as conn:
+        cursor = conn.connection.cursor()
         for stmt in _statements(_MIGRATION.read_text(encoding="utf-8")):
-            conn.execute(text(stmt))
+            cursor.execute(stmt)
 
 
 def _names(engine) -> list[str]:
@@ -188,3 +202,57 @@ def test_migration_normalization_matches_service_strip(db_conn):
     _apply(db_conn)
 
     assert _names(db_conn) == ["s중고s", "중고", "휠"]
+
+
+def test_regexp_replace_leaves_0x1c_which_python_strip_removes(db_conn):
+    """[[:space:]]와 Python .strip()이 갈리는 유일한 문자군(0x1C..0x1F)을 고정한다.
+
+    헤더가 열거하는 일치 문자군은 위 테스트가 덮는다. 이 테스트는 그 반대편 —
+    Python .strip()은 지우지만 ICU [[:space:]]는 White_Space로 보지 않아 남기는
+    0x1C..0x1F — 를 명시적으로 고정한다(2026-08-03 로컬 MySQL 9.6 HEX 비교 실측).
+
+    '=' 비교로는 이 차이가 보이지 않는다 — 0x1C..0x1F가 collation-ignorable이라
+    지워지지 않았는데도 같다고 나온다. 그래서 Python 쪽 원문 문자열로 단언한다.
+
+    이 잔여 오차가 사전을 쪼개지 않는다는 점도 함께 고정한다: ignorable이라
+    유니크 인덱스가 '\\x1c중고'와 '중고'를 같은 항목으로 보고(항목 1건),
+    '\\x1c'만 있는 라벨은 <> '' 가드가 걸러낸다.
+    """
+    job_id = _seed_job(db_conn, reviewed=1)
+    _seed_pair(db_conn, job_id, 0, "\x1c중고")
+    _seed_pair(db_conn, job_id, 1, "\x1c")
+    _seed_pair(db_conn, job_id, 2, "\x1f배선수리")
+
+    _apply(db_conn)
+
+    # 0x1C가 남는다 — Python .strip()이었다면 ['배선수리', '중고']였을 것이다.
+    assert _names(db_conn) == ["\x1c중고", "\x1f배선수리"]
+    # 그럼에도 유니크 인덱스는 '중고'와 같은 항목으로 본다 — 사전이 쪼개지지 않는다.
+    with db_conn.begin() as conn:
+        same = conn.execute(
+            text("SELECT COUNT(*) FROM item_suggestions WHERE item_name = '중고'")
+        ).scalar()
+    assert same == 1
+
+
+def test_distinct_collates_on_the_destination_unique_index(db_conn):
+    """COLLATE의 *방향*을 고정한다 — 지우거나 utf8mb4_unicode_ci로 되돌리면 깨진다.
+
+    utf8mb4_unicode_ci는 UCA 4.0.0이라 보조평면(supplementary plane) 문자에 가중치가
+    없어 '휠𠀀' = '휠𠀁'로 보지만, 목적지 유니크 인덱스의 utf8mb4_0900_ai_ci는 둘을
+    구분한다(2026-08-03 로컬 MySQL 9.6 실측).
+
+    따라서 소스 기준(또는 COLLATE 누락)으로 DISTINCT하면 두 라벨이 하나로 뭉개져 한쪽이
+    조용히 사라지고, 목적지 기준이면 둘 다 등록된다. 목적지가 별개 항목으로 보는 라벨을
+    등록해야 하므로 후자가 맞다.
+
+    다른 라벨 쌍으로는 이 방향이 고정되지 않는다 — 목적지가 더 *넓게* 같다고 보는 쌍은
+    DISTINCT를 어느 쪽으로 하든 ON DUPLICATE KEY UPDATE가 흡수해 최종 행 집합이 같다.
+    """
+    job_id = _seed_job(db_conn, reviewed=1)
+    _seed_pair(db_conn, job_id, 0, "휠𠀀")
+    _seed_pair(db_conn, job_id, 1, "휠𠀁")
+
+    _apply(db_conn)
+
+    assert _names(db_conn) == ["휠𠀀", "휠𠀁"]

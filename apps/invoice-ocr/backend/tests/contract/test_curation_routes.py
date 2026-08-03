@@ -6,8 +6,12 @@ from sqlalchemy import text
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
-    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환."""
+def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목"):
+    """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환.
+
+    canonical을 넘기면 final_label('품목')과 정식 라벨을 벌릴 수 있다 — 두 값이 같으면
+    "정식 라벨을 등록한다"와 "final_label을 등록한다"를 단언으로 구분할 수 없다.
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
@@ -22,9 +26,9 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2):
                 text(
                     "INSERT INTO training_pairs "
                     "(crop_ref, job_id, row_index, final_label, canonical_label, supply, status, reviewed_at) "
-                    f"VALUES (:r, :j, :i, '품목', '품목', 1000, 'included', {stamped})"
+                    f"VALUES (:r, :j, :i, '품목', :c, 1000, 'included', {stamped})"
                 ),
-                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i},
+                {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i, "c": canonical},
             )
     return job_id
 
@@ -542,20 +546,28 @@ def _suggestion_names(engine) -> list[str]:
 
 
 def test_review_registers_included_labels_end_to_end(client, db_conn):
-    """라우터가 ItemRepository를 실제로 주입했는지 — 배선 회귀 방어선."""
-    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    """라우터가 ItemRepository를 실제로 주입했는지 — 배선 회귀 방어선.
+
+    시드의 final_label('품목')과 canonical_label('정식품목')을 벌려, 사전에 들어가는
+    값이 사람이 확정한 정식 라벨임을 단언한다(둘이 같으면 구분 불가).
+    """
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1, canonical="정식품목")
 
     res = client.post(f"/api/curation/jobs/{job_id}/review")
 
     assert res.status_code == 200
     assert res.json() == {"success": True, "data": {"job_id": job_id, "curation_reviewed": True}}
-    assert "품목" in _suggestion_names(db_conn)
+    names = _suggestion_names(db_conn)
+    assert "정식품목" in names
+    assert "품목" not in names  # final_label은 등록 대상이 아니다
 
 
 def test_review_is_idempotent_for_the_dictionary(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
-    client.post(f"/api/curation/jobs/{job_id}/review")
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    first = client.post(f"/api/curation/jobs/{job_id}/review")
+    second = client.post(f"/api/curation/jobs/{job_id}/review")
+    # 2차 호출도 200이어야 한다 — ensure_exists가 평범한 INSERT로 회귀하면 여기서 깨진다.
+    assert (first.status_code, second.status_code) == (200, 200)
     assert _suggestion_names(db_conn).count("품목") == 1
 
 

@@ -92,8 +92,11 @@ CREATE TABLE company_suggestions (
 -- 운영 실물과 정합: 운영 item_suggestions는 utf8mb4_0900_ai_ci다(2026-07-31 실측).
 -- training_pairs(utf8mb4_unicode_ci)와 갈린 이 분기가 이 이슈가 다루는 비교의 실제
 -- 조건이므로 테스트가 재현해야 한다(#40 spec §3.5). 갈린 경위는 미검증이다 —
--- db/schema.sql은 COLLATE 무명시이고 부트스트랩은 DB 기본을 unicode_ci로 만든다.
--- 상호 참조: db/schema.sql의 item_suggestions COLLATE 주석과 짝이다 — 한쪽만 고치면 드리프트.
+-- 부트스트랩 지시(db/migration_poc_to_production.sql:7)는 DB 기본을 unicode_ci로 만들고
+-- db/schema.sql·db/migration_002도 원래 COLLATE 무명시였으므로 "MySQL 8 서버 기본값"
+-- 설명은 성립하지 않는다. 실측값을 정본으로 삼고 경위는 추정하지 않는다.
+-- 상호 참조: db/schema.sql의 item_suggestions COLLATE 주석과 짝이다(#40에서 함께 명시로
+-- 바뀌었다) — 한쪽만 고치면 드리프트.
 CREATE TABLE item_suggestions (
     id INT PRIMARY KEY AUTO_INCREMENT,
     item_name VARCHAR(200) UNIQUE NOT NULL,

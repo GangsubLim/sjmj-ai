@@ -17,7 +17,9 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from app.repositories.curation_repository import CurationRepository
 from app.repositories.items_repository import ItemRepository
+from app.services.curation_service import CurationService
 
 # tests/integration/x.py → tests → backend → invoice-ocr → apps → repo root
 _REPO_ROOT = Path(__file__).resolve().parents[5]
@@ -77,17 +79,23 @@ def _seed_job(engine, *, reviewed=1):
 
 
 def _seed_pair(engine, job_id, row_index, label, status="included"):
+    """final_label에는 canonical_label과 **다른** 값을 심는다.
+
+    두 컬럼에 같은 값을 넣으면 진단 SQL이 `tp.final_label`을 읽도록 바뀌어도 아래 8개가
+    전부 통과한다(실측). 진단은 정식 라벨만 봐야 한다 — ADR 0008 단방향 정합.
+    """
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO training_pairs "
                 "(crop_ref, job_id, row_index, final_label, canonical_label, status) "
-                "VALUES (:r, :j, :i, :l, :l, :s)"
+                "VALUES (:r, :j, :i, :f, :l, :s)"
             ),
             {
                 "r": f"job-{job_id}/row-{row_index}",
                 "j": job_id,
                 "i": row_index,
+                "f": f"초안{row_index}",
                 "l": label,
                 "s": status,
             },
@@ -176,6 +184,24 @@ def test_diagnostic_reports_label_when_only_padded_variant_is_registered(db_conn
     ItemRepository().insert({"item_name": "휠 "})
 
     assert _diverged(db_conn) == ["휠"]
+
+
+def test_diagnostic_is_empty_after_real_service_registration_path(db_conn):
+    """등록을 손으로 재현하지 않고 **실제 서비스 경로**로 시킨 뒤 0행인지 본다.
+
+    다른 케이스들은 `ItemRepository().ensure_exists(label.strip())`로 등록 규칙을 재현하므로,
+    등록 쪽 정규화가 바뀌면(NFKC 추가·내부 공백 축약·빈 값 skip 제거) 전부 통과한 채
+    운영에서만 0행 불변식이 깨진다. 이 한 케이스가 등록 조건과 진단 조건을 한 테스트에 묶는다.
+    """
+    job_id = _seed_job(db_conn, reviewed=0)  # mark_reviewed가 직접 검수완료로 만든다.
+    _seed_pair(db_conn, job_id, 0, "  라이닝1조  ")  # 패딩 라벨(확정 요청은 strip하지 않는다)
+    _seed_pair(db_conn, job_id, 1, "\t중고")
+    _seed_pair(db_conn, job_id, 2, "")  # 등록이 건너뛰는 빈 라벨
+    _seed_pair(db_conn, job_id, 3, "제외품목", status="excluded")
+
+    CurationService(CurationRepository(), ItemRepository()).mark_reviewed(job_id)
+
+    assert _diverged(db_conn) == []
 
 
 def test_diagnostic_normalization_matches_python_strip(db_conn):

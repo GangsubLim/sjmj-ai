@@ -1,12 +1,16 @@
 """테스트 스키마가 운영의 collation 분기를 재현하는지 고정한다(#40, spec §3.5).
 
 운영은 training_pairs(utf8mb4_unicode_ci)와 item_suggestions(utf8mb4_0900_ai_ci)가 갈려 있다
-(2026-07-31 운영 DB 실측). 갈린 경위는 미검증이다 — db/schema.sql·db/migration_002는
-COLLATE 무명시이고 부트스트랩 지시(db/migration_poc_to_production.sql:7)는 DB 기본을
-utf8mb4_unicode_ci로 만들므로 "MySQL 8 서버 기본값" 설명은 성립하지 않는다.
-실측값을 정본으로 삼고 경위는 추정하지 않는다.
+(2026-07-31 운영 DB 실측). 갈린 경위는 미검증이다 — 부트스트랩 지시
+(db/migration_poc_to_production.sql:7)는 DB 기본을 utf8mb4_unicode_ci로 만들고
+db/schema.sql·db/migration_002도 원래 COLLATE 무명시였으므로 "MySQL 8 서버 기본값" 설명은
+성립하지 않는다. 실측값을 정본으로 삼고 경위는 추정하지 않는다(#40에서 db/schema.sql의
+item_suggestions에는 그 실측값이 명시로 반영됐다).
 테스트 스키마가 둘을 같은 collation으로 만들면, 이 이슈가 다루는 바로 그 비교가
 테스트에서는 통과하고 운영에서만 ERROR 1267로 깨진다.
+
+전제: MySQL 8.0+ 서버. utf8mb4_0900_ai_ci는 8.0에서 도입됐고 collation 혼합 비교의
+ERROR 1267도 그 위에서 난다(로컬 9.6 / CI mysql:8).
 """
 
 import pytest
@@ -17,9 +21,17 @@ from app.repositories.items_repository import ItemRepository
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
+# ER_CANT_AGGREGATE_2COLLATIONS — collation이 갈린 두 문자열을 명시 COLLATE 없이 비교할 때.
+ERR_CANT_AGGREGATE_2COLLATIONS = 1267
+
 
 def test_item_suggestions_string_columns_use_production_collation(db_conn):
-    """테이블 레벨 COLLATE 변경은 문자열 컬럼 전부에 걸린다 — Produces 문구(`item_suggestions.*`)와 맞춘다."""
+    """테이블 레벨 COLLATE 변경은 문자열 컬럼 전부에 걸린다 — Produces 문구(`item_suggestions.*`)와 맞춘다.
+
+    컬럼 이름 집합을 정확 일치로 못박지 않는다 — collation과 무관한 스키마 진화(문자열 컬럼
+    추가)로 이 테스트가 빨개지면 안 된다. 불변식은 "문자열 컬럼이 전부 목적지 collation"이고,
+    등록·진단이 실제로 쓰는 item_name이 그 안에 있는지만 함께 확인한다.
+    """
     with db_conn.begin() as conn:
         rows = conn.execute(
             text(
@@ -28,8 +40,10 @@ def test_item_suggestions_string_columns_use_production_collation(db_conn):
                 "AND collation_name IS NOT NULL"
             )
         ).all()
-    assert {c for c, _ in rows} == {"item_name", "default_unit", "category", "notes"}
-    assert {col for _, col in rows} == {"utf8mb4_0900_ai_ci"}
+    column_names = {column_name for column_name, _ in rows}
+    collations = {collation for _, collation in rows}
+    assert "item_name" in column_names
+    assert collations == {"utf8mb4_0900_ai_ci"}
 
 
 def test_training_pairs_canonical_label_keeps_unicode_ci(db_conn):
@@ -58,7 +72,7 @@ def test_bare_join_across_the_two_tables_fails_with_1267(db_conn):
                 "LEFT JOIN item_suggestions it ON it.item_name = tp.canonical_label"
             )
         )
-    assert excinfo.value.orig.args[0] == 1267
+    assert excinfo.value.orig.args[0] == ERR_CANT_AGGREGATE_2COLLATIONS
 
 
 def _seed_included_pair(engine, label):
@@ -110,3 +124,36 @@ def test_registered_label_is_findable_across_the_collation_boundary(db_conn):
             {"j": job_id},
         ).scalar()
     assert found is not None
+
+
+def test_explicit_collate_direction_follows_the_destination_unique_index(db_conn):
+    """명시 COLLATE의 *방향*을 고정한다 — 반대 방향으로 되돌리면 이 테스트가 깨진다.
+
+    위 테스트의 시드 라벨('중고')은 앞뒤 공백이 없어 방향을 고정하지 못한다 —
+    utf8mb4_unicode_ci로 바꿔도 통과한다. 방향이 결과를 바꾸는 축은 PAD 규칙이다
+    (로컬 MySQL 9.6 실측, information_schema.collations의 PAD_ATTRIBUTE):
+      - utf8mb4_unicode_ci  : PAD SPACE → '휠 ' = '휠' 이 참
+      - utf8mb4_0900_ai_ci  : NO PAD    → '휠 ' = '휠' 이 거짓
+    등록이 "이미 있음"을 판정하는 기준은 item_suggestions.item_name의 유니크 인덱스
+    (0900_ai_ci)이므로 진단·마이그레이션도 그 기준으로 봐야 한다. 사전에 '휠 '만 있고
+    '휠'은 없는 상태는 도달 가능하다 — POST/PUT /api/items는 item_name을 strip하지 않는다.
+    그 상태를 unicode_ci로 보면 "이미 등록됨"으로 보여 발산이 숨는다.
+    """
+    job_id = _seed_included_pair(db_conn, "휠")
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO item_suggestions (item_name) VALUES ('휠 ')"))
+
+    def matches(collation):
+        with db_conn.begin() as conn:
+            return conn.execute(
+                text(
+                    "SELECT COUNT(*) FROM training_pairs tp "
+                    "JOIN item_suggestions it "
+                    f"  ON it.item_name = tp.canonical_label COLLATE {collation} "
+                    "WHERE tp.job_id = :j"
+                ),
+                {"j": job_id},
+            ).scalar()
+
+    assert matches("utf8mb4_0900_ai_ci") == 0, "NO PAD: '휠 '는 '휠'과 별개 항목이어야 한다"
+    assert matches("utf8mb4_unicode_ci") == 1, "PAD SPACE: 반대 방향은 발산을 숨긴다"

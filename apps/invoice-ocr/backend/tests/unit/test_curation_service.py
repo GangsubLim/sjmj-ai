@@ -166,10 +166,13 @@ def test_mark_reviewed_dedupes_repeated_labels_across_rows():
     """같은 라벨이 여러 행에 있어도 ensure_exists는 라벨당 한 번만 호출된다.
 
     반복 INSERT는 unique 인덱스 락을 매번 다시 잡는 락 위생 문제라 dedup한다.
+    공백만 다른 변형(" 휠 ")도 같은 라벨이다 — list_included_labels는 공백을 그대로
+    넘기므로(SQL은 NULL만 거른다), 원본 문자열 기준 dedup은 이 케이스를 놓쳐
+    동일한 ensure_exists("휠")를 두 번 발행한다. 정규화 후에 dedup해야 한다.
     """
     repo = MagicMock()
     repo.job_exists.return_value = True
-    repo.list_included_labels.return_value = ["휠", "중고", "휠"]
+    repo.list_included_labels.return_value = ["휠", "중고", "휠", " 휠 "]
     item_repo = MagicMock()
 
     _sync_svc(repo, item_repo).mark_reviewed(7)
@@ -223,6 +226,23 @@ def test_patch_pair_does_not_register_when_job_not_reviewed():
     item_repo = MagicMock()
 
     _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "중간값"})
+
+    assert _registered(item_repo) == []
+
+
+def test_patch_pair_skips_null_canonical_label():
+    """canonical_label이 NULL인 쌍은 등록 대상이 없다 — None 가드가 태워지는 유일한 실경로.
+
+    mark_reviewed 경로는 repository SQL이 NULL을 걸러 서비스에 None이 도달하지 않는다.
+    반면 training_pairs.canonical_label은 nullable이고 CurationPairPatch는
+    {"status": "included"} 단독 요청을 허용하므로, 검수완료 잡에서 라벨이 NULL인 쌍을
+    included로 되돌리면 _register_label(None)이 실제로 호출된다. 가드가 label.strip()으로
+    단순화되면 여기서 AttributeError → 500이 난다.
+    """
+    repo = _patched("included", None, job_reviewed=True)
+    item_repo = MagicMock()
+
+    _sync_svc(repo, item_repo).patch_pair(5, {"status": "included"})
 
     assert _registered(item_repo) == []
 

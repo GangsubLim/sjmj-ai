@@ -68,6 +68,12 @@ CREATE TABLE IF NOT EXISTS company_suggestions (
 -- 품목 자동완성 목록 테이블
 -- COLLATE 명시는 이 테이블뿐이다 — 오타가 아니라 운영 실물과의 의도적 정합이다.
 -- 운영 item_suggestions는 utf8mb4_0900_ai_ci다(2026-07-31 실측, #40).
+-- 이 파일의 나머지 테이블은 COLLATE 무명시라 DB 기본값을 상속한다. 그 기본값은
+-- 부트스트랩에 달려 있고(db/migration_poc_to_production.sql:7의 지시대로
+-- `CREATE DATABASE … COLLATE utf8mb4_unicode_ci`로 만들면 unicode_ci, MySQL 8 기본값으로
+-- 만들면 0900_ai_ci), 그래서 collation 분기의 재현은 부트스트랩 방식에 의존한다.
+-- item_suggestions만 명시하는 이유가 그것이다 — 운영에 이미 존재하는 나머지 테이블의
+-- 정의를 바꾸지 않으면서, 이 이슈가 다루는 한쪽만 부트스트랩과 무관하게 못박는다.
 -- 상호 참조: apps/invoice-ocr/backend/tests/fixtures/schema_test.sql의
 -- item_suggestions COLLATE 주석과 짝이다 — 한쪽만 고치면 드리프트.
 CREATE TABLE IF NOT EXISTS item_suggestions (

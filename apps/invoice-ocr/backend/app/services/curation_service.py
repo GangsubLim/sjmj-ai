@@ -12,6 +12,15 @@ from app.repositories.curation_repository import CurationRepository
 from app.schemas.curation import STATUS_INCLUDED
 
 
+def _normalize_label(label: str | None) -> str:
+    """정식 라벨을 등록 기준 형태로 정규화한다(없으면 빈 문자열).
+
+    정규화 규칙은 ml/tools/bank_update.partition_valid가 뱅크에 넣을 라벨을 고르는
+    규칙과 같다 — strip 후 빈 문자열이면 등록 대상이 아니다.
+    """
+    return (label or "").strip()
+
+
 class CurationService:
     """큐레이션 도메인 서비스."""
 
@@ -124,7 +133,10 @@ class CurationService:
             not_found("OCR 잡을 찾을 수 없습니다.")
         with self._transaction():
             self.repo.mark_reviewed(job_id)
-            for label in dict.fromkeys(self.repo.list_included_labels(job_id)):
+            # dedup은 정규화 후에 한다 — 원본 기준이면 "휠"과 " 휠 "가 각각 살아남아
+            # 같은 ensure_exists("휠")를 두 번 발행한다(락 위생 목적이 무너진다).
+            labels = (_normalize_label(x) for x in self.repo.list_included_labels(job_id))
+            for label in dict.fromkeys(labels):
                 self._register_label(label)
         return {"job_id": job_id, "curation_reviewed": True}
 
@@ -149,11 +161,11 @@ class CurationService:
     def _register_label(self, label: str | None) -> None:
         """정규화한 정식 라벨을 자동완성 사전에 등록한다(빈 값은 건너뛴다).
 
-        정규화 규칙은 ml/tools/bank_update.partition_valid가 뱅크에 넣을 라벨을 고르는
-        규칙과 같다 — strip 후 빈 문자열이면 건너뛴다.
+        canonical_label은 nullable이라 None이 실제로 도달한다(patch_pair 경로) —
+        _normalize_label이 그 경계를 함께 흡수한다.
         """
         if self.item_repo is None:
             return
-        name = (label or "").strip()
+        name = _normalize_label(label)
         if name:
             self.item_repo.ensure_exists(name)

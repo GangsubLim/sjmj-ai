@@ -16,8 +16,8 @@ from app.services.curation_service import CurationService
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-class _SecondCallError(Exception):
-    """두 번째 라벨 등록에서 터지는 테스트 전용 예외."""
+class _RegistrationError(Exception):
+    """라벨 등록에서 터지는 테스트 전용 예외."""
 
 
 class _FlakyItemRepo(ItemRepository):
@@ -34,17 +34,25 @@ class _FlakyItemRepo(ItemRepository):
     def ensure_exists(self, item_name: str) -> None:
         self.calls += 1
         if self.calls == 2:
-            raise _SecondCallError(item_name)
+            raise _RegistrationError(item_name)
         super().ensure_exists(item_name)
 
 
-def _seed(engine) -> int:
+class _FailingItemRepo(ItemRepository):
+    """모든 라벨 등록에서 던진다 — patch_pair는 호출당 라벨이 하나뿐이라 '두 번째'가 없다."""
+
+    def ensure_exists(self, item_name: str) -> None:
+        raise _RegistrationError(item_name)
+
+
+def _seed(engine, *, reviewed: int = 0) -> int:
     with engine.begin() as conn:
         conn.execute(
             text(
                 "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) "
-                "VALUES ('done', '/tx.jpg', 0)"
-            )
+                "VALUES ('done', '/tx.jpg', :r)"
+            ),
+            {"r": reviewed},
         )
         job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         for i, label in enumerate(["휠", "중고"]):
@@ -80,8 +88,34 @@ def test_mark_reviewed_rolls_back_everything_when_registration_fails(db_conn):
     item_repo = _FlakyItemRepo()
     service = CurationService(CurationRepository(), item_repo)
 
-    with pytest.raises(_SecondCallError):
+    with pytest.raises(_RegistrationError):
         service.mark_reviewed(job_id)
 
     assert item_repo.calls == 2
     assert _state(db_conn, job_id) == (0, 0, [])
+
+
+def test_patch_pair_rolls_back_label_update_when_registration_fails(db_conn):
+    """대칭 방어선 — patch_pair의 update_pair와 등록도 한 트랜잭션이어야 한다.
+
+    단위 테스트는 transaction=nullcontext 주입이라 이 경계에 무감각하고 contract
+    테스트는 성공 경로만 밟는다. `with self._transaction():`을 빼면 update_pair가
+    standalone tx로 먼저 커밋돼, 등록이 실패해도 바뀐 라벨만 DB에 남는다.
+    """
+    job_id = _seed(db_conn, reviewed=1)
+    with db_conn.begin() as conn:
+        pair_id = conn.execute(
+            text("SELECT id FROM training_pairs WHERE job_id = :i ORDER BY row_index LIMIT 1"),
+            {"i": job_id},
+        ).scalar()
+
+    service = CurationService(CurationRepository(), _FailingItemRepo())
+    with pytest.raises(_RegistrationError):
+        service.patch_pair(int(pair_id), {"canonical_label": "새라벨"})
+
+    with db_conn.begin() as conn:
+        label = conn.execute(
+            text("SELECT canonical_label FROM training_pairs WHERE id = :i"), {"i": pair_id}
+        ).scalar()
+    assert label == "휠"  # 등록이 실패했으니 라벨 갱신도 남지 않는다
+    assert _state(db_conn, job_id)[2] == []
