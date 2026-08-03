@@ -42,26 +42,67 @@ def _rec(job_id=1, status="gate_target", gate_pass=True, suspect=False, prev=Tru
 
 def test_parse_job_rows_tsv_maps_boolean_strings():
     # SQL이 result_json->>'$.warp_ok'로 값 하나만 뽑으므로 로컬 JSON 파싱이 없다.
-    text = "id\tresult_json->>'$.warp_ok'\n1\ttrue\n2\tfalse\n"
+    text = "id\tresult_json->>'$.warp_ok'\timage_path\n1\ttrue\t/data/ocr_uploads/a.jpg\n2\tfalse\t/data/ocr_uploads/b.jpg\n"
     assert parse_job_rows_tsv(text) == [
-        {"job_id": 1, "warp_ok": True},
-        {"job_id": 2, "warp_ok": False},
+        {"job_id": 1, "warp_ok": True, "image_path": "/data/ocr_uploads/a.jpg"},
+        {"job_id": 2, "warp_ok": False, "image_path": "/data/ocr_uploads/b.jpg"},
     ]
 
 
 def test_parse_job_rows_tsv_treats_null_as_unknown():
     # result_json이 NULL이거나 warp_ok 키가 없는 잡(미처리·failed) — 둘 다 SQL이 NULL을 준다.
-    text = "id\tresult_json->>'$.warp_ok'\n3\tNULL\n4\t\n"
+    text = "id\tresult_json->>'$.warp_ok'\timage_path\n3\tNULL\t/data/ocr_uploads/c.jpg\n4\t\t/data/ocr_uploads/d.jpg\n"
     assert parse_job_rows_tsv(text) == [
-        {"job_id": 3, "warp_ok": None},
-        {"job_id": 4, "warp_ok": None},
+        {"job_id": 3, "warp_ok": None, "image_path": "/data/ocr_uploads/c.jpg"},
+        {"job_id": 4, "warp_ok": None, "image_path": "/data/ocr_uploads/d.jpg"},
     ]
 
 
 def test_parse_job_rows_tsv_rejects_unexpected_value():
     # 예상 밖 표현을 None으로 흡수하면 무회귀 분모가 조용히 줄어 캘리브 결론이 왜곡된다.
     with pytest.raises(ValueError, match="warp_ok"):
-        parse_job_rows_tsv("id\tresult_json->>'$.warp_ok'\n7\t{\"rows\": []}\n")
+        parse_job_rows_tsv(
+            "id\tresult_json->>'$.warp_ok'\timage_path\n7\t{\"rows\": []}\t/data/ocr_uploads/e.jpg\n"
+        )
+
+
+def test_parse_job_rows_tsv_keeps_image_path():
+    # 재워프 주 기준(spec §4.1)이 잡 → 원본 사진 매핑을 요구한다.
+    text = "id\twarp_ok\timage_path\n1\ttrue\t/data/ocr_uploads/ab12.jpg\n"
+    assert parse_job_rows_tsv(text) == [
+        {"job_id": 1, "warp_ok": True, "image_path": "/data/ocr_uploads/ab12.jpg"}
+    ]
+
+
+def test_parse_job_rows_tsv_treats_null_image_path_as_missing():
+    # ocr_jobs.image_path는 nullable이다(db/migration_007_ml_seam.sql:30).
+    text = "id\twarp_ok\timage_path\n2\ttrue\tNULL\n"
+    assert parse_job_rows_tsv(text) == [{"job_id": 2, "warp_ok": True, "image_path": None}]
+
+
+def test_parse_job_rows_tsv_treats_empty_image_path_as_missing():
+    # 빈 image_path도 missing으로 합류한다 — warp_ok의 ""→None 대칭(WARP_OK_VALUES[""]).
+    # 그렇지 않으면 빈 경로가 "사진 없음"이 아니라 "사진 있음(경로 빈값)"으로 오분류된다.
+    text = "id\twarp_ok\timage_path\n5\ttrue\t\n6\tfalse\t/data/ocr_uploads/f.jpg\n"
+    assert parse_job_rows_tsv(text) == [
+        {"job_id": 5, "warp_ok": True, "image_path": None},
+        {"job_id": 6, "warp_ok": False, "image_path": "/data/ocr_uploads/f.jpg"},
+    ]
+
+
+def test_parse_job_rows_tsv_rejects_row_with_wrong_column_count():
+    # 열이 하나라도 어긋나면 매핑이 조용히 밀린다 — 캘리브 근거가 통째로 왜곡되므로 fail-fast.
+    with pytest.raises(ValueError, match="열"):
+        parse_job_rows_tsv("id\twarp_ok\timage_path\n3\ttrue\n")
+
+
+def test_parse_job_rows_tsv_rejects_image_path_with_embedded_tab():
+    # image_path 안의 탭이 열 경계를 밀어 4열이 되는 경우 — 자매 파서
+    # curation_enrich.parse_jobs_tsv:79가 지적하는 동일 위험(업로드 파일명 suffix의 탭 혼입)에
+    # 대한 방어선이다. 조용히 밀리지 않고 fail-fast해야 한다.
+    text = "id\twarp_ok\timage_path\n6\ttrue\t/data/ocr_uploads/a\tb.jpg\n"
+    with pytest.raises(ValueError, match="열"):
+        parse_job_rows_tsv(text)
 
 
 # --- 분모 분류 ---

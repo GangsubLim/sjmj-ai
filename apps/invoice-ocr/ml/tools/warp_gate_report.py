@@ -40,10 +40,12 @@ DEFAULT_CACHE = ML_ROOT / "results" / "warp_gate"
 JOBS_NAME = "jobs.json"
 WARPED_GLOB = "job-*/warped.png"
 
-# 전수 조회 — result_json 통째가 아니라 warp_ok 한 값만 서버에서 뽑는다. 값이 true/false/NULL
-# 뿐이라 TSV 컬럼 경계 오염(제어문자·개행) 여지가 원천 소멸하고 전송량도 줄며, 로컬 JSON
-# 파싱(=파싱 실패를 None으로 삼키던 자리)이 아예 없어진다.
-JOBS_SQL = "SELECT id, result_json->>'$.warp_ok' FROM ocr_jobs ORDER BY id"
+# 전수 조회 — result_json 통째가 아니라 warp_ok 한 값만 서버에서 뽑는다. warp_ok 값 자체는
+# true/false/NULL뿐이라 경계 오염 여지가 없지만, 자유형 image_path(VARCHAR(512))가 업로드
+# 파일명 suffix를 물려받아 탭이 섞일 수 있어(tools/curation_enrich.py:79 참조) TSV 컬럼 경계
+# 오염 여지가 다시 생겼다. 로컬 JSON 파싱(=파싱 실패를 None으로 삼키던 자리)은 여전히 없고,
+# 열 수 검사(parse_job_rows_tsv)가 조용한 밀림 대신 즉시 ValueError로 실패시킨다.
+JOBS_SQL = "SELECT id, result_json->>'$.warp_ok', image_path FROM ocr_jobs ORDER BY id"
 
 STATUS_GATE_TARGET = "gate_target"
 STATUS_QUAD_MISSING = "quad_missing"
@@ -62,21 +64,37 @@ WARP_OK_VALUES = {"true": True, "false": False, "NULL": None, "": None}
 
 
 def parse_job_rows_tsv(text: str) -> list[dict]:
-    """mysql --batch TSV(id, warp_ok)를 [{job_id, warp_ok}]로 파싱한다.
+    """mysql --batch TSV(id, warp_ok, image_path)를 레코드 리스트로 파싱한다.
 
     Raises:
-        ValueError: warp_ok 열이 위 표현이 아닐 때. 예상 밖 값을 None으로 흡수하면 무회귀
-            분모가 조용히 줄어 캘리브 결론이 왜곡되므로 fail-fast한다(curation_report 관례).
+        ValueError: 열 수가 헤더와 다르거나 warp_ok가 예상 밖 표현일 때. 예상 밖 값을 None으로
+            흡수하면 무회귀 분모가 조용히 줄어 캘리브 결론이 왜곡되므로 fail-fast한다.
     """
+    lines = text.strip().split("\n")
+    # 열 수는 헤더에서 파생한다 — JOBS_SQL의 프로젝션 열 수가 바뀌면 이 검사도 함께 움직인다.
+    n_cols = len(lines[0].split("\t"))
     out = []
-    for ln in text.strip().split("\n")[1:]:
+    for ln in lines[1:]:
         if not ln.strip():
             continue
-        job_id, _, raw = ln.partition("\t")
+        cells = ln.split("\t")
+        if len(cells) != n_cols:
+            raise ValueError(f"jobs TSV 열 수가 {n_cols}이 아니다({len(cells)}): {ln!r}")
+        job_id, raw, image_path = cells
         raw = raw.strip()
         if raw not in WARP_OK_VALUES:
             raise ValueError(f"warp_ok 값이 예상 밖이다(job_id={job_id}): {raw!r}")
-        out.append({"job_id": int(job_id), "warp_ok": WARP_OK_VALUES[raw]})
+        image_path = image_path.strip()
+        out.append(
+            {
+                "job_id": int(job_id),
+                "warp_ok": WARP_OK_VALUES[raw],
+                # image_path는 nullable이다 — mysql --raw는 NULL을 리터럴 'NULL'로 준다. 빈
+                # 문자열도 missing으로 합류시킨다(warp_ok가 ""를 None으로 접는 것과 대칭 —
+                # 안 그러면 "사진 없음"이 "사진 있음(경로 빈값)"으로 오분류된다).
+                "image_path": None if image_path in ("NULL", "") else image_path,
+            }
+        )
     return out
 
 
