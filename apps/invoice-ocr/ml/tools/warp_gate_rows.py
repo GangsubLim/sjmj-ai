@@ -51,7 +51,8 @@ def rewarp(bgr):
     quad = _form_quad(bgr)
     if quad is None:
         return None
-    # infer_job.py:147은 warp를 두 번 부르지만 warp는 결정론적 순수 변환이라 1회로 동치다.
+    # handwriting.infer_job.infer_job()의 워프 호출부는 warp를 두 번 부르지만
+    # warp는 결정론적 순수 변환이라 1회로 동치다.
     w = warp(bgr, quad)
     return rotate(w, deskew_angle(w))
 
