@@ -66,21 +66,25 @@ CREATE TABLE IF NOT EXISTS company_suggestions (
 );
 
 -- 품목 자동완성 목록 테이블
+-- COLLATE 명시는 이 테이블뿐이다 — 오타가 아니라 운영 실물과의 의도적 정합이다.
+-- 운영 item_suggestions는 utf8mb4_0900_ai_ci다(2026-07-31 실측, #40).
+-- 상호 참조: apps/invoice-ocr/backend/tests/fixtures/schema_test.sql의
+-- item_suggestions COLLATE 주석과 짝이다 — 한쪽만 고치면 드리프트.
 CREATE TABLE IF NOT EXISTS item_suggestions (
     id INT PRIMARY KEY AUTO_INCREMENT,
     item_name VARCHAR(200) UNIQUE NOT NULL,
     default_unit VARCHAR(20),
     usage_count INT DEFAULT 0,
     last_used TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-);
+) COLLATE=utf8mb4_0900_ai_ci;
 
 -- 기본 회사 데이터 삽입 (iOS 앱과 동일)
-INSERT INTO company_suggestions (company_name) VALUES 
+INSERT INTO company_suggestions (company_name) VALUES
 ('한국강화')
 ON DUPLICATE KEY UPDATE company_name = VALUES(company_name);
 
 -- 기본 품목 데이터 삽입 (iOS 앱과 동일)
-INSERT INTO item_suggestions (item_name, default_unit) VALUES 
+INSERT INTO item_suggestions (item_name, default_unit) VALUES
 ('엔진오일', 'EA'),
 ('파워오일', 'EA'),
 ('파워오일휠터', 'EA'),

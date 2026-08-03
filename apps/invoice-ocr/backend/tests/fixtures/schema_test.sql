@@ -89,6 +89,11 @@ CREATE TABLE company_suggestions (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 품목 자동완성 목록 테이블 (schema.sql + migration_002)
+-- 운영 실물과 정합: 운영 item_suggestions는 utf8mb4_0900_ai_ci다(2026-07-31 실측).
+-- training_pairs(utf8mb4_unicode_ci)와 갈린 이 분기가 이 이슈가 다루는 비교의 실제
+-- 조건이므로 테스트가 재현해야 한다(#40 spec §3.5). 갈린 경위는 미검증이다 —
+-- db/schema.sql은 COLLATE 무명시이고 부트스트랩은 DB 기본을 unicode_ci로 만든다.
+-- 상호 참조: db/schema.sql의 item_suggestions COLLATE 주석과 짝이다 — 한쪽만 고치면 드리프트.
 CREATE TABLE item_suggestions (
     id INT PRIMARY KEY AUTO_INCREMENT,
     item_name VARCHAR(200) UNIQUE NOT NULL,
@@ -100,7 +105,7 @@ CREATE TABLE item_suggestions (
     last_used TIMESTAMP NULL DEFAULT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_category (category)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- 앱 설정 테이블 (migration_003)
 CREATE TABLE app_settings (
