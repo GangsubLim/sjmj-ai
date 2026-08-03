@@ -139,7 +139,7 @@ def test_skips_null_empty_and_whitespace_labels(db_conn):
 
     _apply(db_conn)
 
-    assert _names(db_conn) == ["라이닝1조"]  # TRIM 적용, 빈 값은 제외
+    assert _names(db_conn) == ["라이닝1조"]  # 앞뒤 공백 제거 후 빈 값은 제외
 
 
 def test_is_idempotent_on_second_run(db_conn):
