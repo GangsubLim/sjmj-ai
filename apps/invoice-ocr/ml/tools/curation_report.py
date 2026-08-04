@@ -24,6 +24,7 @@ import shlex
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 # bank_id는 stdlib 전용이고 handwriting에 __init__.py가 없는 암묵 namespace 패키지라
 # 모듈 레벨 import가 numpy/torch를 끌지 않는다(paddle-free 코어 규약 유지).
@@ -114,7 +115,7 @@ REEVAL_SUBDIR = "results/bank_update"
 REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_meta.json"))
 # 원자 교체 한 벌의 마지막 파일 — 앞의 두 파일을 **해석하는** 쪽이라 가장 나중에 갈아끼운다(M2).
 CACHE_META = "meta.json"
-# 교정 이력 캐시 파일명 — report 경로 전용(_require_corrections·_load_corrections)이 공유한다.
+# 교정 이력 캐시 파일명 — report 가드(_require_corrections)와 읽기(_load_corrections)가 공유한다.
 CACHE_CORRECTIONS = "corrections.json"
 
 
@@ -336,29 +337,133 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     return meta
 
 
+def crops_tar_script(backend_env: str, job_ids: list[int]) -> str:
+    """지정 잡의 크롭 디렉터리 중 **존재하는 것만** 묶는 원격 tar 스크립트를 만든다.
+
+    현행처럼 `tar -C ... job-57`을 그대로 부르면 디렉터리가 없을 때 tar가 비0으로 죽어
+    RemoteError가 나고, `--originals` 분기에 도달조차 못 한다(spec §6). 좁히기만 하므로
+    존재하는 디렉터리는 전부 그대로 통과한다.
+
+    누산은 위치 인자(`set --` / `"$@"`)로 한다 — 문자열에 모아 비인용 확장하면 zsh가
+    단어분리를 하지 않아(SH_WORD_SPLIT 기본 off) tar가 " job-1" 하나를 찾다 실패한다(실측).
+    `cd` 실패를 exit 0으로 흡수하는 것은 reeval_probe_script와 같은 관용구다.
+
+    job_ids는 **인용 없이** 보간되므로 정수 여부를 경계에서 검증한다 — 현재 호출부는 argparse
+    `type=int`·`int(...)`로 전부 정수지만 이 함수는 공개 함수라 그 보장이 코드에 없다.
+    `remote_path`와 같은 fail-fast 규약이다: 오타 하나가 원격에서 조용히 다른 명령이 되는 것보다
+    즉시 실패가 낫다(`bool`은 `int`의 하위형이라 따로 뺀다 — `job-True`는 경로가 아니다).
+
+    Raises:
+        ValueError: job_ids에 음이 아닌 정수가 아닌 값이 있을 때.
+    """
+    if not all(isinstance(j, int) and not isinstance(j, bool) and j >= 0 for j in job_ids):
+        raise ValueError(f"job_ids는 음이 아닌 정수여야 한다: {job_ids!r}")
+    names = " ".join(f"job-{j}" for j in job_ids)
+    return (
+        f"{source_env(backend_env)}"
+        'cd "$SJMJ_DATA_DIR/ocr_crops" 2>/dev/null || exit 0; '
+        "set --; "
+        f'for d in {names}; do [ -d "$d" ] && set -- "$@" "$d"; done; '
+        "[ $# -gt 0 ] || exit 0; "
+        'tar -cf - "$@"'
+    )
+
+
+def _original_image_paths(cache: Path, job_ids: list[int]) -> dict[int, str]:
+    """원본 사진 경로를 찾는다 — jobs.json 우선, 없으면 corrections.json 폴백.
+
+    JOBS_SQL이 training_pairs 보유 잡으로 제한돼 있어 쌍 0개 잡은 jobs.json에 없다(조용히
+    아무것도 저장하지 않고 성공으로 끝났다). corrections.json이 같은 값을 이미 싣고 있으므로
+    **새 쿼리·새 ssh 왕복은 0이다.** 폴백 파일이 없으면(구버전 캐시) 기존 동작으로 떨어진다.
+
+    손상 방어는 `_load_corrections`를 그대로 재사용한다 — 같은 파일을 생 `json.loads`로 다시
+    읽으면 중단된 fetch가 남긴 잘린 파일에서 파일명도 복구 절차도 없는 raw JSONDecodeError가
+    난다(그것도 크롭 압축 해제를 마친 뒤에).
+
+    Raises:
+        ValueError: corrections.json이 손상됐을 때(_load_corrections의 문구·복구 절차 그대로).
+    """
+    sources: list[list[dict]] = []
+    jobs_path = cache / "jobs.json"
+    if jobs_path.exists():
+        sources.append(json.loads(jobs_path.read_text(encoding="utf-8")))
+    if (cache / CACHE_CORRECTIONS).exists():
+        sources.append(_load_corrections(cache))
+    paths: dict[int, str] = {}
+    for records in sources:  # 순서가 곧 우선순위다 — setdefault가 jobs.json을 이긴 채로 둔다.
+        for rec in records:
+            # image_path가 NULL인 잡은 "경로 없음"으로 다뤄 경고 경로로 보낸다(cat 'NULL' 금지).
+            if rec.get("image_path"):
+                paths.setdefault(rec["job_id"], rec["image_path"])
+    return {j: paths[j] for j in job_ids if j in paths}
+
+
+class PullResult(NamedTuple):
+    """pull_images 결과 — 회수 디렉터리와 **원본** 회수 성패 건수.
+
+    건수를 반환값에 싣는 이유: `except RemoteError`에는 호스트 다운·인증 실패·타임아웃이 함께
+    들어오므로 원본이 전량 실패해도 CLI 요약 줄은 성공을 단언한다. 이 도구의 소비자는 꼬리 줄만
+    읽는 LLM 에이전트라 그 오독 여지가 크다(종료코드 계약은 그대로 둔다 — 이 슬라이스 범위 밖).
+    """
+
+    out_dir: Path
+    saved: int
+    failed: int
+
+
+def _originals_summary(result: PullResult, n_jobs: int, with_originals: bool) -> str:
+    """CLI 요약 줄에 덧붙일 원본 회수 성패 조각을 만든다(요청하지 않았으면 빈 문자열)."""
+    if not with_originals:
+        return ""  # 요청하지 않은 회수의 0/N은 없는 실패를 지어내는 것이다.
+    return f", 원본 {result.saved}/{n_jobs} 회수 · {result.failed}건 실패"
+
+
 def pull_images(
     host: str, backend_env: str, cache: Path, job_ids: list[int], with_originals: bool
-) -> Path:
-    """지정 잡들의 크롭 디렉터리(+옵션 원본 사진)를 캐시로 동기화한다."""
+) -> PullResult:
+    """지정 잡들의 크롭 디렉터리(+옵션 원본 사진)를 캐시로 동기화한다.
+
+    크롭이 하나도 없는 잡(행검출 전멸)에서도 죽지 않는다 — 원격이 빈 출력을 내면 압축 해제를
+    건너뛰고 원본 회수로 넘어간다.
+    """
     out_dir = cache / "images"
     out_dir.mkdir(parents=True, exist_ok=True)
     # 빈 목록이면 원격 tar가 인자 없이 실행돼 exit 1로 죽는다 — 정상 상태이므로 no-op.
     if not job_ids:
-        return out_dir
-    names = " ".join(f"job-{j}" for j in job_ids)
-    tar_script = f'{source_env(backend_env)}tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {names}'
-    with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script))) as tf:
-        tf.extractall(out_dir, filter="data")
-    if with_originals:
-        jobs = json.loads((cache / "jobs.json").read_text())
-        for j in jobs:
-            if j["job_id"] in job_ids:
-                # image_path는 신뢰 DB 값이지만 원격 셸에 들어가므로 방어적으로 quote한다.
-                data = run_ssh(host, f"cat {shlex.quote(j['image_path'])}")
-                dst = out_dir / f"job-{j['job_id']}"
-                dst.mkdir(parents=True, exist_ok=True)
-                (dst / "original.jpg").write_bytes(data)
-    return out_dir
+        return PullResult(out_dir, saved=0, failed=0)
+    payload = run_ssh(host, crops_tar_script(backend_env, job_ids))
+    if payload:
+        with tarfile.open(fileobj=io.BytesIO(payload)) as tf:
+            tf.extractall(out_dir, filter="data")
+    else:
+        # 디렉터리 선별이 tar 실패를 흡수하므로 오설정(SJMJ_DATA_DIR)도 빈 출력으로 온다 —
+        # CLI가 "동기화 완료"만 인쇄하면 조용한 성공이 된다(현행은 tar 비0으로 즉시 드러났다).
+        print(f"크롭 0건 회수(디렉터리 부재·크롭 미생성·SJMJ_DATA_DIR 오설정): {job_ids}")
+    if not with_originals:
+        return PullResult(out_dir, saved=0, failed=0)
+    paths = _original_image_paths(cache, job_ids)
+    missing = [j for j in job_ids if j not in paths]
+    if missing:
+        print(f"원본 경로를 찾지 못한 잡(캐시에 없음): {missing} — 나머지는 계속 회수한다")
+    saved = 0
+    for jid, image_path in sorted(paths.items()):
+        # image_path는 신뢰 DB 값이지만 원격 셸에 들어가므로 방어적으로 quote한다. `--`는
+        # `-`로 시작하는 경로가 cat의 옵션으로 해석되는 것을 막는다(정확히 `-`면 원격 stdin에서
+        # timeout까지 멈춘다).
+        try:
+            data = run_ssh(host, f"cat -- {shlex.quote(image_path)}")
+        except RemoteError as e:
+            # 사진 삭제·경로 stale은 그 잡만의 문제다 — 나머지 회수를 취소하지 않는다.
+            print(f"원본을 읽지 못한 잡 {jid}({image_path}): {e} — 나머지는 계속 회수한다")
+            continue
+        if not data:
+            # 0바이트도 cat은 성공이다 — 알리지 않으면 빈 original.jpg가 사진으로 오인된다.
+            print(f"원본이 0바이트인 잡 {jid}({image_path}) — 원격 파일을 확인한다")
+        dst = out_dir / f"job-{jid}"
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "original.jpg").write_bytes(data)
+        saved += 1
+    return PullResult(out_dir, saved=saved, failed=len(job_ids) - saved)
 
 
 def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -> Path:
@@ -448,7 +553,9 @@ def _require_corrections(cache: Path) -> None:
 
 
 def _load_corrections(cache: Path) -> list[dict]:
-    """report 경로 전용 — 교정 이력 캐시를 읽는다(읽기 인코딩은 쓰기와 맞춘다, L5).
+    """교정 이력 캐시를 읽는다 — report 렌더와 `_original_image_paths` 폴백이 공유한다.
+
+    (읽기 인코딩은 쓰기와 맞춘다, L5.)
 
     `_reeval_info`(H2)와 같은 관용구로 손상을 막는다(M4) — corrections.json은 비원자
     `_write_json`으로 쓰이므로 중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다.
@@ -542,9 +649,11 @@ def main(argv: list[str] | None = None) -> None:
         if not job_ids:
             print("실패 잡이 없어 가져올 이미지가 없습니다.")
             return
-        out_dir = pull_images(args.host, backend_env, args.cache, job_ids, args.originals)
+        result = pull_images(args.host, backend_env, args.cache, job_ids, args.originals)
         index = _write_images_index(args.cache, enriched, job_ids)
-        print(f"이미지 동기화 → {out_dir} (잡 {len(job_ids)}개)\n인덱스: {index}")
+        # 회수 성패를 요약 줄에 싣는다 — 전량 실패도 꼬리 줄만 보면 성공으로 읽힌다.
+        originals = _originals_summary(result, len(job_ids), args.originals)
+        print(f"이미지 동기화 → {result.out_dir} (잡 {len(job_ids)}개{originals})\n인덱스: {index}")
 
 
 if __name__ == "__main__":
