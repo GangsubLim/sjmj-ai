@@ -170,6 +170,10 @@ def test_corrections_sql_mirrors_the_backend_confirmed_predicate():
     문자열을 재진술하는 항진 대신 backend 소스를 직접 읽어 대조한다(M1) — backend는
     git-tracked라 fresh clone·CI에서도 경로가 성립한다
     (test_bank_update_shares_the_pairs_query와 같은 관용구).
+
+    양쪽 모두 **predicate 목록 전체**를 대조한다 — 파일 전체를 substring 검색하면 네 번째
+    predicate가 붙어도(예: `AND j.status = 'done'`) 세 단언이 그대로 통과해, 이 테스트가
+    막겠다고 선언한 바로 그 분기를 놓친다. 목록 비교는 개수까지 함께 고정한다.
     """
     backend_src = (
         Path(__file__).resolve().parent.parent.parent
@@ -178,12 +182,22 @@ def test_corrections_sql_mirrors_the_backend_confirmed_predicate():
         / "repositories"
         / "ocr_repository.py"
     ).read_text(encoding="utf-8")
-    assert "WHERE j.invoice_id IS NULL" in backend_src
-    assert "NOT EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id)" in backend_src
-    assert "NOT EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)" in backend_src
-    assert "j.invoice_id IS NOT NULL" in CORRECTIONS_SQL
-    assert "EXISTS (SELECT 1 FROM ocr_corrections c2 WHERE c2.job_id = j.id)" in CORRECTIONS_SQL
-    assert "EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)" in CORRECTIONS_SQL
+    where_block = re.search(r"_UNCONFIRMED_WHERE = \(\n(.*?)\n\)", backend_src, re.DOTALL)
+    assert where_block is not None, "백엔드 _UNCONFIRMED_WHERE 상수를 찾지 못했다"
+    assert [p.strip() for p in re.findall(r'"([^"]*)"', where_block.group(1))] == [
+        "WHERE j.invoice_id IS NULL",
+        "AND NOT EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id)",
+        "AND NOT EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)",
+    ]
+    # 서브쿼리에도 WHERE가 있어 바깥 WHERE는 첫 predicate로 앵커한다(앵커가 깨지면 아래 단언이
+    # None으로 즉시 RED가 되므로 드리프트는 그대로 잡힌다).
+    ml_where = re.search(r"WHERE (j\.invoice_id IS NOT NULL .+?) ORDER BY", CORRECTIONS_SQL)
+    assert ml_where is not None, "CORRECTIONS_SQL에서 바깥 WHERE 절을 찾지 못했다"
+    assert ml_where.group(1).split(" OR ") == [
+        "j.invoice_id IS NOT NULL",
+        "EXISTS (SELECT 1 FROM ocr_corrections c2 WHERE c2.job_id = j.id)",
+        "EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)",
+    ]
 
 
 def test_corrections_cols_match_the_sql_alias_order():
@@ -689,11 +703,15 @@ def test_correction_helper_matches_the_parser_shape():
     known 분기뿐 아니라 unknown 분기도 대조한다 — 다섯 값을 None으로 접는 규칙이
     curation_enrich.py와 여기 두 곳에 손으로 복제돼 있어, known만 고정하면 한쪽만
     바뀌어도 아무 테스트도 울리지 않는다.
+
+    known 분기는 추가·폐기가 서로 다른 비대칭 값으로 대조한다 — 기본 행(추가 0·폐기 0)은
+    draft_rows == confirmed_rows == n_lines이라, 헬퍼의 파생식이 뒤바뀌거나 항을 잃어도
+    이 대조가 그대로 통과한다. row_gap 임계 테스트들이 전부 이 파생값에 기대므로
+    드리프트가 이 자리에서 잡혀야 한다.
     """
     hdr = "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path\n"
-    parsed = parse_corrections_tsv(hdr + "1\t1\t0\t0\t3\t/data/up/1.jpeg")[0]
-    assert _correction().keys() == parsed.keys()
-    assert _correction() == parsed
+    parsed = parse_corrections_tsv(hdr + "1\t1\t2\t1\t3\t/data/up/1.jpeg")[0]
+    assert _correction(rows_added=2, rows_dropped=1) == parsed
 
     parsed_null = parse_corrections_tsv(hdr + "1\t0\tNULL\tNULL\tNULL\t/data/up/1.jpeg")[0]
     assert _correction(n_lines=None, has_correction=False, n_corrections=0) == parsed_null
@@ -707,18 +725,23 @@ def test_is_row_balance_known_is_the_single_source_of_the_unknown_predicate():
 
 
 def test_summarize_row_balance_sums_only_the_known_jobs():
+    """추가·폐기 총계를 다르게 둬 초안 행과 확정 행이 서로 다른 수가 되게 한다.
+
+    두 축이 우연히 같은 수가 되는 표본을 쓰면 합계의 출처를 맞바꿔도(초안↔확정) 아무 단언도
+    울리지 않는다 — 초안 행과 확정 행을 거꾸로 인쇄하는 것은 리포트의 핵심 오독이다.
+    """
     corrections = [
         _correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1),
-        _correction(job_id=2, n_lines=5, rows_added=0, rows_dropped=2),
+        _correction(job_id=2, n_lines=5, rows_added=1, rows_dropped=2),
         _correction(job_id=3, n_lines=None),  # 미상 — 합계에서 빠진다
     ]
     rb = summarize_row_balance(corrections)
     assert rb["n_confirmed_jobs"] == 3
     assert rb["n_lines"] == 15
-    assert rb["rows_added"] == 3
+    assert rb["rows_added"] == 4
     assert rb["rows_dropped"] == 3
     assert rb["draft_rows"] == 18  # (10+1) + (5+2)
-    assert rb["confirmed_rows"] == 18  # (10+3) + (5+0)
+    assert rb["confirmed_rows"] == 19  # (10+3) + (5+1)
 
 
 def test_summarize_row_balance_splits_the_two_kinds_of_unknown():

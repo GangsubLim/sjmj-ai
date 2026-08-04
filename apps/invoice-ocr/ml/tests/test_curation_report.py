@@ -31,7 +31,7 @@ from tools.curation_cohort import REEVAL_STATES, is_item_failure
 from tools.curation_render import reeval_notice
 from tools.curation_report import (
     _BANK_PY,
-    _CACHE_RECOVERY,
+    _CACHE_REFETCH,
     PullResult,
     _clear_reeval,
     _cmd_fetch,
@@ -318,12 +318,14 @@ def _assert_names_file_and_recovery(err, filename):
     """손상 메시지가 **파일명과 복구 절차를** 함께 말하는지 본다.
 
     파일명만 보던 단언은 테스트 이름이 약속한 "복구 절차"를 검증하지 않았다 — 지침을 지워도
-    GREEN이었다. 문구는 상수(`_CACHE_RECOVERY`)로 대조해 기대값을 손으로 복제하지 않되, 상수가
+    GREEN이었다. 문구는 상수(`_CACHE_REFETCH`)로 대조해 기대값을 손으로 복제하지 않되, 상수가
     빈 문자열이 되면 `"" in text`가 항진이 되므로 비어있지 않음과 실제 조치(`fetch`)를 함께 본다.
+    대조 대상이 `_CACHE_RECOVERY`(진단+절차)가 아니라 `_CACHE_REFETCH`(절차)인 이유: 손상이
+    아닌 구버전 캐시 가드는 진단 문구 없이 절차만 싣는다(둘 다 이 절차로 끝난다).
     """
     text = str(err.value)
     assert filename in text, text
-    assert _CACHE_RECOVERY and _CACHE_RECOVERY in text, text
+    assert _CACHE_REFETCH and _CACHE_REFETCH in text, text
     assert "fetch" in text, text  # 복구 절차가 실행할 명령을 가리킨다
 
 
@@ -607,6 +609,9 @@ def test_report_command_fails_fast_on_a_cache_without_the_correction_history(tmp
     with pytest.raises(ValueError) as err:
         main(["--cache", str(tmp_path), "report"])
     _assert_names_file_and_recovery(err, "corrections.json")
+    # 이 가드가 주로 잡는 것은 멀쩡한 구버전 캐시다 — "손상이다"를 단정하면 운영자를 엉뚱한
+    # 조치(캐시 삭제)로 보내고, 같은 메시지 앞줄이 적는 사유(구버전·중단된 fetch)와도 어긋난다.
+    assert "손상" not in str(err.value)
 
 
 def test_report_command_names_the_file_and_the_recovery_when_corrections_are_corrupt(tmp_path):
@@ -617,6 +622,21 @@ def test_report_command_names_the_file_and_the_recovery_when_corrections_are_cor
     """
     _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
     (tmp_path / "corrections.json").write_text("{not json}", encoding="utf-8")
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "corrections.json")
+
+
+@pytest.mark.parametrize("body", ["{}", '"corrupt"', "null"])
+def test_report_command_rejects_a_corrections_cache_that_is_not_an_array(tmp_path, body):
+    """M4의 나머지 절반 — 파싱은 되지만 배열이 아닌 캐시도 경계에서 막는다.
+
+    `_reeval_info`의 "JSON 객체가 아니다" 가드와 같은 축이다(그쪽은 `[1, 2]`/`"corrupt"`/`null`로
+    닫혀 있다). 통과시키면 `{}` 캐시가 렌더 안쪽에서 파일명도 복구 절차도 없는 TypeError로 죽어
+    원인이 파싱 경계에서 멀어진다.
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "corrections.json").write_text(body, encoding="utf-8")
     with pytest.raises(ValueError) as err:
         main(["--cache", str(tmp_path), "report"])
     _assert_names_file_and_recovery(err, "corrections.json")
@@ -1123,12 +1143,75 @@ def test_pull_images_skips_a_job_whose_image_path_is_null(tmp_path, monkeypatch,
     assert "원본 경로를 찾지 못한 잡(캐시에 없음): [57]" in capsys.readouterr().out
 
 
+def test_pull_images_skips_a_job_whose_jobs_cache_holds_a_raw_null_path(
+    tmp_path, monkeypatch, capsys
+):
+    """jobs.json은 `--raw` 질의라 SQL NULL이 **문자열** "NULL"로 온다 — 그대로 두면 truthy다.
+
+    corrections.json은 `_cell`이 None으로 접지만 jobs.json이 setdefault 우선이라 폴백이 그 자리를
+    회수하지 못한다. 결과는 원격에 나가는 `cat -- NULL`과 원인을 틀리게 적는 경고다.
+    """
+    _write_cache(
+        tmp_path,
+        pairs=[],
+        jobs=[{"job_id": 57, "image_path": "NULL", "result": {"rows": []}}],
+        corrections=[{**_correction(job_id=57), "image_path": None}],
+    )
+    calls: list[str] = []
+
+    def fake_ssh(host, script):
+        calls.append(script)
+        return b""
+
+    monkeypatch.setattr("tools.curation_report.run_ssh", fake_ssh)
+    pull_images("h", "e.env", tmp_path, [57], with_originals=True)
+    assert not any(c.startswith("cat ") for c in calls)
+    assert "원본 경로를 찾지 못한 잡(캐시에 없음): [57]" in capsys.readouterr().out
+
+
+def test_pull_images_quotes_an_original_path_that_needs_quoting(tmp_path, monkeypatch):
+    """image_path는 DB 값이지만 원격 셸 문자열에 보간된다 — 인용이 그 계약이다.
+
+    다른 픽스처의 경로는 전부 메타문자가 없어 `shlex.quote`가 no-op이라, 인용을 지우고
+    `f"cat -- {image_path}"`로 바꿔도 GREEN이었다(`--` 종결자만 보호되고 있었다).
+    """
+    _write_cache(
+        tmp_path,
+        pairs=[],
+        jobs=[],
+        corrections=[{**_correction(job_id=57), "image_path": "/data/up/57 x;id.jpeg"}],
+    )
+    calls: list[str] = []
+
+    def fake_ssh(host, script):
+        calls.append(script)
+        return b"" if "tar -cf -" in script else b"J"
+
+    monkeypatch.setattr("tools.curation_report.run_ssh", fake_ssh)
+    pull_images("h", "e.env", tmp_path, [57], with_originals=True)
+    # 조립 결과 전문을 고정한다 — 부분 문자열 단언은 인용이 빠진 형태도 통과시킨다.
+    assert calls[-1] == "cat -- '/data/up/57 x;id.jpeg'"
+
+
 def test_pull_images_warns_when_an_original_comes_back_empty(tmp_path, monkeypatch, capsys):
     """0바이트 성공은 빈 original.jpg를 남긴다 — 검수자가 빈 파일을 사진으로 오인한다."""
     _write_cache(tmp_path, pairs=[], jobs=[], corrections=[_correction(job_id=57)])
     monkeypatch.setattr("tools.curation_report.run_ssh", lambda host, script: b"")
     pull_images("h", "e.env", tmp_path, [57], with_originals=True)
     assert "원본이 0바이트인 잡 57(/data/up/57.jpeg)" in capsys.readouterr().out
+
+
+def test_pull_images_does_not_count_a_zero_byte_original_as_saved(tmp_path, monkeypatch):
+    """0바이트는 회수가 아니다 — 세면 요약 줄이 "원본 1/1 회수 · 0건 실패"로 성공을 단언한다.
+
+    그 오독을 막으려고 `PullResult`가 건수를 싣는다(소비자는 꼬리 줄만 읽는 LLM 에이전트다).
+    빈 파일도 남기지 않는다 — 경고만으로는 original.jpg가 그대로 남아 사진으로 오인된다.
+    """
+    _write_cache(tmp_path, pairs=[], jobs=[], corrections=[_correction(job_id=57)])
+    monkeypatch.setattr("tools.curation_report.run_ssh", lambda host, script: b"")
+    result = pull_images("h", "e.env", tmp_path, [57], with_originals=True)
+    assert (result.saved, result.failed) == (0, 1)
+    assert not (result.out_dir / "job-57" / "original.jpg").exists()
 
 
 def test_pull_images_command_reports_how_many_originals_it_saved(tmp_path, monkeypatch, capsys):

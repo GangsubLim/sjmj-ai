@@ -56,6 +56,15 @@ JOBS_SQL = (
 # (parse_jobs_tsv의 탭 방어는 그쪽이 raw=True라 이스케이프가 없기 때문이다 — 근거가 다르다.)
 # 별칭(AS)은 필수다 — mysql --batch TSV 헤더가 표현식 원문이 되면 읽기가 SQL에 묶이고,
 # SELECT 순서는 CORRECTION_COLS와 정확히 같아야 한다(파서가 헤더로 대조해 fail-fast한다, M3).
+# 수지 세 필드의 JSON 값 **타입**은 검사하지 않는다 — ocr_corrections에 쓰는 경로가
+# `ocr_repository.insert_correction` 하나뿐이고 그 인자는 항상 `build_correction`의 산출
+# (rows_added·rows_dropped는 int, lines는 list)이라 타입 붕괴가 도달 불가이기 때문이다.
+# 이 전제가 깨지면 함정 둘이 함께 열린다(MySQL 실측): JSON null은 --batch에서 대문자 NULL이
+# 아니라 문자열 'null'로 찍혀 _cell을 통과한 뒤 int()에서 죽고, JSON_LENGTH는 lines가 비배열
+# 스칼라면 1을 돌려줘 n_lines를 조용히 1로 만든다. writer가 늘면 형제 모듈
+# (`ocr_repository.list_unconfirmed`)처럼 CASE WHEN + JSON_TYPE으로 막는다 — 지금 넣지 않는
+# 이유는 타입 붕괴를 NULL로 접으면 "교정 JSON 결손"(n_missing_json_jobs)으로 오귀속돼 리포트가
+# 원인을 틀리게 인쇄하기 때문이다(도달 불가 경로를 위해 오진을 사는 거래는 하지 않는다).
 CORRECTIONS_SQL = (
     "SELECT j.id AS job_id, "
     "(SELECT COUNT(*) FROM ocr_corrections c3 WHERE c3.job_id = j.id) AS n_corrections, "

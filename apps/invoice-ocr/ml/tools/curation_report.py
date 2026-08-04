@@ -106,8 +106,11 @@ _FINGERPRINT_IMPORT_MARKERS = (
 # 상단 메시지에 실을 원격 stderr 꼬리 줄 수 — traceback 전문은 길고 원인은 끝에 있다.
 _STDERR_EXCERPT_LINES = 3
 
-# 캐시 손상은 원인이 무엇이든 복구 절차가 하나다 — 서버에서 다시 받는다.
-_CACHE_RECOVERY = "로컬 캐시 손상이다. `fetch`를 다시 실행한다."
+# 캐시가 못 쓰게 된 이유는 갈리지만 복구 절차는 하나다 — 서버에서 다시 받는다.
+_CACHE_REFETCH = "`fetch`를 다시 실행한다."
+# 손상 전용 문구. 구버전·중단 fetch 가드는 절차만 쓴다 — 멀쩡한 옛 캐시에 "손상이다"를 단정하면
+# 운영자를 엉뚱한 조치(캐시 삭제)로 보낸다.
+_CACHE_RECOVERY = f"로컬 캐시 손상이다. {_CACHE_REFETCH}"
 
 # 재평가 산출물이 사는 원격 하위 경로(bank_update.DEFAULT_OUT과 같은 자리).
 REEVAL_SUBDIR = "results/bank_update"
@@ -117,6 +120,9 @@ REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_met
 CACHE_META = "meta.json"
 # 교정 이력 캐시 파일명 — report 가드(_require_corrections)와 읽기(_load_corrections)가 공유한다.
 CACHE_CORRECTIONS = "corrections.json"
+# `mysql --batch --raw` 출력의 SQL NULL 표기. jobs.json은 raw 질의라 NULL이 이 **문자열**로
+# 온다(corrections.json은 raw가 아니라 파서의 `_cell`이 None으로 접는다).
+_RAW_NULL = "NULL"
 
 
 def bank_script(worker_env: str, ml_root: str) -> str:
@@ -394,7 +400,10 @@ def _original_image_paths(cache: Path, job_ids: list[int]) -> dict[int, str]:
     for records in sources:  # 순서가 곧 우선순위다 — setdefault가 jobs.json을 이긴 채로 둔다.
         for rec in records:
             # image_path가 NULL인 잡은 "경로 없음"으로 다뤄 경고 경로로 보낸다(cat 'NULL' 금지).
-            if rec.get("image_path"):
+            # 두 소스의 NULL 표기가 다르다: jobs.json은 raw 질의라 문자열 `"NULL"`(truthy)로,
+            # corrections.json은 None으로 온다. jobs.json이 setdefault 우선이라 문자열 쪽을
+            # 걸러내지 않으면 None 폴백이 그 자리를 회수할 기회조차 없다.
+            if rec.get("image_path") and rec["image_path"] != _RAW_NULL:
                 paths.setdefault(rec["job_id"], rec["image_path"])
     return {j: paths[j] for j in job_ids if j in paths}
 
@@ -458,8 +467,10 @@ def pull_images(
             print(f"원본을 읽지 못한 잡 {jid}({image_path}): {e} — 나머지는 계속 회수한다")
             continue
         if not data:
-            # 0바이트도 cat은 성공이다 — 알리지 않으면 빈 original.jpg가 사진으로 오인된다.
+            # 0바이트도 cat은 성공이다 — 빈 original.jpg를 남기면 사진으로 오인되고, 회수로
+            # 세면 요약 줄이 "원본 1/1 회수 · 0건 실패"로 없는 성공을 단언한다(실패로 센다).
             print(f"원본이 0바이트인 잡 {jid}({image_path}) — 원격 파일을 확인한다")
+            continue
         dst = out_dir / f"job-{jid}"
         dst.mkdir(parents=True, exist_ok=True)
         (dst / "original.jpg").write_bytes(data)
@@ -548,8 +559,10 @@ def _require_corrections(cache: Path) -> None:
         ValueError: corrections.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
     """
     if not (cache / CACHE_CORRECTIONS).exists():
+        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
+        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
         raise ValueError(
-            f"{CACHE_CORRECTIONS} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_RECOVERY}"
+            f"{CACHE_CORRECTIONS} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}"
         )
 
 

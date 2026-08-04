@@ -22,7 +22,6 @@ from tools.curation_cohort import (
 from tools.curation_render import (
     _REEVAL_REJECT_TEXT,
     COHORT_TABLE,
-    _pct,
     reeval_notice,
     render_report,
 )
@@ -489,8 +488,10 @@ def test_row_balance_section_decomposes_the_loss_in_two_stages():
     section = md.split("## 행 수지")[1].split("## ")[0]
     # 라벨과 수치를 한 문자열로 고정한다 — 넷을 따로 단언하면 라벨을 맞바꿔도 각각은 존재해
     # 이 절의 존재 이유(두 축을 구분해 읽히게 하는 것)를 깨는 회귀만 정확히 못 잡는다.
-    assert f"행검출 가시 범위   {_pct(10, 13)}   (학습 후보가 된 행" in section
-    assert f"└ 그중 판정 가능   {_pct(1, 10)}   (배제·" in section
+    # 기대값은 리터럴로 적는다 — `_pct(10, 13)`로 적으면 피시험 모듈 자신으로 기대를 만드는
+    # 자기참조라, `_pct`의 서식·백분율 산술이 깨져도 기대가 같이 움직여 통과한다.
+    assert "행검출 가시 범위   10/13 (76.9%)   (학습 후보가 된 행" in section
+    assert "└ 그중 판정 가능   1/10 (10.0%)   (배제·" in section
 
 
 def test_row_balance_section_prints_both_the_lines_and_the_pair_count():
@@ -509,8 +510,8 @@ def test_row_balance_section_keeps_unknown_jobs_outside_the_totals():
     """AC 5 — 미상 잡은 합계 밖이고, 그 사실과 두 종의 분해가 리포트에 남는다."""
     corrections = [
         _correction(job_id=1, n_lines=4),
-        _correction(job_id=2, n_lines=None, has_correction=False),
-        _correction(job_id=3, n_lines=None, has_correction=False),
+        _correction(job_id=2, n_lines=None, has_correction=False, n_corrections=0),
+        _correction(job_id=3, n_lines=None, has_correction=False, n_corrections=0),
         _correction(job_id=4, n_lines=None, has_correction=True),
     ]
     md = _render(_balance_rows(), {"fetched_at": "t"}, corrections)
@@ -544,9 +545,9 @@ def test_row_balance_keeps_the_second_stage_inside_the_known_population():
         ],
     )
     section = md.split("## 행 수지")[1].split("## ")[0]
-    assert f"행검출 가시 범위   {_pct(1, 2)}   (학습 후보가 된 행" in section
+    assert "행검출 가시 범위   1/2 (50.0%)   (학습 후보가 된 행" in section
     # 미상 잡의 쌍이 분자에 새지 않는다 — 접두 라벨까지 붙여 줄 전체로 단언한다.
-    assert f"└ 그중 판정 가능   {_pct(1, 1)}   (배제·" in section
+    assert "└ 그중 판정 가능   1/1 (100.0%)   (배제·" in section
     assert "학습 후보 쌍 1개" in section
 
 
@@ -565,6 +566,24 @@ def test_row_balance_keeps_the_numerator_when_the_second_stage_denominator_is_ze
     assert "└ 그중 판정 가능   1/0 (—)" in section
 
 
+def test_row_balance_two_lines_scope_excluded_pairs_differently():
+    """두 줄의 모집단 비대칭이 의도적임을 못박는다 — 배제 쌍은 쌍 수에 들고 분자에는 안 든다.
+
+    n_lines는 confirm 시점 축이라 그 이후의 배제까지 쌍 수에서 빼면 두 소스의 어긋남을
+    드러내려는 첫 줄의 목적이 사라진다. 반대로 둘째 줄 분자에서 status 필터를 빼면
+    `is_item_evaluable`이 status를 보지 않으므로 배제 쌍이 성능 분자로 샌다.
+    """
+    rows = [
+        _enriched_row(label_bucket="ok", top1_sim=0.9),
+        # 배제됐지만 초안이 정답과 맞은 쌍 — 버킷은 ok다(_item_bucket은 status를 보지 않는다).
+        _enriched_row(crop_ref="job-1/row-1", status="excluded", label_bucket="ok", top1_sim=0.9),
+    ]
+    md = _render(rows, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=2)])
+    section = md.split("## 행 수지")[1].split("## ")[0]
+    assert "학습 후보 쌍 2개(수지 known 잡 한정)" in section
+    assert "└ 그중 판정 가능   1/2 (50.0%)   (배제·" in section
+
+
 def test_row_balance_section_names_reconfirmed_jobs():
     md = _render(
         _balance_rows(), {"fetched_at": "t"}, [_correction(job_id=1, n_lines=4, n_corrections=2)]
@@ -572,6 +591,13 @@ def test_row_balance_section_names_reconfirmed_jobs():
     # 뒤의 빈 줄까지 단언한다 — 재확정 줄이 붙는지에 따라 절 꼬리 구조가 달라지면 다음 절
     # 제목이 이 줄과 한 문단으로 병합돼 읽힌다.
     assert "재확정(교정 이력 2건 이상) 1잡 — 최신 1건만 읽었다\n\n" in md
+
+
+def test_row_balance_section_omits_the_reconfirm_line_when_none_reconfirmed():
+    # 재확정 0잡이면 줄 자체가 없어야 한다 — 가드를 지운 것과 동치인 RED를 방지하는 음성
+    # 테스트(되돌림 절의 음성 테스트와 같은 관용구).
+    md = _render(_balance_rows(), {"fetched_at": "t"}, [_correction(job_id=1, n_lines=4)])
+    assert "재확정(교정 이력 2건 이상)" not in md
 
 
 # --- 잡별 요약 표 + 다음 액션 (spec §5-3, §5-4) ---

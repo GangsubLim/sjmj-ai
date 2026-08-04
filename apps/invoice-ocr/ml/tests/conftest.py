@@ -193,7 +193,18 @@ def _correction(
 
     n_lines=None이면 행 수지 미상(다섯 값 모두 None)이다. 미상 두 종은 has_correction으로
     가른다(교정 이력 없음 vs 교정 JSON 결손).
+
+    두 값을 독립 인자로 받되 **어긋나면 즉시 실패시킨다**(_job의 crop_ref 검증과 같은 이유):
+    파서는 `has_correction = n_corrections > 0`으로 파생하므로 둘이 어긋난 행은 production이
+    낼 수 없다. 그 상태로 합성하면 두 필드를 서로 다르게 읽는 소비자
+    (`summarize_row_balance`의 n_no_correction_jobs vs n_multi_correction_jobs)를 두고
+    의미가 같은 리팩터가 RED로 뜬다. 교정 이력 없음은 `n_corrections=0`으로 표현한다.
     """
+    if has_correction != (n_corrections > 0):
+        raise AssertionError(
+            f"has_correction={has_correction}는 n_corrections={n_corrections}와 어긋난다"
+            " — 파서는 has_correction = n_corrections > 0으로 파생한다"
+        )
     if n_lines is None:
         balance = dict.fromkeys(
             ("rows_added", "rows_dropped", "n_lines", "draft_rows", "confirmed_rows")
