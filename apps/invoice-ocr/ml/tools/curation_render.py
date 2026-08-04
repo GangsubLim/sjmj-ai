@@ -425,7 +425,7 @@ def _render_header(s: dict, meta: dict, corrections: list[dict], enriched: list[
 def render_report(enriched: list[dict], meta: dict, corrections: list[dict]) -> str:
     """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
     s = summarize(enriched)
-    flags = job_flags(enriched)
+    flags = job_flags(enriched, corrections)
     inc = [r for r in enriched if r["status"] == "included"]
     lines = _render_header(s, meta, corrections, enriched)
     lines += _render_cohort_table(s, meta)

@@ -88,6 +88,10 @@ CORRECTION_COLS = (
 # warp_suspect를 켤 금액 실패 최소 건수 — 1건은 단일 오독으로도 나므로 잡 단위 신호가 못 된다.
 MIN_WARP_SUSPECT_BAD = 2
 
+# row_gap을 켤 최소 이동 행 수(사람 추가 + 사람 폐기) — 1건은 단일 오독으로도 나므로 잡 단위
+# 신호가 못 된다(MIN_WARP_SUSPECT_BAD와 같은 근거·같은 형태).
+MIN_ROW_GAP_MOVED = 2
+
 
 def _cell(value: str) -> str | None:
     return None if value == "NULL" else value
@@ -383,23 +387,35 @@ def enrich_pairs(
     return out
 
 
-def job_flags(enriched: list[dict]) -> dict[int, list[str]]:
-    """잡 단위 이상 플래그를 계산한다.
+def job_flags(enriched: list[dict], corrections: list[dict]) -> dict[int, list[str]]:
+    """잡 단위 이상 플래그를 계산한다 — 순회 축은 쌍 보유 잡 ∪ 확정 잡이다.
 
     warp_suspect = 금액 무산출·0드리프트가 그 잡 금액 기재 행의 **절반 이상**이고 절대 건수가
     MIN_WARP_SUSPECT_BAD 이상. "과반"이 아니라 정확히 절반도 포함한다(`bad * 2 >= len(amts)`) —
     임계·비교 연산자는 운영 검수 대상 목록을 정하는 값이므로 이 이슈에서 바꾸지 않는다.
+
+    row_gap = 사람이 옮긴 행(추가 + 폐기)이 MIN_ROW_GAP_MOVED 이상이고 확정 행의 절반 이상.
+    같은 형태를 복제한다. 행 수지가 미상인 잡에는 달지 않는다(조용한 0 판정 금지). corrections를
+    함께 도는 덕에 **쌍이 0개인 잡도 flags에 들어온다** — 행검출이 전멸한 잡이 가장 조용히
+    사라지는 것을 막는 자리다.
     """
     by_job: dict[int, list[dict]] = {}
     for r in enriched:
         if r["status"] == "included":
             by_job.setdefault(r["job_id"], []).append(r)
-    flags = {}
+    flags: dict[int, list[str]] = {}
     for jid, recs in by_job.items():
         amts = [r["amount_bucket"] for r in recs if r["amount_bucket"] is not None]
         bad = sum(b in ("zero_drift", "degenerate") for b in amts)
         suspect = bad >= MIN_WARP_SUSPECT_BAD and bad * 2 >= len(amts)
         flags[jid] = ["warp_suspect"] if suspect else []
+    for c in corrections:
+        flags.setdefault(c["job_id"], [])
+        if not is_row_balance_known(c):
+            continue
+        moved = c["rows_added"] + c["rows_dropped"]
+        if moved >= MIN_ROW_GAP_MOVED and moved * 2 >= c["confirmed_rows"]:
+            flags[c["job_id"]].append("row_gap")
     return flags
 
 
@@ -449,9 +465,10 @@ def is_row_balance_known(correction: dict) -> bool:
     중 하나라도 NULL이면 다섯 다 None)에 기대는 것이다. 파서가 부분 None을 허용하도록 바뀌면
     이 술어 하나만 고치면 된다.
 
-    소비자는 둘이며 같은 술어를 부른다: `summarize_row_balance`(합계의 모집단)와
-    `curation_render._render_row_balance`(그 절 분자의 모집단). 조건을 두 곳에 손으로 적으면
-    한쪽만 고쳤을 때 분자와 분모의 모집단이 조용히 갈라진다(배제 소유 축 술어와 같은 이유).
+    소비자는 셋이며 같은 술어를 부른다: `summarize_row_balance`(합계의 모집단),
+    `curation_render._render_row_balance`(그 절 분자의 모집단), `job_flags`(row_gap 판정의
+    모집단). 조건을 여러 곳에 손으로 적으면 한쪽만 고쳤을 때 모집단이 조용히 갈라진다(배제
+    소유 축 술어와 같은 이유).
     """
     return correction["n_lines"] is not None
 

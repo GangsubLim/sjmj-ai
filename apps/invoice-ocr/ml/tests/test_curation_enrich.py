@@ -368,12 +368,12 @@ def _amount_job(*buckets, job_id=1):
 
 
 def test_job_flags_warp_suspect_on_majority_zero_drift():
-    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok"))[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok"), [])[1] == ["warp_suspect"]
 
 
 def test_job_flags_empty_when_amounts_ok():
     recs = [{"job_id": 2, "status": "included", "amount_bucket": "ok"}]
-    assert job_flags(recs)[2] == []
+    assert job_flags(recs, [])[2] == []
 
 
 def test_job_flags_pins_both_arms_of_the_warp_suspect_threshold():
@@ -385,23 +385,61 @@ def test_job_flags_pins_both_arms_of_the_warp_suspect_threshold():
       - 절반 미달(2/5)은 꺼진다.
       - 비율은 채우지만 절대 건수가 1건(1/1·1/2)이면 꺼진다 — 단일 오독은 잡 신호가 아니다.
     """
-    assert job_flags(_amount_job("zero_drift", "degenerate", "ok", "ok"))[1] == ["warp_suspect"]
-    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok", "ok", "ok"))[1] == []
-    assert job_flags(_amount_job("zero_drift"))[1] == []
-    assert job_flags(_amount_job("degenerate", "ok"))[1] == []
+    assert job_flags(_amount_job("zero_drift", "degenerate", "ok", "ok"), [])[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok", "ok", "ok"), [])[1] == []
+    assert job_flags(_amount_job("zero_drift"), [])[1] == []
+    assert job_flags(_amount_job("degenerate", "ok"), [])[1] == []
 
 
 def test_job_flags_ignores_rows_without_a_recorded_amount():
     """금액 미기재(None)는 분모에도 분자에도 들어가지 않는다 — 섞이면 비율 조건이 흔들린다."""
     recs = _amount_job("zero_drift", "zero_drift", None, None, None)
-    assert job_flags(recs)[1] == ["warp_suspect"]
+    assert job_flags(recs, [])[1] == ["warp_suspect"]
 
 
 def test_job_flags_skips_excluded_pairs():
     recs = _amount_job("zero_drift", "zero_drift") + [
         {"job_id": 1, "status": "excluded", "amount_bucket": "ok"}
     ]
-    assert job_flags(recs)[1] == ["warp_suspect"]  # excluded는 분모에 없다
+    assert job_flags(recs, [])[1] == ["warp_suspect"]  # excluded는 분모에 없다
+
+
+def test_job_flags_row_gap_when_the_human_moved_half_the_rows():
+    """AC 4 — 사람이 옮긴 행(추가+폐기)이 확정 행의 절반 이상이면 행검출 실패 후보다."""
+    flags = job_flags([], [_correction(job_id=5, n_lines=1, rows_added=3, rows_dropped=1)])
+    assert flags[5] == ["row_gap"]  # moved 4, confirmed 4
+
+
+def test_job_flags_pins_both_arms_of_the_row_gap_threshold():
+    """warp_suspect와 같은 형태·같은 하한 — 절대 건수 2 이상 AND 확정 행의 절반 이상."""
+    # 1건은 단일 오독으로도 나므로 잡 단위 신호가 못 된다.
+    assert job_flags([], [_correction(job_id=1, n_lines=1, rows_added=1)])[1] == []
+    # 정확히 절반도 포함한다(moved * 2 >= confirmed_rows).
+    assert job_flags([], [_correction(job_id=1, n_lines=2, rows_added=2)])[1] == ["row_gap"]
+    # 절반 미만은 켜지 않는다(moved 2, confirmed 5).
+    assert job_flags([], [_correction(job_id=1, n_lines=3, rows_added=2)])[1] == []
+    # 폐기만으로도 켜진다 — moved는 추가+폐기 양쪽이다(과검출 축이 조용히 빠지지 않게).
+    assert job_flags([], [_correction(job_id=1, n_lines=2, rows_added=0, rows_dropped=2)])[1] == [
+        "row_gap"
+    ]
+
+
+def test_job_flags_leaves_an_unknown_balance_unflagged():
+    """조용한 0 판정 금지 — 미상 잡에 플래그를 달면 없는 근거로 검수 대상을 만든다."""
+    assert job_flags([], [_correction(job_id=9, n_lines=None)])[9] == []
+
+
+def test_job_flags_covers_jobs_that_have_no_pairs_at_all():
+    """가장 심한 실패(쌍 0개)가 가장 조용히 사라지지 않게 — 순회 축이 두 소스의 합집합이다."""
+    flags = job_flags([], [_correction(job_id=57, n_lines=0, rows_added=9)])
+    assert 57 in flags
+    assert flags[57] == ["row_gap"]
+
+
+def test_job_flags_can_carry_both_flags_on_one_job():
+    recs = _amount_job("zero_drift", "zero_drift", "ok")  # job_id=1, warp_suspect
+    flags = job_flags(recs, [_correction(job_id=1, n_lines=2, rows_added=2)])
+    assert flags[1] == ["warp_suspect", "row_gap"]
 
 
 def test_oob_label_counts_orders_by_frequency():
