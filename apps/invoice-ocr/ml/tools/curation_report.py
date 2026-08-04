@@ -328,8 +328,9 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     _write_json(cache / "bank.json", bank)
     # 네 번째 소스. 재평가 3파일의 원자 교체 한 벌에는 넣지 않는다 — 그 한 벌은 지문 해석
     # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
-    # 표기다(재평가 2파일이 1행). 런북 표는 후속 태스크에서 파일 기준 "다섯"으로 갱신된다
-    # (Refs #72) — 이 커밋 시점에는 아직 "넷"이다.
+    # 표기다 — 원자 교체 밖에서 굳히는 네 번째 캐시 JSON이라는 뜻이다(pairs/jobs/bank 다음).
+    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 세므로
+    # 이 행을 포함해 다섯 행이다.
     _write_json(cache / CACHE_CORRECTIONS, corrections)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
