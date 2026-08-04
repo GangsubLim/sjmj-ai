@@ -21,6 +21,7 @@ from tools.curation_enrich import (
     PAIR_COLS,
     PAIRS_SQL,
     amount_bucket,
+    is_row_balance_known,
     job_flags,
     label_bucket,
     oob_label_counts,
@@ -660,6 +661,13 @@ def test_correction_helper_matches_the_parser_shape():
     assert _correction(n_lines=None, has_correction=False, n_corrections=0) == parsed_null
 
 
+def test_is_row_balance_known_is_the_single_source_of_the_unknown_predicate():
+    """M2 — 미상 판정의 SSoT. 집계와 렌더가 이 술어를 공유해야 모집단이 갈라지지 않는다."""
+    assert is_row_balance_known(_correction(n_lines=3))
+    assert is_row_balance_known(_correction(n_lines=0))  # 0행은 유효한 관측치다
+    assert not is_row_balance_known(_correction(n_lines=None))
+
+
 def test_summarize_row_balance_sums_only_the_known_jobs():
     corrections = [
         _correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1),
@@ -686,6 +694,8 @@ def test_summarize_row_balance_splits_the_two_kinds_of_unknown():
     rb = summarize_row_balance(corrections)
     assert rb["n_unknown_jobs"] == 3
     assert rb["n_no_correction_jobs"] == 2
+    # 결손 종은 집계 계층이 낸다 — 렌더가 뺄셈으로 파생하면 "렌더는 조립만" 원칙이 깨진다.
+    assert rb["n_missing_json_jobs"] == 1
 
 
 def test_summarize_row_balance_of_an_empty_population_is_all_zero():
@@ -694,6 +704,7 @@ def test_summarize_row_balance_of_an_empty_population_is_all_zero():
         "n_confirmed_jobs": 0,
         "n_unknown_jobs": 0,
         "n_no_correction_jobs": 0,
+        "n_missing_json_jobs": 0,
         "n_multi_correction_jobs": 0,
         "n_lines": 0,
         "draft_rows": 0,

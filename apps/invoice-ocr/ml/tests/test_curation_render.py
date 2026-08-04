@@ -22,6 +22,7 @@ from tools.curation_cohort import (
 from tools.curation_render import (
     _REEVAL_REJECT_TEXT,
     COHORT_TABLE,
+    _pct,
     reeval_notice,
     render_report,
 )
@@ -454,3 +455,119 @@ def test_next_actions_hints_pull_images_with_explicit_jobs():
     md = _render(rows, {"fetched_at": "t"})
     next_actions = md.split("## 다음 액션")[1]
     assert "--jobs" in next_actions
+
+
+# --- 행 수지 절 (spec §5-2 — 손실의 두 단계 분해) ---
+
+
+def _balance_rows():
+    """행 수지 절 렌더 입력 — 쌍 2개(1개는 판정 가능)와 확정 잡 2개."""
+    return [
+        _enriched_row(label_bucket="ok", top1_sim=0.9),
+        _enriched_row(crop_ref="job-1/row-1", cohort="unknown", label_bucket="unevaluable"),
+    ]
+
+
+def test_row_balance_section_prints_the_ledger_line():
+    md = _render(
+        _balance_rows(),
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1)],
+    )
+    assert "## 행 수지" in md
+    assert "초안 11행 → 사람 추가 +3 / 사람 폐기 -1 → 확정 13행" in md
+
+
+def test_row_balance_section_decomposes_the_loss_in_two_stages():
+    """AC 3 — 한 단계로 합치면 뱅크 시점 문제·학습 제외까지 행검출 누락으로 읽힌다(spec §5-2)."""
+    md = _render(
+        _balance_rows(),
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1)],
+    )
+    section = md.split("## 행 수지")[1].split("## ")[0]
+    # 라벨과 수치를 한 문자열로 고정한다 — 넷을 따로 단언하면 라벨을 맞바꿔도 각각은 존재해
+    # 이 절의 존재 이유(두 축을 구분해 읽히게 하는 것)를 깨는 회귀만 정확히 못 잡는다.
+    assert f"행검출 가시 범위   {_pct(10, 13)}   (학습 후보가 된 행" in section
+    assert f"└ 그중 판정 가능   {_pct(1, 10)}   (배제·" in section
+
+
+def test_row_balance_section_prints_both_the_lines_and_the_pair_count():
+    """두 수는 소스가 다르다(교정 이력 vs training_pairs) — 어긋남이 드러나야 한다."""
+    md = _render(
+        _balance_rows(),
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=10, rows_added=0, rows_dropped=0)],
+    )
+    # 한정 표시가 없으면 헤더의 쌍 수와의 차이가 소스 드리프트로 오독된다(M4) — 이 수는
+    # 수지 known 잡으로 좁혀진 수다.
+    assert "학습 후보 쌍 2개(수지 known 잡 한정)" in md
+
+
+def test_row_balance_section_keeps_unknown_jobs_outside_the_totals():
+    """AC 5 — 미상 잡은 합계 밖이고, 그 사실과 두 종의 분해가 리포트에 남는다."""
+    corrections = [
+        _correction(job_id=1, n_lines=4),
+        _correction(job_id=2, n_lines=None, has_correction=False),
+        _correction(job_id=3, n_lines=None, has_correction=False),
+        _correction(job_id=4, n_lines=None, has_correction=True),
+    ]
+    md = _render(_balance_rows(), {"fetched_at": "t"}, corrections)
+    assert "행 수지 미상 3잡(교정 이력 없음 2 / 교정 JSON 결손 1) — 위 합계 밖" in md
+
+
+def test_row_balance_section_sits_between_the_sample_table_and_the_core_metrics():
+    """분모를 먼저 읽는 배치 — 행 수지도 분모의 바깥 경계다."""
+    md = _render(_balance_rows(), {"fetched_at": "t"}, [_correction(job_id=1)])
+    assert md.index("## 표본 구성") < md.index("## 행 수지") < md.index("## 핵심 지표")
+
+
+def test_row_balance_keeps_the_second_stage_inside_the_known_population():
+    """H2 — 미상 잡이 쌍을 가지면 둘째 줄 비율이 100%를 넘던 자리(모집단 정렬).
+
+    두 단계의 비율을 **서로 다른 값**으로 벌려 둔다(1/2 vs 1/1) — 같은 값이면 둘째 줄이
+    통째로 사라지거나 스코핑이 한쪽에만 걸려도 첫 줄만으로 단언이 충족된다.
+    """
+    rows = [
+        _enriched_row(label_bucket="ok", top1_sim=0.9),  # job 1 — 수지 known
+        _enriched_row(  # job 2 — 수지 미상인데 쌍은 있다
+            job_id=2, crop_ref="job-2/row-0", label_bucket="ok", top1_sim=0.9
+        ),
+    ]
+    md = _render(
+        rows,
+        {"fetched_at": "t"},
+        [
+            _correction(job_id=1, n_lines=1, rows_added=1),  # 확정 2행 — 1단계는 1/2
+            _correction(job_id=2, n_lines=None),
+        ],
+    )
+    section = md.split("## 행 수지")[1].split("## ")[0]
+    assert f"행검출 가시 범위   {_pct(1, 2)}   (학습 후보가 된 행" in section
+    # 미상 잡의 쌍이 분자에 새지 않는다 — 접두 라벨까지 붙여 줄 전체로 단언한다.
+    assert f"└ 그중 판정 가능   {_pct(1, 1)}   (배제·" in section
+    assert "학습 후보 쌍 1개" in section
+
+
+def test_row_balance_keeps_the_numerator_when_the_second_stage_denominator_is_zero():
+    """M1 — 분모 0에서 분자를 0으로 접으면 이 절이 드러내려는 소스 드리프트가 지워진다.
+
+    n_lines=0(교정 이력 기준 행 0)인데 쌍이 1개면 두 소스가 어긋난 것이다 — `0/0 (—)`로
+    인쇄하면 판정 가능 쌍 1건이 없던 일이 되고 하필 그 신호가 사라진다.
+    """
+    md = _render(
+        [_enriched_row(label_bucket="ok", top1_sim=0.9)],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=0)],
+    )
+    section = md.split("## 행 수지")[1].split("## ")[0]
+    assert "└ 그중 판정 가능   1/0 (—)" in section
+
+
+def test_row_balance_section_names_reconfirmed_jobs():
+    md = _render(
+        _balance_rows(), {"fetched_at": "t"}, [_correction(job_id=1, n_lines=4, n_corrections=2)]
+    )
+    # 뒤의 빈 줄까지 단언한다 — 재확정 줄이 붙는지에 따라 절 꼬리 구조가 달라지면 다음 절
+    # 제목이 이 줄과 한 문단으로 병합돼 읽힌다.
+    assert "재확정(교정 이력 2건 이상) 1잡 — 최신 1건만 읽었다\n\n" in md

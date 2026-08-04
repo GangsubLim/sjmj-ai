@@ -442,6 +442,20 @@ def is_reverted_machine_exclusion(row: dict) -> bool:
     return row["status"] == "included" and row["exclusion_reason"] is not None
 
 
+def is_row_balance_known(correction: dict) -> bool:
+    """그 잡의 행 수지를 읽을 수 있는지 판정한다 — 미상 판정의 SSoT.
+
+    `n_lines is None` 단일 키만 본다 — `parse_corrections_tsv`의 all-or-nothing 접기(다섯 값
+    중 하나라도 NULL이면 다섯 다 None)에 기대는 것이다. 파서가 부분 None을 허용하도록 바뀌면
+    이 술어 하나만 고치면 된다.
+
+    소비자는 둘이며 같은 술어를 부른다: `summarize_row_balance`(합계의 모집단)와
+    `curation_render._render_row_balance`(그 절 분자의 모집단). 조건을 두 곳에 손으로 적으면
+    한쪽만 고쳤을 때 분자와 분모의 모집단이 조용히 갈라진다(배제 소유 축 술어와 같은 이유).
+    """
+    return correction["n_lines"] is not None
+
+
 def summarize_row_balance(corrections: list[dict]) -> dict:
     """잡 단위 행 수지의 전체 합계와 모집단 경계를 낸다 — 미상 잡은 합계에서 뺀다.
 
@@ -449,18 +463,19 @@ def summarize_row_balance(corrections: list[dict]) -> dict:
     분모가 뒤엉키고 기존 지표의 정의가 조용히 바뀐다(spec §4-2·§11).
 
     합계에서 빠진 미상 잡은 사라지지 않고 n_unknown_jobs로 남아 리포트가 그 사실을 인쇄한다.
+    미상 두 종(교정 이력 없음 / 교정 JSON 결손)도 여기서 갈라 낸다 — 렌더가 뺄셈으로
+    파생하면 파생 산술이 문자열 조립 안으로 들어간다.
 
-    미상 판정은 `n_lines is None` 단일 키만 본다 — `parse_corrections_tsv`의 all-or-nothing
-    접기(다섯 값 중 하나라도 NULL이면 다섯 다 None)에 기대는 것이다. 파서가 부분 None을
-    허용하도록 바뀌면 이 판정도 함께 고쳐야 한다(그렇지 않으면 draft_rows 등 살아있는 값이
-    조용히 합계에서 사라진다).
+    미상 판정은 `is_row_balance_known`에 위임한다(술어의 SSoT).
     """
-    known = [c for c in corrections if c["n_lines"] is not None]
-    unknown = [c for c in corrections if c["n_lines"] is None]
+    known = [c for c in corrections if is_row_balance_known(c)]
+    unknown = [c for c in corrections if not is_row_balance_known(c)]
+    n_no_correction = sum(not c["has_correction"] for c in unknown)
     return {
         "n_confirmed_jobs": len(corrections),
         "n_unknown_jobs": len(unknown),
-        "n_no_correction_jobs": sum(not c["has_correction"] for c in unknown),
+        "n_no_correction_jobs": n_no_correction,
+        "n_missing_json_jobs": len(unknown) - n_no_correction,
         "n_multi_correction_jobs": sum(c["n_corrections"] > 1 for c in corrections),
         "n_lines": sum(c["n_lines"] for c in known),
         "draft_rows": sum(c["draft_rows"] for c in known),

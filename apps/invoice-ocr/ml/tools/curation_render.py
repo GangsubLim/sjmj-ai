@@ -23,6 +23,7 @@ from tools.curation_enrich import (
     is_human_excluded,
     is_machine_excluded,
     is_reverted_machine_exclusion,
+    is_row_balance_known,
     job_flags,
     oob_label_counts,
     summarize,
@@ -31,7 +32,13 @@ from tools.curation_enrich import (
 
 
 def _pct(k: int, n: int) -> str:
-    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
+    """비율을 `k/n (p%)`로 인쇄한다 — 분모 0에서도 **분자는 삼키지 않는다**.
+
+    대부분의 호출부는 `k ≤ n`이 구조적으로 보장돼 `n=0 ⇒ k=0`이지만, 행 수지 절의 둘째 줄은
+    분자(training_pairs)와 분모(교정 이력)의 소스가 달라 그 불변식이 깨진다 — 거기서 분자를
+    0으로 접으면 하필 이 절이 드러내려는 소스 드리프트 신호가 지워진다.
+    """
+    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else f"{k}/0 (—)"
 
 
 def _known(value: object) -> str:
@@ -172,6 +179,56 @@ def _render_cohort_table(s: dict, meta: dict) -> list[str]:
         "뱅크 추가 후보는 코호트와 무관하게 현재 뱅크 기준으로 집계된다(성능 측정과 기준이 다르다).",
         "",
     ]
+
+
+def _render_row_balance(enriched: list[dict], corrections: list[dict]) -> list[str]:
+    """행 수지 절 — 손실을 두 단계로 분해한다(행검출 축 / 코호트·배제 축).
+
+    한 단계로 `n_item_evaluable / confirmed_rows`만 적으면 **뱅크 시점 문제와 학습 제외까지
+    행검출 누락으로 읽힌다.** 첫 줄만이 이 슬라이스가 새로 여는 축이고, 둘째 줄은 기존
+    코호트·배제 축이라 읽는 법도 후속 조치도 다르다(런북 0번·4번).
+
+    분자 n_lines는 교정 이력에서, 학습 후보 쌍 수는 training_pairs에서 온다 — 소스가 다르므로
+    둘 다 적어 어긋남(재처리·삭제 흔적)이 드러나게 한다.
+
+    두 줄 모두 **행 수지가 known인 잡**만 본다. 이 스코핑이 막는 것은 미상 잡의 쌍이 분자로
+    새는 누수뿐이며, **100% 상한을 보증하지는 않는다** — 두 소스가 어긋나면(재처리·삭제로
+    쌍이 교정 이력보다 많으면) 100%를 넘는 값이 그대로 인쇄된다. 그것이 이 절이 드러내려는
+    신호이므로 클램프하지 않는다.
+    """
+    # 둘째 줄의 분자·분모 모집단을 맞춘다 — summarize()의 n_item_evaluable은 enriched 전량
+    # 기준이라, 수지 미상 잡이 쌍을 가지면 분자만 부풀어 오른다(조용한 오수치). summarize()는
+    # 손대지 않고(모집단이 다르다) 이 절에서만 known 잡으로 좁힌다.
+    rb = summarize_row_balance(corrections)
+    known_jobs = {c["job_id"] for c in corrections if is_row_balance_known(c)}
+    scoped = [r for r in enriched if r["job_id"] in known_jobs]
+    n_pairs = len(scoped)  # 배제 쌍도 센다 — n_lines는 confirm 시점 축이고 배제는 그 이후다
+    n_evaluable = sum(is_item_evaluable(r) for r in scoped if r["status"] == "included")
+    out = [
+        "",
+        "## 행 수지",
+        "",
+        "```text",
+        f"초안 {rb['draft_rows']}행 → 사람 추가 +{rb['rows_added']} / "
+        f"사람 폐기 -{rb['rows_dropped']} → 확정 {rb['confirmed_rows']}행",
+        "",
+        f"행검출 가시 범위   {_pct(rb['n_lines'], rb['confirmed_rows'])}"
+        f"   (학습 후보가 된 행 / 사람이 인정한 행 · 학습 후보 쌍 {n_pairs}개(수지 known 잡 한정))",
+        f"└ 그중 판정 가능   {_pct(n_evaluable, rb['n_lines'])}"
+        "   (배제·구 뱅크 코호트·정합 장애로 빠진 몫 — 행검출 실패가 아니다)",
+        "```",
+        "",
+        f"행 수지 미상 {rb['n_unknown_jobs']}잡"
+        f"(교정 이력 없음 {rb['n_no_correction_jobs']} / "
+        f"교정 JSON 결손 {rb['n_missing_json_jobs']}) — 위 합계 밖",
+        "",
+    ]
+    if rb["n_multi_correction_jobs"]:
+        out.append(
+            f"재확정(교정 이력 2건 이상) {rb['n_multi_correction_jobs']}잡 — 최신 1건만 읽었다"
+        )
+        out.append("")  # 절 꼬리를 조건과 무관하게 같은 모양으로 닫는다
+    return out
 
 
 def _render_key_metrics(s: dict) -> list[str]:
@@ -372,6 +429,7 @@ def render_report(enriched: list[dict], meta: dict, corrections: list[dict]) -> 
     inc = [r for r in enriched if r["status"] == "included"]
     lines = _render_header(s, meta, corrections, enriched)
     lines += _render_cohort_table(s, meta)
+    lines += _render_row_balance(enriched, corrections)
     lines += _render_key_metrics(s)
 
     bank_candidate_lines, oob = _render_bank_candidates(enriched, inc)
