@@ -11,7 +11,7 @@ tools/curation_enrich.py(파싱·버킷·조인·집계) → tools/curation_coho
 술어·재평가 게이트). ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
 
 Usage:
-    uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/bank 동기화
+    uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/교정 이력/bank/재평가 동기화
     uv run python -m tools.curation_report report       # 캐시 분석 → report.md/failures.jsonl
     uv run python -m tools.curation_report pull-images  # 실패 잡 크롭(+원본) 로컬 동기화
 """
@@ -35,9 +35,11 @@ from tools.curation_cohort import (
     reeval_gate,
 )
 from tools.curation_enrich import (
+    CORRECTIONS_SQL,
     JOBS_SQL,
     PAIRS_SQL,
     enrich_pairs,
+    parse_corrections_tsv,
     parse_jobs_tsv,
     parse_pairs_tsv,
 )
@@ -289,7 +291,7 @@ def _write_json(path: Path, obj) -> None:
 
 
 def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> dict:
-    """서버에서 training_pairs·result_json·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다.
+    """서버에서 training_pairs·result_json·교정 이력·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다.
 
     인자는 키워드 전용이다 — 동종 str 4개(host·두 env 경로·ml_root)가 인접해 위치로 넘기면
     뒤바꿔도 예외가 안 나고, ml_root가 뒤에 끼어든 시점부터 조용한 오연결 위험이 커졌다.
@@ -297,6 +299,9 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     cache.mkdir(parents=True, exist_ok=True)
     pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
     jobs = parse_jobs_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
+    corrections = parse_corrections_tsv(
+        run_ssh(host, mysql_script(backend_env, CORRECTIONS_SQL, raw=False)).decode()
+    )
     try:
         bank = json.loads(run_ssh(host, bank_script(worker_env, ml_root)).decode())
     except RemoteError as e:
@@ -318,6 +323,11 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     _write_json(cache / "pairs.json", pairs)
     _write_json(cache / "jobs.json", jobs)
     _write_json(cache / "bank.json", bank)
+    # 네 번째 소스. 재평가 3파일의 원자 교체 한 벌에는 넣지 않는다 — 그 한 벌은 지문 해석
+    # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
+    # 표기다(재평가 2파일이 1행). 런북 표는 후속 태스크에서 파일 기준 "다섯"으로 갱신된다
+    # (Refs #72) — 이 커밋 시점에는 아직 "넷"이다.
+    _write_json(cache / "corrections.json", corrections)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
     _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
@@ -453,7 +463,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--host", default=env_or(ENV_SSH_HOST), help="ssh 호스트(별칭)")
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help="로컬 캐시 디렉터리")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="서버에서 pairs/jobs/bank 동기화")
+    sub.add_parser("fetch", help="서버에서 pairs/jobs/교정 이력/bank/재평가 동기화")
     sub.add_parser("report", help="캐시 분석 → report.md + failures.jsonl")
     p_img = sub.add_parser("pull-images", help="실패 잡 크롭 동기화(기본: 실패 잡 전체)")
     p_img.add_argument("--jobs", type=int, nargs="*", help="특정 잡만")

@@ -243,6 +243,10 @@ _PAIRS_TSV = (
 _JOBS_TSV = "id\timage_path\tresult\n1\t/data/up/1.jpeg\t" + json.dumps(
     {"rows": [], "warp_ok": True, "retrieval_version": _CUR_VERSION}, ensure_ascii=False
 )
+_CORRECTIONS_TSV = (
+    "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path\n"
+    "1\t1\t2\t1\t3\t/data/up/1.jpeg\n"
+)
 _REEVAL_BODIES = (
     ("score.jsonl", b'{"side": "after"}\n'),
     ("score_meta.json", b'{"n_pairs": 1}\n'),
@@ -270,9 +274,15 @@ def _fake_ssh(
     }
 
     def run(host, script):
+        # 각 분기는 해당 SQL에만 있는 고유 마커로 건다 — 배치 순서가 아니라 마커 자체가
+        # 계약이다(M3). 예컨대 CORRECTIONS_SQL도 `FROM ocr_jobs`를 포함해 그 문자열은 jobs
+        # 분기와 겹치므로 쓸 수 없다. 마커가 SQL에서 사라지면(SELECT 별칭 개명 등) 이 분기가
+        # 조용히 매치를 잃고 아래 마지막 raise가 즉시 알린다.
         if "training_pairs ORDER BY" in script:
             return _PAIRS_TSV.encode()
-        if "ocr_jobs" in script:
+        if "AS n_corrections" in script:
+            return _CORRECTIONS_TSV.encode()
+        if "JSON_UNQUOTE(result_json)" in script:
             return _JOBS_TSV.encode()
         if "PYTHON_BIN" in script:
             if bank_error:
@@ -367,7 +377,9 @@ def test_fetch_all_replaces_the_meta_together_with_the_reeval_pair(tmp_path, mon
     """M2 — 두 파일을 **해석하는** meta.json이 원자 교체 밖에 있으면 한 벌이 반쪽만 원자적이다.
 
     중간 실패는 fail-closed라 수치는 오염되지 않지만, 사유가 stale로 오보되어 사용자가 몇십 분
-    짜리 재채점으로 간다(H1과 같은 오조치).
+    짜리 재채점으로 간다(H1과 같은 오조치). 이 단언 목록의 완전성이 곧 계약이다 — corrections.json
+    이 이 원자 교체 한 벌 밖(별개 축)이라는 사실은 목록에 그 이름이 없다는 것으로 보장된다.
+    corrections.json이 이 그룹에 섞이면 이 테스트가 먼저 깨진다.
     """
     monkeypatch.setattr(
         "tools.curation_report.run_ssh",
@@ -422,6 +434,26 @@ def test_fetch_all_keeps_the_remote_reason_for_a_null_fingerprint(tmp_path, monk
 def test_fetch_all_leaves_the_reason_none_when_the_fingerprint_succeeded(tmp_path, monkeypatch):
     monkeypatch.setattr("tools.curation_report.run_ssh", _fake_ssh())
     assert _fetch_all(tmp_path)["retrieval_version_error"] is None
+
+
+def test_fetch_all_caches_the_correction_history_as_a_fourth_source(tmp_path, monkeypatch):
+    """AC 1 — fetch가 교정 이력을 동기화해 캐시에 남긴다(새 env 없이 기존 글루 재사용)."""
+    monkeypatch.setattr("tools.curation_report.run_ssh", _fake_ssh())
+    _fetch_all(tmp_path)
+    cached = json.loads((tmp_path / "corrections.json").read_text(encoding="utf-8"))
+    assert cached == [
+        {
+            "job_id": 1,
+            "n_corrections": 1,
+            "has_correction": True,
+            "rows_added": 2,
+            "rows_dropped": 1,
+            "n_lines": 3,
+            "draft_rows": 4,
+            "confirmed_rows": 5,
+            "image_path": "/data/up/1.jpeg",
+        }
+    ]
 
 
 def test_cmd_fetch_prints_the_remote_reason_next_to_the_fingerprint_notice(
