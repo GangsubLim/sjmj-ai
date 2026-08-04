@@ -1,11 +1,13 @@
 """tools.curation_enrich 순수 분석 계층 단위테스트 (ssh/DB 비의존, 합성 데이터만)."""
 
+import re
 from pathlib import Path
 
 import pytest
 
 from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공유한다
     BANK,
+    _correction,
     _enrich,
     _enriched_row,
     _job,
@@ -14,15 +16,20 @@ from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공�
     _row,
 )
 from tools.curation_enrich import (
+    CORRECTION_COLS,
+    CORRECTIONS_SQL,
     PAIR_COLS,
     PAIRS_SQL,
     amount_bucket,
+    is_row_balance_known,
     job_flags,
     label_bucket,
     oob_label_counts,
+    parse_corrections_tsv,
     parse_jobs_tsv,
     parse_pairs_tsv,
     summarize,
+    summarize_row_balance,
 )
 
 # --- TSV 파싱 ---
@@ -64,6 +71,157 @@ def test_parse_jobs_tsv_fails_fast_when_image_path_contains_tab():
     text = 'id\timage_path\tresult\n5\t/up/a\t.jpeg\t{"rows": []}'
     with pytest.raises(ValueError, match="컬럼 경계"):
         parse_jobs_tsv(text)
+
+
+_CORRECTIONS_HEADER = "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path"
+
+
+def test_parse_corrections_tsv_derives_the_row_balance():
+    text = _CORRECTIONS_HEADER + "\n7\t1\t3\t1\t12\t/data/up/7.jpeg"
+    assert parse_corrections_tsv(text) == [
+        {
+            "job_id": 7,
+            "n_corrections": 1,
+            "has_correction": True,
+            "rows_added": 3,
+            "rows_dropped": 1,
+            "n_lines": 12,
+            "draft_rows": 13,  # n_lines + rows_dropped
+            "confirmed_rows": 15,  # n_lines + rows_added
+            "image_path": "/data/up/7.jpeg",
+        }
+    ]
+
+
+def test_parse_corrections_tsv_marks_a_job_without_a_correction_row_as_unknown():
+    """LEFT JOIN 미스(구 데이터·link_invoice 백필) — 0으로 접지 않는다(AC 5)."""
+    text = _CORRECTIONS_HEADER + "\n7\t0\tNULL\tNULL\tNULL\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["has_correction"] is False
+    assert (row["rows_added"], row["rows_dropped"], row["n_lines"]) == (None, None, None)
+    assert (row["draft_rows"], row["confirmed_rows"]) == (None, None)
+
+
+def test_parse_corrections_tsv_keeps_has_correction_when_the_json_is_missing():
+    """미상 두 종을 가른다 — 교정 행은 있는데 correction_json이 NULL이면 데이터 결손이다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\tNULL\tNULL\tNULL\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["has_correction"] is True
+    assert row["n_lines"] is None
+
+
+def test_parse_corrections_tsv_folds_a_partial_null_into_unknown():
+    """세 값 중 하나만 NULL이어도 미상이다 — 반쪽 수지는 합계를 조용히 왜곡한다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\t3\tNULL\t12\t/data/up/7.jpeg"
+    assert parse_corrections_tsv(text)[0]["draft_rows"] is None
+
+
+def test_parse_corrections_tsv_keeps_an_escaped_path_verbatim():
+    """raw=False에서 mysql이 탭을 \\t로 이스케이프하므로 컬럼 경계는 밀리지 않는다.
+
+    역이스케이프는 하지 않는다(parse_pairs_tsv와 같은 계약) — image_path는
+    ocr_service.create_job이 uuid4().hex + 화이트리스트 suffix로 만들어 특수문자가
+    구조적으로 들어가지 않는다. 이 테스트는 그 계약을 못박아 둔다.
+    """
+    text = _CORRECTIONS_HEADER + "\n7\t1\t0\t0\t5\t/data/up/a\\tb.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["image_path"] == "/data/up/a\\tb.jpeg"
+    assert row["n_lines"] == 5
+
+
+def test_parse_corrections_tsv_maps_a_null_image_path_to_none():
+    """image_path는 nullable(migration_007:30) — 문자열 'NULL'을 경로로 쓰면 cat이 죽는다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\t0\t0\t5\tNULL"
+    assert parse_corrections_tsv(text)[0]["image_path"] is None
+
+
+def test_parse_corrections_tsv_surfaces_a_reconfirmed_job():
+    """재확정(교정 2건) 잡 — SQL이 MAX(id) 1건만 주고, 중복 사실은 n_corrections로 남는다."""
+    text = _CORRECTIONS_HEADER + "\n7\t2\t1\t0\t5\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["n_corrections"] == 2
+    assert row["has_correction"] is True
+    assert row["confirmed_rows"] == 6
+
+
+def test_corrections_sql_pins_the_dedup_subquery_and_left_join_shape():
+    """MAX(c2.id) 서브쿼리·n_corrections 별칭·LEFT JOIN 존재를 문서로 고정한다.
+
+    계약 검증이 아니라 문서 고정이다(M1) — CORRECTIONS_SQL 정의를 그대로 재진술하는 항진이라
+    표기만 바뀌어도 깨질 뿐, 실제 위험(백엔드 predicate와의 분기·컬럼 순서 어긋남)은 각각
+    test_corrections_sql_mirrors_the_backend_confirmed_predicate와
+    test_corrections_cols_match_the_sql_alias_order가 구조적으로 검증한다.
+    """
+    assert "MAX(c2.id)" in CORRECTIONS_SQL
+    assert "AS n_corrections" in CORRECTIONS_SQL
+    assert "LEFT JOIN ocr_corrections" in CORRECTIONS_SQL  # 교정 행 부재가 미상으로 남는 자리
+
+
+def test_parse_corrections_tsv_returns_empty_when_the_query_matched_nothing():
+    """mysql --batch는 0행이면 헤더조차 찍지 않는다(parse_jobs_tsv와 같은 경계)."""
+    assert parse_corrections_tsv("") == []
+
+
+def test_corrections_sql_mirrors_the_backend_confirmed_predicate():
+    """확정 모집단은 백엔드 `_UNCONFIRMED_WHERE`의 부정이다 — 세 predicate를 실제로 대조한다.
+
+    두 곳이 갈라지면 리포트의 확정 잡 수와 처리 관측(/curation/pending)의 미확정 수의 합이
+    전체와 어긋난다. ml/은 backend/를 import할 수 없어 상수 공유가 불가능하다(spec §3-1).
+    문자열을 재진술하는 항진 대신 backend 소스를 직접 읽어 대조한다(M1) — backend는
+    git-tracked라 fresh clone·CI에서도 경로가 성립한다
+    (test_bank_update_shares_the_pairs_query와 같은 관용구).
+
+    양쪽 모두 **predicate 목록 전체**를 대조한다 — 파일 전체를 substring 검색하면 네 번째
+    predicate가 붙어도(예: `AND j.status = 'done'`) 세 단언이 그대로 통과해, 이 테스트가
+    막겠다고 선언한 바로 그 분기를 놓친다. 목록 비교는 개수까지 함께 고정한다.
+    """
+    backend_src = (
+        Path(__file__).resolve().parent.parent.parent
+        / "backend"
+        / "app"
+        / "repositories"
+        / "ocr_repository.py"
+    ).read_text(encoding="utf-8")
+    where_block = re.search(r"_UNCONFIRMED_WHERE = \(\n(.*?)\n\)", backend_src, re.DOTALL)
+    assert where_block is not None, "백엔드 _UNCONFIRMED_WHERE 상수를 찾지 못했다"
+    assert [p.strip() for p in re.findall(r'"([^"]*)"', where_block.group(1))] == [
+        "WHERE j.invoice_id IS NULL",
+        "AND NOT EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id)",
+        "AND NOT EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)",
+    ]
+    # 서브쿼리에도 WHERE가 있어 바깥 WHERE는 첫 predicate로 앵커한다(앵커가 깨지면 아래 단언이
+    # None으로 즉시 RED가 되므로 드리프트는 그대로 잡힌다).
+    ml_where = re.search(r"WHERE (j\.invoice_id IS NOT NULL .+?) ORDER BY", CORRECTIONS_SQL)
+    assert ml_where is not None, "CORRECTIONS_SQL에서 바깥 WHERE 절을 찾지 못했다"
+    assert ml_where.group(1).split(" OR ") == [
+        "j.invoice_id IS NOT NULL",
+        "EXISTS (SELECT 1 FROM ocr_corrections c2 WHERE c2.job_id = j.id)",
+        "EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)",
+    ]
+
+
+def test_corrections_cols_match_the_sql_alias_order():
+    """SELECT 별칭 순서가 CORRECTION_COLS와 어긋나면 파서의 위치 인덱싱이 조용히 뒤바뀐다(M3).
+
+    부분 순서 단언(예: n_lines가 image_path보다 앞) 대신 전체 별칭 시퀀스를 SSoT와 통째로
+    대조한다 — rows_added/rows_dropped 자리가 바뀌어도 이 테스트가 즉시 잡는다
+    (test_pair_cols_and_the_parsed_row_keys_are_one_contract와 같은 관용구).
+    """
+    aliases = tuple(re.findall(r"AS (\w+)", CORRECTIONS_SQL))
+    assert aliases == CORRECTION_COLS
+
+
+def test_parse_corrections_tsv_fails_fast_when_the_header_does_not_match_correction_cols():
+    """SELECT 순서가 바뀌어도 헤더 대조가 위치 인덱싱의 조용한 뒤바뀜을 막는다(M3)."""
+    bad_header = "job_id\tn_corrections\trows_dropped\trows_added\tn_lines\timage_path"
+    with pytest.raises(ValueError, match="헤더 불일치"):
+        parse_corrections_tsv(bad_header + "\n7\t1\t3\t1\t12\t/data/up/7.jpeg")
+
+
+def test_parse_corrections_tsv_fails_fast_when_the_column_count_is_wrong():
+    """컬럼 경계가 밀리면 조용한 오파싱 대신 즉시 실패한다(M2 — 형제 파서와 같은 계약)."""
+    with pytest.raises(ValueError, match="컬럼 수"):
+        parse_corrections_tsv(_CORRECTIONS_HEADER + "\n7\t1\t3\t1\t12")
 
 
 # --- 라벨 버킷 ---
@@ -224,12 +382,12 @@ def _amount_job(*buckets, job_id=1):
 
 
 def test_job_flags_warp_suspect_on_majority_zero_drift():
-    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok"))[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok"), [])[1] == ["warp_suspect"]
 
 
 def test_job_flags_empty_when_amounts_ok():
     recs = [{"job_id": 2, "status": "included", "amount_bucket": "ok"}]
-    assert job_flags(recs)[2] == []
+    assert job_flags(recs, [])[2] == []
 
 
 def test_job_flags_pins_both_arms_of_the_warp_suspect_threshold():
@@ -241,23 +399,61 @@ def test_job_flags_pins_both_arms_of_the_warp_suspect_threshold():
       - 절반 미달(2/5)은 꺼진다.
       - 비율은 채우지만 절대 건수가 1건(1/1·1/2)이면 꺼진다 — 단일 오독은 잡 신호가 아니다.
     """
-    assert job_flags(_amount_job("zero_drift", "degenerate", "ok", "ok"))[1] == ["warp_suspect"]
-    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok", "ok", "ok"))[1] == []
-    assert job_flags(_amount_job("zero_drift"))[1] == []
-    assert job_flags(_amount_job("degenerate", "ok"))[1] == []
+    assert job_flags(_amount_job("zero_drift", "degenerate", "ok", "ok"), [])[1] == ["warp_suspect"]
+    assert job_flags(_amount_job("zero_drift", "zero_drift", "ok", "ok", "ok"), [])[1] == []
+    assert job_flags(_amount_job("zero_drift"), [])[1] == []
+    assert job_flags(_amount_job("degenerate", "ok"), [])[1] == []
 
 
 def test_job_flags_ignores_rows_without_a_recorded_amount():
     """금액 미기재(None)는 분모에도 분자에도 들어가지 않는다 — 섞이면 비율 조건이 흔들린다."""
     recs = _amount_job("zero_drift", "zero_drift", None, None, None)
-    assert job_flags(recs)[1] == ["warp_suspect"]
+    assert job_flags(recs, [])[1] == ["warp_suspect"]
 
 
 def test_job_flags_skips_excluded_pairs():
     recs = _amount_job("zero_drift", "zero_drift") + [
         {"job_id": 1, "status": "excluded", "amount_bucket": "ok"}
     ]
-    assert job_flags(recs)[1] == ["warp_suspect"]  # excluded는 분모에 없다
+    assert job_flags(recs, [])[1] == ["warp_suspect"]  # excluded는 분모에 없다
+
+
+def test_job_flags_row_gap_when_the_human_moved_half_the_rows():
+    """AC 4 — 사람이 옮긴 행(추가+폐기)이 확정 행의 절반 이상이면 행검출 실패 후보다."""
+    flags = job_flags([], [_correction(job_id=5, n_lines=1, rows_added=3, rows_dropped=1)])
+    assert flags[5] == ["row_gap"]  # moved 4, confirmed 4
+
+
+def test_job_flags_pins_both_arms_of_the_row_gap_threshold():
+    """warp_suspect와 같은 형태·같은 하한 — 절대 건수 2 이상 AND 확정 행의 절반 이상."""
+    # 1건은 단일 오독으로도 나므로 잡 단위 신호가 못 된다.
+    assert job_flags([], [_correction(job_id=1, n_lines=1, rows_added=1)])[1] == []
+    # 정확히 절반도 포함한다(moved * 2 >= confirmed_rows).
+    assert job_flags([], [_correction(job_id=1, n_lines=2, rows_added=2)])[1] == ["row_gap"]
+    # 절반 미만은 켜지 않는다(moved 2, confirmed 5).
+    assert job_flags([], [_correction(job_id=1, n_lines=3, rows_added=2)])[1] == []
+    # 폐기만으로도 켜진다 — moved는 추가+폐기 양쪽이다(과검출 축이 조용히 빠지지 않게).
+    assert job_flags([], [_correction(job_id=1, n_lines=2, rows_added=0, rows_dropped=2)])[1] == [
+        "row_gap"
+    ]
+
+
+def test_job_flags_leaves_an_unknown_balance_unflagged():
+    """조용한 0 판정 금지 — 미상 잡에 플래그를 달면 없는 근거로 검수 대상을 만든다."""
+    assert job_flags([], [_correction(job_id=9, n_lines=None)])[9] == []
+
+
+def test_job_flags_covers_jobs_that_have_no_pairs_at_all():
+    """가장 심한 실패(쌍 0개)가 가장 조용히 사라지지 않게 — 순회 축이 두 소스의 합집합이다."""
+    flags = job_flags([], [_correction(job_id=57, n_lines=0, rows_added=9)])
+    assert 57 in flags
+    assert flags[57] == ["row_gap"]
+
+
+def test_job_flags_can_carry_both_flags_on_one_job():
+    recs = _amount_job("zero_drift", "zero_drift", "ok")  # job_id=1, warp_suspect
+    flags = job_flags(recs, [_correction(job_id=1, n_lines=2, rows_added=2)])
+    assert flags[1] == ["warp_suspect", "row_gap"]
 
 
 def test_oob_label_counts_orders_by_frequency():
@@ -496,6 +692,93 @@ def test_summarize_keeps_amount_metrics_independent_of_item_evaluability():
     s = summarize(rows)
     assert s["n_item_evaluable"] == 0
     assert (s["amount_n"], s["amount_ok"]) == (2, 1)
+
+
+# --- 행 수지 집계 (spec §4-2) ---
+
+
+def test_correction_helper_matches_the_parser_shape():
+    """합성 헬퍼가 파서 출력과 키 집합이 같은지 고정한다 — 갈라지면 렌더 테스트가 거짓이 된다.
+
+    known 분기뿐 아니라 unknown 분기도 대조한다 — 다섯 값을 None으로 접는 규칙이
+    curation_enrich.py와 여기 두 곳에 손으로 복제돼 있어, known만 고정하면 한쪽만
+    바뀌어도 아무 테스트도 울리지 않는다.
+
+    known 분기는 추가·폐기가 서로 다른 비대칭 값으로 대조한다 — 기본 행(추가 0·폐기 0)은
+    draft_rows == confirmed_rows == n_lines이라, 헬퍼의 파생식이 뒤바뀌거나 항을 잃어도
+    이 대조가 그대로 통과한다. row_gap 임계 테스트들이 전부 이 파생값에 기대므로
+    드리프트가 이 자리에서 잡혀야 한다.
+    """
+    hdr = "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path\n"
+    parsed = parse_corrections_tsv(hdr + "1\t1\t2\t1\t3\t/data/up/1.jpeg")[0]
+    assert _correction(rows_added=2, rows_dropped=1) == parsed
+
+    parsed_null = parse_corrections_tsv(hdr + "1\t0\tNULL\tNULL\tNULL\t/data/up/1.jpeg")[0]
+    assert _correction(n_lines=None, has_correction=False, n_corrections=0) == parsed_null
+
+
+def test_is_row_balance_known_is_the_single_source_of_the_unknown_predicate():
+    """M2 — 미상 판정의 SSoT. 집계와 렌더가 이 술어를 공유해야 모집단이 갈라지지 않는다."""
+    assert is_row_balance_known(_correction(n_lines=3))
+    assert is_row_balance_known(_correction(n_lines=0))  # 0행은 유효한 관측치다
+    assert not is_row_balance_known(_correction(n_lines=None))
+
+
+def test_summarize_row_balance_sums_only_the_known_jobs():
+    """추가·폐기 총계를 다르게 둬 초안 행과 확정 행이 서로 다른 수가 되게 한다.
+
+    두 축이 우연히 같은 수가 되는 표본을 쓰면 합계의 출처를 맞바꿔도(초안↔확정) 아무 단언도
+    울리지 않는다 — 초안 행과 확정 행을 거꾸로 인쇄하는 것은 리포트의 핵심 오독이다.
+    """
+    corrections = [
+        _correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1),
+        _correction(job_id=2, n_lines=5, rows_added=1, rows_dropped=2),
+        _correction(job_id=3, n_lines=None),  # 미상 — 합계에서 빠진다
+    ]
+    rb = summarize_row_balance(corrections)
+    assert rb["n_confirmed_jobs"] == 3
+    assert rb["n_lines"] == 15
+    assert rb["rows_added"] == 4
+    assert rb["rows_dropped"] == 3
+    assert rb["draft_rows"] == 18  # (10+1) + (5+2)
+    assert rb["confirmed_rows"] == 19  # (10+3) + (5+1)
+
+
+def test_summarize_row_balance_splits_the_two_kinds_of_unknown():
+    """AC 5 — 운영자의 후속 조치가 다르다(구 데이터 vs 데이터 결손)."""
+    corrections = [
+        _correction(job_id=1, n_lines=None, has_correction=False, n_corrections=0),
+        _correction(job_id=2, n_lines=None, has_correction=False, n_corrections=0),
+        _correction(job_id=3, n_lines=None, has_correction=True),
+        _correction(job_id=4, n_lines=4),
+    ]
+    rb = summarize_row_balance(corrections)
+    assert rb["n_unknown_jobs"] == 3
+    assert rb["n_no_correction_jobs"] == 2
+    # 결손 종은 집계 계층이 낸다 — 렌더가 뺄셈으로 파생하면 "렌더는 조립만" 원칙이 깨진다.
+    assert rb["n_missing_json_jobs"] == 1
+
+
+def test_summarize_row_balance_of_an_empty_population_is_all_zero():
+    rb = summarize_row_balance([])
+    assert rb == {
+        "n_confirmed_jobs": 0,
+        "n_unknown_jobs": 0,
+        "n_no_correction_jobs": 0,
+        "n_missing_json_jobs": 0,
+        "n_multi_correction_jobs": 0,
+        "n_lines": 0,
+        "draft_rows": 0,
+        "rows_added": 0,
+        "rows_dropped": 0,
+        "confirmed_rows": 0,
+    }
+
+
+def test_summarize_row_balance_counts_reconfirmed_jobs():
+    """재확정 잡은 최신 1건만 읽었다는 사실이 수치로 남는다(중복은 SQL이 이미 걸렀다)."""
+    rb = summarize_row_balance([_correction(job_id=1, n_corrections=2), _correction(job_id=2)])
+    assert rb["n_multi_correction_jobs"] == 1
 
 
 # --- era-aware 재판정 (spec §3-C — unevaluable의 생산 지점) ---

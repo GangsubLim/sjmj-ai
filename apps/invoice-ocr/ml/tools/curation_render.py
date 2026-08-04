@@ -23,14 +23,24 @@ from tools.curation_enrich import (
     is_human_excluded,
     is_machine_excluded,
     is_reverted_machine_exclusion,
+    is_row_balance_known,
     job_flags,
     oob_label_counts,
     summarize,
+    summarize_row_balance,
 )
 
 
 def _pct(k: int, n: int) -> str:
-    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else "0/0 (—)"
+    """비율을 `k/n (p%)`로 인쇄한다 — 분모 0에서도 **분자는 삼키지 않는다**.
+
+    대부분의 호출부는 `k ≤ n`이 구조적으로 보장돼 `n=0 ⇒ k=0`이지만, 행 수지 절의 둘째 줄은
+    분자(training_pairs)와 분모(교정 이력)의 소스가 달라 그 불변식이 깨진다 — 거기서 분자를
+    0으로 접으면 하필 이 절이 드러내려는 소스 드리프트 신호가 지워진다.
+
+    잡별 요약 표는 이 함수가 아니라 `_ratio`를 쓴다 — 거기선 분모 0에서 분자를 지운다(`—/0`).
+    """
+    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else f"{k}/0 (—)"
 
 
 def _known(value: object) -> str:
@@ -173,6 +183,56 @@ def _render_cohort_table(s: dict, meta: dict) -> list[str]:
     ]
 
 
+def _render_row_balance(enriched: list[dict], corrections: list[dict]) -> list[str]:
+    """행 수지 절 — 손실을 두 단계로 분해한다(행검출 축 / 코호트·배제 축).
+
+    한 단계로 `n_item_evaluable / confirmed_rows`만 적으면 **뱅크 시점 문제와 학습 제외까지
+    행검출 누락으로 읽힌다.** 첫 줄만이 이 슬라이스가 새로 여는 축이고, 둘째 줄은 기존
+    코호트·배제 축이라 읽는 법도 후속 조치도 다르다(런북 0번·4번).
+
+    분자 n_lines는 교정 이력에서, 학습 후보 쌍 수는 training_pairs에서 온다 — 소스가 다르므로
+    둘 다 적어 어긋남(재처리·삭제 흔적)이 드러나게 한다.
+
+    두 줄 모두 **행 수지가 known인 잡**만 본다. 이 스코핑이 막는 것은 미상 잡의 쌍이 분자로
+    새는 누수뿐이며, **100% 상한을 보증하지는 않는다** — 두 소스가 어긋나면(재처리·삭제로
+    쌍이 교정 이력보다 많으면) 100%를 넘는 값이 그대로 인쇄된다. 그것이 이 절이 드러내려는
+    신호이므로 클램프하지 않는다.
+    """
+    # 둘째 줄의 분자·분모 모집단을 맞춘다 — summarize()의 n_item_evaluable은 enriched 전량
+    # 기준이라, 수지 미상 잡이 쌍을 가지면 분자만 부풀어 오른다(조용한 오수치). summarize()는
+    # 손대지 않고(모집단이 다르다) 이 절에서만 known 잡으로 좁힌다.
+    rb = summarize_row_balance(corrections)
+    known_jobs = {c["job_id"] for c in corrections if is_row_balance_known(c)}
+    scoped = [r for r in enriched if r["job_id"] in known_jobs]
+    n_pairs = len(scoped)  # 배제 쌍도 센다 — n_lines는 confirm 시점 축이고 배제는 그 이후다
+    n_evaluable = sum(is_item_evaluable(r) for r in scoped if r["status"] == "included")
+    out = [
+        "",
+        "## 행 수지",
+        "",
+        "```text",
+        f"초안 {rb['draft_rows']}행 → 사람 추가 +{rb['rows_added']} / "
+        f"사람 폐기 -{rb['rows_dropped']} → 확정 {rb['confirmed_rows']}행",
+        "",
+        f"행검출 가시 범위   {_pct(rb['n_lines'], rb['confirmed_rows'])}"
+        f"   (학습 후보가 된 행 / 사람이 인정한 행 · 학습 후보 쌍 {n_pairs}개(수지 known 잡 한정))",
+        f"└ 그중 판정 가능   {_pct(n_evaluable, rb['n_lines'])}"
+        "   (배제·구 뱅크 코호트·정합 장애로 빠진 몫 — 행검출 실패가 아니다)",
+        "```",
+        "",
+        f"행 수지 미상 {rb['n_unknown_jobs']}잡"
+        f"(교정 이력 없음 {rb['n_no_correction_jobs']} / "
+        f"교정 JSON 결손 {rb['n_missing_json_jobs']}) — 위 합계 밖",
+        "",
+    ]
+    if rb["n_multi_correction_jobs"]:
+        out.append(
+            f"재확정(교정 이력 2건 이상) {rb['n_multi_correction_jobs']}잡 — 최신 1건만 읽었다"
+        )
+        out.append("")  # 절 꼬리를 조건과 무관하게 같은 모양으로 닫는다
+    return out
+
+
 def _render_key_metrics(s: dict) -> list[str]:
     """핵심 지표 표 + 유사도 통계 줄을 렌더한다(render_report에서 순수 추출, M3)."""
     lines = [
@@ -202,26 +262,53 @@ def _render_key_metrics(s: dict) -> list[str]:
     return lines
 
 
+def _ratio(k: int, n: int) -> str:
+    """분모가 0이면 `—/0`으로 적는다 — `0/0`은 판정 불가 잡을 전패로 오독하게 한다.
+
+    `_pct`(분모 0에서도 분자를 인쇄한다)와 다르게 분자를 지운다: 이 표의 두 비율은 분자가
+    분모의 부분집합(`ev`⊇적중, `amts`⊇ok)이라 `n=0 ⇒ k=0`이 구조적으로 참이고, 그래서 남길
+    분자 정보 자체가 없다.
+    """
+    return f"{k}/{n}" if n else "—/0"
+
+
 def _render_job_table(
-    enriched: list[dict], inc: list[dict], flags: dict[int, list[str]]
+    enriched: list[dict], inc: list[dict], flags: dict[int, list[str]], corrections: list[dict]
 ) -> list[str]:
-    """잡별 요약 표를 렌더한다(render_report에서 순수 추출, M3)."""
+    """잡별 요약 표를 렌더한다 — 행 수지 3열을 얹고 쌍 0개 잡도 한 행을 차지한다.
+
+    순회 축이 `enriched ∪ corrections`라 학습 후보 쌍이 하나도 없는 확정 잡(행검출 전멸)이
+    표에서 사라지지 않는다 — 가장 조용히 사라지는 잡이 가장 봐야 할 잡이다(spec §5-3).
+    행 수지가 미상인 잡은 `?`로 적는다(0으로 접지 않는다).
+
+    `pairs(incl)`는 included 한정이다(top1·금액ok와 같은 모집단) — 머리말의 "쌍 보유"는
+    included+excluded 전체 기준이라 배제쌍만 있는 잡은 머리말과 이 표에서 다른 수로 찍힌다.
+    그 차이는 두 계약이 다르다는 신호이지 버그가 아니다(M2) — 열 이름으로 표면화한다.
+    """
+    balance_by_job = {c["job_id"]: c for c in corrections}
+    # 열 이름 하나에서 헤더와 구분선을 함께 도출한다 — 손으로 두 줄을 맞추면 열 수 드리프트가
+    # 검출 불가하다(GFM은 헤더/구분선 셀 수가 다르면 표를 문단으로 뭉갠다, M1).
+    cols = ("job", "pairs(incl)", "초안", "+행", "-행", "top1", "금액ok", "플래그")
     lines = [
         "",
         "## 잡별 요약",
         "",
-        "| job | pairs | top1 | 금액ok | 플래그 |",
-        "| --- | --- | --- | --- | --- |",
+        "| " + " | ".join(cols) + " |",
+        "| " + " | ".join("---" for _ in cols) + " |",
     ]
-    for jid in sorted({r["job_id"] for r in enriched}):
+    for jid in sorted({r["job_id"] for r in enriched} | set(balance_by_job)):
         recs = [r for r in inc if r["job_id"] == jid]
         ev = [r for r in recs if is_item_evaluable(r)]
         amts = [r for r in recs if r["amount_bucket"] is not None]
-        # top-1을 k/n으로 적는다 — 0/n으로 적히면 판정 불가 잡이 전패로 오독된다.
+        c = balance_by_job.get(jid)
+        if c is None or not is_row_balance_known(c):
+            draft, added, dropped = "?", "?", "?"
+        else:
+            draft, added, dropped = c["draft_rows"], c["rows_added"], c["rows_dropped"]
         lines.append(
-            f"| {jid} | {len(recs)} | "
-            f"{sum(r['label_bucket'] == 'ok' for r in ev)}/{len(ev)} | "
-            f"{sum(r['amount_bucket'] == 'ok' for r in amts)}/{len(amts)} | "
+            f"| {jid} | {len(recs)} | {draft} | {added} | {dropped} | "
+            f"{_ratio(sum(r['label_bucket'] == 'ok' for r in ev), len(ev))} | "
+            f"{_ratio(sum(r['amount_bucket'] == 'ok' for r in amts), len(amts))} | "
             f"{', '.join(flags.get(jid, [])) or '—'} |"
         )
     return lines
@@ -333,15 +420,26 @@ def _render_excluded(enriched: list[dict]) -> list[str]:
     return lines
 
 
-def render_report(enriched: list[dict], meta: dict) -> str:
-    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
-    s = summarize(enriched)
-    flags = job_flags(enriched)
-    inc = [r for r in enriched if r["status"] == "included"]
-    lines = [
+def _render_header(s: dict, meta: dict, corrections: list[dict], enriched: list[dict]) -> list[str]:
+    """리포트 제목·동기화 요약·뱅크 지문을 렌더한다(헬퍼 대칭 완성 — render_report는 조립만 한다).
+
+    corrections(교정 이력)는 쌍 기준 지표의 **바깥 경계**를 낸다 — 쌍이 0개인 확정 잡은
+    enriched에 한 줄도 없지만 확정 잡 모집단에는 들어 있다(spec §5-1). 확정 잡 수는
+    `summarize_row_balance`에서 파생한다 — 여기서 다시 세면 이 절과 "## 행 수지" 절의
+    수가 어긋날 수 있다(같은 파일의 배제 절 주석과 같은 이유, M3).
+
+    "쌍 보유"는 **전체 쌍**(included + excluded) 기준이다 — included만으로 좁히면 배제쌍만
+    있는 잡이 "쌍 0개"로 잘못 계상돼 눈먼 잡 신호가 거짓이 된다(M1).
+    """
+    n_confirmed = summarize_row_balance(corrections)["n_confirmed_jobs"]
+    pair_job_ids = {r["job_id"] for r in enriched}
+    n_with_pairs = sum(c["job_id"] in pair_job_ids for c in corrections)
+    return [
         "# OCR 큐레이션 학습쌍 분석 리포트",
         "",
         f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
+        f"확정 잡 {n_confirmed}개(쌍 보유 {n_with_pairs} / "
+        f"쌍 0개 {n_confirmed - n_with_pairs}) · "
         f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍"
         f"(기계 {s['n_excluded_machine']} / 사람 {s['n_excluded_human']})"
         f" · 기계배제 되돌림 {s['n_reverted_machine']}쌍"
@@ -351,7 +449,16 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         f"- 현재 retrieval 지문: {meta.get('retrieval_version') or '미확정'}",
         "",
     ]
+
+
+def render_report(enriched: list[dict], meta: dict, corrections: list[dict]) -> str:
+    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
+    s = summarize(enriched)
+    flags = job_flags(enriched, corrections)
+    inc = [r for r in enriched if r["status"] == "included"]
+    lines = _render_header(s, meta, corrections, enriched)
     lines += _render_cohort_table(s, meta)
+    lines += _render_row_balance(enriched, corrections)
     lines += _render_key_metrics(s)
 
     bank_candidate_lines, oob = _render_bank_candidates(enriched, inc)
@@ -361,10 +468,11 @@ def render_report(enriched: list[dict], meta: dict) -> str:
     lines += _render_miss_list(misses, unreachable)
 
     lines += _render_amount_failures(inc)
-    lines += _render_job_table(enriched, inc, flags)
+    lines += _render_job_table(enriched, inc, flags, corrections)
     lines += _render_excluded(enriched)
 
     warp_jobs = [jid for jid, f in flags.items() if "warp_suspect" in f]
+    row_gap_jobs = sorted(jid for jid, f in flags.items() if "row_gap" in f)
     lines += [
         "",
         "## 다음 액션",
@@ -374,6 +482,11 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         "잡 id를 확인해 `pull-images --jobs <job_id...>`로 직접 지정해 크롭을 검수한다",
         f"- warp 재검토 대상 잡: {warp_jobs or '없음'} "
         "→ warped.png를 시각 검수해 warp 실패 여부 확인",
+        # 크롭이 아니라 원본을 가리킨다 — row_gap 잡은 쌍·크롭이 0개일 수 있어 크롭 검수로는
+        # 아무것도 볼 수 없다(행검출이 전멸한 잡이 이 플래그의 표적이다).
+        f"- 행 수지 이상 잡: {row_gap_jobs or '없음'} → 원본 사진과 행검출 결과를 대조한다"
+        " (`pull-images --jobs <job_id...> --originals`"
+        " — 쌍 0개·크롭 0개 잡도 원본은 받아진다)",
         f"- 리트리벌 미스 {len(misses)}건 → 해당 라벨 뱅크 프로토타입 보강 검토",
         "- 참고: 실패 잡 수(`pull-images` 기본 대상)에는 기계 자동 배제가 포함된다.",
         "- 뱅크에 넣은 크롭을 다시 맞히는 낙관 편향의 분해(peer/hold-out)는 여기서 다시 만들지",
