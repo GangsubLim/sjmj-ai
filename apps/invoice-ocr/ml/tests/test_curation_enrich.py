@@ -1,5 +1,6 @@
 """tools.curation_enrich 순수 분석 계층 단위테스트 (ssh/DB 비의존, 합성 데이터만)."""
 
+import re
 from pathlib import Path
 
 import pytest
@@ -14,12 +15,15 @@ from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공�
     _row,
 )
 from tools.curation_enrich import (
+    CORRECTION_COLS,
+    CORRECTIONS_SQL,
     PAIR_COLS,
     PAIRS_SQL,
     amount_bucket,
     job_flags,
     label_bucket,
     oob_label_counts,
+    parse_corrections_tsv,
     parse_jobs_tsv,
     parse_pairs_tsv,
     summarize,
@@ -64,6 +68,143 @@ def test_parse_jobs_tsv_fails_fast_when_image_path_contains_tab():
     text = 'id\timage_path\tresult\n5\t/up/a\t.jpeg\t{"rows": []}'
     with pytest.raises(ValueError, match="컬럼 경계"):
         parse_jobs_tsv(text)
+
+
+_CORRECTIONS_HEADER = "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path"
+
+
+def test_parse_corrections_tsv_derives_the_row_balance():
+    text = _CORRECTIONS_HEADER + "\n7\t1\t3\t1\t12\t/data/up/7.jpeg"
+    assert parse_corrections_tsv(text) == [
+        {
+            "job_id": 7,
+            "n_corrections": 1,
+            "has_correction": True,
+            "rows_added": 3,
+            "rows_dropped": 1,
+            "n_lines": 12,
+            "draft_rows": 13,  # n_lines + rows_dropped
+            "confirmed_rows": 15,  # n_lines + rows_added
+            "image_path": "/data/up/7.jpeg",
+        }
+    ]
+
+
+def test_parse_corrections_tsv_marks_a_job_without_a_correction_row_as_unknown():
+    """LEFT JOIN 미스(구 데이터·link_invoice 백필) — 0으로 접지 않는다(AC 5)."""
+    text = _CORRECTIONS_HEADER + "\n7\t0\tNULL\tNULL\tNULL\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["has_correction"] is False
+    assert (row["rows_added"], row["rows_dropped"], row["n_lines"]) == (None, None, None)
+    assert (row["draft_rows"], row["confirmed_rows"]) == (None, None)
+
+
+def test_parse_corrections_tsv_keeps_has_correction_when_the_json_is_missing():
+    """미상 두 종을 가른다 — 교정 행은 있는데 correction_json이 NULL이면 데이터 결손이다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\tNULL\tNULL\tNULL\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["has_correction"] is True
+    assert row["n_lines"] is None
+
+
+def test_parse_corrections_tsv_folds_a_partial_null_into_unknown():
+    """세 값 중 하나만 NULL이어도 미상이다 — 반쪽 수지는 합계를 조용히 왜곡한다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\t3\tNULL\t12\t/data/up/7.jpeg"
+    assert parse_corrections_tsv(text)[0]["draft_rows"] is None
+
+
+def test_parse_corrections_tsv_keeps_an_escaped_path_verbatim():
+    """raw=False에서 mysql이 탭을 \\t로 이스케이프하므로 컬럼 경계는 밀리지 않는다.
+
+    역이스케이프는 하지 않는다(parse_pairs_tsv와 같은 계약) — image_path는
+    ocr_service.create_job이 uuid4().hex + 화이트리스트 suffix로 만들어 특수문자가
+    구조적으로 들어가지 않는다. 이 테스트는 그 계약을 못박아 둔다.
+    """
+    text = _CORRECTIONS_HEADER + "\n7\t1\t0\t0\t5\t/data/up/a\\tb.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["image_path"] == "/data/up/a\\tb.jpeg"
+    assert row["n_lines"] == 5
+
+
+def test_parse_corrections_tsv_maps_a_null_image_path_to_none():
+    """image_path는 nullable(migration_007:30) — 문자열 'NULL'을 경로로 쓰면 cat이 죽는다."""
+    text = _CORRECTIONS_HEADER + "\n7\t1\t0\t0\t5\tNULL"
+    assert parse_corrections_tsv(text)[0]["image_path"] is None
+
+
+def test_parse_corrections_tsv_surfaces_a_reconfirmed_job():
+    """재확정(교정 2건) 잡 — SQL이 MAX(id) 1건만 주고, 중복 사실은 n_corrections로 남는다."""
+    text = _CORRECTIONS_HEADER + "\n7\t2\t1\t0\t5\t/data/up/7.jpeg"
+    row = parse_corrections_tsv(text)[0]
+    assert row["n_corrections"] == 2
+    assert row["has_correction"] is True
+    assert row["confirmed_rows"] == 6
+
+
+def test_corrections_sql_pins_the_dedup_subquery_and_left_join_shape():
+    """MAX(c2.id) 서브쿼리·n_corrections 별칭·LEFT JOIN 존재를 문서로 고정한다.
+
+    계약 검증이 아니라 문서 고정이다(M1) — CORRECTIONS_SQL 정의를 그대로 재진술하는 항진이라
+    표기만 바뀌어도 깨질 뿐, 실제 위험(백엔드 predicate와의 분기·컬럼 순서 어긋남)은 각각
+    test_corrections_sql_mirrors_the_backend_confirmed_predicate와
+    test_corrections_cols_match_the_sql_alias_order가 구조적으로 검증한다.
+    """
+    assert "MAX(c2.id)" in CORRECTIONS_SQL
+    assert "AS n_corrections" in CORRECTIONS_SQL
+    assert "LEFT JOIN ocr_corrections" in CORRECTIONS_SQL  # 교정 행 부재가 미상으로 남는 자리
+
+
+def test_parse_corrections_tsv_returns_empty_when_the_query_matched_nothing():
+    """mysql --batch는 0행이면 헤더조차 찍지 않는다(parse_jobs_tsv와 같은 경계)."""
+    assert parse_corrections_tsv("") == []
+
+
+def test_corrections_sql_mirrors_the_backend_confirmed_predicate():
+    """확정 모집단은 백엔드 `_UNCONFIRMED_WHERE`의 부정이다 — 세 predicate를 실제로 대조한다.
+
+    두 곳이 갈라지면 리포트의 확정 잡 수와 처리 관측(/curation/pending)의 미확정 수의 합이
+    전체와 어긋난다. ml/은 backend/를 import할 수 없어 상수 공유가 불가능하다(spec §3-1).
+    문자열을 재진술하는 항진 대신 backend 소스를 직접 읽어 대조한다(M1) — backend는
+    git-tracked라 fresh clone·CI에서도 경로가 성립한다
+    (test_bank_update_shares_the_pairs_query와 같은 관용구).
+    """
+    backend_src = (
+        Path(__file__).resolve().parent.parent.parent
+        / "backend"
+        / "app"
+        / "repositories"
+        / "ocr_repository.py"
+    ).read_text(encoding="utf-8")
+    assert "WHERE j.invoice_id IS NULL" in backend_src
+    assert "NOT EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id)" in backend_src
+    assert "NOT EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)" in backend_src
+    assert "j.invoice_id IS NOT NULL" in CORRECTIONS_SQL
+    assert "EXISTS (SELECT 1 FROM ocr_corrections c2 WHERE c2.job_id = j.id)" in CORRECTIONS_SQL
+    assert "EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)" in CORRECTIONS_SQL
+
+
+def test_corrections_cols_match_the_sql_alias_order():
+    """SELECT 별칭 순서가 CORRECTION_COLS와 어긋나면 파서의 위치 인덱싱이 조용히 뒤바뀐다(M3).
+
+    부분 순서 단언(예: n_lines가 image_path보다 앞) 대신 전체 별칭 시퀀스를 SSoT와 통째로
+    대조한다 — rows_added/rows_dropped 자리가 바뀌어도 이 테스트가 즉시 잡는다
+    (test_pair_cols_and_the_parsed_row_keys_are_one_contract와 같은 관용구).
+    """
+    aliases = tuple(re.findall(r"AS (\w+)", CORRECTIONS_SQL))
+    assert aliases == CORRECTION_COLS
+
+
+def test_parse_corrections_tsv_fails_fast_when_the_header_does_not_match_correction_cols():
+    """SELECT 순서가 바뀌어도 헤더 대조가 위치 인덱싱의 조용한 뒤바뀜을 막는다(M3)."""
+    bad_header = "job_id\tn_corrections\trows_dropped\trows_added\tn_lines\timage_path"
+    with pytest.raises(ValueError, match="헤더 불일치"):
+        parse_corrections_tsv(bad_header + "\n7\t1\t3\t1\t12\t/data/up/7.jpeg")
+
+
+def test_parse_corrections_tsv_fails_fast_when_the_column_count_is_wrong():
+    """컬럼 경계가 밀리면 조용한 오파싱 대신 즉시 실패한다(M2 — 형제 파서와 같은 계약)."""
+    with pytest.raises(ValueError, match="컬럼 수"):
+        parse_corrections_tsv(_CORRECTIONS_HEADER + "\n7\t1\t3\t1\t12")
 
 
 # --- 라벨 버킷 ---

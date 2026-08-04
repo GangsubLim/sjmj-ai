@@ -37,6 +37,54 @@ JOBS_SQL = (
     "WHERE id IN (SELECT DISTINCT job_id FROM training_pairs)"
 )
 
+# 확정 잡 모집단 + 잡 단위 행 수지 원자료(네 번째 데이터 소스).
+# WHERE는 백엔드 `apps/invoice-ocr/backend/app/repositories/ocr_repository.py`의
+# `_UNCONFIRMED_WHERE`(미확정 판정)의 **부정**이다 — 확정 증거 세 predicate를 그대로
+# 미러링한다. ml/은 backend/를 import할 수 없어 상수를 공유할 수 없으므로 양쪽 주석이
+# 서로를 가리킨다. 두 곳이 갈라지면 이 리포트의 확정 잡 수와 처리 관측(/curation/pending)의
+# 미확정 수의 합이 전체와 안 맞게 된다.
+# 모집단의 출발점을 ocr_corrections가 아니라 ocr_jobs로 두는 이유: 교정 행이 없는 확정 잡
+# (link_invoice 백필 이력)이 통째로 빠져 "미상"이 도달 불가가 된다. LEFT JOIN이 그 자리다.
+# job_id는 UNIQUE가 아니다(migration_007:40-51). 명세서 삭제로 ocr_jobs.invoice_id가
+# ON DELETE SET NULL 되면 재확정이 가능하고, 쌍 0개 잡은 crop_ref UNIQUE 충돌도 없어
+# 교정 행이 둘 이상 남을 수 있다. 정본은 MAX(id) 1건으로 SQL에서 확정하고, 중복 사실은
+# n_corrections로 리포트에 노출한다(제약 추가는 DB 변경이라 이 슬라이스 범위 밖 — 후속 이슈).
+# has_correction은 n_corrections > 0으로 파서가 파생한다(컬럼 수는 CORRECTION_COLS 길이 그대로).
+# image_path를 맨 뒤에 두는 이유: raw=False에서는 mysql이 탭·개행을 이스케이프해 컬럼 경계가
+# 보장되지만, 유일한 가변 자유 문자열이라 맨 뒤 + split(maxsplit=len(CORRECTION_COLS)-1)로
+# 방어 깊이를 한 겹 둔다.
+# (parse_jobs_tsv의 탭 방어는 그쪽이 raw=True라 이스케이프가 없기 때문이다 — 근거가 다르다.)
+# 별칭(AS)은 필수다 — mysql --batch TSV 헤더가 표현식 원문이 되면 읽기가 SQL에 묶이고,
+# SELECT 순서는 CORRECTION_COLS와 정확히 같아야 한다(파서가 헤더로 대조해 fail-fast한다, M3).
+CORRECTIONS_SQL = (
+    "SELECT j.id AS job_id, "
+    "(SELECT COUNT(*) FROM ocr_corrections c3 WHERE c3.job_id = j.id) AS n_corrections, "
+    "JSON_EXTRACT(c.correction_json,'$.rows_added') AS rows_added, "
+    "JSON_EXTRACT(c.correction_json,'$.rows_dropped') AS rows_dropped, "
+    "JSON_LENGTH(c.correction_json,'$.lines') AS n_lines, "
+    "j.image_path AS image_path "
+    "FROM ocr_jobs j LEFT JOIN ocr_corrections c "
+    "ON c.id = (SELECT MAX(c2.id) FROM ocr_corrections c2 WHERE c2.job_id = j.id) "
+    "WHERE j.invoice_id IS NOT NULL "
+    "OR EXISTS (SELECT 1 FROM ocr_corrections c2 WHERE c2.job_id = j.id) "
+    "OR EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id) "
+    "ORDER BY j.id"
+)
+
+# corrections TSV의 컬럼 이름·위치 SSoT. SELECT 별칭 순서와 파서의 헤더 대조·위치 인덱싱이
+# 이 튜플 하나로 묶인다 — parse_pairs_tsv가 헤더 키 매핑 + strict=True로 순서 위험을 막는
+# 것과 같은 이유다(M3). SELECT 순서만 바뀌어도(예: rows_added/rows_dropped 자리 교환) 위치
+# 인덱싱은 예외 없이 조용히 뒤바뀐 수지를 낸다 — parse_corrections_tsv가 헤더를 이 튜플과
+# 대조해 fail-fast로 막는다.
+CORRECTION_COLS = (
+    "job_id",
+    "n_corrections",
+    "rows_added",
+    "rows_dropped",
+    "n_lines",
+    "image_path",
+)
+
 # warp_suspect를 켤 금액 실패 최소 건수 — 1건은 단일 오독으로도 나므로 잡 단위 신호가 못 된다.
 MIN_WARP_SUSPECT_BAD = 2
 
@@ -81,6 +129,65 @@ def parse_jobs_tsv(text: str) -> list[dict]:
         if not raw.lstrip().startswith("{"):
             raise ValueError(f"jobs TSV 컬럼 경계 오류(job_id={job_id}) — image_path 제어문자 의심")
         out.append({"job_id": int(job_id), "image_path": image_path, "result": json.loads(raw)})
+    return out
+
+
+def parse_corrections_tsv(text: str) -> list[dict]:
+    """mysql --batch TSV(ocr_jobs ⨝ ocr_corrections)를 잡 단위 행 수지 dict로 파싱한다.
+
+    수지 세 값 중 하나라도 NULL이면 셋 모두 None = 미상이다(0으로 접지 않는다) — 파생값
+    (draft_rows·confirmed_rows)도 함께 None이 되어 이후 합계·플래그에서 통째로 빠진다.
+    미상 두 종은 has_correction으로 가른다: 교정 이력 자체가 없다(구 데이터, 정상) vs
+    교정 행은 있는데 correction_json이 NULL이다(데이터 결손, 버그 의심).
+
+    n_corrections > 1은 재확정 흔적이다 — 정본은 SQL이 MAX(id)로 고르고, 이 값은 그 사실을
+    리포트까지 나르는 통로다(조용한 최신 채택 금지).
+
+    헤더를 CORRECTION_COLS와 대조해 fail-fast한다 — parse_pairs_tsv가 헤더 키 매핑으로 컬럼
+    순서 위험을 막는 것과 같은 방어다(M3). SELECT 순서만 바뀌어도 위치 인덱싱은 예외 없이
+    조용히 뒤바뀐 수지를 내므로, 여기서는 헤더 자체를 SSoT와 통째로 비교한다.
+
+    Raises:
+        ValueError: 헤더가 CORRECTION_COLS와 다르거나 컬럼 수가 어긋날 때.
+    """
+    stripped = text.strip()
+    if not stripped:
+        return []
+    lines = stripped.split("\n")
+    header = tuple(lines[0].split("\t"))
+    if header != CORRECTION_COLS:
+        raise ValueError(f"corrections TSV 헤더 불일치: {header!r} != {CORRECTION_COLS!r}")
+    out: list[dict] = []
+    for ln in lines[1:]:
+        parts = ln.split("\t", len(CORRECTION_COLS) - 1)
+        if len(parts) != len(CORRECTION_COLS):
+            raise ValueError(f"corrections TSV 컬럼 수 오류({len(parts)}개): {ln[:80]!r}")
+        row = dict(zip(CORRECTION_COLS, parts, strict=True))
+        job_id = int(row["job_id"])
+        n_corrections = int(row["n_corrections"])
+        raw = [_cell(row[k]) for k in ("rows_added", "rows_dropped", "n_lines")]
+        if any(v is None for v in raw):
+            balance = dict.fromkeys(
+                ("rows_added", "rows_dropped", "n_lines", "draft_rows", "confirmed_rows")
+            )
+        else:
+            added, dropped, n_lines = (int(v) for v in raw)
+            balance = {
+                "rows_added": added,
+                "rows_dropped": dropped,
+                "n_lines": n_lines,
+                "draft_rows": n_lines + dropped,
+                "confirmed_rows": n_lines + added,
+            }
+        out.append(
+            {
+                "job_id": job_id,
+                "n_corrections": n_corrections,
+                "has_correction": n_corrections > 0,
+                **balance,
+                "image_path": _cell(row["image_path"]),  # E7과 한 벌
+            }
+        )
     return out
 
 
