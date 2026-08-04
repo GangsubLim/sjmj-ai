@@ -176,7 +176,8 @@ def test_render_report_shows_evaluable_denominators_and_no_none_sim_crash():
     ]
     md = _render(rows, {"fetched_at": "t"})
     assert "| 품목 top-1 (평가 가능 쌍 기준) | 0/1 (0.0%) |" in md  # 분모가 2가 아니라 1
-    assert "| 1 | 2 | 0/1 |" in md  # 잡별 top-1은 k/n 표기
+    # 잡별 top-1은 k/n 표기. 교정 이력이 없는 잡이라 행 수지 3열은 ?다(0으로 접지 않는다).
+    assert "| 1 | 2 | ? | ? | ? | 0/1 | 2/2 | — |" in md
     assert "job-1/row-1" in md  # 미스 목록엔 평가 가능 쌍만
     assert "job-1/row-0" not in md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
 
@@ -571,3 +572,74 @@ def test_row_balance_section_names_reconfirmed_jobs():
     # 뒤의 빈 줄까지 단언한다 — 재확정 줄이 붙는지에 따라 절 꼬리 구조가 달라지면 다음 절
     # 제목이 이 줄과 한 문단으로 병합돼 읽힌다.
     assert "재확정(교정 이력 2건 이상) 1잡 — 최신 1건만 읽었다\n\n" in md
+
+
+# --- 잡별 요약 표 + 다음 액션 (spec §5-3, §5-4) ---
+# 표 행은 **한 줄 통째로** 단언한다 — 칸을 따로 단언하면 열 순서가 뒤바뀌어도(초안↔+행 등)
+# 각 값은 여전히 존재해 통과한다. 라벨과 수치의 결합을 고정하는 것이 이 표의 계약이다.
+
+
+def test_job_table_adds_the_row_balance_columns():
+    rows = [_enriched_row(label_bucket="ok", top1_sim=0.9, amount_bucket="ok")]
+    md = _render(
+        rows, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=3, rows_added=2, rows_dropped=1)]
+    )
+    assert "| job | pairs(incl) | 초안 | +행 | -행 | top1 | 금액ok | 플래그 |" in md
+    assert "| 1 | 1 | 4 | 2 | 1 | 1/1 | 1/1 | row_gap |" in md
+
+
+def test_job_table_marks_an_unknown_balance_with_a_question_mark():
+    rows = [_enriched_row(label_bucket="ok", top1_sim=0.9, amount_bucket="ok")]
+    md = _render(rows, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=None)])
+    assert "| 1 | 1 | ? | ? | ? | 1/1 | 1/1 | — |" in md
+
+
+def test_job_table_gives_a_pairless_job_its_own_row():
+    """행검출이 전멸한 잡이 표에서 사라지지 않는다 — 분모 0은 0/0이 아니라 —/0으로 적는다."""
+    md = _render([], {"fetched_at": "t"}, [_correction(job_id=57, n_lines=0, rows_added=9)])
+    assert "| 57 | 0 | 0 | 9 | 0 | —/0 | —/0 | row_gap |" in md
+
+
+def test_next_actions_point_the_row_gap_jobs_at_the_original_photo():
+    """row_gap 잡의 후속 조치는 크롭이 아니라 원본 사진 대조다(쌍·크롭이 0개일 수 있다).
+
+    줄을 통째로 단언한다 — 잡 목록만 단언하면 조치 문구가 사라져도, 문구만 단언하면 목록이
+    비어도(교정 이력을 flags에 넘기지 않는 배선 회귀) 통과한다.
+    """
+    md = _render([], {"fetched_at": "t"}, [_correction(job_id=57, n_lines=0, rows_added=9)])
+    next_actions = md.split("## 다음 액션")[1]
+    assert (
+        "- 행 수지 이상 잡: [57] → 원본 사진과 행검출 결과를 대조한다"
+        " (`pull-images --jobs <job_id...> --originals`"
+        " — 쌍 0개·크롭 0개 잡도 원본은 받아진다)" in next_actions
+    )
+
+
+def test_job_table_pairs_column_excludes_excluded_pairs_unlike_the_header():
+    """M-2 — `pairs(incl)`는 included만 센다. 머리말의 "쌍 보유"는 전체 쌍(포함+배제) 기준이라,
+    배제쌍만 있는 잡은 머리말에서 쌍 1개로 잡히지만 표에서는 0개로 찍힌다 — 두 계약이
+    다르다는 사실을 열 이름으로 표면화한다.
+    """
+    enriched = _enrich([_pair(status="excluded")], [_job(rows=[])])
+    md = _render(enriched, {"fetched_at": "t"}, [_correction(job_id=1)])
+    assert "확정 잡 1개(쌍 보유 1 / 쌍 0개 0)" in md
+    assert "| 1 | 0 | 3 | 0 | 0 | —/0 | —/0 | — |" in md
+
+
+def test_job_table_rows_are_sorted_by_job_id():
+    """작은 정수 job_id는 우연히 정렬돼 보일 수 있다 — 57을 2보다 먼저 넣어 sorted()를 못박는다."""
+    corrections = [_correction(job_id=57, n_lines=0), _correction(job_id=2, n_lines=0)]
+    md = _render([], {"fetched_at": "t"}, corrections)
+    table = md.split("## 잡별 요약")[1]
+    assert table.index("| 2 |") < table.index("| 57 |")
+
+
+def test_next_actions_row_gap_jobs_are_sorted():
+    """row_gap_jobs도 같은 함정이 있다 — 57을 2보다 먼저 넣어 sorted()를 못박는다."""
+    corrections = [
+        _correction(job_id=57, n_lines=0, rows_added=9),
+        _correction(job_id=2, n_lines=0, rows_added=9),
+    ]
+    md = _render([], {"fetched_at": "t"}, corrections)
+    next_actions = md.split("## 다음 액션")[1]
+    assert "행 수지 이상 잡: [2, 57]" in next_actions
