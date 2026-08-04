@@ -7,6 +7,7 @@ import pytest
 
 from tests.conftest import (  # 합성 헬퍼는 렌더 계층 테스트와 공유한다
     BANK,
+    _correction,
     _enrich,
     _enriched_row,
     _job,
@@ -27,6 +28,7 @@ from tools.curation_enrich import (
     parse_jobs_tsv,
     parse_pairs_tsv,
     summarize,
+    summarize_row_balance,
 )
 
 # --- TSV 파싱 ---
@@ -637,6 +639,74 @@ def test_summarize_keeps_amount_metrics_independent_of_item_evaluability():
     s = summarize(rows)
     assert s["n_item_evaluable"] == 0
     assert (s["amount_n"], s["amount_ok"]) == (2, 1)
+
+
+# --- 행 수지 집계 (spec §4-2) ---
+
+
+def test_correction_helper_matches_the_parser_shape():
+    """합성 헬퍼가 파서 출력과 키 집합이 같은지 고정한다 — 갈라지면 렌더 테스트가 거짓이 된다.
+
+    known 분기뿐 아니라 unknown 분기도 대조한다 — 다섯 값을 None으로 접는 규칙이
+    curation_enrich.py와 여기 두 곳에 손으로 복제돼 있어, known만 고정하면 한쪽만
+    바뀌어도 아무 테스트도 울리지 않는다.
+    """
+    hdr = "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path\n"
+    parsed = parse_corrections_tsv(hdr + "1\t1\t0\t0\t3\t/data/up/1.jpeg")[0]
+    assert _correction().keys() == parsed.keys()
+    assert _correction() == parsed
+
+    parsed_null = parse_corrections_tsv(hdr + "1\t0\tNULL\tNULL\tNULL\t/data/up/1.jpeg")[0]
+    assert _correction(n_lines=None, has_correction=False, n_corrections=0) == parsed_null
+
+
+def test_summarize_row_balance_sums_only_the_known_jobs():
+    corrections = [
+        _correction(job_id=1, n_lines=10, rows_added=3, rows_dropped=1),
+        _correction(job_id=2, n_lines=5, rows_added=0, rows_dropped=2),
+        _correction(job_id=3, n_lines=None),  # 미상 — 합계에서 빠진다
+    ]
+    rb = summarize_row_balance(corrections)
+    assert rb["n_confirmed_jobs"] == 3
+    assert rb["n_lines"] == 15
+    assert rb["rows_added"] == 3
+    assert rb["rows_dropped"] == 3
+    assert rb["draft_rows"] == 18  # (10+1) + (5+2)
+    assert rb["confirmed_rows"] == 18  # (10+3) + (5+0)
+
+
+def test_summarize_row_balance_splits_the_two_kinds_of_unknown():
+    """AC 5 — 운영자의 후속 조치가 다르다(구 데이터 vs 데이터 결손)."""
+    corrections = [
+        _correction(job_id=1, n_lines=None, has_correction=False, n_corrections=0),
+        _correction(job_id=2, n_lines=None, has_correction=False, n_corrections=0),
+        _correction(job_id=3, n_lines=None, has_correction=True),
+        _correction(job_id=4, n_lines=4),
+    ]
+    rb = summarize_row_balance(corrections)
+    assert rb["n_unknown_jobs"] == 3
+    assert rb["n_no_correction_jobs"] == 2
+
+
+def test_summarize_row_balance_of_an_empty_population_is_all_zero():
+    rb = summarize_row_balance([])
+    assert rb == {
+        "n_confirmed_jobs": 0,
+        "n_unknown_jobs": 0,
+        "n_no_correction_jobs": 0,
+        "n_multi_correction_jobs": 0,
+        "n_lines": 0,
+        "draft_rows": 0,
+        "rows_added": 0,
+        "rows_dropped": 0,
+        "confirmed_rows": 0,
+    }
+
+
+def test_summarize_row_balance_counts_reconfirmed_jobs():
+    """재확정 잡은 최신 1건만 읽었다는 사실이 수치로 남는다(중복은 SQL이 이미 걸렀다)."""
+    rb = summarize_row_balance([_correction(job_id=1, n_corrections=2), _correction(job_id=2)])
+    assert rb["n_multi_correction_jobs"] == 1
 
 
 # --- era-aware 재판정 (spec §3-C — unevaluable의 생산 지점) ---

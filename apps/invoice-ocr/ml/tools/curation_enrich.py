@@ -442,6 +442,34 @@ def is_reverted_machine_exclusion(row: dict) -> bool:
     return row["status"] == "included" and row["exclusion_reason"] is not None
 
 
+def summarize_row_balance(corrections: list[dict]) -> dict:
+    """잡 단위 행 수지의 전체 합계와 모집단 경계를 낸다 — 미상 잡은 합계에서 뺀다.
+
+    `summarize()`와 한 함수로 섞지 않는다: 두 집계의 모집단이 다르다(쌍 vs 잡). 섞으면
+    분모가 뒤엉키고 기존 지표의 정의가 조용히 바뀐다(spec §4-2·§11).
+
+    합계에서 빠진 미상 잡은 사라지지 않고 n_unknown_jobs로 남아 리포트가 그 사실을 인쇄한다.
+
+    미상 판정은 `n_lines is None` 단일 키만 본다 — `parse_corrections_tsv`의 all-or-nothing
+    접기(다섯 값 중 하나라도 NULL이면 다섯 다 None)에 기대는 것이다. 파서가 부분 None을
+    허용하도록 바뀌면 이 판정도 함께 고쳐야 한다(그렇지 않으면 draft_rows 등 살아있는 값이
+    조용히 합계에서 사라진다).
+    """
+    known = [c for c in corrections if c["n_lines"] is not None]
+    unknown = [c for c in corrections if c["n_lines"] is None]
+    return {
+        "n_confirmed_jobs": len(corrections),
+        "n_unknown_jobs": len(unknown),
+        "n_no_correction_jobs": sum(not c["has_correction"] for c in unknown),
+        "n_multi_correction_jobs": sum(c["n_corrections"] > 1 for c in corrections),
+        "n_lines": sum(c["n_lines"] for c in known),
+        "draft_rows": sum(c["draft_rows"] for c in known),
+        "rows_added": sum(c["rows_added"] for c in known),
+        "rows_dropped": sum(c["rows_dropped"] for c in known),
+        "confirmed_rows": sum(c["confirmed_rows"] for c in known),
+    }
+
+
 def summarize(enriched: list[dict]) -> dict:
     """included 쌍의 핵심 지표를 집계한다 — 품목 지표는 평가 가능 쌍만 분모로 쓴다.
 

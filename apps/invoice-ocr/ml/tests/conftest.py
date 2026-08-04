@@ -186,6 +186,35 @@ def _enriched_row(**over):
     return {**base, **over}
 
 
+def _correction(
+    job_id=1, *, n_lines=3, rows_added=0, rows_dropped=0, has_correction=True, n_corrections=1
+):
+    """corrections.json 1행 합성 — parse_corrections_tsv 출력 shape과 한 벌이다.
+
+    n_lines=None이면 행 수지 미상(다섯 값 모두 None)이다. 미상 두 종은 has_correction으로
+    가른다(교정 이력 없음 vs 교정 JSON 결손).
+    """
+    if n_lines is None:
+        balance = dict.fromkeys(
+            ("rows_added", "rows_dropped", "n_lines", "draft_rows", "confirmed_rows")
+        )
+    else:
+        balance = {
+            "rows_added": rows_added,
+            "rows_dropped": rows_dropped,
+            "n_lines": n_lines,
+            "draft_rows": n_lines + rows_dropped,
+            "confirmed_rows": n_lines + rows_added,
+        }
+    return {
+        "job_id": job_id,
+        "n_corrections": n_corrections,
+        "has_correction": has_correction,
+        **balance,
+        "image_path": f"/data/up/{job_id}.jpeg",
+    }
+
+
 @pytest.fixture
 def tiny_invoices_sql() -> str:
     """invoices/invoice_items 최소 INSERT 샘플 (백업 형식 모사)."""
