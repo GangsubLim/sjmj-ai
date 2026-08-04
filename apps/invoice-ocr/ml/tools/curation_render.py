@@ -26,6 +26,7 @@ from tools.curation_enrich import (
     job_flags,
     oob_label_counts,
     summarize,
+    summarize_row_balance,
 )
 
 
@@ -333,15 +334,26 @@ def _render_excluded(enriched: list[dict]) -> list[str]:
     return lines
 
 
-def render_report(enriched: list[dict], meta: dict) -> str:
-    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
-    s = summarize(enriched)
-    flags = job_flags(enriched)
-    inc = [r for r in enriched if r["status"] == "included"]
-    lines = [
+def _render_header(s: dict, meta: dict, corrections: list[dict], enriched: list[dict]) -> list[str]:
+    """리포트 제목·동기화 요약·뱅크 지문을 렌더한다(헬퍼 대칭 완성 — render_report는 조립만 한다).
+
+    corrections(교정 이력)는 쌍 기준 지표의 **바깥 경계**를 낸다 — 쌍이 0개인 확정 잡은
+    enriched에 한 줄도 없지만 확정 잡 모집단에는 들어 있다(spec §5-1). 확정 잡 수는
+    `summarize_row_balance`에서 파생한다 — 여기서 다시 세면 이 절과 "## 행 수지" 절의
+    수가 어긋날 수 있다(같은 파일의 배제 절 주석과 같은 이유, M3).
+
+    "쌍 보유"는 **전체 쌍**(included + excluded) 기준이다 — included만으로 좁히면 배제쌍만
+    있는 잡이 "쌍 0개"로 잘못 계상돼 눈먼 잡 신호가 거짓이 된다(M1).
+    """
+    n_confirmed = summarize_row_balance(corrections)["n_confirmed_jobs"]
+    pair_job_ids = {r["job_id"] for r in enriched}
+    n_with_pairs = sum(c["job_id"] in pair_job_ids for c in corrections)
+    return [
         "# OCR 큐레이션 학습쌍 분석 리포트",
         "",
         f"- 동기화: {meta.get('fetched_at', '?')} · 잡 {s['n_jobs']}개 · "
+        f"확정 잡 {n_confirmed}개(쌍 보유 {n_with_pairs} / "
+        f"쌍 0개 {n_confirmed - n_with_pairs}) · "
         f"included {s['n_included']}쌍 · excluded {s['n_excluded']}쌍"
         f"(기계 {s['n_excluded_machine']} / 사람 {s['n_excluded_human']})"
         f" · 기계배제 되돌림 {s['n_reverted_machine']}쌍"
@@ -351,6 +363,14 @@ def render_report(enriched: list[dict], meta: dict) -> str:
         f"- 현재 retrieval 지문: {meta.get('retrieval_version') or '미확정'}",
         "",
     ]
+
+
+def render_report(enriched: list[dict], meta: dict, corrections: list[dict]) -> str:
+    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
+    s = summarize(enriched)
+    flags = job_flags(enriched)
+    inc = [r for r in enriched if r["status"] == "included"]
+    lines = _render_header(s, meta, corrections, enriched)
     lines += _render_cohort_table(s, meta)
     lines += _render_key_metrics(s)
 

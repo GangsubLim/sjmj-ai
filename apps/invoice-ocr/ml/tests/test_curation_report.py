@@ -16,6 +16,7 @@ import pytest
 from tests.conftest import (  # 합성 헬퍼는 분석 계층 테스트와 공유한다
     _CUR_VERSION,
     BANK,
+    _correction,
     _enrich,
     _enriched_row,
     _four_vintages,
@@ -495,6 +496,7 @@ def _write_cache(
     *,
     pairs,
     jobs,
+    corrections=None,
     bank_labels=None,
     retrieval_version=_CUR_VERSION,
     reeval=None,
@@ -506,6 +508,10 @@ def _write_cache(
     bank_labels = sorted(BANK) if bank_labels is None else bank_labels
     (tmp_path / "pairs.json").write_text(json.dumps(pairs, ensure_ascii=False), encoding="utf-8")
     (tmp_path / "jobs.json").write_text(json.dumps(jobs, ensure_ascii=False), encoding="utf-8")
+    # 네 번째 소스. 기본값은 빈 목록 — 가드 테스트만 이 파일을 일부러 만들지 않는다.
+    (tmp_path / "corrections.json").write_text(
+        json.dumps(corrections or [], ensure_ascii=False), encoding="utf-8"
+    )
     (tmp_path / "bank.json").write_text(
         json.dumps(
             {"size": len(bank_labels), "counts": {lb: 1 for lb in bank_labels}}, ensure_ascii=False
@@ -588,6 +594,59 @@ def test_pull_images_still_runs_off_a_stale_pairs_cache(tmp_path, monkeypatch):
     main(["--cache", str(tmp_path), "pull-images"])
     assert pulled == [[1]]  # 조인 결손(row_missing)이 검수 대상으로 남는다
     assert (tmp_path / "images_index.md").exists()
+
+
+def test_report_command_fails_fast_on_a_cache_without_the_correction_history(tmp_path):
+    """AC 7 — 구버전 캐시(교정 이력 없음)에서 report가 조용히 통과하지 않는다."""
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "corrections.json").unlink()
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "corrections.json")
+
+
+def test_report_command_names_the_file_and_the_recovery_when_corrections_are_corrupt(tmp_path):
+    """M4 — corrections.json은 비원자 쓰기라 중단된 fetch가 잘린 파일을 남길 수 있다.
+
+    `_reeval_info`의 손상 가드(H2)와 같은 관용구를 요구한다 — raw JSONDecodeError가 새면
+    어느 파일을 어떻게 고치는지 알 수 없다.
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "corrections.json").write_text("{not json}", encoding="utf-8")
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "corrections.json")
+
+
+def test_pull_images_still_runs_without_the_correction_history(tmp_path, monkeypatch):
+    """가드는 report 경로에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+
+    기존 `test_pull_images_still_runs_off_a_stale_pairs_cache`와 골격이 같지만 축이 다르다
+    (pairs.json 구버전 키 vs corrections.json 파일 부재). 두 축을 한 테스트로 합치지 않는다.
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "corrections.json").unlink()
+    pulled: list[list[int]] = []
+
+    def fake_pull(host, backend_env, cache, job_ids, with_originals):
+        pulled.append(job_ids)
+        return cache / "images"
+
+    monkeypatch.setattr("tools.curation_report.pull_images", fake_pull)
+    main(["--cache", str(tmp_path), "pull-images", "--jobs", "1"])
+    assert pulled == [[1]]
+
+
+def test_report_command_passes_the_correction_history_to_the_renderer(tmp_path, capsys):
+    """배선 회귀 — 캐시를 읽고도 렌더에 넘기지 않으면 새 절이 통째로 빈다."""
+    _write_cache(
+        tmp_path,
+        pairs=[_pair()],
+        jobs=[_job(rows=[_row(top5=[("엔진오일", 0.9)])])],
+        corrections=[_correction(job_id=1, n_lines=3, rows_added=2, rows_dropped=1)],
+    )
+    main(["--cache", str(tmp_path), "report"])
+    assert "확정 잡 1개(쌍 보유 1 / 쌍 0개 0)" in capsys.readouterr().out
 
 
 def test_load_enriched_wires_the_current_fingerprint_so_pairs_stay_evaluable(tmp_path):

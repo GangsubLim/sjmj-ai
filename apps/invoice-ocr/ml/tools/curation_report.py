@@ -114,6 +114,8 @@ REEVAL_SUBDIR = "results/bank_update"
 REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_meta.json"))
 # 원자 교체 한 벌의 마지막 파일 — 앞의 두 파일을 **해석하는** 쪽이라 가장 나중에 갈아끼운다(M2).
 CACHE_META = "meta.json"
+# 교정 이력 캐시 파일명 — report 경로 전용(_require_corrections·_load_corrections)이 공유한다.
+CACHE_CORRECTIONS = "corrections.json"
 
 
 def bank_script(worker_env: str, ml_root: str) -> str:
@@ -327,7 +329,7 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
     # 표기다(재평가 2파일이 1행). 런북 표는 후속 태스크에서 파일 기준 "다섯"으로 갱신된다
     # (Refs #72) — 이 커밋 시점에는 아직 "넷"이다.
-    _write_json(cache / "corrections.json", corrections)
+    _write_json(cache / CACHE_CORRECTIONS, corrections)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
     _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
@@ -428,6 +430,44 @@ def _require_exclusion_reason(enriched: list[dict]) -> None:
         )
 
 
+def _require_corrections(cache: Path) -> None:
+    """교정 이력 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
+    교정 이력을 판정에 쓰지 않으므로 — §6의 원본 경로 폴백은 파일이 **있을 때만** 쓰는
+    최적화다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다. 하필 그 상황이
+    `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는 상황이다.
+
+    Raises:
+        ValueError: corrections.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    if not (cache / CACHE_CORRECTIONS).exists():
+        raise ValueError(
+            f"{CACHE_CORRECTIONS} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_RECOVERY}"
+        )
+
+
+def _load_corrections(cache: Path) -> list[dict]:
+    """report 경로 전용 — 교정 이력 캐시를 읽는다(읽기 인코딩은 쓰기와 맞춘다, L5).
+
+    `_reeval_info`(H2)와 같은 관용구로 손상을 막는다(M4) — corrections.json은 비원자
+    `_write_json`으로 쓰이므로 중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다.
+
+    Raises:
+        ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
+    """
+    path = cache / CACHE_CORRECTIONS
+    try:
+        corrections = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
+    if not isinstance(corrections, list):
+        raise ValueError(
+            f"{path.name}이 JSON 배열이 아니다({type(corrections).__name__}) — {_CACHE_RECOVERY}"
+        )
+    return corrections
+
+
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
     """pull-images 기본 대상 — 검수 대상 실패가 있는 잡 + excluded가 있는 잡.
 
@@ -482,7 +522,8 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "report":
         _require_exclusion_reason(enriched)
-        report = render_report(enriched, meta)
+        _require_corrections(args.cache)
+        report = render_report(enriched, meta, _load_corrections(args.cache))
         report_path = args.cache / "report.md"
         report_path.write_text(report)
         # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이

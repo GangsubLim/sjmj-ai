@@ -6,6 +6,7 @@ fetch 글루·CLI(_failure_job_ids·_load_enriched 등)의 테스트는 tests/te
 
 from tests.conftest import (  # 합성 헬퍼는 분석 계층 테스트와 공유한다
     _CUR_VERSION,
+    _correction,
     _enrich,
     _enriched_row,
     _job,
@@ -26,13 +27,39 @@ from tools.curation_render import (
 )
 
 
+def _render(enriched, meta, corrections=()):
+    """render_report 호출을 한 자리에 모은다 — 교정 이력을 안 보는 테스트는 빈 목록을 준다."""
+    return render_report(enriched, meta, list(corrections))
+
+
+def test_report_header_states_the_confirmed_job_population():
+    """AC — 기존 `잡 N개`(쌍 보유)의 바깥 경계를 옆에 적는다. K>0이면 눈먼 잡이 있다는 신호다."""
+    rows = [_enriched_row(label_bucket="ok", top1_sim=0.9)]  # job_id=1
+    corrections = [_correction(job_id=1), _correction(job_id=57, n_lines=0, rows_added=9)]
+    md = _render(rows, {"fetched_at": "t"}, corrections)
+    # 뒤쪽 " · included"까지 붙여 단언한다 — 이음매의 구분자를 지우는 뮤테이션도 여기서 잡는다(L3).
+    assert "확정 잡 2개(쌍 보유 1 / 쌍 0개 1) · included" in md
+
+
+def test_report_header_pair_ownership_counts_the_whole_pair_not_just_included():
+    """M1 — "쌍 보유"는 included만이 아니라 excluded까지 포함한 전체 쌍 기준이다.
+
+    배제쌍만 있는 잡(`test_render_report_handles_job_with_only_excluded_pairs`가 실재 상태로
+    인정)을 included 기준으로 좁히면 "쌍 0개"로 잘못 계상돼, 헤더가 존재하지 않는 눈먼 잡을
+    신호로 올린다.
+    """
+    enriched = _enrich([_pair(status="excluded")], [_job(rows=[])])
+    md = _render(enriched, {"fetched_at": "t"}, [_correction(job_id=1)])
+    assert "확정 잡 1개(쌍 보유 1 / 쌍 0개 0)" in md
+
+
 def test_render_report_handles_job_with_only_excluded_pairs():
     # `"excluded" in md`로는 아무것도 확인되지 않는다 — 머리말의 "excluded {n}쌍"과 표본
     # 구성표의 `| excluded |` 행은 배제 절이 통째로 사라져도, 입력이 비어도 늘 찍힌다.
     # 이 쌍은 사유가 없으므로 사람 배제 절 **안에** 그 crop_ref가 있는지까지 본다.
     pairs = [_pair(status="excluded")]
     enriched = _enrich(pairs, [_job(rows=[_row(top5=[("엔진오일", 0.9)])])])
-    md = render_report(enriched, {"fetched_at": "t"})
+    md = _render(enriched, {"fetched_at": "t"})
     section = "## excluded — 사람 배제"
     assert section in md
     assert "job-1/row-0" in md.split(section)[1]
@@ -53,7 +80,7 @@ def test_render_report_splits_excluded_sections():
         ),
         _pair(id=3, crop_ref="job-1/row-2", row_index=2, status="excluded", exclusion_reason=None),
     ]
-    md = render_report(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
+    md = _render(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
     machine_section = md.split("## excluded — 기계 자동 배제")[1].split("## excluded — 사람 배제")[
         0
     ]
@@ -71,7 +98,7 @@ def test_render_report_splits_excluded_sections():
 
 def test_render_report_shows_reverted_section():
     pairs = [_pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason="blank_crop")]
-    md = render_report(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
+    md = _render(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
     section = "## included — 기계 자동 배제를 사람이 되돌림"
     assert section in md
     assert "job-1/row-0" in md.split(section)[1]
@@ -81,7 +108,7 @@ def test_render_report_hides_reverted_section_when_none_reverted():
     # 되돌림 0건이면 섹션 자체가 없어야 한다 — 지운 것과 동치인 RED를 방지하는 음성 테스트.
     pairs = [_pair(id=1, crop_ref="job-1/row-0", status="included", exclusion_reason=None)]
     rows = [_row(top5=[("엔진오일", 0.9)])]
-    md = render_report(_enrich(pairs, [_job(rows=rows)]), {"fetched_at": "t"})
+    md = _render(_enrich(pairs, [_job(rows=rows)]), {"fetched_at": "t"})
     assert "기계 자동 배제를 사람이 되돌림" not in md
 
 
@@ -111,7 +138,7 @@ def test_render_report_shows_machine_exclusion_false_positive_rate():
         _pair(id=4, crop_ref="job-1/row-3", row_index=3, status="excluded", exclusion_reason=None),
         _pair(id=5, crop_ref="job-1/row-4", row_index=4, status="excluded", exclusion_reason=None),
     ]
-    md = render_report(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
+    md = _render(_enrich(pairs, [_job(rows=[])]), {"fetched_at": "t"})
     # 라벨과 비율을 따로 보면 지표 행이 서로 뒤바뀌어도 통과한다 — 한 문자열로 못박는다.
     assert "| 빈 크롭 가드 오탐(되돌림/기계 판정) | 1/3 (33.3%) |" in md
 
@@ -129,7 +156,7 @@ def test_render_report_smoke_contains_key_sections():
     ]
     rows = [_row(top5=[("엔진오일", 0.9)]), _row(idx=1, top5=[("드라이", 0.7)], supply=0, raw="0")]
     enriched = _enrich(pairs, [_job(rows=rows)])
-    md = render_report(enriched, {"fetched_at": "2026-07-27T00:00:00", "bank_distinct": 4})
+    md = _render(enriched, {"fetched_at": "2026-07-27T00:00:00", "bank_distinct": 4})
     assert "핵심 지표" in md
     assert "뱅크 추가 후보" in md
     assert "안가방" in md
@@ -146,7 +173,7 @@ def test_render_report_shows_evaluable_denominators_and_no_none_sim_crash():
             top5_labels=["공임"],
         ),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     assert "| 품목 top-1 (평가 가능 쌍 기준) | 0/1 (0.0%) |" in md  # 분모가 2가 아니라 1
     assert "| 1 | 2 | 0/1 |" in md  # 잡별 top-1은 k/n 표기
     assert "job-1/row-1" in md  # 미스 목록엔 평가 가능 쌍만
@@ -164,7 +191,7 @@ def test_misses_list_prints_the_judged_answer_not_just_final_label():
         top5_labels=["드라이", "엔진오일"],
         top1_sim=0.7,
     )
-    md = render_report([row], {"fetched_at": "t"})
+    md = _render([row], {"fetched_at": "t"})
     misses = md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
     assert "answer='엔진오일'" in misses
 
@@ -186,7 +213,7 @@ def test_pairs_without_a_reachable_peer_are_kept_out_of_the_retrieval_miss_list(
             top1_sim=0.5,
         ),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     misses = md.split("## in-bank 리트리벌 미스")[1].split("##")[0]
     assert "job-1/row-1" in misses and "job-1/row-0" not in misses
     assert "도달 불가" in md  # 제외 건수를 공개한다
@@ -304,7 +331,7 @@ def test_render_report_puts_the_sample_composition_above_the_core_metrics():
             in_bank=False,
         ),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     assert md.index("## 표본 구성") < md.index("## 핵심 지표")
     assert "| unknown | 1 |" in md
     assert "| no_label | 1 |" in md
@@ -328,7 +355,7 @@ def test_cohort_table_covers_every_cohort_a_pair_can_get():
 
 def test_cohort_table_marks_are_derived_from_the_evaluable_constant():
     """M3 — ○/✗를 표에 손으로 적으면 ITEM_EVALUABLE_COHORTS가 바뀔 때 표만 옛말을 인쇄한다."""
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
+    md = _render([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
     for name, note in COHORT_TABLE:
         assert "○" not in note and "✗" not in note  # 설명문에는 마크가 없다(상수에서 도출)
         row = next(ln for ln in md.splitlines() if ln.startswith(f"| {name} |"))
@@ -348,7 +375,7 @@ def test_sample_table_states_the_item_metric_denominator_and_row_missing():
             amount_bucket=None,
         ),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     assert "| current_bank | 2 |" in md  # ○ 코호트 합계는 2인데
     assert "품목 지표 분모(평가 가능 쌍) 1쌍" in md  # 분모는 1이고
     assert "row_missing 1건" in md  # 그 차이의 출처를 밝힌다
@@ -361,7 +388,7 @@ def test_reeval_notice_line_is_its_own_paragraph():
     고정하려는 재평가 알림 문단이 나오지 않는다.
     """
     meta = {"fetched_at": "t", "retrieval_version": _CUR_VERSION}
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], meta)
+    md = _render([_enriched_row(label_bucket="ok", top1_sim=0.9)], meta)
     assert f"{reeval_notice(meta)}\n\n뱅크 추가 후보는 코호트와 무관하게" in md
 
 
@@ -373,7 +400,7 @@ def test_current_bank_coverage_line_has_a_nonzero_denominator_even_when_unevalua
             crop_ref="job-1/row-1", cohort="unknown", label_bucket="unevaluable", in_bank=False
         ),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     assert "현재 뱅크 보유: 1/2" in md
 
 
@@ -385,18 +412,18 @@ def test_bank_coverage_line_is_its_own_paragraph_not_a_list_continuation():
         _enriched_row(answer="새라벨", label_bucket="unevaluable", in_bank=False),
         _enriched_row(crop_ref="job-1/row-1", label_bucket="ok", in_bank=True, top1_sim=0.9),
     ]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     assert "- 새라벨 ×1\n\n현재 뱅크 보유:" in md
 
 
 def test_bank_coverage_line_keeps_its_blank_line_when_there_are_no_candidates():
-    md = render_report([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
+    md = _render([_enriched_row(label_bucket="ok", top1_sim=0.9)], {"fetched_at": "t"})
     assert "- 없음\n\n현재 뱅크 보유:" in md
 
 
 def test_report_header_prints_the_current_retrieval_fingerprint():
     """H1 — 판정의 기준값(현재 지문)이 인쇄되지 않으면 코호트 표를 검증할 근거가 없다."""
-    md = render_report(
+    md = _render(
         [_enriched_row(label_bucket="ok", top1_sim=0.9)],
         {"fetched_at": "t", "retrieval_version": "a1b2c3d4e5f6"},
     )
@@ -409,7 +436,7 @@ def test_report_without_a_current_fingerprint_sends_the_user_to_fetch_not_a_resc
     이때 재평가 부재 문구를 인쇄하면 몇십 분짜리 원격 재채점을 권하는데, 그 재채점도 게이트가
     no_fingerprint로 기각해 지표는 여전히 0/0이다 — 실제 필요한 조치는 fetch 재실행이다.
     """
-    md = render_report(
+    md = _render(
         [_enriched_row(cohort="stale_bank", label_bucket="unevaluable")],
         {"fetched_at": "t", "reeval": {"state": "absent", "adopted": False}},
     )
@@ -424,6 +451,6 @@ def test_next_actions_hints_pull_images_with_explicit_jobs():
     가리켜야 한다(pull 대상 자체는 넓히지 않는다 — spec §5).
     """
     rows = [_enriched_row(cohort="unknown", label_bucket="unevaluable", in_bank=False)]
-    md = render_report(rows, {"fetched_at": "t"})
+    md = _render(rows, {"fetched_at": "t"})
     next_actions = md.split("## 다음 액션")[1]
     assert "--jobs" in next_actions
