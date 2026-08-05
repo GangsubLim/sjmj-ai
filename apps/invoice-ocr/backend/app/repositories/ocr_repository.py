@@ -23,6 +23,9 @@ def _parse_job(row) -> dict | None:
 # - training_pairs: ocr_corrections와 중복이지만, "두 탭이 겹치지 않는다"를 학습쌍의
 #   출처(라이브 confirm이냐 migration_008 백필이냐)에 대한 가정 없이 구조적으로 참이게
 #   만든다. 비용은 인덱스된 FK 서브쿼리 하나.
+# 이 predicate의 **부정**을 큐레이션 리포트가 확정 잡 모집단으로 미러링한다
+# (apps/invoice-ocr/ml/tools/curation_enrich.py:CORRECTIONS_SQL). ml/은 backend/를 import할
+# 수 없어 상수 공유가 불가능하므로, 여기를 고치면 그쪽도 함께 고친다.
 _UNCONFIRMED_WHERE = (
     "WHERE j.invoice_id IS NULL "
     "AND NOT EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id) "

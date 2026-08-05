@@ -76,31 +76,3 @@ def test_list_included_labels_drops_null_but_keeps_blank(db_conn):
 
 def test_list_included_labels_empty_for_unknown_job(db_conn):
     assert CurationRepository().list_included_labels(999999) == []
-
-
-def test_is_job_reviewed_true_when_flagged(db_conn):
-    assert CurationRepository().is_job_reviewed(_seed_job(db_conn, reviewed=1)) is True
-
-
-def test_is_job_reviewed_false_when_not_flagged(db_conn):
-    assert CurationRepository().is_job_reviewed(_seed_job(db_conn, reviewed=0)) is False
-
-
-def test_is_job_reviewed_scoped_to_job(db_conn):
-    """검수 상태가 엇갈린 두 잡이 공존해도 각자의 값을 돌려준다.
-
-    잡이 1건뿐인 시드에서는 `WHERE id = :id`를 통째로 지워도 세 단언이 모두 통과한다.
-    이 술어는 patch_pair의 자동등록 트리거 조건이라(검수 중 잡의 중간 라벨이 사전에 새는
-    경로) 스코프가 풀리면 등록 시점이 조용히 어긋난다.
-    """
-    reviewed = _seed_job(db_conn, reviewed=1)
-    unreviewed = _seed_job(db_conn, reviewed=0)
-    repo = CurationRepository()
-
-    assert repo.is_job_reviewed(reviewed) is True
-    assert repo.is_job_reviewed(unreviewed) is False
-
-
-def test_is_job_reviewed_false_for_unknown_job(db_conn):
-    _seed_job(db_conn, reviewed=1)  # 검수완료 잡이 있어도 없는 id는 False여야 한다.
-    assert CurationRepository().is_job_reviewed(999999) is False

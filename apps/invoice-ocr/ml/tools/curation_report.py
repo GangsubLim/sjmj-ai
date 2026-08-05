@@ -5,13 +5,15 @@
 버킷으로 귀속한 마크다운 리포트를 만든다. LLM 에이전트가 리포트→실패 크롭 시각 검수→
 개선(뱅크 추가·warp 재검토) 루프를 돌리기 위한 입구다. 사용법은 docs/runbooks 참조.
 
-코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 세 모듈에 분리돼 있고 의존은
-단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
+코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 별도 모듈들에 분리돼 있고
+의존은 단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
 tools/curation_enrich.py(파싱·버킷·조인·집계) → tools/curation_cohort.py(코호트·평가 가능성
-술어·재평가 게이트). ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
+술어·재평가 게이트). 이 모듈은 tools/curation_label_source.py(조작 출처 SQL·파싱·집계)도
+직접 끌어온다 — 그 모듈은 enrich에 의존하지 않고 cohort만 본다.
+ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
 
 Usage:
-    uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/bank 동기화
+    uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/교정 이력/bank/재평가 동기화
     uv run python -m tools.curation_report report       # 캐시 분석 → report.md/failures.jsonl
     uv run python -m tools.curation_report pull-images  # 실패 잡 크롭(+원본) 로컬 동기화
 """
@@ -24,6 +26,7 @@ import shlex
 import tarfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import NamedTuple
 
 # bank_id는 stdlib 전용이고 handwriting에 __init__.py가 없는 암묵 namespace 패키지라
 # 모듈 레벨 import가 numpy/torch를 끌지 않는다(paddle-free 코어 규약 유지).
@@ -35,12 +38,15 @@ from tools.curation_cohort import (
     reeval_gate,
 )
 from tools.curation_enrich import (
+    CORRECTIONS_SQL,
     JOBS_SQL,
     PAIRS_SQL,
     enrich_pairs,
+    parse_corrections_tsv,
     parse_jobs_tsv,
     parse_pairs_tsv,
 )
+from tools.curation_label_source import LABEL_SOURCES_SQL, parse_label_sources_tsv
 from tools.curation_render import NO_FINGERPRINT_NOTICE, render_report
 from tools.remote import (
     ENV_BACKEND_ENV,
@@ -103,8 +109,11 @@ _FINGERPRINT_IMPORT_MARKERS = (
 # 상단 메시지에 실을 원격 stderr 꼬리 줄 수 — traceback 전문은 길고 원인은 끝에 있다.
 _STDERR_EXCERPT_LINES = 3
 
-# 캐시 손상은 원인이 무엇이든 복구 절차가 하나다 — 서버에서 다시 받는다.
-_CACHE_RECOVERY = "로컬 캐시 손상이다. `fetch`를 다시 실행한다."
+# 캐시가 못 쓰게 된 이유는 갈리지만 복구 절차는 하나다 — 서버에서 다시 받는다.
+_CACHE_REFETCH = "`fetch`를 다시 실행한다."
+# 손상 전용 문구. 구버전·중단 fetch 가드는 절차만 쓴다 — 멀쩡한 옛 캐시에 "손상이다"를 단정하면
+# 운영자를 엉뚱한 조치(캐시 삭제)로 보낸다.
+_CACHE_RECOVERY = f"로컬 캐시 손상이다. {_CACHE_REFETCH}"
 
 # 재평가 산출물이 사는 원격 하위 경로(bank_update.DEFAULT_OUT과 같은 자리).
 REEVAL_SUBDIR = "results/bank_update"
@@ -112,6 +121,19 @@ REEVAL_SUBDIR = "results/bank_update"
 REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_meta.json"))
 # 원자 교체 한 벌의 마지막 파일 — 앞의 두 파일을 **해석하는** 쪽이라 가장 나중에 갈아끼운다(M2).
 CACHE_META = "meta.json"
+# 교정 이력 캐시 파일명 — report 가드(_require_corrections)와 읽기(_load_corrections)가 공유한다.
+CACHE_CORRECTIONS = "corrections.json"
+# 조작 출처 캐시 파일명 — report 가드(_require_label_sources)와 읽기(_load_label_sources)가 공유한다.
+# 다섯 번째 소스. 교정 이력과 같은 축이라 같은 자리(fetch_all)에서 `_write_json`으로 굳힌다 —
+# 재평가 3파일의 원자 교체 한 벌에 넣지 않는 이유는 fetch_all의 네 번째 소스(CACHE_CORRECTIONS)
+# 주석과 같다. corrections와는 ssh 왕복이 갈리므로 그 사이 확정이 끼어들면 두 캐시의 세대가
+# 어긋날 수 있다(pairs/jobs/bank/corrections 4소스가 이미 공유하는 성질이고, 수동 오프라인
+# 도구라 창은 초 단위다). 어긋남은 조용히 넘어가지 않는다 — 조작 출처 절의 매칭 행 수 드리프트
+# 경고가 리포트에서 그 자리에 인쇄한다.
+CACHE_LABEL_SOURCES = "label_sources.json"
+# `mysql --batch --raw` 출력의 SQL NULL 표기. jobs.json은 raw 질의라 NULL이 이 **문자열**로
+# 온다(corrections.json은 raw가 아니라 파서의 `_cell`이 None으로 접는다).
+_RAW_NULL = "NULL"
 
 
 def bank_script(worker_env: str, ml_root: str) -> str:
@@ -289,7 +311,7 @@ def _write_json(path: Path, obj) -> None:
 
 
 def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cache: Path) -> dict:
-    """서버에서 training_pairs·result_json·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다.
+    """서버에서 training_pairs·result_json·교정 이력·뱅크 라벨·현재 지문·재평가 산출물을 동기화한다.
 
     인자는 키워드 전용이다 — 동종 str 4개(host·두 env 경로·ml_root)가 인접해 위치로 넘기면
     뒤바꿔도 예외가 안 나고, ml_root가 뒤에 끼어든 시점부터 조용한 오연결 위험이 커졌다.
@@ -297,6 +319,12 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     cache.mkdir(parents=True, exist_ok=True)
     pairs = parse_pairs_tsv(run_ssh(host, mysql_script(backend_env, PAIRS_SQL, raw=False)).decode())
     jobs = parse_jobs_tsv(run_ssh(host, mysql_script(backend_env, JOBS_SQL, raw=True)).decode())
+    corrections = parse_corrections_tsv(
+        run_ssh(host, mysql_script(backend_env, CORRECTIONS_SQL, raw=False)).decode()
+    )
+    label_sources = parse_label_sources_tsv(
+        run_ssh(host, mysql_script(backend_env, LABEL_SOURCES_SQL, raw=False)).decode()
+    )
     try:
         bank = json.loads(run_ssh(host, bank_script(worker_env, ml_root)).decode())
     except RemoteError as e:
@@ -318,35 +346,152 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     _write_json(cache / "pairs.json", pairs)
     _write_json(cache / "jobs.json", jobs)
     _write_json(cache / "bank.json", bank)
+    # 네 번째 소스. 재평가 3파일의 원자 교체 한 벌에는 넣지 않는다 — 그 한 벌은 지문 해석
+    # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
+    # 표기다 — 원자 교체 밖에서 굳히는 네 번째 캐시 JSON이라는 뜻이다(pairs/jobs/bank 다음).
+    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 센다
+    # — 캐시 JSON 순번과 그 표의 행 수는 애초에 축이 다르니 개수를 여기에 적지 않는다.
+    _write_json(cache / CACHE_CORRECTIONS, corrections)
+    # 다섯 번째 소스 — 근거는 CACHE_LABEL_SOURCES 선언 옆 주석 참조.
+    _write_json(cache / CACHE_LABEL_SOURCES, label_sources)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
     _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
     return meta
 
 
+def crops_tar_script(backend_env: str, job_ids: list[int]) -> str:
+    """지정 잡의 크롭 디렉터리 중 **존재하는 것만** 묶는 원격 tar 스크립트를 만든다.
+
+    현행처럼 `tar -C ... job-57`을 그대로 부르면 디렉터리가 없을 때 tar가 비0으로 죽어
+    RemoteError가 나고, `--originals` 분기에 도달조차 못 한다(spec §6). 좁히기만 하므로
+    존재하는 디렉터리는 전부 그대로 통과한다.
+
+    누산은 위치 인자(`set --` / `"$@"`)로 한다 — 문자열에 모아 비인용 확장하면 zsh가
+    단어분리를 하지 않아(SH_WORD_SPLIT 기본 off) tar가 " job-1" 하나를 찾다 실패한다(실측).
+    `cd` 실패를 exit 0으로 흡수하는 것은 reeval_probe_script와 같은 관용구다.
+
+    job_ids는 **인용 없이** 보간되므로 정수 여부를 경계에서 검증한다 — 현재 호출부는 argparse
+    `type=int`·`int(...)`로 전부 정수지만 이 함수는 공개 함수라 그 보장이 코드에 없다.
+    `remote_path`와 같은 fail-fast 규약이다: 오타 하나가 원격에서 조용히 다른 명령이 되는 것보다
+    즉시 실패가 낫다(`bool`은 `int`의 하위형이라 따로 뺀다 — `job-True`는 경로가 아니다).
+
+    Raises:
+        ValueError: job_ids에 음이 아닌 정수가 아닌 값이 있을 때.
+    """
+    if not all(isinstance(j, int) and not isinstance(j, bool) and j >= 0 for j in job_ids):
+        raise ValueError(f"job_ids는 음이 아닌 정수여야 한다: {job_ids!r}")
+    names = " ".join(f"job-{j}" for j in job_ids)
+    return (
+        f"{source_env(backend_env)}"
+        'cd "$SJMJ_DATA_DIR/ocr_crops" 2>/dev/null || exit 0; '
+        "set --; "
+        f'for d in {names}; do [ -d "$d" ] && set -- "$@" "$d"; done; '
+        "[ $# -gt 0 ] || exit 0; "
+        'tar -cf - "$@"'
+    )
+
+
+def _original_image_paths(cache: Path, job_ids: list[int]) -> dict[int, str]:
+    """원본 사진 경로를 찾는다 — jobs.json 우선, 없으면 corrections.json 폴백.
+
+    JOBS_SQL이 training_pairs 보유 잡으로 제한돼 있어 쌍 0개 잡은 jobs.json에 없다(조용히
+    아무것도 저장하지 않고 성공으로 끝났다). corrections.json이 같은 값을 이미 싣고 있으므로
+    **새 쿼리·새 ssh 왕복은 0이다.** 폴백 파일이 없으면(구버전 캐시) 기존 동작으로 떨어진다.
+
+    손상 방어는 `_load_corrections`를 그대로 재사용한다 — 같은 파일을 생 `json.loads`로 다시
+    읽으면 중단된 fetch가 남긴 잘린 파일에서 파일명도 복구 절차도 없는 raw JSONDecodeError가
+    난다(그것도 크롭 압축 해제를 마친 뒤에).
+
+    Raises:
+        ValueError: corrections.json이 손상됐을 때(_load_corrections의 문구·복구 절차 그대로).
+    """
+    sources: list[list[dict]] = []
+    jobs_path = cache / "jobs.json"
+    if jobs_path.exists():
+        sources.append(json.loads(jobs_path.read_text(encoding="utf-8")))
+    if (cache / CACHE_CORRECTIONS).exists():
+        sources.append(_load_corrections(cache))
+    paths: dict[int, str] = {}
+    for records in sources:  # 순서가 곧 우선순위다 — setdefault가 jobs.json을 이긴 채로 둔다.
+        for rec in records:
+            # image_path가 NULL인 잡은 "경로 없음"으로 다뤄 경고 경로로 보낸다(cat 'NULL' 금지).
+            # 두 소스의 NULL 표기가 다르다: jobs.json은 raw 질의라 문자열 `"NULL"`(truthy)로,
+            # corrections.json은 None으로 온다. jobs.json이 setdefault 우선이라 문자열 쪽을
+            # 걸러내지 않으면 None 폴백이 그 자리를 회수할 기회조차 없다.
+            if rec.get("image_path") and rec["image_path"] != _RAW_NULL:
+                paths.setdefault(rec["job_id"], rec["image_path"])
+    return {j: paths[j] for j in job_ids if j in paths}
+
+
+class PullResult(NamedTuple):
+    """pull_images 결과 — 회수 디렉터리와 **원본** 회수 성패 건수.
+
+    건수를 반환값에 싣는 이유: `except RemoteError`에는 호스트 다운·인증 실패·타임아웃이 함께
+    들어오므로 원본이 전량 실패해도 CLI 요약 줄은 성공을 단언한다. 이 도구의 소비자는 꼬리 줄만
+    읽는 LLM 에이전트라 그 오독 여지가 크다(종료코드 계약은 그대로 둔다 — 이 슬라이스 범위 밖).
+    """
+
+    out_dir: Path
+    saved: int
+    failed: int
+
+
+def _originals_summary(result: PullResult, n_jobs: int, with_originals: bool) -> str:
+    """CLI 요약 줄에 덧붙일 원본 회수 성패 조각을 만든다(요청하지 않았으면 빈 문자열)."""
+    if not with_originals:
+        return ""  # 요청하지 않은 회수의 0/N은 없는 실패를 지어내는 것이다.
+    return f", 원본 {result.saved}/{n_jobs} 회수 · {result.failed}건 실패"
+
+
 def pull_images(
     host: str, backend_env: str, cache: Path, job_ids: list[int], with_originals: bool
-) -> Path:
-    """지정 잡들의 크롭 디렉터리(+옵션 원본 사진)를 캐시로 동기화한다."""
+) -> PullResult:
+    """지정 잡들의 크롭 디렉터리(+옵션 원본 사진)를 캐시로 동기화한다.
+
+    크롭이 하나도 없는 잡(행검출 전멸)에서도 죽지 않는다 — 원격이 빈 출력을 내면 압축 해제를
+    건너뛰고 원본 회수로 넘어간다.
+    """
     out_dir = cache / "images"
     out_dir.mkdir(parents=True, exist_ok=True)
     # 빈 목록이면 원격 tar가 인자 없이 실행돼 exit 1로 죽는다 — 정상 상태이므로 no-op.
     if not job_ids:
-        return out_dir
-    names = " ".join(f"job-{j}" for j in job_ids)
-    tar_script = f'{source_env(backend_env)}tar -C "$SJMJ_DATA_DIR/ocr_crops" -cf - {names}'
-    with tarfile.open(fileobj=io.BytesIO(run_ssh(host, tar_script))) as tf:
-        tf.extractall(out_dir, filter="data")
-    if with_originals:
-        jobs = json.loads((cache / "jobs.json").read_text())
-        for j in jobs:
-            if j["job_id"] in job_ids:
-                # image_path는 신뢰 DB 값이지만 원격 셸에 들어가므로 방어적으로 quote한다.
-                data = run_ssh(host, f"cat {shlex.quote(j['image_path'])}")
-                dst = out_dir / f"job-{j['job_id']}"
-                dst.mkdir(parents=True, exist_ok=True)
-                (dst / "original.jpg").write_bytes(data)
-    return out_dir
+        return PullResult(out_dir, saved=0, failed=0)
+    payload = run_ssh(host, crops_tar_script(backend_env, job_ids))
+    if payload:
+        with tarfile.open(fileobj=io.BytesIO(payload)) as tf:
+            tf.extractall(out_dir, filter="data")
+    else:
+        # 디렉터리 선별이 tar 실패를 흡수하므로 오설정(SJMJ_DATA_DIR)도 빈 출력으로 온다 —
+        # CLI가 "동기화 완료"만 인쇄하면 조용한 성공이 된다(현행은 tar 비0으로 즉시 드러났다).
+        print(f"크롭 0건 회수(디렉터리 부재·크롭 미생성·SJMJ_DATA_DIR 오설정): {job_ids}")
+    if not with_originals:
+        return PullResult(out_dir, saved=0, failed=0)
+    paths = _original_image_paths(cache, job_ids)
+    missing = [j for j in job_ids if j not in paths]
+    if missing:
+        print(f"원본 경로를 찾지 못한 잡(캐시에 없음): {missing} — 나머지는 계속 회수한다")
+    saved = 0
+    for jid, image_path in sorted(paths.items()):
+        # image_path는 신뢰 DB 값이지만 원격 셸에 들어가므로 방어적으로 quote한다. `--`는
+        # `-`로 시작하는 경로가 cat의 옵션으로 해석되는 것을 막는다(정확히 `-`면 원격 stdin에서
+        # timeout까지 멈춘다).
+        try:
+            data = run_ssh(host, f"cat -- {shlex.quote(image_path)}")
+        except RemoteError as e:
+            # 사진 삭제·경로 stale은 그 잡만의 문제다 — 나머지 회수를 취소하지 않는다.
+            print(f"원본을 읽지 못한 잡 {jid}({image_path}): {e} — 나머지는 계속 회수한다")
+            continue
+        if not data:
+            # 0바이트도 cat은 성공이다 — 빈 original.jpg를 남기면 사진으로 오인되고, 회수로
+            # 세면 요약 줄이 "원본 1/1 회수 · 0건 실패"로 없는 성공을 단언한다(실패로 센다).
+            print(f"원본이 0바이트인 잡 {jid}({image_path}) — 원격 파일을 확인한다")
+            continue
+        dst = out_dir / f"job-{jid}"
+        dst.mkdir(parents=True, exist_ok=True)
+        (dst / "original.jpg").write_bytes(data)
+        saved += 1
+    return PullResult(out_dir, saved=saved, failed=len(job_ids) - saved)
 
 
 def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -> Path:
@@ -418,6 +563,86 @@ def _require_exclusion_reason(enriched: list[dict]) -> None:
         )
 
 
+def _require_cache_file(cache: Path, name: str) -> None:
+    """`name` 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    `_require_corrections`·`_require_label_sources`가 공유하는 본문이다 —
+    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
+    두 캐시 모두 판정에 쓰지 않으므로 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+    하필 그 상황이 `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는
+    상황이다.
+
+    Raises:
+        ValueError: `name` 캐시가 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    if not (cache / name).exists():
+        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
+        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
+        raise ValueError(f"{name} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}")
+
+
+def _require_corrections(cache: Path) -> None:
+    """교정 이력 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    본문은 `_require_cache_file`에 위임한다 — `_require_label_sources`와 같은 관용구다.
+
+    Raises:
+        ValueError: corrections.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    _require_cache_file(cache, CACHE_CORRECTIONS)
+
+
+def _load_cache_array(path: Path) -> list[dict]:
+    """캐시 JSON 배열 1개를 손상 방어와 함께 읽는다 — corrections·label_sources가 공유한다.
+
+    `_reeval_info`(H2)와 같은 관용구다(M4): 두 캐시 모두 비원자 `_write_json`으로 쓰이므로
+    중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다. 파싱은 되지만 배열이 아닌 캐시도
+    여기서 막는다 — 통과시키면 렌더 안쪽에서 파일명도 복구 절차도 없는 TypeError로 죽는다.
+
+    Raises:
+        ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
+    if not isinstance(data, list):
+        raise ValueError(
+            f"{path.name}이 JSON 배열이 아니다({type(data).__name__}) — {_CACHE_RECOVERY}"
+        )
+    return data
+
+
+def _load_corrections(cache: Path) -> list[dict]:
+    """교정 이력 캐시를 읽는다 — report 렌더와 `_original_image_paths` 폴백이 공유한다.
+
+    (읽기 인코딩은 쓰기와 맞춘다, L5.)
+
+    `_reeval_info`(H2)와 같은 관용구로 손상을 막는다(M4) — corrections.json은 비원자
+    `_write_json`으로 쓰이므로 중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다.
+
+    Raises:
+        ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
+    """
+    return _load_cache_array(cache / CACHE_CORRECTIONS)
+
+
+def _require_label_sources(cache: Path) -> None:
+    """조작 출처 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    본문은 `_require_cache_file`에 위임한다 — `_require_corrections`와 같은 관용구다.
+
+    Raises:
+        ValueError: label_sources.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    _require_cache_file(cache, CACHE_LABEL_SOURCES)
+
+
+def _load_label_sources(cache: Path) -> list[dict]:
+    """조작 출처 캐시를 읽는다 — 손상 방어는 `_load_corrections`와 공유한다."""
+    return _load_cache_array(cache / CACHE_LABEL_SOURCES)
+
+
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
     """pull-images 기본 대상 — 검수 대상 실패가 있는 잡 + excluded가 있는 잡.
 
@@ -447,13 +672,42 @@ def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache
         print(NO_FINGERPRINT_NOTICE)
 
 
+def _cmd_report(enriched: list[dict], meta: dict, cache: Path) -> None:
+    """report 서브커맨드 — 캐시를 분석해 report.md·failures.jsonl을 만든다.
+
+    `_cmd_fetch`와 같은 관용구다: 구버전·손상 캐시(exclusion_reason·corrections·label_sources
+    3종)는 렌더 진입 전에 fail-fast로 막는다.
+    """
+    _require_exclusion_reason(enriched)
+    _require_corrections(cache)
+    _require_label_sources(cache)
+    report = render_report(
+        enriched, meta, _load_corrections(cache), label_sources=_load_label_sources(cache)
+    )
+    report_path = cache / "report.md"
+    # 두 산출물 모두 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라가
+    # 비-UTF8 로케일에서 UnicodeEncodeError로 죽거나(latin-1) 조용히 다른 바이트로
+    # 기록된다(eucKR). 자매 도구 blank_crop_report가 같은 원인으로 실제로 죽었다(99f66f94).
+    report_path.write_text(report, encoding="utf-8")
+    # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
+    # 산출물에 그대로 남는다(spec §3-C).
+    failures = [r for r in enriched if is_item_failure(r)]
+    fail_path = cache / "failures.jsonl"
+    fail_path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n",
+        encoding="utf-8",
+    )
+    print(report)
+    print(f"저장: {report_path}\n저장: {fail_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     """서브커맨드(fetch/report/pull-images)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="curation_report", description=__doc__)
     ap.add_argument("--host", default=env_or(ENV_SSH_HOST), help="ssh 호스트(별칭)")
     ap.add_argument("--cache", type=Path, default=DEFAULT_CACHE, help="로컬 캐시 디렉터리")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("fetch", help="서버에서 pairs/jobs/bank 동기화")
+    sub.add_parser("fetch", help="서버에서 pairs/jobs/교정 이력/bank/재평가 동기화")
     sub.add_parser("report", help="캐시 분석 → report.md + failures.jsonl")
     p_img = sub.add_parser("pull-images", help="실패 잡 크롭 동기화(기본: 실패 잡 전체)")
     p_img.add_argument("--jobs", type=int, nargs="*", help="특정 잡만")
@@ -471,19 +725,7 @@ def main(argv: list[str] | None = None) -> None:
     enriched, meta = _load_enriched(args.cache)
 
     if args.cmd == "report":
-        _require_exclusion_reason(enriched)
-        report = render_report(enriched, meta)
-        report_path = args.cache / "report.md"
-        report_path.write_text(report)
-        # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
-        # 산출물에 그대로 남는다(spec §3-C).
-        failures = [r for r in enriched if is_item_failure(r)]
-        fail_path = args.cache / "failures.jsonl"
-        fail_path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
-        )
-        print(report)
-        print(f"저장: {report_path}\n저장: {fail_path}")
+        _cmd_report(enriched, meta, args.cache)
         return
 
     if args.cmd == "pull-images":
@@ -491,9 +733,11 @@ def main(argv: list[str] | None = None) -> None:
         if not job_ids:
             print("실패 잡이 없어 가져올 이미지가 없습니다.")
             return
-        out_dir = pull_images(args.host, backend_env, args.cache, job_ids, args.originals)
+        result = pull_images(args.host, backend_env, args.cache, job_ids, args.originals)
         index = _write_images_index(args.cache, enriched, job_ids)
-        print(f"이미지 동기화 → {out_dir} (잡 {len(job_ids)}개)\n인덱스: {index}")
+        # 회수 성패를 요약 줄에 싣는다 — 전량 실패도 꼬리 줄만 보면 성공으로 읽힌다.
+        originals = _originals_summary(result, len(job_ids), args.originals)
+        print(f"이미지 동기화 → {result.out_dir} (잡 {len(job_ids)}개{originals})\n인덱스: {index}")
 
 
 if __name__ == "__main__":

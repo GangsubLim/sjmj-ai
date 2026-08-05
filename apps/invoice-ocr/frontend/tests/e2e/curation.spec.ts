@@ -54,3 +54,53 @@ test("워프 미산출 잡 → 워프 이미지 404 시 placeholder로 폴백", 
   await expect(warped).toBeVisible();
   await expect(warped).toHaveAttribute("src", /^data:image\/svg\+xml/);
 });
+
+test("검수된 잡 수정 → 재검수 배너 → 큐에서 재검수 필요 → 재확정 → 검수됨", async ({
+  page,
+}) => {
+  // mock 시드 #127은 curation_reviewed=true다(mocks/curation.ts). Playwright는 항상
+  // VITE_USE_MOCK=true로 뜬다(playwright.config.ts:19).
+  //
+  // 목록에서 **클릭으로** 드릴다운한다 — page.goto는 full reload라 mocks/api.ts의 모듈
+  // 전역 curationJobs(:447)가 시드로 리셋되어 게이트 해제가 사라진다. 뒤로가기도 같은
+  // 이유로 goBack()(history pop, SPA 클라이언트 라우팅)을 쓴다.
+  await page.goto("/curation");
+  await page.getByText("#127").click();
+  await expect(page).toHaveURL(/\/curation\/127$/);
+  await expect(page.getByRole("heading", { name: /잡 #127/ })).toBeVisible();
+  // 검수된 잡이므로 처음에는 배너가 없고 버튼이 비활성이다.
+  await expect(page.getByText("↺ 재검수 필요")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "검수 완료" })).toBeDisabled();
+
+  // 쌍 하나를 수정 → 게이트 해제.
+  await page.getByRole("button", { name: "제외" }).first().click();
+
+  // 배너 노출 + "검수 완료" 재활성화(AC 2·4).
+  await expect(page.getByText("↺ 재검수 필요")).toBeVisible();
+  await expect(page.getByRole("button", { name: "검수 완료" })).toBeEnabled();
+
+  // 목록으로 돌아가 3-state 뱃지를 확인한다(AC 3). 이 한 단계가 mocks/api.ts의
+  // toSummary → curationJobState의 needs_recheck 분기 → 목록 뱃지를 한 번에 태운다 —
+  // 재확정 후의 "✓ 검수됨"만 보면 curation_reviewed_at은 전혀 검증되지 않는다.
+  await page.goBack();
+  await expect(page).toHaveURL(/\/curation$/);
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { name: "잡 #127 상세" }) })
+      .getByText("↺ 재검수 필요"),
+  ).toBeVisible();
+
+  // 다시 드릴다운 → 재확정 → 큐로 복귀.
+  await page.getByText("#127").click();
+  await page.getByRole("button", { name: "검수 완료" }).click();
+  await expect(page).toHaveURL(/\/curation$/);
+
+  // 잡 #127이 다시 "검수됨"으로 보인다.
+  await expect(
+    page
+      .getByRole("row")
+      .filter({ has: page.getByRole("button", { name: "잡 #127 상세" }) })
+      .getByText("✓ 검수됨"),
+  ).toBeVisible();
+});

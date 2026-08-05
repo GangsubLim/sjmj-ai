@@ -159,6 +159,7 @@ CREATE TABLE ocr_jobs (
     result_json JSON,
     invoice_id INT,
     curation_reviewed BOOLEAN NOT NULL DEFAULT FALSE,
+    curation_reviewed_at DATETIME NULL DEFAULT NULL,  -- migration_011: 첫 검수 시각(해제해도 유지)
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_ocr_jobs_status (status),

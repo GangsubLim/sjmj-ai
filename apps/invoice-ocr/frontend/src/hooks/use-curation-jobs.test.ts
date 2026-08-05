@@ -15,6 +15,7 @@ function summary(over: Partial<CurationJobSummary> = {}): CurationJobSummary {
     job_id: 1,
     invoice_id: 10,
     curation_reviewed: false,
+    curation_reviewed_at: null,
     pair_count: 3,
     unreviewed_count: 3,
     created_at: "2026-06-30T09:00:00",

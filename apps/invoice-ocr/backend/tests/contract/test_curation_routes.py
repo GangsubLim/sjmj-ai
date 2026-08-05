@@ -571,18 +571,154 @@ def test_review_is_idempotent_for_the_dictionary(client, db_conn):
     assert _suggestion_names(db_conn).count("품목") == 1
 
 
-def test_patch_pair_registers_only_after_job_reviewed(client, db_conn):
+# ── 게이트 해제(Issue #52) ─────────────────────────────────────────────────
+
+
+def _gate(engine, job_id):
+    with engine.begin() as conn:
+        row = (
+            conn.execute(
+                text("SELECT curation_reviewed, curation_reviewed_at FROM ocr_jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+            .mappings()
+            .first()
+        )
+    return (row["curation_reviewed"], row["curation_reviewed_at"])
+
+
+def _pair_status(engine, pair_id):
+    with engine.begin() as conn:
+        return conn.execute(
+            text("SELECT status FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+
+
+def test_patch_pair_releases_gate_of_reviewed_job(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    held_flag, first_stamp = _gate(db_conn, job_id)
+    # 전제 단언 — 게이트가 실제로 걸렸고 첫 검수 시각이 찍혔다. 이게 없으면 mark_reviewed가
+    # 퇴행해 전 상태가 (0, None)이어도 아래 flag == 0 / stamp == first_stamp가 둘 다
+    # 통과해, "걸렸다가 풀렸다"를 증명하지 못한 채 GREEN이 된다.
+    assert held_flag == 1
+    assert first_stamp is not None
+
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨"})
+
+    assert res.status_code == 200
+    assert res.json()["data"]["job_curation_reviewed"] is False
+    flag, stamp = _gate(db_conn, job_id)
+    assert flag == 0  # 게이트 해제
+    assert stamp == first_stamp  # 첫 검수 시각은 유지 → "재검수 필요"로 판별된다
+
+    job = next(j for j in client.get("/api/curation/jobs").json()["data"] if j["job_id"] == job_id)
+    assert job["unreviewed_count"] == 1  # 게이트 해제와 재확인 대상 수가 함께 움직인다
+
+
+def test_patch_pair_on_unreviewed_job_applies_edit_and_reports_false(client, db_conn):
+    """이미 미검수인 잡은 0 → 0 no-op이며 응답도 False다(spec §3.4). 수정 자체는 반영된다.
+
+    시드가 이미 (0, None)이라 게이트 단언만으로는 "수정이 실제로 처리됐다"가 증명되지
+    않는다 — status 전이(included → excluded)를 함께 고정해 no-op인 것은 게이트뿐임을
+    분명히 한다. curation_reviewed_at이 NULL로 남는 단언은 유지한다(release_gate가
+    스탬프를 찍기 시작하면 "미검수"가 "재검수 필요"로 오분류되므로 여기서 걸려야 한다).
+    """
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
 
-    # 검수 중 — 등록되지 않는다.
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수중라벨"})
-    assert res.status_code == 200
-    assert "검수중라벨" not in _suggestion_names(db_conn)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
 
-    # 검수완료 후 라벨 수정 — 등록된다.
+    assert res.status_code == 200
+    assert res.json()["data"]["job_curation_reviewed"] is False
+    assert res.json()["data"]["status"] == "excluded"  # 수정은 반영됐다
+    assert _pair_status(db_conn, pid) == "excluded"
+    assert _gate(db_conn, job_id) == (0, None)
+
+
+def test_patch_pair_does_not_register_after_job_reviewed(client, db_conn):
+    """검수완료 후 라벨을 고쳐도 사전에 등록되지 않는다 — 재확정이 유일한 등록 트리거."""
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
     client.post(f"/api/curation/jobs/{job_id}/review")
+
     res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
     assert res.status_code == 200
-    assert res.json()["data"]["canonical_label"] == "검수후라벨"
+    assert "검수후라벨" not in _suggestion_names(db_conn)
+
+    # 재확정하면 그때 등록된다.
+    client.post(f"/api/curation/jobs/{job_id}/review")
     assert "검수후라벨" in _suggestion_names(db_conn)
+
+
+def test_re_review_after_gate_release_keeps_first_review_stamp(client, db_conn):
+    """해제 → 재확정 왕복 후에도 API가 노출하는 첫 검수 시각은 그대로다(COALESCE).
+
+    "재검수 필요"(해제됐지만 과거에 검수된 잡)와 "미검수"(한 번도 검수 안 한 잡)를 가르는
+    유일한 근거가 HTTP 경로 끝까지 살아 있는지 고정한다.
+
+    첫 값을 과거 sentinel로 **직접 심는다**. 두 번 검수하는 방식은 curation_reviewed_at이
+    소수초 0자리라 같은 초 안에서는 COALESCE를 빼고 `= CURRENT_TIMESTAMP`로 구현해도
+    통과한다(false-green).
+    """
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    with db_conn.begin() as conn:
+        conn.execute(
+            text("UPDATE ocr_jobs SET curation_reviewed_at = '2020-01-01 00:00:00' WHERE id = :id"),
+            {"id": job_id},
+        )
+
+    client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨"})
+    client.post(f"/api/curation/jobs/{job_id}/review")
+
+    job = next(j for j in client.get("/api/curation/jobs").json()["data"] if j["job_id"] == job_id)
+    assert job["curation_reviewed_at"] == "2020-01-01T00:00:00"
+
+
+def test_list_jobs_exposes_curation_reviewed_at(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    assert job["curation_reviewed_at"] is not None
+
+
+def test_list_jobs_curation_reviewed_at_is_null_for_never_reviewed(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    assert job["curation_reviewed_at"] is None
+
+
+def test_job_detail_exposes_curation_reviewed_at(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+
+    res = client.get(f"/api/curation/jobs/{job_id}")
+
+    assert res.json()["data"]["curation_reviewed_at"] is not None
+
+
+def test_patch_pair_validation_error_envelope_is_unchanged(client, db_conn):
+    """외부 계약 불변식 — 필드 추가가 에러 envelope·status·details 형태를 건드리지 않는다."""
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(f"/api/curation/pairs/{pid}", json={})
+
+    assert res.status_code == 400
+    body = res.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    details = body["error"]["details"]
+    # 비어 있지 않음을 먼저 요구한다 — 빈 dict면 아래 all(...)이 공허하게 참이 되어
+    # "details는 {필드: 메시지} 문자열 맵"이라는 불변식이 사실상 고정되지 않는다.
+    assert isinstance(details, dict) and details
+    assert all(isinstance(k, str) and isinstance(v, str) for k, v in details.items())

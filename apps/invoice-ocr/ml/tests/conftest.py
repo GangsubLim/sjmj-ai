@@ -186,6 +186,46 @@ def _enriched_row(**over):
     return {**base, **over}
 
 
+def _correction(
+    job_id=1, *, n_lines=3, rows_added=0, rows_dropped=0, has_correction=True, n_corrections=1
+):
+    """corrections.json 1행 합성 — parse_corrections_tsv 출력 shape과 한 벌이다.
+
+    n_lines=None이면 행 수지 미상(다섯 값 모두 None)이다. 미상 두 종은 has_correction으로
+    가른다(교정 이력 없음 vs 교정 JSON 결손).
+
+    두 값을 독립 인자로 받되 **어긋나면 즉시 실패시킨다**(_job의 crop_ref 검증과 같은 이유):
+    파서는 `has_correction = n_corrections > 0`으로 파생하므로 둘이 어긋난 행은 production이
+    낼 수 없다. 그 상태로 합성하면 두 필드를 서로 다르게 읽는 소비자
+    (`summarize_row_balance`의 n_no_correction_jobs vs n_multi_correction_jobs)를 두고
+    의미가 같은 리팩터가 RED로 뜬다. 교정 이력 없음은 `n_corrections=0`으로 표현한다.
+    """
+    if has_correction != (n_corrections > 0):
+        raise AssertionError(
+            f"has_correction={has_correction}는 n_corrections={n_corrections}와 어긋난다"
+            " — 파서는 has_correction = n_corrections > 0으로 파생한다"
+        )
+    if n_lines is None:
+        balance = dict.fromkeys(
+            ("rows_added", "rows_dropped", "n_lines", "draft_rows", "confirmed_rows")
+        )
+    else:
+        balance = {
+            "rows_added": rows_added,
+            "rows_dropped": rows_dropped,
+            "n_lines": n_lines,
+            "draft_rows": n_lines + rows_dropped,
+            "confirmed_rows": n_lines + rows_added,
+        }
+    return {
+        "job_id": job_id,
+        "n_corrections": n_corrections,
+        "has_correction": has_correction,
+        **balance,
+        "image_path": f"/data/up/{job_id}.jpeg",
+    }
+
+
 @pytest.fixture
 def tiny_invoices_sql() -> str:
     """invoices/invoice_items 최소 INSERT 샘플 (백업 형식 모사)."""

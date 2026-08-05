@@ -28,7 +28,7 @@ _LIMIT_MAX = 100
 
 
 def _service() -> CurationService:
-    # 검수완료·검수완료 잡의 쌍 PATCH 시 정식 라벨을 자동완성 사전에 등록(부수효과 — ADR 0008)
+    # 검수완료 시 included 정식 라벨을 자동완성 사전에 등록(부수효과 — ADR 0008)
     return CurationService(item_repo=ItemRepository())
 
 
