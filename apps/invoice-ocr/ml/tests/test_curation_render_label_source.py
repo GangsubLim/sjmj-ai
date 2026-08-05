@@ -86,6 +86,9 @@ def test_label_source_table_keeps_every_rank_row_including_zero_counts():
     assert "| └ rank 0 | 0 | 0.0% |" in section
     assert "| └ rank 3 | 1 | 50.0% |" in section
     assert "| └ rank 4 | 0 | 0.0% |" in section
+    # └ 행은 candidate_picked의 분해다 — 다른 출처 밑으로 옮겨가면 표가 다른 뜻이 된다.
+    assert section.index("| candidate_picked |") < section.index("| └ rank 0 |")
+    assert section.index("| └ rank 4 |") < section.index("| manual_picked |")
 
 
 def test_label_source_table_extends_the_rank_rows_past_the_default_range():
@@ -154,6 +157,8 @@ def test_label_source_section_names_unknown_sources_and_says_they_are_in_the_den
     assert "알 수 없는 조작 출처 1종 2건: bulk_applied(2)" in section
     assert "app/schemas/ocr.py" in section
     assert "분모에는 포함되어 있다" in section
+    # 표에 행이 없으면 "분모에 있다"는 경고와 표가 서로를 부정한다 — 행까지 함께 못박는다.
+    assert "| bulk_applied (미지) | 2 | 66.7% |" in section
 
 
 def test_label_source_section_stays_quiet_about_unknown_vocabulary_when_every_source_is_known():
@@ -172,7 +177,11 @@ def test_label_source_section_flags_a_matched_row_count_that_diverges_from_the_r
     md = _render(
         [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=5)], _ls_many(["top1_kept"])
     )
-    assert "매칭 행 수가 행 수지 절과 다르다" in _label_source_section(md)
+    # 두 수를 뒤바꿔 적어도 통과하지 않도록 문장 전체를 못박는다 — 진단이 거꾸로 읽히면 안 된다.
+    assert (
+        "매칭 행 수가 행 수지 절과 다르다: 조작 출처 1행 vs 교정 이력 n_lines 5행"
+        in _label_source_section(md)
+    )
 
 
 def test_label_source_section_stays_quiet_when_the_two_sources_agree():
@@ -194,6 +203,18 @@ def test_label_source_ladder_prints_the_mismatch_warning_right_after_the_ladder(
     warning_pos = section.index("⚠ 매칭 행 수가 행 수지 절과 다르다")
     explanation_pos = section.index("매칭 행은 **잡별 최신")
     assert ladder_end < warning_pos < explanation_pos
+
+
+def test_label_source_table_prints_a_dash_not_zero_percent_when_nothing_was_recorded():
+    """도입 전 데이터는 전량 미기록이라 분모가 0이다 — 그때 '측정 안 됨'을 '측정했는데 0%'로
+    인쇄하면 현행 운영 상태를 정반대로 읽는다. n_lines=0으로 두어 행 수지 어긋남 경고가
+    기준선에 섞이지 않게 한다.
+    """
+    section = _label_source_section(
+        _render([], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=0)], [])
+    )
+    assert "| top1_kept | 0 | — |" in section
+    assert "| └ rank 0 | 0 | — |" in section
 
 
 # --- 출처 × 품목 버킷 교차 절 (#73 spec §3-6) ---

@@ -690,19 +690,7 @@ def test_report_command_writes_the_label_source_section(tmp_path):
         tmp_path,
         pairs=[_pair()],
         jobs=[_job(rows=[_row(top5=[("엔진오일", 0.9)])])],
-        corrections=[
-            {
-                "job_id": 1,
-                "n_corrections": 1,
-                "has_correction": True,
-                "rows_added": 0,
-                "rows_dropped": 0,
-                "n_lines": 1,
-                "draft_rows": 1,
-                "confirmed_rows": 1,
-                "image_path": "/data/up/1.jpeg",
-            }
-        ],
+        corrections=[_correction(job_id=1, n_lines=1)],
         label_sources=[{"job_id": 1, "crop_ref": "job-1/row-0", "label_source": "top1_kept"}],
     )
     main(["--cache", str(tmp_path), "report"])

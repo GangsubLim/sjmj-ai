@@ -180,8 +180,15 @@ def test_a_bare_candidate_picked_without_a_rank_counts_as_unknown():
     assert s["unknown_counts"] == {"candidate_picked": 1}
 
 
+def test_unknown_counts_are_ordered_by_count_then_alphabetically():
+    """미지 어휘가 여럿이면 대응 우선순위는 건수다 — 관측 순서대로 두면 가장 흔한 값이 뒤에 묻힌다."""
+    s = summarize_label_sources(_many(["b_src", "a_src", "c_src", "c_src"]))
+    # 관측 순서(b→a→c)와도 사전순(a→b→c)과도 다른 표본이라 두 축을 함께 못박는다.
+    assert list(s["unknown_counts"]) == ["c_src", "a_src", "b_src"]
+
+
 def test_min_rank_sample_is_a_named_constant():
-    """하한을 렌더에 인라인하면 근거 주석이 사라지고 두 곳이 갈라진다."""
+    """판단 문턱을 바꾸는 것은 의도적 행위여야 한다 — 값이 흔들리면 이 테스트가 먼저 RED가 된다."""
     assert MIN_RANK_SAMPLE == 10
 
 
@@ -335,6 +342,14 @@ def test_table_is_densely_materialized_across_every_row_and_column():
     }
     # 0건 행(관측되지 않은 기지 출처)도 모든 열이 채워진 채로 표에 남는다.
     assert c["table"]["manual_typed"] == dict.fromkeys(c["columns"], 0)
+
+
+def test_an_unknown_bucket_extends_the_columns_instead_of_dropping_its_count():
+    """열 축을 상수로 고정하면 버킷 어휘가 늘었을 때 그 건수가 표에서 통째로 사라진다."""
+    enriched = [_enriched_row(crop_ref="job-1/row-0", label_bucket="zeta_bucket")]
+    c = cross_label_source_buckets([_ls("top1_kept", ref="job-1/row-0")], enriched)
+    assert c["columns"] == ITEM_BUCKET_COLUMNS + ("zeta_bucket",)
+    assert c["table"]["top1_kept"]["zeta_bucket"] == 1
 
 
 def test_an_unknown_source_keeps_its_own_row_in_the_cross_table():

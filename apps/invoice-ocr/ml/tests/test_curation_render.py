@@ -28,7 +28,11 @@ from tools.curation_render import (
 
 
 def _render(enriched, meta, corrections=(), label_sources=()):
-    """render_report 호출을 한 자리에 모은다 — 그 소스를 안 보는 테스트는 빈 목록을 준다."""
+    """render_report 호출을 한 자리에 모은다 — corrections·label_sources를 안 보는 테스트는 빈 목록을 준다.
+
+    빈 label_sources는 중립이 아니다: 조작 출처 절이 ⚠ 경고를 띄운 기준선 위에서 나머지 절을
+    본다(각 테스트가 자기 절만 잘라 단언하므로 지금은 무해하다).
+    """
     return render_report(enriched, meta, list(corrections), label_sources=list(label_sources))
 
 
