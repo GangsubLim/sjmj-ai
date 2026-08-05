@@ -407,4 +407,108 @@ describe("useCurationJob", () => {
     expect(result.current.error).toBe("불러오기 실패");
     expect(result.current.job).toBeNull();
   });
+
+  it("PATCH 성공은 잡 게이트를 해제한다(검수 완료 버튼 재활성화 경로)", async () => {
+    mockGetJob.mockResolvedValue({
+      data: {
+        ...jobDetail(),
+        curation_reviewed: true,
+        curation_reviewed_at: "2026-06-30T08:30:00",
+      },
+    });
+    mockPatchPair.mockResolvedValue({ data: patchResult() });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "배추" });
+    });
+
+    expect(result.current.job!.curation_reviewed).toBe(false);
+    // 첫 검수 시각은 서버가 지우지 않으므로 로컬에서도 유지된다 → "재검수 필요"로 판별된다.
+    expect(result.current.job!.curation_reviewed_at).toBe(
+      "2026-06-30T08:30:00",
+    );
+  });
+
+  it("job_curation_reviewed는 pair 객체에 새지 않는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockPatchPair.mockResolvedValue({ data: patchResult() });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "배추" });
+    });
+
+    // job_id와 같은 계약 비대칭 — pair에 섞이면 상세 pair의 타입 계약이 오염된다.
+    expect(result.current.job!.pairs[0]).not.toHaveProperty(
+      "job_curation_reviewed",
+    );
+    expect(result.current.job!.pairs[0]).not.toHaveProperty("job_id");
+  });
+
+  it("PATCH 실패는 게이트를 건드리지 않는다", async () => {
+    mockGetJob.mockResolvedValue({
+      data: {
+        ...jobDetail(),
+        curation_reviewed: true,
+        curation_reviewed_at: "2026-06-30T08:30:00",
+      },
+    });
+    mockPatchPair.mockRejectedValue(new Error("boom"));
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "배추" });
+    });
+
+    // 요청이 실패하면 서버는 게이트를 건드리지 않았다 — 화면도 따라가면 안 된다.
+    expect(result.current.job!.curation_reviewed).toBe(true);
+    expect(mockToastError).toHaveBeenCalled();
+  });
+
+  it("stale 성공 뒤 최신 요청이 실패해도 잡 게이트는 해제 상태로 남는다", async () => {
+    // 서버는 A의 PATCH로 이미 curation_reviewed=0을 썼다. B가 실패해도 그 사실은
+    // 되돌아가지 않는다 — 화면이 true로 남으면 배너가 안 뜨고 "검수 완료"가 잠긴 채
+    // 서버와 발산한다(AC 2·4). 게이트 반영이 stale 가드 뒤로 내려가면 이 케이스가 깨진다.
+    mockGetJob.mockResolvedValue({
+      data: {
+        ...jobDetail(),
+        curation_reviewed: true,
+        curation_reviewed_at: "2026-06-30T08:30:00",
+      },
+    });
+    const dA = deferred<{ data: CurationPairPatchResult }>();
+    const dB = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair
+      .mockReturnValueOnce(dA.promise)
+      .mockReturnValueOnce(dB.promise);
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    let pA!: Promise<void>;
+    let pB!: Promise<void>;
+    await act(async () => {
+      pA = result.current.patchPair(9001, { canonical_label: "A" });
+    });
+    await act(async () => {
+      pB = result.current.patchPair(9001, { canonical_label: "B" });
+    });
+
+    await act(async () => {
+      dA.resolve({ data: patchResult({ canonical_label: "A" }) }); // stale 성공 — 서버는 해제됨
+      dB.reject(new Error("network")); // 최신 실패 — pair만 롤백된다
+      await pA;
+      await pB;
+    });
+
+    expect(result.current.job!.curation_reviewed).toBe(false);
+    // 첫 검수 시각은 서버가 지우지 않는다 → 화면은 "재검수 필요"로 판별된다.
+    expect(result.current.job!.curation_reviewed_at).toBe(
+      "2026-06-30T08:30:00",
+    );
+  });
 });
