@@ -153,6 +153,25 @@ def test_update_pair_clears_reviewed_at(db_conn):
     assert stamp is None
 
 
+def test_update_pair_clears_reviewed_at_even_when_no_column_is_updatable(db_conn):
+    """화이트리스트 컬럼이 하나도 없어도 reviewed_at 되돌림은 건너뛰지 않는다.
+
+    조기 반환으로 이 문장을 함께 삼키면, 이미 release_gate 를 부른 patch_pair 와
+    어긋난 상태("미처리 0 인데 미검수")가 조용히 남는다. 라우터의 model_validator 가
+    빈 body 를 막아 API 로는 도달하지 않지만, 이 메서드가 소유한 상태 전이는
+    호출자가 무엇을 넘기든 성립해야 한다.
+    """
+    _job_id, pair_id = _seed_job_and_pair(db_conn)
+
+    CurationRepository().update_pair(pair_id, {})
+
+    with db_conn.begin() as conn:
+        stamp = conn.execute(
+            text("SELECT reviewed_at FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+    assert stamp is None
+
+
 def test_release_gate_clears_flag_but_keeps_first_review_stamp(db_conn):
     job_id, _pair_id = _seed_job_and_pair(db_conn, reviewed=1)
     with db_conn.begin() as conn:
@@ -195,15 +214,46 @@ def test_release_gate_does_not_stamp_curation_reviewed_at_when_never_reviewed(db
     assert stamp is None
 
 
-def test_mark_reviewed_stamps_first_review_time(db_conn):
-    """한 번도 검수되지 않은 잡은 mark_reviewed가 curation_reviewed_at을 채운다."""
+def test_mark_reviewed_sets_gate_and_stamps_first_review_time(db_conn):
+    """한 번도 검수되지 않은 잡은 mark_reviewed가 게이트를 걸고 curation_reviewed_at을 채운다.
+
+    curation_reviewed = 1은 mark_reviewed의 **주 효과**인데도 스탬프만 보면 그 대입을
+    UPDATE에서 통째로 지워도 이 파일 전체가 GREEN이다(우연히 contract 층만 잡는다).
+    같은 왕복을 담당하는 이 파일에서 함께 고정한다.
+    """
     job_id, _pair_id = _seed_job_and_pair(db_conn, reviewed=0)
 
     CurationRepository().mark_reviewed(job_id)
 
     with db_conn.begin() as conn:
+        row = (
+            conn.execute(
+                text("SELECT curation_reviewed, curation_reviewed_at FROM ocr_jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+            .mappings()
+            .first()
+        )
+    assert row["curation_reviewed"] == 1
+    assert row["curation_reviewed_at"] is not None
+
+
+def test_mark_reviewed_restamps_pair_cleared_by_update_pair(db_conn):
+    """왕복 후반 — update_pair가 지운 reviewed_at을 mark_reviewed가 다시 찍는다.
+
+    시드가 항상 reviewed_at을 채워두므로, 이 테스트가 없으면 mark_reviewed의 두 번째
+    UPDATE(미처리 쌍 재스탬프)를 통째로 지워도 이 파일이 전부 GREEN이다 — 모듈 docstring이
+    표방하는 "게이트 해제 → 재검수 왕복"의 후반부가 repository 층에서 미검증으로 남는다.
+    """
+    job_id, pair_id = _seed_job_and_pair(db_conn, reviewed=0)
+    repo = CurationRepository()
+    repo.update_pair(pair_id, {"canonical_label": "정식명"})  # reviewed_at → NULL
+
+    repo.mark_reviewed(job_id)
+
+    with db_conn.begin() as conn:
         stamp = conn.execute(
-            text("SELECT curation_reviewed_at FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            text("SELECT reviewed_at FROM training_pairs WHERE id = :id"), {"id": pair_id}
         ).scalar()
     assert stamp is not None
 

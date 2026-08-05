@@ -55,7 +55,7 @@ test("워프 미산출 잡 → 워프 이미지 404 시 placeholder로 폴백", 
   await expect(warped).toHaveAttribute("src", /^data:image\/svg\+xml/);
 });
 
-test("검수된 잡 수정 → 재확인 배너 → 큐에서 재검수 필요 → 재확정 → 검수됨", async ({
+test("검수된 잡 수정 → 재검수 배너 → 큐에서 재검수 필요 → 재확정 → 검수됨", async ({
   page,
 }) => {
   // mock 시드 #127은 curation_reviewed=true다(mocks/curation.ts). Playwright는 항상
@@ -69,14 +69,14 @@ test("검수된 잡 수정 → 재확인 배너 → 큐에서 재검수 필요 �
   await expect(page).toHaveURL(/\/curation\/127$/);
   await expect(page.getByRole("heading", { name: /잡 #127/ })).toBeVisible();
   // 검수된 잡이므로 처음에는 배너가 없고 버튼이 비활성이다.
-  await expect(page.getByText("↺ 재확인 필요")).toHaveCount(0);
+  await expect(page.getByText("↺ 재검수 필요")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "검수 완료" })).toBeDisabled();
 
   // 쌍 하나를 수정 → 게이트 해제.
   await page.getByRole("button", { name: "제외" }).first().click();
 
   // 배너 노출 + "검수 완료" 재활성화(AC 2·4).
-  await expect(page.getByText("↺ 재확인 필요")).toBeVisible();
+  await expect(page.getByText("↺ 재검수 필요")).toBeVisible();
   await expect(page.getByRole("button", { name: "검수 완료" })).toBeEnabled();
 
   // 목록으로 돌아가 3-state 뱃지를 확인한다(AC 3). 이 한 단계가 mocks/api.ts의

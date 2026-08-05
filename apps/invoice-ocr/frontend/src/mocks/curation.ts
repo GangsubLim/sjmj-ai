@@ -59,9 +59,9 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     job_id: 127,
     invoice_id: 340,
     curation_reviewed: true,
-    // 검수 완료 잡. e2e(curation.spec.ts)가 이 잡의 쌍을 수정해 "재검수 필요" 배너를
-    // 확인한다 — 서버의 mark_reviewed가 쌍 스탬프와 같은 시각을 찍으므로 pairs의
-    // reviewed_at과 맞춘다.
+    // 검수 완료 잡. e2e(curation.spec.ts)가 이 잡의 쌍을 수정해 상세의
+    // "↺ 재검수 필요" 배너와 목록의 같은 이름 뱃지를 각각 확인한다 — 서버의
+    // mark_reviewed가 쌍 스탬프와 같은 시각을 찍으므로 pairs의 reviewed_at과 맞춘다.
     curation_reviewed_at: "2026-06-30T08:30:00",
     warp_ok: false,
     created_at: "2026-06-30T08:00:00",
@@ -77,7 +77,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         // §6 세 번째 칸(기계가 배제했으나 사람이 되돌림)을 mock 모드에서 재현하는 자리.
         // status가 "included"라 목록에서 "제외" 버튼으로 노출되는 유일한 pair —
         // e2e(curation.spec.ts)가 "제외" 버튼 .first()로 이 pair를 클릭해 게이트를
-        // 해제하고 "재확인 필요" 배너를 확인한다. status를 바꾸면 그 셀렉터가 어긋난다.
+        // 해제하고 "↺ 재검수 필요" 배너를 확인한다. status를 바꾸면 그 셀렉터가 어긋난다.
         status: "included",
         exclusion_reason: "blank_crop",
         reviewed_at: "2026-06-30T08:30:00",
@@ -104,6 +104,51 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         reviewed_at: "2026-06-30T08:30:00",
         uncertain: false,
         top5: [],
+      },
+    ],
+  },
+  {
+    // "재검수 필요"(curation_reviewed=false + curation_reviewed_at≠null)를 정적으로
+    // 재현하는 자리 — 이 상태는 런타임 PATCH로만 만들어지고 새로고침이면 시드로
+    // 리셋되므로, 이 잡이 없으면 mock 모드 수동 QA·디자인 리뷰가 ↺ 뱃지를 볼 수 없다.
+    // e2e는 이 잡을 건드리지 않는다(미검수 배지·"제외" .first()는 #128/#127 것이고,
+    // 목록 뱃지 단언은 행 스코프다). 시드를 늘릴 때 그 전제를 다시 확인할 것.
+    job_id: 126,
+    invoice_id: 339,
+    curation_reviewed: false,
+    curation_reviewed_at: "2026-06-29T17:20:00",
+    warp_ok: true,
+    created_at: "2026-06-29T17:00:00",
+    pairs: [
+      {
+        // 검수 후 다시 손댄 쌍 — 서버가 같은 UPDATE에서 reviewed_at을 NULL로 되돌린다.
+        id: 7001,
+        crop_ref: "126/0",
+        row_index: 0,
+        draft_label: "대파",
+        final_label: "대파",
+        canonical_label: "대파",
+        supply: 9000,
+        status: "included",
+        exclusion_reason: null,
+        reviewed_at: null,
+        uncertain: false,
+        top5: [{ label: "대파", sim: 0.86 }],
+      },
+      {
+        // 첫 검수 때 스탬프된 채 남은 쌍 — 잡 스탬프와 같은 시각(mark_reviewed 단일 tx).
+        id: 7002,
+        crop_ref: "126/1",
+        row_index: 1,
+        draft_label: "양파",
+        final_label: "양파",
+        canonical_label: "양파",
+        supply: 4000,
+        status: "included",
+        exclusion_reason: null,
+        reviewed_at: "2026-06-29T17:20:00",
+        uncertain: false,
+        top5: [{ label: "양파", sim: 0.93 }],
       },
     ],
   },

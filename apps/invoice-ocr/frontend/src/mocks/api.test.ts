@@ -90,4 +90,17 @@ describe("mockCurationAPI.reviewJob — COALESCE 미러", () => {
     const secondPass = await mockCurationAPI.getJob(128);
     expect(secondPass.data.curation_reviewed_at).toBe(firstStamp);
   });
+
+  it("스탬프를 서버와 같은 naive 로컬 ISO(초 정밀도)로 만든다", async () => {
+    // 백엔드는 MySQL DATETIME을 "2026-06-30T08:30:00"로 낸다. toISOString()의
+    // UTC "Z"·밀리초 형태를 쓰면 mock 저장소에 서버가 만들 수 없는 값이 섞인다.
+    await mockCurationAPI.reviewJob(128);
+    const { data } = await mockCurationAPI.getJob(128);
+    expect(data.curation_reviewed_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,
+    );
+    expect(data.pairs[0].reviewed_at).toMatch(
+      /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,
+    );
+  });
 });

@@ -121,9 +121,10 @@ class CurationRepository:
         """
         allowed = ("status", "canonical_label")
         cols = [c for c in allowed if c in fields]
-        # 방어: 라우터는 model_validator로 검증된 비어있지 않은 fields만 전달(API 경로로는 도달 불가).
-        if not cols:
-            return
+        # cols가 비어도 조기 반환하지 않는다. 조기 반환하면 아래 reviewed_at 되돌림까지
+        # 함께 건너뛰어, 이미 게이트를 해제한 patch_pair와 어긋난 상태("미처리 0인데
+        # 미검수")가 조용히 생긴다. 라우터가 model_validator로 걸러 API 경로로는 도달하지
+        # 않지만, 이 메서드가 소유한 상태 전이를 삼키지 않는 쪽이 안전하다.
         assignments = [f"{c} = :{c}" for c in cols]
         if fields.get("status") == STATUS_EXCLUDED:
             assignments.append("exclusion_reason = NULL")

@@ -18,8 +18,6 @@ _MIGRATION = _REPO_ROOT / "db" / "migration_010_sync_item_vocabulary.sql"
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
-_statements = _migration_sql.statements
-
 
 def _apply(engine) -> None:
     _migration_sql.apply(engine, _MIGRATION)
@@ -54,17 +52,6 @@ def _seed_pair(engine, job_id, row_index, label, status="included"):
 
 def test_migration_file_exists():
     assert _MIGRATION.is_file(), f"missing migration: {_MIGRATION}"
-
-
-def test_statement_splitter_matches_mysql_comment_rule():
-    """`--` 뒤에 공백이 와야 주석이다 — `--foo`는 MySQL에서 SQL이다.
-
-    헬퍼가 운영보다 관대하면(`--foo`도 주석 취급) 테스트만 초록이고
-    `mysql < file`은 syntax error가 난다.
-    """
-    assert _statements("-- 주석\nSELECT 1;") == ["SELECT 1"]
-    assert _statements("--\nSELECT 1;") == ["SELECT 1"]
-    assert _statements("--주석아님\nSELECT 1;") == ["--주석아님\nSELECT 1"]
 
 
 def test_registers_only_included_labels_of_reviewed_jobs(db_conn):

@@ -94,6 +94,9 @@ def test_is_idempotent_and_does_not_overwrite_existing_stamp(db_conn):
 
     _apply(db_conn)
     first = _stamp(db_conn, job_id)
+    # 1차가 실제로 채웠는지 먼저 고정한다 — 이게 없으면 백필 UPDATE가 통째로 사라져도
+    # first/second가 나란히 None이 되어 아래 단언이 공허하게 초록이다(실측 2026-08-05).
+    assert str(first) == "2026-01-01 09:00:00"
     # 2차 실행 전에 쌍의 스탬프를 바꿔 둔다 — 백필이 덮으면 값이 따라 움직인다.
     with db_conn.begin() as conn:
         conn.execute(
@@ -131,15 +134,21 @@ def test_backfill_preserves_updated_at(db_conn):
 
 
 def test_add_column_guard_actually_creates_the_column(db_conn):
-    """가드의 ALTER 분기를 실제로 태운다.
+    """가드의 ALTER 분기를 실제로 태운다 — 기존 행 백필까지 한 번에.
 
     다른 케이스는 conftest 세션 fixture가 schema_test.sql로 컬럼을 미리 만들어 두므로
     @col_exists = 1 → 'DO 0' 분기만 지나간다. 즉 DDL 문법·타입·nullable이 한 번도
     검증되지 않는다 — 여기서만 컬럼을 지우고 진짜 ALTER를 태운다.
 
+    운영 첫 실행의 모양은 "컬럼을 만들고 **그 자리에서** 기존 행을 백필한다"이므로 잡을
+    미리 심어 둔다. 빈 테이블로 두면 그 조합이 어디서도 검증되지 않는다 — 실측
+    (2026-08-05): 백필 UPDATE를 통째로 지워도 이 테스트는 초록이었다.
+
     DDL은 롤백되지 않는다. _apply가 중간에 실패하면 세션의 나머지 테스트가 전부
     깨지므로 finally에서 반드시 복구한다.
     """
+    job_id = _seed_job(db_conn, reviewed=1)
+    _seed_pair(db_conn, job_id, 0, "2026-01-01 09:00:00")
     with db_conn.begin() as conn:
         conn.execute(text("ALTER TABLE ocr_jobs DROP COLUMN curation_reviewed_at"))
     try:
@@ -176,3 +185,5 @@ def test_add_column_guard_actually_creates_the_column(db_conn):
     assert col is not None
     assert col["DATA_TYPE"] == "datetime"
     assert col["IS_NULLABLE"] == "YES"
+    # 새로 만든 컬럼에 기존 행의 스탬프가 실제로 채워졌는지 — ALTER와 백필의 결합.
+    assert str(_stamp(db_conn, job_id)) == "2026-01-01 09:00:00"

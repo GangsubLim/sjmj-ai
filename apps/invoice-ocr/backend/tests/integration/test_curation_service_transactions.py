@@ -62,6 +62,10 @@ class _FailingPairRepo(CurationRepository):
         super().release_gate(job_id)
 
     def update_pair(self, pair_id: int, fields: dict) -> None:
+        # **먼저 실제로 쓴 뒤** 던진다. 쓰지 않고 던지면 되돌아갈 쌍 갱신이 애초에 없어
+        # release_gate의 롤백만 증명된다 — update_pair가 바운드 커넥션에 합류하는지는
+        # 미검증으로 남고, 자체 커넥션을 여는 구현으로 퇴행해도 GREEN이다.
+        super().update_pair(pair_id, fields)
         raise _PairUpdateError(pair_id)
 
 
@@ -102,6 +106,13 @@ def _state(engine, job_id) -> tuple[int, int, list[str]]:
     return int(reviewed), int(stamped), names
 
 
+def _canonical_label(engine, pair_id) -> str:
+    with engine.begin() as conn:
+        return conn.execute(
+            text("SELECT canonical_label FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+
+
 def test_mark_reviewed_rolls_back_everything_when_registration_fails(db_conn):
     """N번째 라벨 등록이 실패하면 검수완료 표시·reviewed_at 스탬프·앞선 등록까지 되돌아간다."""
     job_id = _seed(db_conn)
@@ -140,3 +151,5 @@ def test_patch_pair_rolls_back_gate_release_when_pair_update_fails(db_conn):
     assert repo.gate_released == 1  # 레버가 실제로 당겨졌다(호출 자체가 생략되지 않았다)
     # 게이트 해제가 되돌아간다 — 부분 반영이 남지 않는다.
     assert _state(db_conn, job_id)[0] == 1
+    # 쌍 갱신도 함께 되돌아간다 — 두 쓰기가 같은 트랜잭션이라는 증거.
+    assert _canonical_label(db_conn, int(pair_id)) == "휠"

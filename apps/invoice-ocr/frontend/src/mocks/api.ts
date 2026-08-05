@@ -26,6 +26,7 @@ import { mockIssuer, mockAppSettings } from "./settings";
 import { mockSalespeople } from "./salespeople";
 import { mockSalesRecords } from "./sales-records";
 import { mockCurationJobDetails } from "./curation";
+import { formatYYYYMMDD } from "@/utils/calendar";
 
 // --- In-memory stores (deep clone to avoid mutation of originals) ---
 let invoices: Invoice[] = JSON.parse(JSON.stringify(mockInvoices));
@@ -448,6 +449,16 @@ let curationJobs: CurationJobDetail[] = JSON.parse(
   JSON.stringify(mockCurationJobDetails),
 );
 
+// 백엔드는 MySQL DATETIME(naive)을 jsonable_encoder로 "2026-06-30T08:30:00" 형태로 낸다.
+// toISOString()은 UTC "Z" + 밀리초라 서버가 만들 수 없는 값이고, 시드(mocks/curation.ts)와도
+// 형태가 갈린다 — 코드베이스의 iso.slice(5,16) 관용구가 KST 9시간 어긋난 값을 보이게 된다.
+const toServerDateTime = (d: Date): string => {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${formatYYYYMMDD(d)}T${hh}:${mm}:${ss}`;
+};
+
 const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
   job_id: job.job_id,
   invoice_id: job.invoice_id,
@@ -531,7 +542,7 @@ export const mockCurationAPI = {
     // 서버는 한 트랜잭션의 단일 CURRENT_TIMESTAMP로 잡·쌍 스탬프를 함께 찍는다
     // (mark_reviewed) — mock도 한 번만 만든 시각을 공유해 "잡과 쌍이 같은 시각"
     // 시드 불변식을 보장한다.
-    const now = new Date().toISOString();
+    const now = toServerDateTime(new Date());
     curationJobs = curationJobs.map((job) =>
       job.job_id === jobId
         ? {

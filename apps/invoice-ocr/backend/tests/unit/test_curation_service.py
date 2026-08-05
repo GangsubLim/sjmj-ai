@@ -235,21 +235,27 @@ def test_patch_pair_releases_gate_before_updating_pair():
     assert calls.index("release_gate") < calls.index("update_pair")
 
 
-def test_patch_pair_does_not_register_even_when_job_reviewed():
+def test_patch_pair_does_not_register_labels_even_if_a_reviewed_check_returns_true():
     """검수완료 잡의 라벨을 고쳐도 사전에 등록하지 않는다(spec §3.3 회귀 방어).
 
     이 우회 경로의 존재 이유는 "검수완료 버튼이 disabled라 등록 트리거를 다시 걸 수
     없다"였는데, #52가 그 전제를 없앴다(게이트가 해제되어 버튼이 재활성화된다).
     mark_reviewed를 단일 등록 지점으로 되돌린다 — 게이트가 풀린 상태에서 학습용 라벨만
     먼저 사전에 새는 모순을 막는다(ADR 0008).
+
+    is_job_reviewed는 #52가 제거한 repository API다. 그런데도 True를 **명시적으로**
+    심는 이유: 이 분기가 되살아나는 회귀를 MagicMock의 암묵적 truthy 반환에 기대면
+    (본문에 아무것도 안 보인다) 나중에 기본값이 False인 mock으로 바뀔 때 이 테스트가
+    이름과 반대되는 것을 조용히 단언하게 된다.
     """
     repo = _patched("included", "휠")
+    repo.is_job_reviewed.return_value = True
     item_repo = MagicMock()
 
     _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "휠"})
 
+    # _registered가 ensure_exists.call_args_list에서 파생되므로 assert_not_called와 같은 검사다.
     assert _registered(item_repo) == []
-    item_repo.ensure_exists.assert_not_called()
 
 
 def test_patch_pair_response_shape_adds_job_gate():
@@ -279,7 +285,10 @@ def test_patch_pair_404_when_pair_missing():
     repo = MagicMock()
     repo.find_pair.return_value = None
 
-    with pytest.raises(AppError):
+    with pytest.raises(AppError) as ei:
         _sync_svc(repo, MagicMock()).patch_pair(999, {"status": "included"})
 
+    # AppError 기반 타입만 보면 400/409로 바뀌어도 통과한다 — status를 고정한다.
+    assert ei.value.status == 404
     repo.release_gate.assert_not_called()
+    repo.update_pair.assert_not_called()

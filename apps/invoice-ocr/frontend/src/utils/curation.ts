@@ -34,3 +34,12 @@ export function curationJobState(
   if (job.curation_reviewed) return "reviewed";
   return job.curation_reviewed_at === null ? "unreviewed" : "needs_recheck";
 }
+
+// 상태 이름도 판별과 같이 한 곳에서 소유한다 — 목록 뱃지와 상세 배너가 같은 상태를
+// 다른 이름("재검수 필요"/"재확인 필요")으로 부르던 드리프트를 구조적으로 막는다.
+// 어휘는 ADR 0004와 백엔드·타입 주석이 쓰는 "재검수 필요"에 맞춘다.
+export const CURATION_STATE_LABELS: Record<CurationJobState, string> = {
+  unreviewed: "● 미검수",
+  needs_recheck: "↺ 재검수 필요",
+  reviewed: "✓ 검수됨",
+};

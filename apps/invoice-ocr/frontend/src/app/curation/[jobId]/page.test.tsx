@@ -125,7 +125,7 @@ describe("CurationJobPage", () => {
 
   it("재검수 필요 잡에 배너를 띄우고 검수 완료 버튼을 활성화한다", () => {
     setup(needsRecheckJob());
-    expect(screen.getByText("↺ 재확인 필요")).toBeInTheDocument();
+    expect(screen.getByText("↺ 재검수 필요")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "검수 완료" })).toBeEnabled();
   });
 
@@ -137,13 +137,21 @@ describe("CurationJobPage", () => {
 
   it("배너는 쌍 수정 후 동적으로 나타나므로 aria-live=polite로 SR에 통지한다", () => {
     setup(needsRecheckJob());
-    const banner = screen.getByText("↺ 재확인 필요").closest("[aria-live]");
+    const banner = screen.getByText("↺ 재검수 필요").closest("[aria-live]");
     expect(banner).toBeInTheDocument();
+  });
+
+  it("배너가 없는 상태에서도 aria-live 영역은 DOM에 남아 있다", () => {
+    // 라이브 리전은 "이미 DOM에 있는" 요소의 변경만 통지한다. 영역과 내용이 함께
+    // 삽입되면 SR(NVDA/JAWS/VoiceOver)은 아무것도 읽지 않는다 — 쌍 수정 직후
+    // 배너가 뜨는 이 화면이 정확히 그 경우라, 컨테이너는 상시 마운트해야 한다.
+    const { container } = setup(job()); // 배너 없는 상태(unreviewed)
+    expect(container.querySelector("[aria-live]")).toBeInTheDocument();
   });
 
   it("한 번도 검수 안 한 잡에는 배너를 띄우지 않는다", () => {
     setup(job()); // curation_reviewed=false, curation_reviewed_at=null
-    expect(screen.queryByText("↺ 재확인 필요")).not.toBeInTheDocument();
+    expect(screen.queryByText("↺ 재검수 필요")).not.toBeInTheDocument();
   });
 
   it("검수된 잡의 검수 완료 버튼은 비활성이고 배너도 없다", () => {
@@ -153,7 +161,7 @@ describe("CurationJobPage", () => {
         curation_reviewed_at: "2026-06-30T08:30:00",
       }),
     );
-    expect(screen.queryByText("↺ 재확인 필요")).not.toBeInTheDocument();
+    expect(screen.queryByText("↺ 재검수 필요")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "검수 완료" })).toBeDisabled();
   });
 
