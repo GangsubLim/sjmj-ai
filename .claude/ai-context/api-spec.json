@@ -411,7 +411,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 갱신 결과가 included이고 검수완료된 잡의 쌍이면 정식 라벨을 자동완성 사전에 등록)",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐)",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
@@ -2428,7 +2428,7 @@
     "/api/curation/pairs/{id}": {
       "patch": {
         "summary": "쌍 큐레이션 — status 또는 canonical_label 갱신(Pydantic 검증)",
-        "description": "status를 'excluded'로 갱신하면 서버가 같은 UPDATE에서 exclusion_reason을 NULL로 함께 적용한다(사람 판정이 기계 배제 사유를 덮어씀, ADR 0006). exclusion_reason 자체는 요청 화이트리스트(status/canonical_label) 밖이라 클라이언트가 값을 보낼 수 없다 — 오직 서버(자동 배제 파이프라인)만 채운다. 갱신 결과가 included이고 그 쌍이 속한 잡이 이미 curation_reviewed면 정식 라벨(strip 후 비어 있지 않을 때)을 item_suggestions에 등록한다(default_unit='EA', 이미 있으면 무변경 — ADR 0008 단방향 정합). 검수 중인 잡의 PATCH는 등록하지 않는다.",
+        "description": "status를 'excluded'로 갱신하면 서버가 같은 UPDATE에서 exclusion_reason을 NULL로 함께 적용한다(사람 판정이 기계 배제 사유를 덮어씀, ADR 0006). exclusion_reason 자체는 요청 화이트리스트(status/canonical_label) 밖이라 클라이언트가 값을 보낼 수 없다 — 오직 서버(자동 배제 파이프라인)만 채운다. 이 쌍의 reviewed_at을 무조건 NULL로 되돌리고 그 쌍이 속한 잡의 curation_reviewed 게이트를 무조건 해제한다(값이 실제로 바뀌었는지는 판별하지 않음, Issue #52 spec §3.4) — 응답 job_curation_reviewed는 항상 false. 정식 라벨을 자동완성 사전에 즉시 등록하지 않는다(Issue #52 spec §3.3) — 등록 트리거는 잡 검수완료(POST .../review, mark_reviewed) 하나뿐이다(ADR 0008).",
         "tags": ["curation"],
         "parameters": [
           {
@@ -3608,6 +3608,12 @@
           "curation_reviewed": {
             "type": "boolean"
           },
+          "curation_reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "잡의 첫 검수 시각. 게이트가 해제돼도 지워지지 않는다(mark_reviewed가 COALESCE로 첫 값만 채운다). curation_reviewed와 함께 3-state를 이룬다 — 미검수(reviewed=false, 이 값 NULL) / 재검수 필요(reviewed=false, 이 값 NOT NULL) / 검수됨(reviewed=true). migration_011 이전에 검수된 잡은 training_pairs.reviewed_at의 MIN으로 백필되며, 모든 쌍의 스탬프가 이미 지워진 잡은 복원 불가라 NULL로 남는다."
+          },
           "pair_count": {
             "type": "integer"
           },
@@ -3665,7 +3671,8 @@
           "reviewed_at": {
             "type": "string",
             "format": "date-time",
-            "nullable": true
+            "nullable": true,
+            "description": "이 쌍이 사람 확인을 통과한 시각. PATCH /api/curation/pairs/{id}로 이 쌍을 수정하면(status/canonical_label 무관) 같은 UPDATE에서 항상 NULL로 되돌아간다 — 감사 로그가 아니라 '재확인 필요' 표식이기 때문이다(Issue #52 spec §3.1). mark_reviewed(잡 검수완료)가 각 쌍에 다시 값을 채운다."
           },
           "top5": {
             "type": "array",
@@ -3685,6 +3692,10 @@
           "uncertain": {
             "type": "boolean",
             "description": "품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡은 false. GET /jobs/{id} 전용 — PATCH /pairs/{id} 응답에는 없다(top5와 같은 계약 비대칭)."
+          },
+          "job_curation_reviewed": {
+            "type": "boolean",
+            "description": "PATCH /api/curation/pairs/{id} 응답에만 포함(잡 상세 pairs에는 없음 — job_id와 같은 계약 비대칭). 쌍 수정은 그 잡의 게이트를 무조건 해제하므로 항상 false다. 프론트가 서버 규칙을 재현하지 않고 응답만 보고 '검수 완료' 버튼을 재활성화한다."
           }
         }
       },
@@ -3700,6 +3711,12 @@
           },
           "curation_reviewed": {
             "type": "boolean"
+          },
+          "curation_reviewed_at": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "잡의 첫 검수 시각. 게이트가 해제돼도 지워지지 않는다(mark_reviewed가 COALESCE로 첫 값만 채운다). curation_reviewed와 함께 3-state를 이룬다 — 미검수(reviewed=false, 이 값 NULL) / 재검수 필요(reviewed=false, 이 값 NOT NULL) / 검수됨(reviewed=true). migration_011 이전에 검수된 잡은 training_pairs.reviewed_at의 MIN으로 백필되며, 모든 쌍의 스탬프가 이미 지워진 잡은 복원 불가라 NULL로 남는다."
           },
           "warp_ok": {
             "type": "boolean"
