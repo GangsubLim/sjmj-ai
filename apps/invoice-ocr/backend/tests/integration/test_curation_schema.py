@@ -76,3 +76,13 @@ def test_training_pairs_exclusion_reason_stores_blank_crop(db_conn):
             text("SELECT exclusion_reason FROM training_pairs WHERE job_id = :j"), {"j": job_id}
         ).scalar()
     assert reason == "blank_crop"
+
+
+def test_ocr_jobs_curation_reviewed_at_defaults_null(db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/v.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        stamp = conn.execute(
+            text("SELECT curation_reviewed_at FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+    assert stamp is None
