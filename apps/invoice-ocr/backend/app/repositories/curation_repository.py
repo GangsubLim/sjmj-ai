@@ -30,11 +30,12 @@ class CurationRepository:
     def list_jobs(self, limit: int, offset: int) -> tuple[list[dict], int]:
         """training_pairs 보유 잡을 검수상태·미처리수와 함께 페이지 조회한다."""
         list_sql = text(
-            "SELECT j.id AS job_id, j.invoice_id, j.curation_reviewed, j.created_at, "
+            "SELECT j.id AS job_id, j.invoice_id, j.curation_reviewed, j.curation_reviewed_at, "
+            "j.created_at, "
             "COUNT(tp.id) AS pair_count, "
             "SUM(CASE WHEN tp.reviewed_at IS NULL THEN 1 ELSE 0 END) AS unreviewed_count "
             "FROM ocr_jobs j JOIN training_pairs tp ON tp.job_id = j.id "
-            "GROUP BY j.id, j.invoice_id, j.curation_reviewed, j.created_at "
+            "GROUP BY j.id, j.invoice_id, j.curation_reviewed, j.curation_reviewed_at, j.created_at "
             "ORDER BY j.curation_reviewed ASC, j.created_at DESC, j.id DESC "
             "LIMIT :limit OFFSET :offset"
         )
@@ -50,7 +51,8 @@ class CurationRepository:
             job_row = (
                 conn.execute(
                     text(
-                        "SELECT id, invoice_id, curation_reviewed, result_json, created_at "
+                        "SELECT id, invoice_id, curation_reviewed, curation_reviewed_at, "
+                        "result_json, created_at "
                         "FROM ocr_jobs WHERE id = :id"
                     ),
                     {"id": job_id},
@@ -96,7 +98,15 @@ class CurationRepository:
             return dict(row) if row else None
 
     def update_pair(self, pair_id: int, fields: dict) -> None:
-        """학습쌍의 status/canonical_label을 갱신한다(화이트리스트 컬럼만).
+        """학습쌍의 status/canonical_label을 갱신하고 reviewed_at을 NULL로 되돌린다.
+
+        **reviewed_at을 되돌리는 이유(Issue #52 spec §3.1).** reviewed_at은 "이 쌍이 사람
+        확인을 통과했다"는 표식이지 감사 로그가 아니다. ml/tools/blank_crop_report.py의
+        기계 경로(--recheck-reviewed)가 이미 같은 관례를 쓰므로, 사람 경로가 보존을 택하면
+        두 경로가 같은 컬럼의 의미를 다르게 쓰게 된다. 또 목록의 unreviewed_count가 그대로
+        "재확인해야 할 행 수"가 되어야 하는데, 보존하면 재검수 필요 상태에서 그 값이 0이
+        되어 "미처리 0인데 미검수"라는 모순된 표시가 생긴다. 잃는 것(첫 검수 시각)은
+        ocr_jobs.curation_reviewed_at이 잡 단위에서 회복한다.
 
         사람이 배제(status='excluded')하면 **같은 UPDATE 문에서** exclusion_reason을 NULL로
         지운다. 클라이언트가 보낸 값이 아니라 서버 파생 쓰기이므로 화이트리스트의 역할
@@ -111,12 +121,15 @@ class CurationRepository:
         """
         allowed = ("status", "canonical_label")
         cols = [c for c in allowed if c in fields]
-        # 방어: 라우터는 model_validator로 검증된 비어있지 않은 fields만 전달(API 경로로는 도달 불가).
-        if not cols:
-            return
+        # cols가 비어도 조기 반환하지 않는다. 조기 반환하면 아래 reviewed_at 되돌림까지
+        # 함께 건너뛰어, 이미 게이트를 해제한 patch_pair와 어긋난 상태("미처리 0인데
+        # 미검수")가 조용히 생긴다. 라우터가 model_validator로 걸러 API 경로로는 도달하지
+        # 않지만, 이 메서드가 소유한 상태 전이를 삼키지 않는 쪽이 안전하다.
         assignments = [f"{c} = :{c}" for c in cols]
         if fields.get("status") == STATUS_EXCLUDED:
             assignments.append("exclusion_reason = NULL")
+        # 수정된 쌍은 재확인 대상으로 되돌린다 — 기계 경로(blank_crop_report)와 같은 관례.
+        assignments.append("reviewed_at = NULL")
         params = {c: fields[c] for c in cols}
         params["id"] = pair_id
         with connection() as conn:
@@ -139,11 +152,46 @@ class CurationRepository:
                 text("SELECT image_path FROM ocr_jobs WHERE id = :id"), {"id": job_id}
             ).scalar()
 
-    def mark_reviewed(self, job_id: int) -> None:
-        """잡을 검수완료로 표시하고 미처리 쌍에 reviewed_at을 찍는다."""
+    def release_gate(self, job_id: int) -> None:
+        """잡의 검수 게이트를 해제한다(curation_reviewed_at은 건드리지 않는다).
+
+        **호출 순서 제약.** 이 메서드는 patch_pair 트랜잭션에서 반드시 update_pair보다
+        **먼저** 호출돼야 한다. mark_reviewed가 ocr_jobs(부모) → training_pairs(자식)
+        순서로 잠그므로, patch_pair가 반대 순서로 잠그면 두 **사람 경로** 사이에 순환
+        대기가 성립한다. 같은 순서를 쓰면 사람 경로끼리는 추가 직렬화(SELECT … FOR
+        UPDATE) 없이 교착이 배제된다. 기계 apply 경로(ml/tools/blank_crop_report.py의
+        build_apply_script)는 자식→부모라 사람 경로와의 순환 대기가 여전히 가능하다 —
+        #52 이전부터 있던 위험이며 오퍼레이터 단발 실행 + InnoDB 교착 감지로 수용한다
+        (정렬은 후속 이슈 #76). 이 순서는 repository가 강제할 수 없고 service의 호출
+        순서에만 달려 있다 — 강제 장치는 service 단위 테스트의 호출 순서 단언이다.
+
+        curation_reviewed_at을 지우지 않는 것이 "재검수 필요"(해제됐지만 과거에 검수된 잡)와
+        "미검수"(한 번도 검수 안 한 잡)를 가르는 유일한 근거다.
+
+        Args:
+            job_id: 게이트를 해제할 OCR 잡 id.
+        """
         with connection() as conn:
             conn.execute(
-                text("UPDATE ocr_jobs SET curation_reviewed = 1 WHERE id = :id"), {"id": job_id}
+                text("UPDATE ocr_jobs SET curation_reviewed = 0 WHERE id = :id"), {"id": job_id}
+            )
+
+    def mark_reviewed(self, job_id: int) -> None:
+        """잡을 검수완료로 표시하고 미처리 쌍에 reviewed_at을 찍는다.
+
+        curation_reviewed_at은 COALESCE로 **첫 검수 시각만** 채운다. 게이트가 해제됐다가
+        재확정될 때 이 값이 갱신되면 "한 번 검수됐다가 해제된 잡"의 판별 근거가 사라진다.
+
+        잠금 순서: 부모(ocr_jobs) → 자식(training_pairs). 근거는 release_gate docstring 참조.
+        """
+        with connection() as conn:
+            conn.execute(
+                text(
+                    "UPDATE ocr_jobs SET curation_reviewed = 1, "
+                    "curation_reviewed_at = COALESCE(curation_reviewed_at, CURRENT_TIMESTAMP) "
+                    "WHERE id = :id"
+                ),
+                {"id": job_id},
             )
             conn.execute(
                 text(
@@ -175,12 +223,3 @@ class CurationRepository:
                 {"id": job_id, "status": STATUS_INCLUDED},
             ).scalars()
             return list(rows)
-
-    def is_job_reviewed(self, job_id: int) -> bool:
-        """잡이 검수완료 상태인지 여부(없는 잡은 False)."""
-        with connection() as conn:
-            return bool(
-                conn.execute(
-                    text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
-                ).scalar()
-            )

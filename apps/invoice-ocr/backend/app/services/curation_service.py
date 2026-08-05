@@ -9,7 +9,6 @@ from app import db
 from app.config import crop_dir
 from app.core.errors import not_found
 from app.repositories.curation_repository import CurationRepository
-from app.schemas.curation import STATUS_INCLUDED
 
 
 def _normalize_label(label: str | None) -> str:
@@ -42,6 +41,8 @@ class CurationService:
                 "job_id": int(r["job_id"]),
                 "invoice_id": r["invoice_id"],
                 "curation_reviewed": bool(r["curation_reviewed"]),
+                # created_at과 같은 취급 — 직렬화는 jsonable_encoder에 맡긴다.
+                "curation_reviewed_at": r["curation_reviewed_at"],
                 "pair_count": int(r["pair_count"]),
                 "unreviewed_count": int(r["unreviewed_count"] or 0),
                 "created_at": r["created_at"],
@@ -88,28 +89,34 @@ class CurationService:
             "job_id": int(job["id"]),
             "invoice_id": job["invoice_id"],
             "curation_reviewed": bool(job["curation_reviewed"]),
+            "curation_reviewed_at": job["curation_reviewed_at"],
             "warp_ok": bool(result.get("warp_ok", False)),
             "created_at": job["created_at"],
             "pairs": pairs,
         }
 
     def patch_pair(self, pair_id: int, fields: dict) -> dict:
-        """학습쌍을 부분 갱신하고 갱신된 쌍을 반환한다. 없으면 404.
+        """학습쌍을 부분 갱신하고 갱신된 쌍 + 잡의 게이트 상태를 반환한다. 없으면 404.
 
-        갱신 결과가 included이고 그 쌍이 속한 잡이 이미 검수완료면 정식 라벨을 자동완성
-        사전에 등록한다(ADR 0008). 검수완료 버튼은 이미 검수된 잡에서 disabled이므로,
-        이 경로가 없으면 "검수완료 → 나중에 라벨 수정"이 등록 트리거를 다시 걸 수 없다.
-        검수 중인 잡은 등록하지 않는다 — 라벨 입력 도중의 중간값이 사전에 새지 않게 한다.
+        수정은 그 잡의 검수 게이트를 **무조건** 해제한다(Issue #52 spec §3.4). 값이 실제로
+        바뀌었는지는 판별하지 않는다 — 이미 미검수면 0 → 0 no-op이고, 제외했다 되돌린
+        경우도 재확인 대상으로 본다(오클릭 방어가 이 변경의 취지다). 프론트는 값이 같으면
+        애초에 PATCH를 보내지 않는다(CurationPairRow.commitLabel).
+
+        정식 라벨의 사전 등록은 여기서 하지 않는다(spec §3.3). 과거에는 "검수완료 잡의
+        쌍이 included면 즉시 등록"하는 우회 경로가 있었는데, 그 존재 이유("검수완료 버튼이
+        disabled라 등록 트리거를 다시 걸 수 없다")를 이 변경이 없앴다. mark_reviewed가
+        단일 등록 지점이다(ADR 0008).
         """
-        if self.repo.find_pair(pair_id) is None:
+        prev = self.repo.find_pair(pair_id)  # non-locking read — 트랜잭션 밖
+        if prev is None:
             not_found("학습쌍을 찾을 수 없습니다.")
         with self._transaction():
-            self.repo.update_pair(pair_id, fields)
+            # ①→② 순서는 락 순서 불변식이다(spec §4.2). ocr_jobs(부모) → training_pairs(자식).
+            # 뒤집으면 mark_reviewed와 순환 대기가 성립한다.
+            self.repo.release_gate(int(prev["job_id"]))  # ① ocr_jobs — 게이트 해제
+            self.repo.update_pair(pair_id, fields)  # ② training_pairs — reviewed_at → NULL
             updated = self.repo.find_pair(pair_id)
-            if updated["status"] == STATUS_INCLUDED and self.repo.is_job_reviewed(
-                int(updated["job_id"])
-            ):
-                self._register_label(updated["canonical_label"])
         return {
             "id": int(updated["id"]),
             "crop_ref": updated["crop_ref"],
@@ -122,6 +129,9 @@ class CurationService:
             "status": updated["status"],
             "exclusion_reason": updated["exclusion_reason"],
             "reviewed_at": updated["reviewed_at"],
+            # 상수 False — 해제 규칙이 무조건이라(§3.4) 방금 0을 쓴 값을 되읽는 것과 결과가
+            # 같다. 규칙이 조건부로 바뀌면 이 상수부터 깨져야 한다(재조회로 되돌릴 것).
+            "job_curation_reviewed": False,
         }
 
     def mark_reviewed(self, job_id: int) -> dict:
@@ -161,8 +171,12 @@ class CurationService:
     def _register_label(self, label: str | None) -> None:
         """정규화한 정식 라벨을 자동완성 사전에 등록한다(빈 값은 건너뛴다).
 
-        canonical_label은 nullable이라 None이 실제로 도달한다(patch_pair 경로) —
-        _normalize_label이 그 경계를 함께 흡수한다.
+        호출자는 mark_reviewed 하나뿐이다(spec §3.3으로 patch_pair 경로가 제거됨).
+        list_included_labels의 SQL이 NULL을 걸러 실제로는 None이 도달하지 않지만,
+        canonical_label이 nullable이므로 타입 경계는 _normalize_label이 흡수한 채로 둔다.
+        게다가 유일 호출자 mark_reviewed가 이미 _normalize_label을 적용한 정규화된
+        str만 넘기므로, None은 SQL과 호출자 양쪽에서 두 겹으로 도달 불가하다 — SQL만
+        바꾼다고 None이 다시 도달하는 건 아니다.
         """
         if self.item_repo is None:
             return

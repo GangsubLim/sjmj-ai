@@ -76,3 +76,36 @@ def test_training_pairs_exclusion_reason_stores_blank_crop(db_conn):
             text("SELECT exclusion_reason FROM training_pairs WHERE job_id = :j"), {"j": job_id}
         ).scalar()
     assert reason == "blank_crop"
+
+
+def test_ocr_jobs_curation_reviewed_at_defaults_null(db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/v.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        stamp = conn.execute(
+            text("SELECT curation_reviewed_at FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+    assert stamp is None
+
+
+def test_ocr_jobs_curation_reviewed_at_column_type_matches_production_ddl(db_conn):
+    """하니스의 컬럼 정의가 운영 DDL(db/migration_011)과 같은 타입·nullable이어야 한다.
+
+    NULL 기본값만 단언하면 fixtures/schema_test.sql이 운영과 갈려도 아무 데서도
+    안 걸린다 — 실측(2026-08-05): 이 컬럼을 VARCHAR(32)로 바꿔도 스위트 559건이
+    전부 통과했다.
+    """
+    with db_conn.begin() as conn:
+        col = (
+            conn.execute(
+                text(
+                    "SELECT DATA_TYPE, IS_NULLABLE FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = 'ocr_jobs' "
+                    "AND column_name = 'curation_reviewed_at'"
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert col is not None
+    assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("datetime", "YES")

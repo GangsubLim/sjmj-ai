@@ -20,6 +20,7 @@ migration_007_ml_seam.sql      ← Phase 1A 신규(ML 이음새: total_supply �
 migration_008_curation_training_pairs.sql  ← 큐레이션 게이트(ocr_jobs.curation_reviewed) + training_pairs 학습 read-model; 백필 SQL은 JSON_TABLE(MySQL 8.0.4+ 필요)
 migration_009_training_pairs_exclusion_reason.sql  ← 배제 사유 축(ADR 0006, Issue #38)
 migration_010_sync_item_vocabulary.sql  ← 정식 라벨 → 자동완성 사전 일괄 등록(ADR 0008, Issue #40)
+migration_011_curation_reviewed_at.sql  ← 잡 첫 검수 시각(게이트 해제 후 재검수 판별, ADR 0004, Issue #52)
 ```
 
 ## 일회성 데이터 마이그레이션 (빌드 순서 아님)

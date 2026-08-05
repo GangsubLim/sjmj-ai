@@ -26,6 +26,7 @@ import { mockIssuer, mockAppSettings } from "./settings";
 import { mockSalespeople } from "./salespeople";
 import { mockSalesRecords } from "./sales-records";
 import { mockCurationJobDetails } from "./curation";
+import { formatYYYYMMDD } from "@/utils/calendar";
 
 // --- In-memory stores (deep clone to avoid mutation of originals) ---
 let invoices: Invoice[] = JSON.parse(JSON.stringify(mockInvoices));
@@ -448,10 +449,21 @@ let curationJobs: CurationJobDetail[] = JSON.parse(
   JSON.stringify(mockCurationJobDetails),
 );
 
+// 백엔드는 MySQL DATETIME(naive)을 jsonable_encoder로 "2026-06-30T08:30:00" 형태로 낸다.
+// toISOString()은 UTC "Z" + 밀리초라 서버가 만들 수 없는 값이고, 시드(mocks/curation.ts)와도
+// 형태가 갈린다 — 코드베이스의 iso.slice(5,16) 관용구가 KST 9시간 어긋난 값을 보이게 된다.
+const toServerDateTime = (d: Date): string => {
+  const hh = String(d.getHours()).padStart(2, "0");
+  const mm = String(d.getMinutes()).padStart(2, "0");
+  const ss = String(d.getSeconds()).padStart(2, "0");
+  return `${formatYYYYMMDD(d)}T${hh}:${mm}:${ss}`;
+};
+
 const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
   job_id: job.job_id,
   invoice_id: job.invoice_id,
   curation_reviewed: job.curation_reviewed,
+  curation_reviewed_at: job.curation_reviewed_at,
   pair_count: job.pairs.length,
   unreviewed_count: job.pairs.filter((p) => p.reviewed_at === null).length,
   created_at: job.created_at,
@@ -487,9 +499,9 @@ export const mockCurationAPI = {
   patchPair: async (id: number, patch: CurationPairPatch) => {
     await delay();
     let result: CurationPairPatchResult | null = null;
-    curationJobs = curationJobs.map((job) => ({
-      ...job,
-      pairs: job.pairs.map((p) => {
+    curationJobs = curationJobs.map((job) => {
+      const touched = job.pairs.some((p) => p.id === id);
+      const pairs = job.pairs.map((p) => {
         if (p.id !== id) return p;
         const updated = {
           ...p,
@@ -497,14 +509,27 @@ export const mockCurationAPI = {
           // 서버 파생 쓰기 미러: status='excluded'면 같은 UPDATE에서 exclusion_reason도
           // NULL로 갱신된다(curation_repository.update_pair, ADR 0006). 포함 방향은 지우지 않는다.
           ...(patch.status === "excluded" ? { exclusion_reason: null } : {}),
-          reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+          // 수정된 쌍은 재확인 대상으로 되돌아간다(Issue #52 spec §3.1) — 서버가 같은
+          // UPDATE에서 reviewed_at = NULL을 쓴다. 채우는 방향이면 mock 모드·E2E가
+          // 서버와 반대 상태를 유지한다.
+          reviewed_at: null,
         };
-        // PATCH 응답 형태: job_id 포함, top5·uncertain 제외(계약 비대칭 — curation_service.py의 patch_pair 참조).
+        // PATCH 응답 형태: job_id + job_curation_reviewed 포함, top5·uncertain 제외
+        // (계약 비대칭 — curation_service.py의 patch_pair 참조).
         const { top5: _top5, uncertain: _uncertain, ...base } = updated;
-        result = { ...base, job_id: job.job_id };
+        result = {
+          ...base,
+          job_id: job.job_id,
+          // 해제는 무조건이라 서버도 상수 false를 돌려준다(spec §3.4).
+          job_curation_reviewed: false,
+        };
         return updated;
-      }),
-    }));
+      });
+      // 소속 잡의 게이트를 해제한다. curation_reviewed_at은 지우지 않는다(§3.2) —
+      // 그래야 "재검수 필요"와 "미검수"가 갈린다. 건드리지 않은 잡은 참조를 그대로
+      // 유지한다(불필요한 새 객체 생성 방지).
+      return touched ? { ...job, curation_reviewed: false, pairs } : job;
+    });
     if (!result) throw new Error("쌍을 찾을 수 없습니다");
     return { data: result as CurationPairPatchResult };
   },
@@ -514,14 +539,20 @@ export const mockCurationAPI = {
     if (!curationJobs.some((j) => j.job_id === jobId)) {
       throw new Error("잡을 찾을 수 없습니다");
     }
+    // 서버는 한 트랜잭션의 단일 CURRENT_TIMESTAMP로 잡·쌍 스탬프를 함께 찍는다
+    // (mark_reviewed) — mock도 한 번만 만든 시각을 공유해 "잡과 쌍이 같은 시각"
+    // 시드 불변식을 보장한다.
+    const now = toServerDateTime(new Date());
     curationJobs = curationJobs.map((job) =>
       job.job_id === jobId
         ? {
             ...job,
             curation_reviewed: true,
+            // 서버의 COALESCE 미러 — 첫 검수 시각만 채우고 재확정 때는 유지한다.
+            curation_reviewed_at: job.curation_reviewed_at ?? now,
             pairs: job.pairs.map((p) => ({
               ...p,
-              reviewed_at: p.reviewed_at ?? new Date().toISOString(),
+              reviewed_at: p.reviewed_at ?? now,
             })),
           }
         : job,

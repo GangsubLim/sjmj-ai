@@ -115,8 +115,23 @@ export function useCurationJob(
       );
       try {
         const res = await curationAPI.patchPair(id, patch);
-        // 2) 성공: 응답을 merge. job_id는 버리고 top5는 기존 값 보존(계약 비대칭).
-        const { job_id: _jobId, ...base } = res.data;
+        // 2) 성공: 응답을 merge. job_id·게이트는 pair에서 떼고 top5는 기존 값 보존(계약 비대칭).
+        const {
+          job_id: pairJobId,
+          job_curation_reviewed: gate,
+          ...base
+        } = res.data;
+        // 게이트는 pair가 아니라 **잡 단위 서버 사실**이라 stale 가드보다 먼저 반영한다.
+        // 뒤에 두면 "stale 성공 + 최신 실패" 조합에서 서버는 이미 해제(0)했는데 화면은
+        // 검수됨(true)으로 남아 배너가 안 뜨고 버튼이 잠긴 채 발산한다(AC 2·4).
+        // 해제는 무조건이라(spec §3.4) gate는 항상 false다 — 되돌리는 방향이 없어
+        // 도착 순서와 무관하게 안전하다. 잡이 바뀐 뒤 도착한 응답이 남의 잡 상태를
+        // 건드리지 않도록 job_id를 대조하고, 값이 같으면 prev를 그대로 돌려 재렌더를 막는다.
+        setJob((prev) =>
+          prev && prev.job_id === pairJobId && prev.curation_reviewed !== gate
+            ? { ...prev, curation_reviewed: gate }
+            : prev,
+        );
         // 성공은 stale이어도 '서버가 저장했다'는 사실이므로 확정값에는 먼저 반영한다 —
         // 여기서 그냥 버리면 뒤이은 최신 요청의 실패가 저장된 적 있는 값을 건너뛰고 옛
         // 값으로 롤백해, 라벨링 도구가 서버와 다른 라벨을 보여준다.

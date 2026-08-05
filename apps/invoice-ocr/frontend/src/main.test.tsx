@@ -30,6 +30,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
     job_id: 42,
     invoice_id: null,
     curation_reviewed: false,
+    curation_reviewed_at: null,
     warp_ok: false,
     created_at: "2026-06-30T09:00:00",
     pairs: [],
