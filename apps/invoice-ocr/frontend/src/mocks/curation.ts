@@ -7,6 +7,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     job_id: 128,
     invoice_id: 341,
     curation_reviewed: false,
+    // 한 번도 검수 안 한 잡 — curationJobState가 "unreviewed"로 판별한다.
     curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:10:00",
@@ -58,6 +59,9 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     job_id: 127,
     invoice_id: 340,
     curation_reviewed: true,
+    // 검수 완료 잡. e2e(curation.spec.ts)가 이 잡의 쌍을 수정해 "재검수 필요" 배너를
+    // 확인한다 — 서버의 mark_reviewed가 쌍 스탬프와 같은 시각을 찍으므로 pairs의
+    // reviewed_at과 맞춘다.
     curation_reviewed_at: "2026-06-30T08:30:00",
     warp_ok: false,
     created_at: "2026-06-30T08:00:00",
