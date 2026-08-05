@@ -224,6 +224,11 @@ def _cross_table_and_columns(
     table: dict[str, Counter] = {}
     for ls, row in ev:
         # 미지 어휘는 원문 그대로 한 행을 차지한다 — 조용히 버리면 사다리 합과 표 합이 어긋난다.
+        # 맨 candidate_picked(접미 rank 없음)는 label_source_key가 미지로 보므로 여기서도
+        # 미지 행으로 남는다 — 기지 행("candidate_picked")과 이름이 겹칠 위험이 있지만,
+        # `label_source` 필드와 화이트리스트 검증이 같은 커밋(e56d0af)에서 함께 들어와
+        # `services/ocr_correction.py`가 검증된 payload만 저장하므로 검증 이전 데이터가
+        # 남아 있을 창 자체가 없다(도달 불가). 도달 가능해지면 이 흡수가 문제가 된다.
         key = label_source_key(ls["label_source"]) or ls["label_source"]
         table.setdefault(key, Counter())[row["label_bucket"]] += 1
     observed_buckets = {bucket for row in table.values() for bucket in row}

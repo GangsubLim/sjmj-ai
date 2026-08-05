@@ -373,4 +373,26 @@ def test_cross_table_rows_follow_the_distribution_order_with_unknowns_last():
         _render(enriched, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=3)], label_sources)
     )
     assert section.index("| top1_kept |") < section.index("| manual_typed |")
-    assert section.index("| manual_typed |") < section.index("| bulk_applied |")
+    assert section.index("| manual_typed |") < section.index("| bulk_applied (미지) |")
+
+
+def test_cross_table_marks_an_unknown_row_so_it_reads_apart_from_the_known_vocabulary():
+    """분포 절의 표는 미지 값에 `(미지)`를 붙이는데(§3-4), 교차표만 침묵하면 같은 리포트 안에서
+    두 표가 미지 취급을 다르게 한 것처럼 읽힌다."""
+    enriched = [_enriched_row(crop_ref="job-1/row-0", label_bucket="ok")]
+    label_sources = [_ls("bulk_applied", ref="job-1/row-0")]
+    section = _cross_section(
+        _render(enriched, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=1)], label_sources)
+    )
+    assert "| bulk_applied (미지) | 1 | 0 | 0 | 0 | 0 |" in section
+
+
+def test_cross_table_does_not_mark_a_known_row_as_unknown():
+    """음성 테스트 — 기지 출처 행에 `(미지)`가 붙으면 표시 자체가 신호를 잃는다."""
+    enriched = [_enriched_row(crop_ref="job-1/row-0", label_bucket="ok")]
+    label_sources = [_ls("top1_kept", ref="job-1/row-0")]
+    section = _cross_section(
+        _render(enriched, {"fetched_at": "t"}, [_correction(job_id=1, n_lines=1)], label_sources)
+    )
+    assert "| top1_kept (미지) |" not in section
+    assert "| top1_kept | 1 | 0 | 0 | 0 | 0 |" in section

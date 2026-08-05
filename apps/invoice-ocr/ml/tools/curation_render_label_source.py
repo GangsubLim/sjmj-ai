@@ -157,13 +157,20 @@ def _label_source_cross_table(c: dict) -> list[str]:
     행 순서를 여기서 정렬하면 분포 표(KNOWN_LABEL_SOURCES 순)와 이 표가 따로 움직여, 같은
     출처의 두 행을 잇는 교차 검산이 매번 스캔이 된다. 0건 행도 인쇄한다 — 빼면 "그 출처는
     평가 가능 행이 하나도 없었다"는 관측이 사라진다(rank 행을 전량 인쇄하는 것과 같은 규약).
+
+    미지 행은 `(미지)`를 붙여 분포 표(`_label_source_table`)와 같은 표시를 맞춘다 — 분포 절은
+    미지 어휘를 경고로 드러내는데 이 표만 침묵하면 "분모에 포함된다"는 규약(spec §3-4)이 이
+    표에서만 안 보인다. 기지 여부는 `KNOWN_LABEL_SOURCES` 멤버십으로 판정한다(어휘를 여기
+    손으로 다시 적지 않는다 — M3와 같은 규약).
     """
     out = [
         "| 출처 | " + " | ".join(c["columns"]) + " |",
         "| --- | " + " | ".join("---" for _ in c["columns"]) + " |",
     ]
     out += [
-        f"| {src} | " + " | ".join(str(c["table"][src][col]) for col in c["columns"]) + " |"
+        f"| {src if src in KNOWN_LABEL_SOURCES else f'{src} (미지)'} | "
+        + " | ".join(str(c["table"][src][col]) for col in c["columns"])
+        + " |"
         for src in c["rows"]
     ]
     return out
