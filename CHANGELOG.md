@@ -5,6 +5,22 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.9.0] — 2026-08-05
+
+검수를 끝낸 잡이라도 학습쌍을 다시 건드리면 확인을 한 번 더 받는다. 인식 정확도 리포트는 "모델이 사람을 얼마나 도왔는지"를 처음으로 수치로 보여준다 ([#79](https://github.com/GangsubLim/sjmj-ai/pull/79), [#77](https://github.com/GangsubLim/sjmj-ai/pull/77), [#75](https://github.com/GangsubLim/sjmj-ai/pull/75)).
+
+### Added
+
+- 검수 완료된 잡의 학습쌍을 수정하면 검수 상태가 자동으로 풀리고 재확인을 요구한다 — 오클릭 한 번이 확인 없이 다음 학습에 반영되던 경로를 막는다 ([#79](https://github.com/GangsubLim/sjmj-ai/pull/79))
+- 큐레이션 목록·상세가 "미검수 / 재검수 필요 / 검수됨" 세 상태를 구분해 보여준다 ([#79](https://github.com/GangsubLim/sjmj-ai/pull/79))
+- 인식 정확도 리포트에 조작 출처 분포가 추가된다 — 첫 후보가 틀렸어도 사람이 후보 목록에서 골랐다면 모델이 일한 것으로 집계한다 ([#77](https://github.com/GangsubLim/sjmj-ai/pull/77))
+- 리포트가 교정 이력을 함께 읽어, 초안 대비 확정본에서 사람이 몇 행을 더하고 뺐는지 관측한다 ([#75](https://github.com/GangsubLim/sjmj-ai/pull/75))
+
+### Changed
+
+- 큐레이션 분석 런북에서 "실패"가 뜻하는 층위를 쌍 단위와 잡 단위로 분리하고, 리포트가 재지 못하는 범위를 명시한다 ([#71](https://github.com/GangsubLim/sjmj-ai/issues/71))
+- 런북의 배포 완료된 일회성 안내를 걷어내고 누락 버킷 2종·개선 액션 표를 현행화 (e6780ba)
+
 ## [v0.8.0] — 2026-08-04
 
 검수를 시작하기 전 단계의 인식 잡을 목록으로 훑어보고, 어디까지 잘 처리됐는지 확인할 수 있다 ([#68](https://github.com/GangsubLim/sjmj-ai/pull/68)).
