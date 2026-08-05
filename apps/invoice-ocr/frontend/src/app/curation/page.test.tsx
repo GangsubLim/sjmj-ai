@@ -72,6 +72,26 @@ describe("CurationQueuePage", () => {
     expect(screen.getByText("✓ 검수됨")).toBeInTheDocument();
   });
 
+  it("재검수 필요 상태의 잡은 ↺ 뱃지를 렌더한다", () => {
+    setup({
+      total: 1,
+      data: [
+        {
+          job_id: 300,
+          invoice_id: 60,
+          curation_reviewed: false,
+          // 검수됐다가 쌍 수정으로 해제된 잡 — "미검수"와 구분돼야 한다(AC 3).
+          curation_reviewed_at: "2026-06-29T09:00:00",
+          pair_count: 3,
+          unreviewed_count: 1,
+          created_at: "2026-06-29T09:00:00",
+        },
+      ],
+    });
+    expect(screen.getByText("↺ 재검수 필요")).toBeInTheDocument();
+    expect(screen.queryByText("● 미검수")).not.toBeInTheDocument();
+  });
+
   it("빈 큐는 EmptyState를 보여준다", () => {
     setup();
     expect(screen.getByText("검수할 잡이 없습니다")).toBeInTheDocument();

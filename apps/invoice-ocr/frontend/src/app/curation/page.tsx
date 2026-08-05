@@ -16,6 +16,8 @@ import {
   PaginationPrevious,
 } from "@/components/ui/pagination";
 import { getVisiblePages } from "@/lib/pagination";
+import { curationJobState, type CurationJobState } from "@/utils/curation";
+import type { CurationJobSummary } from "@/types/curation";
 
 function formatDate(iso: string): string {
   return iso.slice(5, 10); // MM-DD
@@ -96,11 +98,7 @@ export default function CurationQueuePage() {
                 <td>{job.pair_count}</td>
                 <td>{job.unreviewed_count}</td>
                 <td>
-                  {job.curation_reviewed ? (
-                    <span className="text-green-600">✓ 검수됨</span>
-                  ) : (
-                    <span className="text-amber-600">● 미검수</span>
-                  )}
+                  <CurationStateBadge job={job} />
                 </td>
                 <td>{formatDate(job.created_at)}</td>
               </tr>
@@ -155,4 +153,25 @@ export default function CurationQueuePage() {
       )}
     </PageContainer>
   );
+}
+
+// 판별은 utils/curation.curationJobState가 소유한다 — 목록과 상세가 같은 규칙을 쓴다.
+// 라벨·클래스는 Record로 묶는다 — CurationJobState에 상태가 추가되면 여기가 컴파일
+// 에러로 막아 조용히 "● 미검수"로 새는 걸 방지한다(app/curation/pending/page.tsx와 같은 관례).
+const BADGE_LABELS: Record<CurationJobState, string> = {
+  unreviewed: "● 미검수",
+  needs_recheck: "↺ 재검수 필요",
+  reviewed: "✓ 검수됨",
+};
+
+const BADGE_CLASSES: Record<CurationJobState, string> = {
+  unreviewed: "text-amber-600",
+  // 미검수와 같은 amber이되 볼드로 갈라 "확인했다가 다시 손봐야 하는 잡"임을 드러낸다.
+  needs_recheck: "font-bold text-amber-600",
+  reviewed: "text-green-600",
+};
+
+function CurationStateBadge({ job }: { job: CurationJobSummary }) {
+  const state = curationJobState(job);
+  return <span className={BADGE_CLASSES[state]}>{BADGE_LABELS[state]}</span>;
 }
