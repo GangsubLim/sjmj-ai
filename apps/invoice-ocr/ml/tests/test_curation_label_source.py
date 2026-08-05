@@ -8,15 +8,18 @@ import re
 
 import pytest
 
+from tests.conftest import _enriched_row
 from tools.curation_enrich import CORRECTIONS_SQL
 from tools.curation_label_source import (
     CANDIDATE_PICKED,
     DEFAULT_RANK_SLOTS,
+    ITEM_BUCKET_COLUMNS,
     KNOWN_LABEL_SOURCES,
     LABEL_SOURCE_COLS,
     LABEL_SOURCES_SQL,
     LATEST_CORRECTION_SUBQUERY,
     MIN_RANK_SAMPLE,
+    cross_label_source_buckets,
     label_source_key,
     parse_label_sources_tsv,
     parse_rank,
@@ -180,3 +183,163 @@ def test_a_bare_candidate_picked_without_a_rank_counts_as_unknown():
 def test_min_rank_sample_is_a_named_constant():
     """하한을 렌더에 인라인하면 근거 주석이 사라지고 두 곳이 갈라진다."""
     assert MIN_RANK_SAMPLE == 10
+
+
+def test_the_ladder_splits_every_reason_a_recorded_row_leaves_the_cross_table():
+    """사다리 5항이 각각 갈리고 합이 기록 행 수와 같다 — 빠진 행이 사유 없이 사라지지 않는다.
+
+    `n_unevaluable`(시점 판정 불가)과 `n_row_missing`(데이터 정합 장애)은 관심사가 다른 두
+    축이다(curation_cohort.TEMPORAL_UNEVALUABLE_BUCKETS / DATA_INTEGRITY_FAILURE_BUCKETS).
+    """
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="ok"),
+        _enriched_row(crop_ref="job-1/row-1", status="excluded", label_bucket="ok"),
+        _enriched_row(crop_ref="job-1/row-2", label_bucket="unevaluable"),
+        _enriched_row(crop_ref="job-1/row-3", label_bucket="row_missing"),
+    ]
+    label_sources = [
+        _ls("top1_kept", ref="job-1/row-0"),
+        _ls("top1_kept", ref="job-1/row-1"),
+        _ls("top1_kept", ref="job-1/row-2"),
+        _ls("top1_kept", ref="job-1/row-3"),
+        _ls("top1_kept", ref="job-1/row-9"),  # 조인 실패 — 학습쌍이 없다
+        _ls(None, ref="job-1/row-8"),  # 미기록은 사다리 시작 전에 빠진다
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert (c["n_recorded"], c["n_no_pair"], c["n_excluded"]) == (5, 1, 1)
+    assert (c["n_unevaluable"], c["n_row_missing"]) == (1, 1)
+    assert c["n_evaluable"] == 1
+    ladder_sum = (
+        c["n_no_pair"]
+        + c["n_excluded"]
+        + c["n_unevaluable"]
+        + c["n_row_missing"]
+        + c["n_evaluable"]
+    )
+    assert ladder_sum == c["n_recorded"]
+
+
+def test_an_excluded_pair_with_an_ok_bucket_never_leaks_into_the_table_or_headline():
+    """§8 리스크3 — `is_item_evaluable`은 status를 보지 않으므로 included 필터가 먼저다.
+
+    status 필터를 빼면 학습 제외된 쌍 중 버킷이 ok/top5_only인 것이 교차표와 headline 분모·
+    분자로 샌다(`test_row_balance_two_lines_scope_excluded_pairs_differently`와 같은 표본 구성).
+    """
+    enriched = [_enriched_row(crop_ref="job-1/row-0", status="excluded", label_bucket="ok")]
+    c = cross_label_source_buckets([_ls("top1_kept", ref="job-1/row-0")], enriched)
+    assert c["n_excluded"] == 1
+    assert c["n_evaluable"] == 0
+    # table은 rows × columns로 조밀 물질화되므로 빈 dict가 아니라 전부 0인 표가 된다.
+    assert all(cell == 0 for row in c["table"].values() for cell in row.values())
+    assert (c["n_miss"], c["n_miss_candidate_picked"]) == (0, 0)
+
+
+def test_the_cross_table_counts_evaluable_rows_by_source_and_bucket():
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="ok"),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="top5_only"),
+        _enriched_row(crop_ref="job-1/row-2", label_bucket="out_of_bank"),
+    ]
+    label_sources = [
+        _ls("top1_kept", ref="job-1/row-0"),
+        _ls("candidate_picked:2", ref="job-1/row-1"),
+        _ls("manual_typed", ref="job-1/row-2"),
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert c["table"]["top1_kept"]["ok"] == 1
+    # rank는 교차표에서 candidate_picked 한 행으로 접힌다(rank 분해는 분포 절의 몫이다).
+    assert c["table"][CANDIDATE_PICKED]["top5_only"] == 1
+    assert c["table"]["manual_typed"]["out_of_bank"] == 1
+    assert c["columns"][:5] == ITEM_BUCKET_COLUMNS
+
+
+def test_the_headline_divides_candidate_picks_by_the_evaluable_top1_misses():
+    """AC 3 — included ∩ 평가 가능 행 중 버킷 != ok가 분모, 그중 후보 칩 선택이 분자다."""
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="ok"),  # 분모 밖
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="top5_only"),
+        _enriched_row(crop_ref="job-1/row-2", label_bucket="in_bank_miss"),
+        _enriched_row(crop_ref="job-1/row-3", status="excluded", label_bucket="top5_only"),
+    ]
+    label_sources = [
+        _ls("top1_kept", ref="job-1/row-0"),
+        _ls("candidate_picked:1", ref="job-1/row-1"),
+        _ls("manual_typed", ref="job-1/row-2"),
+        _ls("candidate_picked:0", ref="job-1/row-3"),  # 학습 제외 — 새면 안 된다
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert (c["n_miss"], c["n_miss_candidate_picked"]) == (2, 1)
+
+
+def test_retrieval_miss_narrows_the_headline_to_top5_only_and_in_bank_miss():
+    """out_of_bank·no_candidates는 후보 칩이 구조적으로 도움을 줄 수 없어 좁은 분모에서 빠진다."""
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="ok"),  # 분모 밖
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="top5_only"),
+        _enriched_row(crop_ref="job-1/row-2", label_bucket="in_bank_miss"),
+        _enriched_row(crop_ref="job-1/row-3", label_bucket="out_of_bank"),
+        _enriched_row(crop_ref="job-1/row-4", label_bucket="no_candidates"),
+    ]
+    label_sources = [
+        _ls("top1_kept", ref="job-1/row-0"),
+        _ls("candidate_picked:1", ref="job-1/row-1"),
+        _ls("manual_typed", ref="job-1/row-2"),
+        _ls("candidate_picked:0", ref="job-1/row-3"),
+        _ls("candidate_picked:2", ref="job-1/row-4"),
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert (c["n_miss"], c["n_miss_candidate_picked"]) == (4, 3)
+    assert (c["n_retrieval_miss"], c["n_retrieval_miss_candidate_picked"]) == (2, 1)
+
+
+def test_retrieval_miss_pair_is_a_subset_of_the_wide_miss_pair():
+    """좁은 쌍(n_retrieval_miss*)은 넓은 쌍(n_miss*)의 부분집합이어야 한다 — 관계 자체를 못박는다."""
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="top5_only"),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="out_of_bank"),
+    ]
+    label_sources = [
+        _ls("candidate_picked:1", ref="job-1/row-0"),
+        _ls("candidate_picked:2", ref="job-1/row-1"),
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert c["n_retrieval_miss"] <= c["n_miss"]
+    assert c["n_retrieval_miss_candidate_picked"] <= c["n_miss_candidate_picked"]
+
+
+def test_rows_key_mirrors_columns_known_order_then_unknown_sorted():
+    """rows는 columns와 대칭이다 — KNOWN_LABEL_SOURCES 순서(0건 유지) + 관측된 미지 사전순 뒤."""
+    enriched = [
+        _enriched_row(crop_ref="job-1/row-0", label_bucket="ok"),
+        _enriched_row(crop_ref="job-1/row-1", label_bucket="ok"),
+    ]
+    label_sources = [
+        _ls("manual_typed", ref="job-1/row-0"),
+        _ls("zeta_unknown", ref="job-1/row-1"),
+    ]
+    c = cross_label_source_buckets(label_sources, enriched)
+    assert c["rows"] == KNOWN_LABEL_SOURCES + ("zeta_unknown",)
+
+
+def test_table_is_densely_materialized_across_every_row_and_column():
+    """`Counter`는 없는 키에 조용히 0을 내 렌더의 오타를 숨긴다 — 조밀 dict로 물질화해 막는다."""
+    enriched = [_enriched_row(crop_ref="job-1/row-0", label_bucket="ok")]
+    c = cross_label_source_buckets([_ls("top1_kept", ref="job-1/row-0")], enriched)
+    assert type(c["table"]["top1_kept"]) is dict
+    assert c["table"]["top1_kept"] == {
+        "ok": 1,
+        "top5_only": 0,
+        "in_bank_miss": 0,
+        "out_of_bank": 0,
+        "no_candidates": 0,
+    }
+    # 0건 행(관측되지 않은 기지 출처)도 모든 열이 채워진 채로 표에 남는다.
+    assert c["table"]["manual_typed"] == dict.fromkeys(c["columns"], 0)
+
+
+def test_an_unknown_source_keeps_its_own_row_in_the_cross_table():
+    """분포 절과 같은 규약 — 미지 어휘를 조용히 버리면 사다리 합과 표 합이 어긋난다."""
+    enriched = [_enriched_row(crop_ref="job-1/row-0", label_bucket="ok")]
+    c = cross_label_source_buckets([_ls("bulk_applied", ref="job-1/row-0")], enriched)
+    assert c["table"]["bulk_applied"]["ok"] == 1
+    assert sum(sum(row.values()) for row in c["table"].values()) == c["n_evaluable"]

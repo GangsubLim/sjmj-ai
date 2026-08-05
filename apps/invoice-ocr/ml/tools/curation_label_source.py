@@ -19,6 +19,13 @@ curation_cohort(평가 가능성 술어). enrich에는 의존하지 않는다.
 
 from collections import Counter
 
+from tools.curation_cohort import (
+    DATA_INTEGRITY_FAILURE_BUCKETS,
+    RETRIEVAL_MISS_BUCKETS,
+    TEMPORAL_UNEVALUABLE_BUCKETS,
+    is_item_evaluable,
+)
+
 # label_sources TSV의 컬럼 이름·위치 SSoT. SELECT 별칭 순서와 파서의 헤더 대조·위치 인덱싱이
 # 이 튜플 하나로 묶인다(parse_corrections_tsv와 동일 방어).
 LABEL_SOURCE_COLS = ("job_id", "crop_ref", "label_source")
@@ -201,4 +208,128 @@ def summarize_label_sources(label_sources: list[dict]) -> dict:
         "n_candidate_picked": source_counts[CANDIDATE_PICKED],
         # 건수 내림차순 → 값 사전순. 경고 줄이 매 실행마다 같은 순서로 나오게 한다.
         "unknown_counts": dict(sorted(unknown.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }
+
+
+# 교차표의 열 — `curation_enrich.label_bucket`의 어휘 5종을 그대로 쓴다(새 어휘를 발명하지
+# 않는다). 평가 가능 행은 구조상 이 다섯 중 하나지만, 어휘가 늘어도 값을 삼키지 않도록
+# 관측된 미지 버킷은 열 뒤에 붙인다.
+ITEM_BUCKET_COLUMNS = ("ok", "top5_only", "in_bank_miss", "out_of_bank", "no_candidates")
+
+
+def _cross_table_and_columns(
+    ev: list[tuple[dict, dict]],
+) -> tuple[dict[str, Counter], tuple[str, ...]]:
+    """평가 가능 조인쌍을 출처 × 버킷 `Counter`로 접고, 열 순서(기지 + 미지 사전순)를 낸다."""
+    table: dict[str, Counter] = {}
+    for ls, row in ev:
+        # 미지 어휘는 원문 그대로 한 행을 차지한다 — 조용히 버리면 사다리 합과 표 합이 어긋난다.
+        key = label_source_key(ls["label_source"]) or ls["label_source"]
+        table.setdefault(key, Counter())[row["label_bucket"]] += 1
+    observed_buckets = {bucket for row in table.values() for bucket in row}
+    columns = ITEM_BUCKET_COLUMNS + tuple(sorted(observed_buckets - set(ITEM_BUCKET_COLUMNS)))
+    return table, columns
+
+
+def _densify_table(
+    table: dict[str, Counter], columns: tuple[str, ...]
+) -> tuple[dict[str, dict[str, int]], tuple[str, ...]]:
+    """행 순서(`rows`)를 열과 대칭으로 정하고, `table`을 rows × columns 조밀 dict로 물질화한다.
+
+    `rows`는 `KNOWN_LABEL_SOURCES` 순서(0건 출처도 유지) + 관측된 미지 출처를 `sorted()`로
+    뒤에 붙인다 — 분포 절의 `dict.fromkeys(KNOWN_LABEL_SOURCES, 0)`과 같은 행 축 규약이다.
+    `Counter`는 없는 키에 예외 없이 0을 내 렌더가 버킷 이름을 오타내도 조용히 0이 인쇄되므로,
+    조밀 dict로 물질화해 모든 행 × 모든 열이 채워지게 한다(0건 행도 포함).
+    """
+    rows = KNOWN_LABEL_SOURCES + tuple(sorted(set(table) - set(KNOWN_LABEL_SOURCES)))
+    dense = {src: {col: table.get(src, Counter()).get(col, 0) for col in columns} for src in rows}
+    return dense, rows
+
+
+def _split_unevaluable(
+    inc: list[tuple[dict, dict]],
+) -> tuple[list[tuple[dict, dict]], int, int]:
+    """`inc`에서 평가 가능(`ev`)을 가르고, 나머지를 두 축으로 더 가른다.
+
+    `n_unevaluable`(시점 판정 불가)과 `n_row_missing`(데이터 정합 장애, 재처리로 result_json과
+    training_pairs가 어긋난 상태)은 관심사가 다른 두 축이다 — curation_cohort의 기존 상수
+    (`TEMPORAL_UNEVALUABLE_BUCKETS`/`DATA_INTEGRITY_FAILURE_BUCKETS`)를 따라 갈라 낸다.
+    """
+    ev = [(ls, row) for ls, row in inc if is_item_evaluable(row)]
+    unevaluable = [(ls, row) for ls, row in inc if not is_item_evaluable(row)]
+    n_unevaluable = sum(
+        1 for _, row in unevaluable if row["label_bucket"] in TEMPORAL_UNEVALUABLE_BUCKETS
+    )
+    n_row_missing = sum(
+        1 for _, row in unevaluable if row["label_bucket"] in DATA_INTEGRITY_FAILURE_BUCKETS
+    )
+    return ev, n_unevaluable, n_row_missing
+
+
+def _cross_miss_stats(ev: list[tuple[dict, dict]]) -> dict:
+    """headline 분자·분모 — 넓은 분모(AC 3)와 `RETRIEVAL_MISS_BUCKETS`로 좁힌 짝을 함께 낸다.
+
+    `out_of_bank`(정답이 뱅크에 없음)·`no_candidates`(후보 0건)는 후보 칩이 구조적으로 도움을
+    줄 수 없어 분모에만 기여하고 분자에는 기여할 수 없다 — 좁은 짝은 넓은 짝의 부분집합이다.
+    """
+    misses = [(ls, row) for ls, row in ev if row["label_bucket"] != "ok"]
+    retrieval_misses = [
+        (ls, row) for ls, row in misses if row["label_bucket"] in RETRIEVAL_MISS_BUCKETS
+    ]
+
+    def _n_candidate_picked(pairs: list[tuple[dict, dict]]) -> int:
+        return sum(label_source_key(ls["label_source"]) == CANDIDATE_PICKED for ls, _ in pairs)
+
+    return {
+        "n_miss": len(misses),
+        "n_miss_candidate_picked": _n_candidate_picked(misses),
+        "n_retrieval_miss": len(retrieval_misses),
+        "n_retrieval_miss_candidate_picked": _n_candidate_picked(retrieval_misses),
+    }
+
+
+def cross_label_source_buckets(label_sources: list[dict], enriched: list[dict]) -> dict:
+    """기록된 조작 출처를 crop_ref로 enriched에 조인해 출처 × 품목 버킷 교차를 낸다.
+
+    **`included` → `evaluable` 2단계 순서가 계약이다.** `is_item_evaluable`은 `label_bucket`
+    한 키만 보고 `status`를 보지 않으므로(curation_cohort), status 필터를 빼면 학습 제외된 쌍
+    중 버킷이 ok/top5_only인 것이 교차표와 headline 분모·분자로 샌다. `summarize()`가
+    `inc → ev`로 좁히는 것과 같은 순서다(spec §3-6).
+
+    모집단을 평가 가능 행으로 한정하는 이유는 기존 top-1 지표와 같은 잣대를 써야 리포트 안에서
+    교차 검산이 되기 때문이다. 빠진 행은 사라지지 않고 사유별로 사다리에 남는다(사다리를 두
+    축으로 가르는 근거는 `_split_unevaluable` 참조).
+
+    조인 키가 `crop_ref` 단독인 근거는 둘이다. 형식(`job-N/row-M`)이 전역 유일하고,
+    한 교정본의 `lines[]`에 같은 `crop_ref`가 두 번 들어간 상태는 **커밋될 수 없다** —
+    `build_correction`의 `lines.append`는 중복을 막지 않지만, `ocr_service.confirm`이
+    교정 insert와 `insert_training_pairs`를 한 트랜잭션으로 묶고 `training_pairs.crop_ref`가
+    UNIQUE(migration_008)라 중복은 교정 행까지 함께 롤백시킨다. 따라서 1:N 조인은 도달 불가다
+    (도달 불가 경로용 방어는 넣지 않는다 — 넣으면 리포트가 데이터 이상에서 죽는다).
+
+    `by_ref = {row["crop_ref"]: row for row in enriched}`의 덮어쓰기 무해성은 반대 방향에서
+    같은 제약이 보장한다 — `enriched`는 `training_pairs`를 그대로 읽은 것이고(curation_enrich의
+    `PAIRS_SQL`) `training_pairs.crop_ref UNIQUE NOT NULL`(migration_008)이 같은 crop_ref를
+    가진 두 행을 애초에 허용하지 않으므로, 이 dict는 서로 다른 두 행을 침묵 속에 덮어쓸 수 없다.
+    """
+    by_ref = {row["crop_ref"]: row for row in enriched}
+    recorded = [r for r in label_sources if r["label_source"] is not None]
+    joined = [(r, by_ref[r["crop_ref"]]) for r in recorded if r["crop_ref"] in by_ref]
+    inc = [(ls, row) for ls, row in joined if row["status"] == "included"]
+    ev, n_unevaluable, n_row_missing = _split_unevaluable(inc)
+
+    table, columns = _cross_table_and_columns(ev)
+    dense_table, rows = _densify_table(table, columns)
+
+    return {
+        "n_recorded": len(recorded),
+        "n_no_pair": len(recorded) - len(joined),
+        "n_excluded": len(joined) - len(inc),
+        "n_unevaluable": n_unevaluable,
+        "n_row_missing": n_row_missing,
+        "n_evaluable": len(ev),
+        "table": dense_table,
+        "columns": columns,
+        "rows": rows,
+        **_cross_miss_stats(ev),
     }
