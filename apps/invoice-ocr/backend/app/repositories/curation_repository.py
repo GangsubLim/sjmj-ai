@@ -222,12 +222,3 @@ class CurationRepository:
                 {"id": job_id, "status": STATUS_INCLUDED},
             ).scalars()
             return list(rows)
-
-    def is_job_reviewed(self, job_id: int) -> bool:
-        """잡이 검수완료 상태인지 여부(없는 잡은 False)."""
-        with connection() as conn:
-            return bool(
-                conn.execute(
-                    text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
-                ).scalar()
-            )

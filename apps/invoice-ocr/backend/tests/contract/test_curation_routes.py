@@ -571,18 +571,105 @@ def test_review_is_idempotent_for_the_dictionary(client, db_conn):
     assert _suggestion_names(db_conn).count("품목") == 1
 
 
-def test_patch_pair_registers_only_after_job_reviewed(client, db_conn):
+# ── 게이트 해제(Issue #52) ─────────────────────────────────────────────────
+
+
+def _gate(engine, job_id):
+    with engine.begin() as conn:
+        row = (
+            conn.execute(
+                text("SELECT curation_reviewed, curation_reviewed_at FROM ocr_jobs WHERE id = :id"),
+                {"id": job_id},
+            )
+            .mappings()
+            .first()
+        )
+    return (row["curation_reviewed"], row["curation_reviewed_at"])
+
+
+def test_patch_pair_releases_gate_of_reviewed_job(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+    _flag, first_stamp = _gate(db_conn, job_id)
+
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨"})
+
+    assert res.status_code == 200
+    assert res.json()["data"]["job_curation_reviewed"] is False
+    flag, stamp = _gate(db_conn, job_id)
+    assert flag == 0  # 게이트 해제
+    assert stamp == first_stamp  # 첫 검수 시각은 유지 → "재검수 필요"로 판별된다
+
+    job = next(j for j in client.get("/api/curation/jobs").json()["data"] if j["job_id"] == job_id)
+    assert job["unreviewed_count"] == 1  # 게이트 해제와 재확인 대상 수가 함께 움직인다
+
+
+def test_patch_pair_on_unreviewed_job_reports_false(client, db_conn):
+    """이미 미검수인 잡은 0 → 0 no-op이며 응답도 False다(spec §3.4)."""
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
 
-    # 검수 중 — 등록되지 않는다.
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수중라벨"})
-    assert res.status_code == 200
-    assert "검수중라벨" not in _suggestion_names(db_conn)
+    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
 
-    # 검수완료 후 라벨 수정 — 등록된다.
+    assert res.status_code == 200
+    assert res.json()["data"]["job_curation_reviewed"] is False
+    assert _gate(db_conn, job_id) == (0, None)
+
+
+def test_patch_pair_does_not_register_after_job_reviewed(client, db_conn):
+    """검수완료 후 라벨을 고쳐도 사전에 등록되지 않는다 — 재확정이 유일한 등록 트리거."""
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
     client.post(f"/api/curation/jobs/{job_id}/review")
+
     res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
     assert res.status_code == 200
-    assert res.json()["data"]["canonical_label"] == "검수후라벨"
+    assert "검수후라벨" not in _suggestion_names(db_conn)
+
+    # 재확정하면 그때 등록된다.
+    client.post(f"/api/curation/jobs/{job_id}/review")
     assert "검수후라벨" in _suggestion_names(db_conn)
+
+
+def test_list_jobs_exposes_curation_reviewed_at(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    assert job["curation_reviewed_at"] is not None
+
+
+def test_list_jobs_curation_reviewed_at_is_null_for_never_reviewed(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    assert job["curation_reviewed_at"] is None
+
+
+def test_job_detail_exposes_curation_reviewed_at(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    client.post(f"/api/curation/jobs/{job_id}/review")
+
+    res = client.get(f"/api/curation/jobs/{job_id}")
+
+    assert res.json()["data"]["curation_reviewed_at"] is not None
+
+
+def test_patch_pair_validation_error_envelope_is_unchanged(client, db_conn):
+    """외부 계약 불변식 — 필드 추가가 에러 envelope·status·details 형태를 건드리지 않는다."""
+    job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+    pid = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(f"/api/curation/pairs/{pid}", json={})
+
+    assert res.status_code == 400
+    body = res.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert isinstance(body["error"]["details"], dict)
+    assert all(isinstance(v, str) for v in body["error"]["details"].values())

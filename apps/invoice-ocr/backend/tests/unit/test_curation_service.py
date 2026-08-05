@@ -3,6 +3,9 @@
 from contextlib import nullcontext
 from unittest.mock import MagicMock
 
+import pytest
+
+from app.core.errors import AppError
 from app.services.curation_service import CurationService
 
 
@@ -32,6 +35,7 @@ class _Repo:
                 "id": job_id,
                 "invoice_id": 10,
                 "curation_reviewed": 0,
+                "curation_reviewed_at": None,
                 "created_at": "2026-07-28T09:00:00",
                 "result_json": self._result_json,
             },
@@ -188,7 +192,7 @@ def test_mark_reviewed_response_shape_is_unchanged():
     assert result == {"job_id": 7, "curation_reviewed": True}
 
 
-def _patched(status, label, *, job_reviewed):
+def _patched(status, label):
     """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다."""
     repo = MagicMock()
     pair = {
@@ -205,59 +209,51 @@ def _patched(status, label, *, job_reviewed):
         "reviewed_at": None,
     }
     repo.find_pair.return_value = pair
-    repo.is_job_reviewed.return_value = job_reviewed
     return repo
 
 
-def test_patch_pair_registers_when_job_already_reviewed():
-    """검수완료 버튼은 이미 검수된 잡에서 disabled라, 이 경로가 없으면 '검수완료 후 라벨 수정'이 구멍으로 남는다."""
-    repo = _patched("included", "휠", job_reviewed=True)
+def test_patch_pair_releases_the_job_gate():
+    repo = _patched("included", "휠")
+
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+
+    repo.release_gate.assert_called_once_with(3)
+
+
+def test_patch_pair_releases_gate_before_updating_pair():
+    """락 순서 불변식(spec §4.2) — ocr_jobs(부모) 먼저, training_pairs(자식) 나중.
+
+    mark_reviewed가 이미 부모부터 잠그므로, patch_pair가 반대 순서로 잠그면 두 경로
+    사이에 순환 대기가 성립한다. 실 MySQL 2-커넥션 재현 테스트는 conftest의 테스트별
+    TRUNCATE 격리와 맞지 않고 flaky하므로, 불변식을 **호출 순서**로 고정한다.
+    """
+    repo = _patched("included", "휠")
+
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+
+    calls = [c[0] for c in repo.method_calls]
+    assert calls.index("release_gate") < calls.index("update_pair")
+
+
+def test_patch_pair_does_not_register_even_when_job_reviewed():
+    """검수완료 잡의 라벨을 고쳐도 사전에 등록하지 않는다(spec §3.3 회귀 방어).
+
+    이 우회 경로의 존재 이유는 "검수완료 버튼이 disabled라 등록 트리거를 다시 걸 수
+    없다"였는데, #52가 그 전제를 없앴다(게이트가 해제되어 버튼이 재활성화된다).
+    mark_reviewed를 단일 등록 지점으로 되돌린다 — 게이트가 풀린 상태에서 학습용 라벨만
+    먼저 사전에 새는 모순을 막는다(ADR 0008).
+    """
+    repo = _patched("included", "휠")
     item_repo = MagicMock()
 
     _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "휠"})
 
-    assert _registered(item_repo) == ["휠"]
-    repo.is_job_reviewed.assert_called_once_with(3)
-
-
-def test_patch_pair_does_not_register_when_job_not_reviewed():
-    """검수 중인 잡의 라벨 입력 중간값이 사전에 새지 않게 한다."""
-    repo = _patched("included", "중간값", job_reviewed=False)
-    item_repo = MagicMock()
-
-    _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "중간값"})
-
     assert _registered(item_repo) == []
+    item_repo.ensure_exists.assert_not_called()
 
 
-def test_patch_pair_skips_null_canonical_label():
-    """canonical_label이 NULL인 쌍은 등록 대상이 없다 — None 가드가 태워지는 유일한 실경로.
-
-    mark_reviewed 경로는 repository SQL이 NULL을 걸러 서비스에 None이 도달하지 않는다.
-    반면 training_pairs.canonical_label은 nullable이고 CurationPairPatch는
-    {"status": "included"} 단독 요청을 허용하므로, 검수완료 잡에서 라벨이 NULL인 쌍을
-    included로 되돌리면 _register_label(None)이 실제로 호출된다. 가드가 label.strip()으로
-    단순화되면 여기서 AttributeError → 500이 난다.
-    """
-    repo = _patched("included", None, job_reviewed=True)
-    item_repo = MagicMock()
-
-    _sync_svc(repo, item_repo).patch_pair(5, {"status": "included"})
-
-    assert _registered(item_repo) == []
-
-
-def test_patch_pair_does_not_register_when_excluded():
-    repo = _patched("excluded", "제외품목", job_reviewed=True)
-    item_repo = MagicMock()
-
-    _sync_svc(repo, item_repo).patch_pair(5, {"status": "excluded"})
-
-    assert _registered(item_repo) == []
-
-
-def test_patch_pair_response_shape_is_unchanged():
-    repo = _patched("included", "휠", job_reviewed=True)
+def test_patch_pair_response_shape_adds_job_gate():
+    repo = _patched("included", "휠")
     result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
     assert set(result) == {
         "id",
@@ -271,5 +267,19 @@ def test_patch_pair_response_shape_is_unchanged():
         "status",
         "exclusion_reason",
         "reviewed_at",
+        "job_curation_reviewed",
     }
     assert result["canonical_label"] == "휠"
+    # 해제는 무조건이므로(spec §3.4) 항상 False다.
+    assert result["job_curation_reviewed"] is False
+
+
+def test_patch_pair_404_when_pair_missing():
+    """존재하지 않는 쌍은 트랜잭션에 들어가기 전에 404 — release_gate가 호출되지 않는다."""
+    repo = MagicMock()
+    repo.find_pair.return_value = None
+
+    with pytest.raises(AppError):
+        _sync_svc(repo, MagicMock()).patch_pair(999, {"status": "included"})
+
+    repo.release_gate.assert_not_called()
