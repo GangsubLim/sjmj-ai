@@ -19,6 +19,7 @@ from tools.curation_cohort import (
     REEVAL_REJECT_REASONS,
     REEVAL_STATES,
 )
+from tools.curation_label_source import MIN_RANK_SAMPLE
 from tools.curation_render import (
     _REEVAL_REJECT_TEXT,
     COHORT_TABLE,
@@ -27,9 +28,23 @@ from tools.curation_render import (
 )
 
 
-def _render(enriched, meta, corrections=()):
-    """render_report 호출을 한 자리에 모은다 — 교정 이력을 안 보는 테스트는 빈 목록을 준다."""
-    return render_report(enriched, meta, list(corrections))
+def _render(enriched, meta, corrections=(), label_sources=()):
+    """render_report 호출을 한 자리에 모은다 — 그 소스를 안 보는 테스트는 빈 목록을 준다."""
+    return render_report(enriched, meta, list(corrections), label_sources=list(label_sources))
+
+
+def _ls(label_source, ref="job-1/row-0"):
+    """label_sources.json 1행 합성 — parse_label_sources_tsv 출력 shape과 한 벌이다."""
+    return {"job_id": 1, "crop_ref": ref, "label_source": label_source}
+
+
+def _ls_many(values):
+    return [_ls(v, ref=f"job-1/row-{i}") for i, v in enumerate(values)]
+
+
+def _label_source_section(md):
+    """분포 절만 잘라낸다 — 뒤따르는 `### ` 하위 절이 `\n## `에 안 걸려 함께 딸려온다."""
+    return md.split("## 조작 출처")[1].split("\n## ")[0].split("\n### ")[0]
 
 
 def test_report_header_states_the_confirmed_job_population():
@@ -598,6 +613,169 @@ def test_row_balance_section_omits_the_reconfirm_line_when_none_reconfirmed():
     # 테스트(되돌림 절의 음성 테스트와 같은 관용구).
     md = _render(_balance_rows(), {"fetched_at": "t"}, [_correction(job_id=1, n_lines=4)])
     assert "재확정(교정 이력 2건 이상)" not in md
+
+
+# --- 조작 출처 분포 절 (#73 spec §3-5) ---
+
+
+def test_label_source_section_sits_between_the_row_balance_and_the_key_metrics():
+    """행 수지와 같은 교정 이력 소스를 쓰고 분모 사다리가 이어지므로 붙어 있어야 읽힌다."""
+    md = _render(
+        [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=1)], _ls_many(["top1_kept"])
+    )
+    assert md.index("## 행 수지") < md.index("## 조작 출처") < md.index("## 핵심 지표")
+
+
+def test_label_source_ladder_puts_the_dropped_and_added_rows_outside_the_denominator():
+    """폐기·추가 행은 lines[]에 없어 조작 출처가 존재하지 않는다 — 분포의 분모 밖이다."""
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=3, rows_added=4, rows_dropped=2)],
+        _ls_many(["top1_kept", None, None]),
+    )
+    section = _label_source_section(md)
+    assert "초안 5행 = 매칭 3 + 사람 폐기 2" in section
+    assert "확정 7행 = 매칭 3 + 사람 추가 4" in section
+    assert "매칭 3 → 기록 있음 1 / 미기록 2" in section
+    assert "분모 밖" in section
+
+
+def test_label_source_ladder_refuses_to_assert_a_sum_when_a_job_balance_is_unknown():
+    """#72 불변식 — 수지 미상 잡을 0으로 접지 않는다. 폐기·추가는 `?`, 합은 단정하지 않는다."""
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=2), _correction(job_id=2, n_lines=None)],
+        _ls_many(["top1_kept", None]),
+    )
+    section = _label_source_section(md)
+    assert "초안 ?행 = 매칭 2 + 사람 폐기 ?" in section
+    assert "확정 ?행 = 매칭 2 + 사람 추가 ?" in section
+    assert "행 수지 미상 1잡" in section
+    assert "`## 행 수지` 절은 같은 상황에서" in section
+
+
+def test_label_source_table_keeps_every_rank_row_including_zero_counts():
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=2)],
+        _ls_many(["candidate_picked:3", "top1_kept"]),
+    )
+    section = _label_source_section(md)
+    assert "| candidate_picked | 1 | 50.0% |" in section
+    assert "| └ rank 0 | 0 | 0.0% |" in section
+    assert "| └ rank 3 | 1 | 50.0% |" in section
+    assert "| └ rank 4 | 0 | 0.0% |" in section
+
+
+def test_label_source_table_extends_the_rank_rows_past_the_default_range():
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=1)],
+        _ls_many(["candidate_picked:6"]),
+    )
+    assert "| └ rank 6 | 1 | 100.0% |" in _label_source_section(md)
+
+
+def test_label_source_section_warns_when_an_observed_rank_exceeds_the_default_range():
+    """§3-4의 "리포트가 곧 드리프트 탐지기"를 candidate_picked 축에서도 성립시킨다."""
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=1)],
+        _ls_many(["candidate_picked:6"]),
+    )
+    section = _label_source_section(md)
+    assert "관측 rank가 기본 범위를 넘었다" in section
+    assert "TOP_K" in section
+
+
+def test_label_source_section_stays_quiet_when_every_rank_is_inside_the_default_range():
+    """음성 테스트 — 계약 범위 안에서 경고가 뜨면 "확대됐다" 신호가 무의미해진다."""
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=1)],
+        _ls_many(["candidate_picked:4"]),
+    )
+    assert "관측 rank가 기본 범위를 넘었다" not in _label_source_section(md)
+
+
+def test_label_source_section_warns_below_the_rank_sample_floor():
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=1)],
+        _ls_many(["candidate_picked:1"]),
+    )
+    section = _label_source_section(md)
+    assert f"후보 칩 선택 표본 1건(하한 {MIN_RANK_SAMPLE})" in section
+    assert "판단 근거가 되지 못한다" in section
+
+
+def test_label_source_section_stays_quiet_once_the_rank_sample_floor_is_met():
+    """음성 테스트 — 하한 이상에서도 경고가 붙으면 "아직 아니다" 신호가 무의미해진다."""
+    values = [f"candidate_picked:{i % 5}" for i in range(MIN_RANK_SAMPLE)]
+    md = _render(
+        [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=len(values))], _ls_many(values)
+    )
+    assert "하한" not in _label_source_section(md)
+
+
+def test_label_source_section_names_unknown_sources_and_says_they_are_in_the_denominator():
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=3)],
+        _ls_many(["bulk_applied", "bulk_applied", "top1_kept"]),
+    )
+    section = _label_source_section(md)
+    assert "알 수 없는 조작 출처 1종 2건: bulk_applied(2)" in section
+    assert "app/schemas/ocr.py" in section
+    assert "분모에는 포함되어 있다" in section
+
+
+def test_label_source_section_stays_quiet_about_unknown_vocabulary_when_every_source_is_known():
+    """음성 테스트 — 어휘가 전부 기지면 미지 어휘 경고가 뜨지 않는다(rank·표본 하한 경고의 짝)."""
+    md = _render(
+        [],
+        {"fetched_at": "t"},
+        [_correction(job_id=1, n_lines=2)],
+        _ls_many(["top1_kept", "manual_picked"]),
+    )
+    assert "알 수 없는 조작 출처" not in _label_source_section(md)
+
+
+def test_label_source_section_flags_a_matched_row_count_that_diverges_from_the_row_balance():
+    """§8 리스크1의 런타임 관측 — 두 절이 다른 교정 행을 읽으면 매칭 행 수부터 어긋난다."""
+    md = _render(
+        [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=5)], _ls_many(["top1_kept"])
+    )
+    assert "매칭 행 수가 행 수지 절과 다르다" in _label_source_section(md)
+
+
+def test_label_source_section_stays_quiet_when_the_two_sources_agree():
+    md = _render(
+        [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=1)], _ls_many(["top1_kept"])
+    )
+    assert "매칭 행 수가 행 수지 절과 다르다" not in _label_source_section(md)
+
+
+def test_label_source_ladder_prints_the_mismatch_warning_right_after_the_ladder():
+    """M1 — 성립하지 않는 등식을 먼저 단정형으로 읽고 한참 뒤에야 경고를 보면 자기 규약
+    (모르는 것을 말하지 않는다)에 어긋난다. 경고는 사다리(코드블록) 직후·설명 문단보다 앞에 온다.
+    """
+    md = _render(
+        [], {"fetched_at": "t"}, [_correction(job_id=1, n_lines=5)], _ls_many(["top1_kept"])
+    )
+    section = _label_source_section(md)
+    ladder_end = section.index("```", section.index("```text") + len("```text"))
+    warning_pos = section.index("⚠ 매칭 행 수가 행 수지 절과 다르다")
+    explanation_pos = section.index("매칭 행은 **잡별 최신")
+    assert ladder_end < warning_pos < explanation_pos
 
 
 # --- 잡별 요약 표 + 다음 액션 (spec §5-3, §5-4) ---

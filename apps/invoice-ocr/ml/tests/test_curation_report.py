@@ -684,6 +684,33 @@ def test_report_command_rejects_a_broken_label_sources_cache(tmp_path, body):
     _assert_names_file_and_recovery(err, "label_sources.json")
 
 
+def test_report_command_writes_the_label_source_section(tmp_path):
+    """AC — 캐시의 조작 출처가 실제 리포트 파일까지 도달한다(로더 배선 확인)."""
+    _write_cache(
+        tmp_path,
+        pairs=[_pair()],
+        jobs=[_job(rows=[_row(top5=[("엔진오일", 0.9)])])],
+        corrections=[
+            {
+                "job_id": 1,
+                "n_corrections": 1,
+                "has_correction": True,
+                "rows_added": 0,
+                "rows_dropped": 0,
+                "n_lines": 1,
+                "draft_rows": 1,
+                "confirmed_rows": 1,
+                "image_path": "/data/up/1.jpeg",
+            }
+        ],
+        label_sources=[{"job_id": 1, "crop_ref": "job-1/row-0", "label_source": "top1_kept"}],
+    )
+    main(["--cache", str(tmp_path), "report"])
+    report = (tmp_path / "report.md").read_text()
+    assert "## 조작 출처" in report
+    assert "| top1_kept | 1 | 100.0% |" in report
+
+
 def test_pull_images_still_runs_without_the_label_sources(tmp_path, monkeypatch):
     """가드는 report 분기에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
 

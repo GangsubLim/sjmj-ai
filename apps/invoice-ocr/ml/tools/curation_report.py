@@ -679,10 +679,9 @@ def _cmd_report(enriched: list[dict], meta: dict, cache: Path) -> None:
     _require_exclusion_reason(enriched)
     _require_corrections(cache)
     _require_label_sources(cache)
-    # 손상 방어(fail-fast)만 한다 — render_report에 넘기는 배선은 후속 task 범위라 반환값은
-    # 아직 소비처가 없다(ruff F841 회피).
-    _load_label_sources(cache)
-    report = render_report(enriched, meta, _load_corrections(cache))
+    report = render_report(
+        enriched, meta, _load_corrections(cache), label_sources=_load_label_sources(cache)
+    )
     report_path = cache / "report.md"
     report_path.write_text(report)
     # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
