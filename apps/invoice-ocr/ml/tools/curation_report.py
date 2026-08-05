@@ -5,10 +5,12 @@
 버킷으로 귀속한 마크다운 리포트를 만든다. LLM 에이전트가 리포트→실패 크롭 시각 검수→
 개선(뱅크 추가·warp 재검토) 루프를 돌리기 위한 입구다. 사용법은 docs/runbooks 참조.
 
-코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 세 모듈에 분리돼 있고 의존은
-단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
+코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 별도 모듈들에 분리돼 있고
+의존은 단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
 tools/curation_enrich.py(파싱·버킷·조인·집계) → tools/curation_cohort.py(코호트·평가 가능성
-술어·재평가 게이트). ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
+술어·재평가 게이트). 이 모듈은 tools/curation_label_source.py(조작 출처 SQL·파싱·집계)도
+직접 끌어온다 — 그 모듈은 enrich에 의존하지 않고 cohort만 본다.
+ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
 
 Usage:
     uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/교정 이력/bank/재평가 동기화
@@ -683,13 +685,17 @@ def _cmd_report(enriched: list[dict], meta: dict, cache: Path) -> None:
         enriched, meta, _load_corrections(cache), label_sources=_load_label_sources(cache)
     )
     report_path = cache / "report.md"
-    report_path.write_text(report)
+    # 두 산출물 모두 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라가
+    # 비-UTF8 로케일에서 UnicodeEncodeError로 죽거나(latin-1) 조용히 다른 바이트로
+    # 기록된다(eucKR). 자매 도구 blank_crop_report가 같은 원인으로 실제로 죽었다(99f66f94).
+    report_path.write_text(report, encoding="utf-8")
     # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
     # 산출물에 그대로 남는다(spec §3-C).
     failures = [r for r in enriched if is_item_failure(r)]
     fail_path = cache / "failures.jsonl"
     fail_path.write_text(
-        "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
+        "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n",
+        encoding="utf-8",
     )
     print(report)
     print(f"저장: {report_path}\n저장: {fail_path}")

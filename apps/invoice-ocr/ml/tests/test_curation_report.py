@@ -699,6 +699,27 @@ def test_report_command_writes_the_label_source_section(tmp_path):
     assert "| top1_kept | 1 | 100.0% |" in report
 
 
+def test_report_command_pins_utf8_when_writing_its_korean_artifacts(tmp_path, monkeypatch):
+    """두 산출물 모두 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라간다.
+
+    자매 도구 blank_crop_report가 같은 원인으로 실제 운영에서 죽어 99f66f94가 고쳤다.
+    산출 바이트만 비교하면 테스트 로케일이 UTF-8이라 인코딩을 떼도 통과하므로, 쓰기 호출의
+    encoding 인자를 그 자리에서 붙잡는다(원본을 호출해 파일도 그대로 남긴다).
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    encodings: dict[str, str | None] = {}
+    write_text = Path.write_text
+
+    def spy(self, data, encoding=None, **kwargs):
+        encodings[self.name] = encoding
+        return write_text(self, data, encoding=encoding, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    main(["--cache", str(tmp_path), "report"])
+    assert encodings["report.md"] == "utf-8"
+    assert encodings["failures.jsonl"] == "utf-8"
+
+
 def test_pull_images_still_runs_without_the_label_sources(tmp_path, monkeypatch):
     """가드는 report 분기에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
 
