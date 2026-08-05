@@ -27,9 +27,13 @@ from tools.curation_render import (
 )
 
 
-def _render(enriched, meta, corrections=()):
-    """render_report 호출을 한 자리에 모은다 — 교정 이력을 안 보는 테스트는 빈 목록을 준다."""
-    return render_report(enriched, meta, list(corrections))
+def _render(enriched, meta, corrections=(), label_sources=()):
+    """render_report 호출을 한 자리에 모은다 — corrections·label_sources를 안 보는 테스트는 빈 목록을 준다.
+
+    빈 label_sources는 중립이 아니다: 조작 출처 절이 ⚠ 경고를 띄운 기준선 위에서 나머지 절을
+    본다(각 테스트가 자기 절만 잘라 단언하므로 지금은 무해하다).
+    """
+    return render_report(enriched, meta, list(corrections), label_sources=list(label_sources))
 
 
 def test_report_header_states_the_confirmed_job_population():
@@ -488,8 +492,8 @@ def test_row_balance_section_decomposes_the_loss_in_two_stages():
     section = md.split("## 행 수지")[1].split("## ")[0]
     # 라벨과 수치를 한 문자열로 고정한다 — 넷을 따로 단언하면 라벨을 맞바꿔도 각각은 존재해
     # 이 절의 존재 이유(두 축을 구분해 읽히게 하는 것)를 깨는 회귀만 정확히 못 잡는다.
-    # 기대값은 리터럴로 적는다 — `_pct(10, 13)`로 적으면 피시험 모듈 자신으로 기대를 만드는
-    # 자기참조라, `_pct`의 서식·백분율 산술이 깨져도 기대가 같이 움직여 통과한다.
+    # 기대값은 리터럴로 적는다 — `pct(10, 13)`로 적으면 피시험 모듈 자신으로 기대를 만드는
+    # 자기참조라, `pct`의 서식·백분율 산술이 깨져도 기대가 같이 움직여 통과한다.
     assert "행검출 가시 범위   10/13 (76.9%)   (학습 후보가 된 행" in section
     assert "└ 그중 판정 가능   1/10 (10.0%)   (배제·" in section
 

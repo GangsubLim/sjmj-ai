@@ -1,8 +1,11 @@
-"""TOPK 동기 불변식 — ml의 TOPK 2곳 == api-spec.json label_source의 candidate_picked 개수.
+"""TOPK 동기 불변식 — ml의 TOPK 3곳 == api-spec.json label_source의 candidate_picked 개수.
 
-어긋나면 ml이 backend 화이트리스트 밖 rank의 후보를 내보내 confirm 전체가 400으로 죽거나,
-반대로 후보가 조용히 유실된다. backend/frontend 쪽 동기는 각자의 테스트가 덮으므로 여기서는
-'ml ↔ 계약(api-spec.json)'만 본다 — ml은 별도 uv 패키지라 backend 모듈을 import할 수 없다.
+추론 두 곳(infer_photo·bank_update)이 어긋나면 ml이 backend 화이트리스트 밖 rank의 후보를
+내보내 confirm 전체가 400으로 죽거나, 반대로 후보가 조용히 유실된다. 셋째 사본
+(curation_label_source.DEFAULT_RANK_SLOTS)은 파싱에 쓰이지 않아 고장 양상이 더 가볍다 —
+confirm은 멀쩡하고 큐레이션 리포트의 rank 관측 창만 좁아진다. backend/frontend 쪽 동기는
+각자의 테스트가 덮으므로 여기서는 'ml ↔ 계약(api-spec.json)'만 본다 — ml은 별도 uv 패키지라
+backend 모듈을 import할 수 없다.
 """
 
 import json
@@ -10,6 +13,7 @@ import re
 from pathlib import Path
 
 from tools import bank_update
+from tools.curation_label_source import DEFAULT_RANK_SLOTS
 
 _ML = Path(__file__).resolve().parents[1]
 # ml/tests/test_topk_sync.py → tests → ml → invoice-ocr → apps → repo 루트
@@ -43,5 +47,6 @@ def test_ml_topk_matches_api_spec_candidate_ranks():
     actual = {
         "handwriting/infer_photo.py": _infer_photo_topk(),
         "tools/bank_update.py": bank_update.TOPK,
+        "tools/curation_label_source.py": DEFAULT_RANK_SLOTS,
     }
     assert actual == dict.fromkeys(actual, expected)

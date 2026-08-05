@@ -95,7 +95,7 @@ def test_row_missing_pairs_stay_in_failures_and_pull_images():
 def test_row_missing_survives_an_unevaluable_cohort():
     """M1 계약 유지 — 데이터 정합 장애는 시점 판정 불가에 삼켜지지 않는다.
 
-    plan Task 11의 _item_bucket 초안은 코호트를 row_missing보다 먼저 봐서, 스탬프 없는 잡
+    이전 `_item_bucket` 초안은 코호트를 row_missing보다 먼저 봐서, 스탬프 없는 잡
     (현재 데이터 전량)의 조인 결손을 unevaluable로 흡수한다. 그러면 row_missing이
     failures.jsonl·pull-images에서 통째로 사라진다(curation_cohort.DATA_INTEGRITY_
     FAILURE_BUCKETS 계약 위반). 그래서 row_missing을 코호트보다 먼저 판정한다.
@@ -161,7 +161,7 @@ def test_bank_script_body_is_valid_python_and_survives_double_quoting():
 
 
 def test_remote_scripts_expand_a_tilde_ml_root_instead_of_quoting_it_literally():
-    """Task 6 리뷰 M2 이관 — `SJMJ_REMOTE_ML_ROOT=~/…` 주입이 원격에서 즉시 실패하지 않게 한다."""
+    """원격 스크립트 리뷰 M2 이관 — `SJMJ_REMOTE_ML_ROOT=~/…` 주입이 원격에서 즉시 실패하지 않게 한다."""
     for script in (
         bank_script("~/e.env", "~/sjmj-ai/apps/invoice-ocr/ml"),
         reeval_probe_script("~/sjmj-ai/apps/invoice-ocr/ml"),
@@ -252,6 +252,9 @@ _CORRECTIONS_TSV = (
     "job_id\tn_corrections\trows_added\trows_dropped\tn_lines\timage_path\n"
     "1\t1\t2\t1\t3\t/data/up/1.jpeg\n"
 )
+_LABEL_SOURCES_TSV = (
+    "job_id\tcrop_ref\tlabel_source\n1\tjob-1/row-0\ttop1_kept\n1\tjob-1/row-1\tNULL\n"
+)
 _REEVAL_BODIES = (
     ("score.jsonl", b'{"side": "after"}\n'),
     ("score_meta.json", b'{"n_pairs": 1}\n'),
@@ -289,6 +292,8 @@ def _fake_ssh(
             return _CORRECTIONS_TSV.encode()
         if "JSON_UNQUOTE(result_json)" in script:
             return _JOBS_TSV.encode()
+        if "jt.label_source AS label_source" in script:
+            return _LABEL_SOURCES_TSV.encode()
         if "PYTHON_BIN" in script:
             if bank_error:
                 raise RemoteError(bank_error)
@@ -463,6 +468,17 @@ def test_fetch_all_caches_the_correction_history_as_a_fourth_source(tmp_path, mo
     ]
 
 
+def test_fetch_all_caches_the_label_sources_as_a_fifth_source(tmp_path, monkeypatch):
+    """AC — fetch가 조작 출처를 동기화해 캐시에 남긴다(신규 env 0 · 기존 mysql 글루 재사용)."""
+    monkeypatch.setattr("tools.curation_report.run_ssh", _fake_ssh())
+    _fetch_all(tmp_path)
+    cached = json.loads((tmp_path / "label_sources.json").read_text(encoding="utf-8"))
+    assert cached == [
+        {"job_id": 1, "crop_ref": "job-1/row-0", "label_source": "top1_kept"},
+        {"job_id": 1, "crop_ref": "job-1/row-1", "label_source": None},
+    ]
+
+
 def test_cmd_fetch_prints_the_remote_reason_next_to_the_fingerprint_notice(
     tmp_path, monkeypatch, capsys
 ):
@@ -503,6 +519,7 @@ def _write_cache(
     pairs,
     jobs,
     corrections=None,
+    label_sources=None,
     bank_labels=None,
     retrieval_version=_CUR_VERSION,
     reeval=None,
@@ -517,6 +534,10 @@ def _write_cache(
     # 네 번째 소스. 기본값은 빈 목록 — 가드 테스트만 이 파일을 일부러 만들지 않는다.
     (tmp_path / "corrections.json").write_text(
         json.dumps(corrections or [], ensure_ascii=False), encoding="utf-8"
+    )
+    # 다섯 번째 소스. 기본값은 빈 목록 — 가드 테스트만 이 파일을 일부러 지우거나 망가뜨린다.
+    (tmp_path / "label_sources.json").write_text(
+        json.dumps(label_sources or [], ensure_ascii=False), encoding="utf-8"
     )
     (tmp_path / "bank.json").write_text(
         json.dumps(
@@ -642,6 +663,82 @@ def test_report_command_rejects_a_corrections_cache_that_is_not_an_array(tmp_pat
     _assert_names_file_and_recovery(err, "corrections.json")
 
 
+def test_report_command_fails_fast_on_a_cache_without_the_label_sources(tmp_path):
+    """구버전 캐시(조작 출처 없음)에서 report가 조용히 "미기록 0건"을 인쇄하지 않는다."""
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").unlink()
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "label_sources.json")
+    # 이 가드가 주로 잡는 것은 손상이 아니라 구버전 캐시다(_require_corrections와 같은 규약).
+    assert "손상" not in str(err.value)
+
+
+@pytest.mark.parametrize("body", ["{not json}", "{}", '"corrupt"', "null"])
+def test_report_command_rejects_a_broken_label_sources_cache(tmp_path, body):
+    """비원자 `_write_json`으로 쓰이므로 중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다."""
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "label_sources.json")
+
+
+def test_report_command_writes_the_label_source_section(tmp_path):
+    """AC — 캐시의 조작 출처가 실제 리포트 파일까지 도달한다(로더 배선 확인)."""
+    _write_cache(
+        tmp_path,
+        pairs=[_pair()],
+        jobs=[_job(rows=[_row(top5=[("엔진오일", 0.9)])])],
+        corrections=[_correction(job_id=1, n_lines=1)],
+        label_sources=[{"job_id": 1, "crop_ref": "job-1/row-0", "label_source": "top1_kept"}],
+    )
+    main(["--cache", str(tmp_path), "report"])
+    report = (tmp_path / "report.md").read_text()
+    assert "## 조작 출처" in report
+    assert "| top1_kept | 1 | 100.0% |" in report
+
+
+def test_report_command_pins_utf8_when_writing_its_korean_artifacts(tmp_path, monkeypatch):
+    """두 산출물 모두 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라간다.
+
+    자매 도구 blank_crop_report가 같은 원인으로 실제 운영에서 죽어 99f66f94가 고쳤다.
+    산출 바이트만 비교하면 테스트 로케일이 UTF-8이라 인코딩을 떼도 통과하므로, 쓰기 호출의
+    encoding 인자를 그 자리에서 붙잡는다(원본을 호출해 파일도 그대로 남긴다).
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    encodings: dict[str, str | None] = {}
+    write_text = Path.write_text
+
+    def spy(self, data, encoding=None, **kwargs):
+        encodings[self.name] = encoding
+        return write_text(self, data, encoding=encoding, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", spy)
+    main(["--cache", str(tmp_path), "report"])
+    assert encodings["report.md"] == "utf-8"
+    assert encodings["failures.jsonl"] == "utf-8"
+
+
+def test_pull_images_still_runs_without_the_label_sources(tmp_path, monkeypatch):
+    """가드는 report 분기에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+
+    하필 그 상황이 `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는
+    상황이다(corrections 축의 같은 테스트와 골격이 같고 축만 다르다).
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").unlink()
+    pulled: list[list[int]] = []
+
+    def fake_pull(host, backend_env, cache, job_ids, with_originals):
+        pulled.append(job_ids)
+        return PullResult(cache / "images", saved=0, failed=0)
+
+    monkeypatch.setattr("tools.curation_report.pull_images", fake_pull)
+    main(["--cache", str(tmp_path), "pull-images"])
+    assert pulled == [[1]]
+
+
 def test_pull_images_still_runs_without_the_correction_history(tmp_path, monkeypatch):
     """가드는 report 경로에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
 
@@ -674,7 +771,7 @@ def test_report_command_passes_the_correction_history_to_the_renderer(tmp_path, 
 
 
 def test_load_enriched_wires_the_current_fingerprint_so_pairs_stay_evaluable(tmp_path):
-    """Task 11 리뷰 M5 이관 — 지문을 넘기지 않으면 CLI 리포트가 전량 unevaluable이 된다."""
+    """리뷰 M5 이관 — 지문을 넘기지 않으면 CLI 리포트가 전량 unevaluable이 된다."""
     _write_cache(
         tmp_path,
         pairs=[_pair()],
@@ -705,7 +802,7 @@ def test_load_enriched_adopts_a_consistent_reevaluation(tmp_path):
 
 
 def test_load_enriched_flattens_the_nested_fingerprint_for_the_notice(tmp_path):
-    """Task 12 리뷰 이관 — score_meta는 지문을 중첩으로 쓰고 reeval_notice는 평탄 키를 읽는다.
+    """리뷰 이관 — score_meta는 지문을 중첩으로 쓰고 reeval_notice는 평탄 키를 읽는다.
 
     재맵이 없으면 채택 문구가 지문 자리에 '?'를 인쇄한다(계산 A/표시 B).
     """

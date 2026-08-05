@@ -5,10 +5,12 @@
 버킷으로 귀속한 마크다운 리포트를 만든다. LLM 에이전트가 리포트→실패 크롭 시각 검수→
 개선(뱅크 추가·warp 재검토) 루프를 돌리기 위한 입구다. 사용법은 docs/runbooks 참조.
 
-코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 세 모듈에 분리돼 있고 의존은
-단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
+코어 규약 준수: stdlib 전용(paddle/torch 불필요), 순수 계층은 별도 모듈들에 분리돼 있고
+의존은 단방향이다 — 이 모듈(fetch 글루·CLI) → tools/curation_render.py(렌더) →
 tools/curation_enrich.py(파싱·버킷·조인·집계) → tools/curation_cohort.py(코호트·평가 가능성
-술어·재평가 게이트). ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
+술어·재평가 게이트). 이 모듈은 tools/curation_label_source.py(조작 출처 SQL·파싱·집계)도
+직접 끌어온다 — 그 모듈은 enrich에 의존하지 않고 cohort만 본다.
+ssh/DB 접근은 fetch 글루에 격리. 원격 접속값은 env로만 주입한다.
 
 Usage:
     uv run python -m tools.curation_report fetch        # 서버에서 pairs/jobs/교정 이력/bank/재평가 동기화
@@ -44,6 +46,7 @@ from tools.curation_enrich import (
     parse_jobs_tsv,
     parse_pairs_tsv,
 )
+from tools.curation_label_source import LABEL_SOURCES_SQL, parse_label_sources_tsv
 from tools.curation_render import NO_FINGERPRINT_NOTICE, render_report
 from tools.remote import (
     ENV_BACKEND_ENV,
@@ -120,6 +123,14 @@ REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_met
 CACHE_META = "meta.json"
 # 교정 이력 캐시 파일명 — report 가드(_require_corrections)와 읽기(_load_corrections)가 공유한다.
 CACHE_CORRECTIONS = "corrections.json"
+# 조작 출처 캐시 파일명 — report 가드(_require_label_sources)와 읽기(_load_label_sources)가 공유한다.
+# 다섯 번째 소스. 교정 이력과 같은 축이라 같은 자리(fetch_all)에서 `_write_json`으로 굳힌다 —
+# 재평가 3파일의 원자 교체 한 벌에 넣지 않는 이유는 fetch_all의 네 번째 소스(CACHE_CORRECTIONS)
+# 주석과 같다. corrections와는 ssh 왕복이 갈리므로 그 사이 확정이 끼어들면 두 캐시의 세대가
+# 어긋날 수 있다(pairs/jobs/bank/corrections 4소스가 이미 공유하는 성질이고, 수동 오프라인
+# 도구라 창은 초 단위다). 어긋남은 조용히 넘어가지 않는다 — 조작 출처 절의 매칭 행 수 드리프트
+# 경고가 리포트에서 그 자리에 인쇄한다.
+CACHE_LABEL_SOURCES = "label_sources.json"
 # `mysql --batch --raw` 출력의 SQL NULL 표기. jobs.json은 raw 질의라 NULL이 이 **문자열**로
 # 온다(corrections.json은 raw가 아니라 파서의 `_cell`이 None으로 접는다).
 _RAW_NULL = "NULL"
@@ -311,6 +322,9 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     corrections = parse_corrections_tsv(
         run_ssh(host, mysql_script(backend_env, CORRECTIONS_SQL, raw=False)).decode()
     )
+    label_sources = parse_label_sources_tsv(
+        run_ssh(host, mysql_script(backend_env, LABEL_SOURCES_SQL, raw=False)).decode()
+    )
     try:
         bank = json.loads(run_ssh(host, bank_script(worker_env, ml_root)).decode())
     except RemoteError as e:
@@ -335,9 +349,11 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     # 네 번째 소스. 재평가 3파일의 원자 교체 한 벌에는 넣지 않는다 — 그 한 벌은 지문 해석
     # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
     # 표기다 — 원자 교체 밖에서 굳히는 네 번째 캐시 JSON이라는 뜻이다(pairs/jobs/bank 다음).
-    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 세므로
-    # 이 행을 포함해 다섯 행이다.
+    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 센다
+    # — 캐시 JSON 순번과 그 표의 행 수는 애초에 축이 다르니 개수를 여기에 적지 않는다.
     _write_json(cache / CACHE_CORRECTIONS, corrections)
+    # 다섯 번째 소스 — 근거는 CACHE_LABEL_SOURCES 선언 옆 주석 참조.
+    _write_json(cache / CACHE_LABEL_SOURCES, label_sources)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
     _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
@@ -547,23 +563,54 @@ def _require_exclusion_reason(enriched: list[dict]) -> None:
         )
 
 
+def _require_cache_file(cache: Path, name: str) -> None:
+    """`name` 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    `_require_corrections`·`_require_label_sources`가 공유하는 본문이다 —
+    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
+    두 캐시 모두 판정에 쓰지 않으므로 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+    하필 그 상황이 `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는
+    상황이다.
+
+    Raises:
+        ValueError: `name` 캐시가 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    if not (cache / name).exists():
+        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
+        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
+        raise ValueError(f"{name} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}")
+
+
 def _require_corrections(cache: Path) -> None:
     """교정 이력 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
 
-    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
-    교정 이력을 판정에 쓰지 않으므로 — §6의 원본 경로 폴백은 파일이 **있을 때만** 쓰는
-    최적화다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다. 하필 그 상황이
-    `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는 상황이다.
+    본문은 `_require_cache_file`에 위임한다 — `_require_label_sources`와 같은 관용구다.
 
     Raises:
         ValueError: corrections.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
     """
-    if not (cache / CACHE_CORRECTIONS).exists():
-        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
-        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
+    _require_cache_file(cache, CACHE_CORRECTIONS)
+
+
+def _load_cache_array(path: Path) -> list[dict]:
+    """캐시 JSON 배열 1개를 손상 방어와 함께 읽는다 — corrections·label_sources가 공유한다.
+
+    `_reeval_info`(H2)와 같은 관용구다(M4): 두 캐시 모두 비원자 `_write_json`으로 쓰이므로
+    중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다. 파싱은 되지만 배열이 아닌 캐시도
+    여기서 막는다 — 통과시키면 렌더 안쪽에서 파일명도 복구 절차도 없는 TypeError로 죽는다.
+
+    Raises:
+        ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
+    if not isinstance(data, list):
         raise ValueError(
-            f"{CACHE_CORRECTIONS} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}"
+            f"{path.name}이 JSON 배열이 아니다({type(data).__name__}) — {_CACHE_RECOVERY}"
         )
+    return data
 
 
 def _load_corrections(cache: Path) -> list[dict]:
@@ -577,16 +624,23 @@ def _load_corrections(cache: Path) -> list[dict]:
     Raises:
         ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
     """
-    path = cache / CACHE_CORRECTIONS
-    try:
-        corrections = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
-    if not isinstance(corrections, list):
-        raise ValueError(
-            f"{path.name}이 JSON 배열이 아니다({type(corrections).__name__}) — {_CACHE_RECOVERY}"
-        )
-    return corrections
+    return _load_cache_array(cache / CACHE_CORRECTIONS)
+
+
+def _require_label_sources(cache: Path) -> None:
+    """조작 출처 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    본문은 `_require_cache_file`에 위임한다 — `_require_corrections`와 같은 관용구다.
+
+    Raises:
+        ValueError: label_sources.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    _require_cache_file(cache, CACHE_LABEL_SOURCES)
+
+
+def _load_label_sources(cache: Path) -> list[dict]:
+    """조작 출처 캐시를 읽는다 — 손상 방어는 `_load_corrections`와 공유한다."""
+    return _load_cache_array(cache / CACHE_LABEL_SOURCES)
 
 
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
@@ -618,6 +672,35 @@ def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache
         print(NO_FINGERPRINT_NOTICE)
 
 
+def _cmd_report(enriched: list[dict], meta: dict, cache: Path) -> None:
+    """report 서브커맨드 — 캐시를 분석해 report.md·failures.jsonl을 만든다.
+
+    `_cmd_fetch`와 같은 관용구다: 구버전·손상 캐시(exclusion_reason·corrections·label_sources
+    3종)는 렌더 진입 전에 fail-fast로 막는다.
+    """
+    _require_exclusion_reason(enriched)
+    _require_corrections(cache)
+    _require_label_sources(cache)
+    report = render_report(
+        enriched, meta, _load_corrections(cache), label_sources=_load_label_sources(cache)
+    )
+    report_path = cache / "report.md"
+    # 두 산출물 모두 전문이 한국어다 — 인코딩을 고정하지 않으면 플랫폼 로케일을 따라가
+    # 비-UTF8 로케일에서 UnicodeEncodeError로 죽거나(latin-1) 조용히 다른 바이트로
+    # 기록된다(eucKR). 자매 도구 blank_crop_report가 같은 원인으로 실제로 죽었다(99f66f94).
+    report_path.write_text(report, encoding="utf-8")
+    # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
+    # 산출물에 그대로 남는다(spec §3-C).
+    failures = [r for r in enriched if is_item_failure(r)]
+    fail_path = cache / "failures.jsonl"
+    fail_path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n",
+        encoding="utf-8",
+    )
+    print(report)
+    print(f"저장: {report_path}\n저장: {fail_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     """서브커맨드(fetch/report/pull-images)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="curation_report", description=__doc__)
@@ -642,20 +725,7 @@ def main(argv: list[str] | None = None) -> None:
     enriched, meta = _load_enriched(args.cache)
 
     if args.cmd == "report":
-        _require_exclusion_reason(enriched)
-        _require_corrections(args.cache)
-        report = render_report(enriched, meta, _load_corrections(args.cache))
-        report_path = args.cache / "report.md"
-        report_path.write_text(report)
-        # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
-        # 산출물에 그대로 남는다(spec §3-C).
-        failures = [r for r in enriched if is_item_failure(r)]
-        fail_path = args.cache / "failures.jsonl"
-        fail_path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
-        )
-        print(report)
-        print(f"저장: {report_path}\n저장: {fail_path}")
+        _cmd_report(enriched, meta, args.cache)
         return
 
     if args.cmd == "pull-images":

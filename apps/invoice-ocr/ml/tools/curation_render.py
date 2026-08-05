@@ -9,6 +9,8 @@ tools/curation_cohort.py를 뗀 것과 같은 관용구).
 의존 방향은 단방향이다: curation_report(fetch·CLI) → curation_render(이 모듈, 렌더) →
 curation_enrich(분석) → curation_cohort(판정). curation_report는 render_report와
 NO_FINGERPRINT_NOTICE(지문 미확정 안내 — fetch 직후 안내에도 재사용) 둘만 끌어온다.
+조작 출처 두 절은 같은 이유로 한 겹 더 떼어 curation_render_label_source에 있고, 두 렌더
+모듈이 공유하는 서식 원자는 curation_render_fmt에 있다(이 모듈 → 그 둘, 역방향 없음).
 
 코어 규약 준수: stdlib 전용(paddle/numpy/pillow 불필요), 전부 순수함수.
 """
@@ -29,30 +31,11 @@ from tools.curation_enrich import (
     summarize,
     summarize_row_balance,
 )
-
-
-def _pct(k: int, n: int) -> str:
-    """비율을 `k/n (p%)`로 인쇄한다 — 분모 0에서도 **분자는 삼키지 않는다**.
-
-    대부분의 호출부는 `k ≤ n`이 구조적으로 보장돼 `n=0 ⇒ k=0`이지만, 행 수지 절의 둘째 줄은
-    분자(training_pairs)와 분모(교정 이력)의 소스가 달라 그 불변식이 깨진다 — 거기서 분자를
-    0으로 접으면 하필 이 절이 드러내려는 소스 드리프트 신호가 지워진다.
-
-    잡별 요약 표는 이 함수가 아니라 `_ratio`를 쓴다 — 거기선 분모 0에서 분자를 지운다(`—/0`).
-    """
-    return f"{k}/{n} ({100 * k / n:.1f}%)" if n else f"{k}/0 (—)"
-
-
-def _known(value: object) -> str:
-    """값을 인쇄하되 **모를 때만** '?'로 물러선다 — 이 모듈은 모르는 것을 말하지 않는다.
-
-    `dict.get(key, "?")`로는 이 폴백이 발화하지 않는다: 생산자(`curation_report._reeval_info`)가
-    키를 항상 만들되 None으로 시드하므로 `get`은 기본값이 아니라 저장된 None을 돌려주고, 손상된
-    score_meta.json이 리터럴 "None"으로 인쇄돼 진짜 값처럼 읽힌다. truthiness가 아니라
-    `is None`으로 판정한다 — n_pairs 0쌍은 유효한 관측치라 '?'로 뭉개면 안 된다.
-    """
-    return "?" if value is None else str(value)
-
+from tools.curation_render_fmt import known_text, pct
+from tools.curation_render_label_source import (
+    render_label_source_cross,
+    render_label_sources,
+)
 
 # 표본 구성표 — 분모를 핵심 지표보다 먼저 읽게 한다(spec §3-C). 표에 없는 코호트가 생기면
 # 그 쌍들은 조용히 사라지므로 test_cohort_table_covers_every_cohort_a_pair_can_get이 이 표를
@@ -132,9 +115,9 @@ def reeval_notice(meta: dict) -> str:
     info = meta.get("reeval") or {}
     if info.get("adopted"):
         return (
-            f"재평가: {_known(info.get('generated_at'))} · retrieval 지문 "
-            f"{_known(info.get('after'))}(현재와 일치) · scope={_known(info.get('scope'))} · "
-            f"표본 {_known(info.get('n_pairs'))}쌍"
+            f"재평가: {known_text(info.get('generated_at'))} · retrieval 지문 "
+            f"{known_text(info.get('after'))}(현재와 일치) · scope={known_text(info.get('scope'))} · "
+            f"표본 {known_text(info.get('n_pairs'))}쌍"
         )
     state = info.get("state")
     if not info or state == "absent":
@@ -214,9 +197,9 @@ def _render_row_balance(enriched: list[dict], corrections: list[dict]) -> list[s
         f"초안 {rb['draft_rows']}행 → 사람 추가 +{rb['rows_added']} / "
         f"사람 폐기 -{rb['rows_dropped']} → 확정 {rb['confirmed_rows']}행",
         "",
-        f"행검출 가시 범위   {_pct(rb['n_lines'], rb['confirmed_rows'])}"
+        f"행검출 가시 범위   {pct(rb['n_lines'], rb['confirmed_rows'])}"
         f"   (학습 후보가 된 행 / 사람이 인정한 행 · 학습 후보 쌍 {n_pairs}개(수지 known 잡 한정))",
-        f"└ 그중 판정 가능   {_pct(n_evaluable, rb['n_lines'])}"
+        f"└ 그중 판정 가능   {pct(n_evaluable, rb['n_lines'])}"
         "   (배제·구 뱅크 코호트·정합 장애로 빠진 몫 — 행검출 실패가 아니다)",
         "```",
         "",
@@ -240,15 +223,15 @@ def _render_key_metrics(s: dict) -> list[str]:
         "",
         "| 지표 | 값 |",
         "| --- | --- |",
-        f"| 품목 top-1 (평가 가능 쌍 기준) | {_pct(s['top1_hits'], s['n_item_evaluable'])} |",
-        f"| 품목 top-5 (평가 가능 쌍 기준) | {_pct(s['top5_hits'], s['n_item_evaluable'])} |",
+        f"| 품목 top-1 (평가 가능 쌍 기준) | {pct(s['top1_hits'], s['n_item_evaluable'])} |",
+        f"| 품목 top-5 (평가 가능 쌍 기준) | {pct(s['top5_hits'], s['n_item_evaluable'])} |",
         "| 정답이 뱅크에 존재(현재 뱅크 기준 · 평가 가능 쌍 분모) | "
-        f"{_pct(s['in_bank_n'], s['n_item_evaluable'])} |",
-        f"| in-bank 한정 top-1 | {_pct(s['in_bank_top1'], s['in_bank_n'])} |",
-        f"| in-bank 한정 top-5 | {_pct(s['in_bank_top5'], s['in_bank_n'])} |",
-        f"| 금액 일치 | {_pct(s['amount_ok'], s['amount_n'])} |",
+        f"{pct(s['in_bank_n'], s['n_item_evaluable'])} |",
+        f"| in-bank 한정 top-1 | {pct(s['in_bank_top1'], s['in_bank_n'])} |",
+        f"| in-bank 한정 top-5 | {pct(s['in_bank_top5'], s['in_bank_n'])} |",
+        f"| 금액 일치 | {pct(s['amount_ok'], s['amount_n'])} |",
         f"| 빈 크롭 가드 오탐(되돌림/기계 판정) | "
-        f"{_pct(s['n_reverted_machine'], s['n_reverted_machine'] + s['n_excluded_machine'])} |",
+        f"{pct(s['n_reverted_machine'], s['n_reverted_machine'] + s['n_excluded_machine'])} |",
         "",
         f"라벨 버킷: {dict(s['label_buckets'])}",
         f"금액 버킷: {dict(s['amount_buckets'])}",
@@ -265,7 +248,7 @@ def _render_key_metrics(s: dict) -> list[str]:
 def _ratio(k: int, n: int) -> str:
     """분모가 0이면 `—/0`으로 적는다 — `0/0`은 판정 불가 잡을 전패로 오독하게 한다.
 
-    `_pct`(분모 0에서도 분자를 인쇄한다)와 다르게 분자를 지운다: 이 표의 두 비율은 분자가
+    `pct`(분모 0에서도 분자를 인쇄한다)와 다르게 분자를 지운다: 이 표의 두 비율은 분자가
     분모의 부분집합(`ev`⊇적중, `amts`⊇ok)이라 `n=0 ⇒ k=0`이 구조적으로 참이고, 그래서 남길
     분자 정보 자체가 없다.
     """
@@ -363,7 +346,7 @@ def _render_bank_candidates(
     lines += [
         # 빈 줄이 없으면 CommonMark lazy continuation으로 마지막 불릿에 흡수돼 그 라벨 수치로 읽힌다.
         "",
-        f"현재 뱅크 보유: {_pct(sum(r['in_bank'] for r in labeled), len(labeled))} "
+        f"현재 뱅크 보유: {pct(sum(r['in_bank'] for r in labeled), len(labeled))} "
         "(라벨 있는 included 전체 기준 — 코호트와 무관)",
     ]
     return lines, oob
@@ -451,14 +434,22 @@ def _render_header(s: dict, meta: dict, corrections: list[dict], enriched: list[
     ]
 
 
-def render_report(enriched: list[dict], meta: dict, corrections: list[dict]) -> str:
-    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다."""
+def render_report(
+    enriched: list[dict], meta: dict, corrections: list[dict], *, label_sources: list[dict]
+) -> str:
+    """분석 결과를 에이전트가 소비하기 좋은 마크다운 리포트로 렌더한다.
+
+    `corrections`와 `label_sources`는 둘 다 `list[dict]`라 위치 인자로 두면 뒤바뀌어도 타입체커도
+    테스트도 못 잡고 전량 오수치 리포트가 조용히 나온다 — `label_sources`를 키워드 전용으로 둔다.
+    """
     s = summarize(enriched)
     flags = job_flags(enriched, corrections)
     inc = [r for r in enriched if r["status"] == "included"]
     lines = _render_header(s, meta, corrections, enriched)
     lines += _render_cohort_table(s, meta)
     lines += _render_row_balance(enriched, corrections)
+    lines += render_label_sources(label_sources, corrections)
+    lines += render_label_source_cross(label_sources, enriched)
     lines += _render_key_metrics(s)
 
     bank_candidate_lines, oob = _render_bank_candidates(enriched, inc)
