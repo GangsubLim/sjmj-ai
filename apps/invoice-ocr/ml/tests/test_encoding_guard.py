@@ -19,6 +19,11 @@ ML_ROOT = Path(__file__).resolve().parents[1]
 # 모르는 수신자는 기본적으로 위반으로 잡는다(누락은 조용하지만 오탐은 시끄럽다).
 NON_TEXT_OPEN_RECEIVERS = frozenset({"Image", "tarfile"})
 
+# 모드 문자열에 쓰일 수 있는 문자 전체. 파일명이 mode 자리에 오는 호출
+# (`zipfile.ZipFile(...).open("member")` 등)이 "b"를 품었다고 바이너리로
+# 오판돼 위반이 조용히 사라지는 것을 막는다.
+MODE_CHARS = frozenset("rwxab+tU")
+
 # git이 없거나 목록이 비면 가드가 조용히 통과한다 — 알려진 파일로 경계 산출을 검증한다.
 SENTINEL_SOURCES = ("tools/warp_gate_report.py", "handwriting/dataset_build.py")
 
@@ -78,7 +83,12 @@ def _violations(path: Path) -> list[str]:
         if kind is None:
             continue
         mode = _mode_arg(node, kind)
-        if isinstance(mode, ast.Constant) and isinstance(mode.value, str) and "b" in mode.value:
+        if (
+            isinstance(mode, ast.Constant)
+            and isinstance(mode.value, str)
+            and set(mode.value) <= MODE_CHARS
+            and "b" in mode.value
+        ):
             continue
         if any(kw.arg == "encoding" for kw in node.keywords):
             continue

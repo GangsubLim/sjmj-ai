@@ -15,6 +15,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ML_ROOT = Path(__file__).resolve().parents[1]
@@ -35,25 +36,29 @@ def run_driver(source: str, *argv: str) -> subprocess.CompletedProcess:
     # 파일로 실행되므로 sys.path[0]이 tests/가 되고, cwd=ML_ROOT만으로는 tools 패키지가
     # 잡히지 않는다(pytest ini의 pythonpath=["."]는 pytest 프로세스에만 적용되고
     # subprocess에는 전파되지 않는다).
-    driver = ML_ROOT / "tests" / "_locale_driver_tmp.py"
-    driver.write_text(source, encoding="utf-8")
-    try:
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        driver = Path(tmp_dir) / "_locale_driver.py"
+        driver.write_text(source, encoding="utf-8")
         return subprocess.run(
             [sys.executable, str(driver), *argv],
-            cwd=ML_ROOT,  # pythonpath = ["."] 전제 — tools 패키지를 찾으려면 ml 루트여야 한다
+            cwd=ML_ROOT,  # 도구가 상대 경로를 쓸 때를 대비 — import 경로는 위 PYTHONPATH가 담당
             env=env,
             capture_output=True,
             text=True,
         )
-    finally:
-        driver.unlink(missing_ok=True)
 
 
 def test_locale_is_actually_non_utf8():
-    # 재현이 성립하는지 먼저 확인한다 — US-ASCII가 아니면 아래 테스트들이 무의미하게 통과한다.
-    proc = run_driver("import locale, sys\nsys.stdout.write(locale.getpreferredencoding(False))\n")
+    # 재현이 성립하는지 먼저 확인한다 — ascii 코덱이 아니면 아래 테스트들이 무의미하게 통과한다.
+    # getpreferredencoding()이 주는 이름 문자열 자체는 플랫폼마다 다르다(macOS `US-ASCII`
+    # vs glibc `ANSI_X3.4-1968`) — codecs.lookup(...).name으로 정규화해야 양 플랫폼이
+    # 동일하게 `ascii`로 수렴한다(실측: macOS·ubuntu 도커 2종 모두 확인).
+    proc = run_driver(
+        "import codecs, locale, sys\n"
+        "sys.stdout.write(codecs.lookup(locale.getpreferredencoding(False)).name)\n"
+    )
     assert proc.returncode == 0, proc.stderr
-    assert "ascii" in proc.stdout.lower(), f"재현 로케일이 무효다: {proc.stdout!r}"
+    assert proc.stdout.strip() == "ascii", f"재현 로케일이 무효다: {proc.stdout!r}"
 
 
 def test_cache_sync_round_trips_korean(tmp_path):
