@@ -17,6 +17,8 @@ curation_cohort(평가 가능성 술어). enrich에는 의존하지 않는다.
 한 벌이라 여기 산다, CORRECTIONS_SQL이 파서 옆에 사는 것과 같은 관용구).
 """
 
+from collections import Counter
+
 # label_sources TSV의 컬럼 이름·위치 SSoT. SELECT 별칭 순서와 파서의 헤더 대조·위치 인덱싱이
 # 이 튜플 하나로 묶인다(parse_corrections_tsv와 동일 방어).
 LABEL_SOURCE_COLS = ("job_id", "crop_ref", "label_source")
@@ -91,3 +93,112 @@ def parse_label_sources_tsv(text: str) -> list[dict]:
             }
         )
     return out
+
+
+# ml이 드는 허용 어휘는 **표시 순서 + 기지 여부 판정용**이다. SSoT는 백엔드
+# `app/schemas/ocr.py`의 LABEL_SOURCES(TOP_K 파생)이며, api-spec.json과의 동기 테스트는 붙이지
+# 않는다(spec §3-4) — 읽기 전용 분석 도구를 백엔드 어휘 추가만으로 RED로 만드는 것은 값에 비해
+# 비용이 크다. 대신 **리포트 자체가 드리프트 탐지기**다: 미지 값이 관측되면 그 자리에서
+# 경고하고 백엔드 스키마를 가리킨다(드리프트가 실제로 문제가 되는 시점에 신호가 뜬다).
+KNOWN_LABEL_SOURCES = (
+    "top1_kept",
+    "candidate_picked",
+    "manual_picked",
+    "manual_typed",
+    "new_item_created",
+)
+CANDIDATE_PICKED = "candidate_picked"
+_CANDIDATE_PREFIX = f"{CANDIDATE_PICKED}:"
+
+# rank 행 기본 칸 수 = 백엔드 TOP_K(현재 5)의 **미동기 사본**이다. 값 자체는 파싱에 쓰이지
+# 않는다(접두 파싱이 TOP_K 변경에 자동 추종한다) — 이 상수가 정하는 것은 "0건이어도 인쇄할
+# rank 칸 수"의 하한뿐이라, 어긋나도 confirm이 죽지 않고 관측이 좁아질 뿐이다
+# (`tests/test_topk_sync.py`가 이 상수도 세 번째 사본으로 묶어 CI에서 드리프트를 잡는다 —
+# 다만 잡히더라도 다른 두 사본과 달리 confirm을 무너뜨리는 대신 관측만 좁아지는 고장 양상이다).
+# 좁아지는 경우: TOP_K가 늘었는데 뒤쪽 rank 선택이 아직 0건이면 그 칸이 인쇄되지 않아
+# "뒤쪽 rank에서 아무도 안 골랐다"는 관측이 사라진다. rank가 실제로 관측되면 범위가 따라
+# 늘고 렌더가 ⚠ 경고를 띄운다(H1) — 그 경고가 이 사본의 갱신 신호다.
+DEFAULT_RANK_SLOTS = 5
+
+# rank 분포를 판단 근거로 쓸 최소 표본 수. 2026-08-04 운영 실측 표본은 2건이라, 하한 없이
+# 비율만 인쇄하면 "rank 1이 50%"가 결론처럼 읽힌다(관측 2건의 50%다). 10은 rank 5칸에
+# 칸당 평균 2건이 깔리는 최소선 — 근거 있는 정밀도가 아니라 "아직 아니다"를 말하는 문턱이다.
+MIN_RANK_SAMPLE = 10
+
+
+def parse_rank(value: str | None) -> int | None:
+    """`candidate_picked:N`의 rank(0-based)를 뽑는다 — 접두 파싱이라 TOP_K 변경에 자동 추종한다.
+
+    저장값이 `candidate_picked:0`부터이므로 rank 0이 곧 top-1 후보다. 표시도 0-based로
+    유지한다 — 1-based로 바꾸면 리포트와 `failures.jsonl`·원본 `correction_json`이 한 칸씩
+    어긋난다(spec §3-5).
+
+    문법만 본다 — 계약 범위(백엔드 TOP_K) 초과 여부는 판정하지 않는다. 범위 초과는 렌더의
+    경고 줄이 말한다(값은 분모·rank 행에 그대로 남는다, spec §3-5의 자동 확장 규정).
+
+    Returns:
+        rank 정수. 접두가 없거나 접미가 십진 정수가 아니면 None(= 미지 값).
+    """
+    if value is None or not value.startswith(_CANDIDATE_PREFIX):
+        return None
+    suffix = value[len(_CANDIDATE_PREFIX) :]
+    # isdigit()은 유니코드 No 범주(위첨자 `²` 등)에도 True를 내 int()가 ValueError로 터지고,
+    # isdecimal()은 아라비아-인도 숫자(`٣`)도 걸러 십진 정수만 통과시킨다.
+    return int(suffix) if suffix.isdecimal() else None
+
+
+def label_source_key(value: str) -> str | None:
+    """기록된 값의 집계 키를 낸다 — 미지 어휘는 None이다(분모에는 남고 경고로 뜬다).
+
+    rank 없는 맨 `candidate_picked`는 미지로 본다: 백엔드 화이트리스트가 허용하지 않는 값이고,
+    기지로 세면 rank 행의 합과 candidate_picked 건수가 어긋나 표가 스스로 모순된다.
+    """
+    if parse_rank(value) is not None:
+        return CANDIDATE_PICKED
+    if value in KNOWN_LABEL_SOURCES and value != CANDIDATE_PICKED:
+        return value
+    return None
+
+
+def summarize_label_sources(label_sources: list[dict]) -> dict:
+    """조작 출처 분포를 집계한다 — 미기록은 분모에서 갈리고, 미지 어휘는 분모에 남는다.
+
+    분모 사다리의 규약(spec §3-5):
+      - n_records = 매칭 행(잡별 최신 교정의 lines[]) 전량. 사람 폐기·추가 행은 lines[]에
+        아예 없어 이 수의 밖이다(그 값은 행 수지 집계에서 파생한다 — 여기서 다시 세지 않는다).
+      - n_recorded / n_unrecorded = 기록 있음 / 미기록. 미기록의 **원인은 나누지 않는다**
+        (도입 전·미전송·오타 키 유실이 섞여 있고, NULL만으로는 원인을 증명하지 못한다).
+      - n_known / n_unknown = 기록 있음의 하위 갈래(기지 어휘 합계 / 미지 어휘 합계). 렌더가
+        뺄셈으로 파생하면 파생 산술이 문자열 조립 안으로 들어간다 — 여기서 미리 갈라 낸다
+        (`curation_enrich.summarize_row_balance`의 `n_no_correction_jobs`/`n_missing_json_jobs`와
+        같은 관용구). 합은 n_recorded와 같다.
+    """
+    recorded = [r["label_source"] for r in label_sources if r["label_source"] is not None]
+    source_counts = dict.fromkeys(KNOWN_LABEL_SOURCES, 0)
+    ranks: Counter = Counter()
+    unknown: Counter = Counter()
+    for value in recorded:
+        key = label_source_key(value)
+        if key is None:
+            unknown[value] += 1
+            continue
+        source_counts[key] += 1
+        rank = parse_rank(value)
+        if rank is not None:
+            ranks[rank] += 1
+    n_rank_slots = max(DEFAULT_RANK_SLOTS, max(ranks, default=-1) + 1)
+    n_known = sum(source_counts.values())
+    n_unknown = sum(unknown.values())
+    return {
+        "n_records": len(label_sources),
+        "n_recorded": len(recorded),
+        "n_unrecorded": len(label_sources) - len(recorded),
+        "n_known": n_known,
+        "n_unknown": n_unknown,
+        "source_counts": source_counts,
+        "rank_counts": {rank: ranks.get(rank, 0) for rank in range(n_rank_slots)},
+        "n_rank_slots": n_rank_slots,
+        "n_candidate_picked": source_counts[CANDIDATE_PICKED],
+        # 건수 내림차순 → 값 사전순. 경고 줄이 매 실행마다 같은 순서로 나오게 한다.
+        "unknown_counts": dict(sorted(unknown.items(), key=lambda kv: (-kv[1], kv[0]))),
+    }

@@ -10,6 +10,7 @@ import re
 from pathlib import Path
 
 from tools import bank_update
+from tools.curation_label_source import DEFAULT_RANK_SLOTS
 
 _ML = Path(__file__).resolve().parents[1]
 # ml/tests/test_topk_sync.py → tests → ml → invoice-ocr → apps → repo 루트
@@ -43,5 +44,6 @@ def test_ml_topk_matches_api_spec_candidate_ranks():
     actual = {
         "handwriting/infer_photo.py": _infer_photo_topk(),
         "tools/bank_update.py": bank_update.TOPK,
+        "tools/curation_label_source.py": DEFAULT_RANK_SLOTS,
     }
     assert actual == dict.fromkeys(actual, expected)
