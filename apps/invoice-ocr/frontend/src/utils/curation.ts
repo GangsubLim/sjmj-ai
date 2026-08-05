@@ -1,3 +1,5 @@
+import type { CurationJobSummary } from "@/types/curation";
+
 interface LabelTriplet {
   draft_label: string | null;
   final_label: string | null;
@@ -20,4 +22,15 @@ export function isLabelRenormalized(
 
 export function isPairChanged(pair: LabelTriplet): boolean {
   return isLabelCorrected(pair) || isLabelRenormalized(pair);
+}
+
+export type CurationJobState = "unreviewed" | "needs_recheck" | "reviewed";
+
+// 잡 단위 게이트의 3-state 판별을 한 곳에 모은다 — 목록 뱃지와 상세 배너가 공유한다.
+// 커버리지 include가 utils/hooks/stores만이라, 이 판별이 화면 컴포넌트에 있으면 계상되지 않는다.
+export function curationJobState(
+  job: Pick<CurationJobSummary, "curation_reviewed" | "curation_reviewed_at">,
+): CurationJobState {
+  if (job.curation_reviewed) return "reviewed";
+  return job.curation_reviewed_at === null ? "unreviewed" : "needs_recheck";
 }

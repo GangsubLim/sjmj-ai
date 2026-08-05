@@ -8,6 +8,7 @@ import type {
   CurationPairBase,
   CurationPairPatchResult,
   CurationJobDetail,
+  CurationJobSummary,
   CurationPairPatch,
 } from "./curation";
 
@@ -38,13 +39,33 @@ describe("curation 타입 계약", () => {
     >();
   });
 
-  it("잡 상세 pair는 top5를 가지고 job_id는 없다", () => {
-    expectTypeOf<CurationJobPair>().toHaveProperty("top5");
-    expectTypeOf<CurationJobPair>().not.toHaveProperty("job_id");
+  it("curation_reviewed_at·job_curation_reviewed는 필수다(optional 회귀 차단)", () => {
+    // toHaveProperty는 optional 필드에도 통과한다 — toEqualTypeOf로 `| undefined`
+    // 섞임까지 잡아야 실제로 optional 회귀를 차단한다.
+    expectTypeOf<CurationJobSummary["curation_reviewed_at"]>().toEqualTypeOf<
+      string | null
+    >();
+    expectTypeOf<CurationJobDetail["curation_reviewed_at"]>().toEqualTypeOf<
+      string | null
+    >();
+    expectTypeOf<
+      CurationPairPatchResult["job_curation_reviewed"]
+    >().toEqualTypeOf<boolean>();
   });
 
-  it("PATCH 결과는 job_id를 가지고 top5는 없다", () => {
+  it("잡 상세 pair는 top5를 가지고 job_id·잡 게이트는 없다", () => {
+    expectTypeOf<CurationJobPair>().toHaveProperty("top5");
+    expectTypeOf<CurationJobPair>().not.toHaveProperty("job_id");
+    // 계약 비대칭 — 게이트는 PATCH 응답 전용이다(api-spec의 공유 CurationPair와 달리
+    // TS 타입은 갈라 둔다).
+    expectTypeOf<CurationJobPair>().not.toHaveProperty("job_curation_reviewed");
+  });
+
+  it("PATCH 결과는 job_id·잡 게이트를 가지고 top5는 없다", () => {
     expectTypeOf<CurationPairPatchResult>().toHaveProperty("job_id");
+    expectTypeOf<CurationPairPatchResult>().toHaveProperty(
+      "job_curation_reviewed",
+    );
     expectTypeOf<CurationPairPatchResult>().not.toHaveProperty("top5");
   });
 

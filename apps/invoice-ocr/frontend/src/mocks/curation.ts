@@ -7,6 +7,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     job_id: 128,
     invoice_id: 341,
     curation_reviewed: false,
+    curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:10:00",
     pairs: [
@@ -57,6 +58,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     job_id: 127,
     invoice_id: 340,
     curation_reviewed: true,
+    curation_reviewed_at: "2026-06-30T08:30:00",
     warp_ok: false,
     created_at: "2026-06-30T08:00:00",
     pairs: [

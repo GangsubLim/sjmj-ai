@@ -452,6 +452,7 @@ const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
   job_id: job.job_id,
   invoice_id: job.invoice_id,
   curation_reviewed: job.curation_reviewed,
+  curation_reviewed_at: job.curation_reviewed_at,
   pair_count: job.pairs.length,
   unreviewed_count: job.pairs.filter((p) => p.reviewed_at === null).length,
   created_at: job.created_at,
@@ -501,7 +502,8 @@ export const mockCurationAPI = {
         };
         // PATCH 응답 형태: job_id 포함, top5·uncertain 제외(계약 비대칭 — curation_service.py의 patch_pair 참조).
         const { top5: _top5, uncertain: _uncertain, ...base } = updated;
-        result = { ...base, job_id: job.job_id };
+        // 쌍 수정은 그 잡의 게이트를 무조건 해제하므로 서버는 항상 false를 돌려준다.
+        result = { ...base, job_id: job.job_id, job_curation_reviewed: false };
         return updated;
       }),
     }));

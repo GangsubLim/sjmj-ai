@@ -10,6 +10,8 @@ export interface CurationJobSummary {
   job_id: number;
   invoice_id: number | null;
   curation_reviewed: boolean;
+  // 첫 검수 시각. 게이트가 해제돼도 지워지지 않아 "미검수"와 "재검수 필요"를 가른다.
+  curation_reviewed_at: string | null;
   pair_count: number;
   unreviewed_count: number;
   created_at: string;
@@ -38,15 +40,18 @@ export interface CurationJobPair extends CurationPairBase {
   uncertain: boolean;
 }
 
-// PATCH /pairs/{id} 응답 — job_id 포함, top5 없음(계약 비대칭).
+// PATCH /pairs/{id} 응답 — job_id + 잡 게이트 포함, top5 없음(계약 비대칭).
 export interface CurationPairPatchResult extends CurationPairBase {
   job_id: number;
+  // 쌍 수정은 그 잡의 게이트를 무조건 해제하므로 서버는 항상 false를 돌려준다.
+  job_curation_reviewed: boolean;
 }
 
 export interface CurationJobDetail {
   job_id: number;
   invoice_id: number | null;
   curation_reviewed: boolean;
+  curation_reviewed_at: string | null;
   warp_ok: boolean;
   created_at: string;
   pairs: CurationJobPair[];

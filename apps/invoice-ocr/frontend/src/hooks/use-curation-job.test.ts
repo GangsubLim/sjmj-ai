@@ -23,6 +23,7 @@ function jobDetail(): CurationJobDetail {
     job_id: 128,
     invoice_id: 341,
     curation_reviewed: false,
+    curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:00:00",
     pairs: [
@@ -87,6 +88,7 @@ function patchResult(
     exclusion_reason: null,
     reviewed_at: "2026-06-30T10:00:00",
     job_id: 128,
+    job_curation_reviewed: false,
     ...over,
   };
 }
