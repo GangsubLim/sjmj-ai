@@ -74,8 +74,10 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         final_label: "당근",
         canonical_label: "당근",
         supply: 5000,
-        // job 127은 e2e가 워프 placeholder만 확인하므로 상호작용 단언에 영향이 없다.
         // §6 세 번째 칸(기계가 배제했으나 사람이 되돌림)을 mock 모드에서 재현하는 자리.
+        // status가 "included"라 목록에서 "제외" 버튼으로 노출되는 유일한 pair —
+        // e2e(curation.spec.ts)가 "제외" 버튼 .first()로 이 pair를 클릭해 게이트를
+        // 해제하고 "재확인 필요" 배너를 확인한다. status를 바꾸면 그 셀렉터가 어긋난다.
         status: "included",
         exclusion_reason: "blank_crop",
         reviewed_at: "2026-06-30T08:30:00",
@@ -91,7 +93,8 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         canonical_label: null,
         supply: null,
         // §6 두 번째 칸(기계 배제, 사람 미검토) — 운영 다수·배지 기본 표시 상태를 mock에도 재현.
-        // job 127은 e2e가 워프 placeholder만 확인하므로(curation.spec.ts) 추가해도 안전.
+        // status가 이미 "excluded"라 "포함" 버튼으로 노출되므로 e2e의 "제외" 버튼
+        // .first() 클릭(pair 8001) 대상이 아니다 — 값을 바꾸면 그 셀렉터가 어긋난다.
         status: "excluded",
         exclusion_reason: "blank_crop",
         // 잡 127은 curation_reviewed=true다. 서버의 mark_reviewed는 같은 트랜잭션에서
