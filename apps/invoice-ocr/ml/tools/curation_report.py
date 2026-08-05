@@ -44,6 +44,7 @@ from tools.curation_enrich import (
     parse_jobs_tsv,
     parse_pairs_tsv,
 )
+from tools.curation_label_source import LABEL_SOURCES_SQL, parse_label_sources_tsv
 from tools.curation_render import NO_FINGERPRINT_NOTICE, render_report
 from tools.remote import (
     ENV_BACKEND_ENV,
@@ -120,6 +121,14 @@ REEVAL_FILES = (("score.jsonl", "reeval.jsonl"), ("score_meta.json", "reeval_met
 CACHE_META = "meta.json"
 # 교정 이력 캐시 파일명 — report 가드(_require_corrections)와 읽기(_load_corrections)가 공유한다.
 CACHE_CORRECTIONS = "corrections.json"
+# 조작 출처 캐시 파일명 — report 가드(_require_label_sources)와 읽기(_load_label_sources)가 공유한다.
+# 다섯 번째 소스. 교정 이력과 같은 축이라 같은 자리(fetch_all)에서 `_write_json`으로 굳힌다 —
+# 재평가 3파일의 원자 교체 한 벌에 넣지 않는 이유는 fetch_all의 네 번째 소스(CACHE_CORRECTIONS)
+# 주석과 같다. corrections와는 ssh 왕복이 갈리므로 그 사이 확정이 끼어들면 두 캐시의 세대가
+# 어긋날 수 있다(pairs/jobs/bank/corrections 4소스가 이미 공유하는 성질이고, 수동 오프라인
+# 도구라 창은 초 단위다). 어긋남은 조용히 넘어가지 않는다 — 조작 출처 절의 매칭 행 수 드리프트
+# 경고가 리포트에서 그 자리에 인쇄한다.
+CACHE_LABEL_SOURCES = "label_sources.json"
 # `mysql --batch --raw` 출력의 SQL NULL 표기. jobs.json은 raw 질의라 NULL이 이 **문자열**로
 # 온다(corrections.json은 raw가 아니라 파서의 `_cell`이 None으로 접는다).
 _RAW_NULL = "NULL"
@@ -311,6 +320,9 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     corrections = parse_corrections_tsv(
         run_ssh(host, mysql_script(backend_env, CORRECTIONS_SQL, raw=False)).decode()
     )
+    label_sources = parse_label_sources_tsv(
+        run_ssh(host, mysql_script(backend_env, LABEL_SOURCES_SQL, raw=False)).decode()
+    )
     try:
         bank = json.loads(run_ssh(host, bank_script(worker_env, ml_root)).decode())
     except RemoteError as e:
@@ -338,6 +350,8 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 세므로
     # 이 행을 포함해 다섯 행이다.
     _write_json(cache / CACHE_CORRECTIONS, corrections)
+    # 다섯 번째 소스 — 근거는 CACHE_LABEL_SOURCES 선언 옆 주석 참조.
+    _write_json(cache / CACHE_LABEL_SOURCES, label_sources)
     # 재평가 두 파일과 그 해석자(meta.json)는 한 벌로 갈아끼운다 — 순서는 해석자가 마지막.
     meta_body = json.dumps(meta, ensure_ascii=False, indent=1).encode()
     _replace_atomically(cache, [*reeval_files, (CACHE_META, meta_body)])
