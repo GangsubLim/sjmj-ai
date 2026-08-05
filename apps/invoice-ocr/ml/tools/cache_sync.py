@@ -168,8 +168,8 @@ def write_manifest(
         **counts,
         **(extra or {}),
     }
-    (cache / data_name).write_text(json.dumps(data, ensure_ascii=False, indent=1))
-    (cache / META_NAME).write_text(json.dumps(meta, ensure_ascii=False, indent=1))
+    (cache / data_name).write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    (cache / META_NAME).write_text(json.dumps(meta, ensure_ascii=False, indent=1), encoding="utf-8")
     return meta
 
 
@@ -186,4 +186,4 @@ def load_cache_meta(cache: Path, data_name: str, *, tool: str) -> dict:
             f"캐시가 없다({', '.join(missing)}) — 먼저 fetch를 실행할 것: "
             f"`python -m tools.{tool} --cache {cache} fetch`"
         )
-    return json.loads((cache / META_NAME).read_text())
+    return json.loads((cache / META_NAME).read_text(encoding="utf-8"))

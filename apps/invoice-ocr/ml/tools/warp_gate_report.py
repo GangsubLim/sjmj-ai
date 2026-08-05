@@ -178,7 +178,9 @@ def fetch_all(host: str, backend_env: str, worker_env: str, cache: Path) -> dict
         root=UPLOADS_ROOT,
         timeout=UPLOADS_TIMEOUT_S,
     )
-    (cache / PAIRS_NAME).write_text(json.dumps(pairs, ensure_ascii=False, indent=1))
+    (cache / PAIRS_NAME).write_text(
+        json.dumps(pairs, ensure_ascii=False, indent=1), encoding="utf-8"
+    )
     meta = write_manifest(
         cache,
         JOBS_NAME,
@@ -253,7 +255,7 @@ def _iter_rewarps(cache: Path, jobs: list[int] | None = None):
         cache: fetch가 채운 캐시 디렉터리(jobs.json + uploads/).
         jobs: 대상 job_id 목록. None이면 전 잡.
     """
-    all_jobs = json.loads((cache / JOBS_NAME).read_text())
+    all_jobs = json.loads((cache / JOBS_NAME).read_text(encoding="utf-8"))
     wanted = set(jobs) if jobs is not None else None
     for j in all_jobs:
         if wanted is not None and j["job_id"] not in wanted:
@@ -388,7 +390,7 @@ def _load_baseline(path: Path) -> dict:
     """
     if not path.exists():
         raise SystemExit(f"베이스라인 스냅샷이 없다: {path} — 먼저 --out으로 스냅샷을 만들 것")
-    return json.loads(path.read_text())
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def _render_pair_impact(before: dict, snapshot: dict, pairs_path: Path) -> list[str]:
@@ -398,7 +400,7 @@ def _render_pair_impact(before: dict, snapshot: dict, pairs_path: Path) -> list[
         # 절을 통째로 빼면 "검증했더니 변화 0건"과 "아예 못 봤다"가 리포트에서 구분되지
         # 않는다 — fetch_all이 pairs 0건에 경고를 찍는 것과 같은 이유다.
         return [*lines, f"⚠️  pairs 캐시 없음({pairs_path}) — fetch를 다시 실행할 것(축 ②-a 미검증)"]
-    pairs = json.loads(pairs_path.read_text())
+    pairs = json.loads(pairs_path.read_text(encoding="utf-8"))
     rows = changed_pairs(before, snapshot, pair_rows(pairs))
     affected = [(j, i, "moved") for j, i in rows["moved"]]
     affected += [(j, i, "vanished") for j, i in rows["vanished"]]
@@ -447,7 +449,7 @@ def _run_crop_identity(args) -> None:
     # 갱신하며 직전 값과 대조하는 자연스러운 호출) 순서가 뒤집힐 때 방금 쓴 파일을
     # 베이스라인으로 읽어 diff가 항상 비고 게이트가 무조건 초록이 된다.
     before = _load_baseline(args.baseline) if args.baseline is not None else None
-    args.out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=1))
+    args.out.write_text(json.dumps(snapshot, ensure_ascii=False, indent=1), encoding="utf-8")
     if args.baseline is None:
         print(f"저장: {args.out}")
         return
@@ -517,13 +519,13 @@ def main(argv: list[str] | None = None) -> None:
     drift = stored_vs_rewarp(records)
     md = render_rewarp_report(records, margins, drift, meta)
     out_md = args.cache / "warp_gate_report.md"
-    out_md.write_text(md)
+    out_md.write_text(md, encoding="utf-8")
     metrics_json = [
         {"job_id": r["job_id"], "label": r["label"], "status": r["status"], "metrics": r["metrics"]}
         for r in records
     ]
     out_json = args.cache / "warp_gate_metrics.json"
-    out_json.write_text(json.dumps(metrics_json, ensure_ascii=False, indent=1))
+    out_json.write_text(json.dumps(metrics_json, ensure_ascii=False, indent=1), encoding="utf-8")
     print(md)
     print(f"저장: {out_md} · {out_json}")
 
