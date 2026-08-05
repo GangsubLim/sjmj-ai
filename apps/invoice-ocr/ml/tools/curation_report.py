@@ -347,8 +347,8 @@ def fetch_all(*, host: str, backend_env: str, worker_env: str, ml_root: str, cac
     # 네 번째 소스. 재평가 3파일의 원자 교체 한 벌에는 넣지 않는다 — 그 한 벌은 지문 해석
     # 짝이 어긋나지 않게 하는 별개 축이다(spec §3-2). "네 번째"는 spec §2의 논리 소스 축
     # 표기다 — 원자 교체 밖에서 굳히는 네 번째 캐시 JSON이라는 뜻이다(pairs/jobs/bank 다음).
-    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 세므로
-    # 이 행을 포함해 다섯 행이다.
+    # 런북(docs/runbooks/ocr-curation-analysis.md)의 소스 표는 재평가 산출을 한 행으로 더 센다
+    # — 캐시 JSON 순번과 그 표의 행 수는 애초에 축이 다르니 개수를 여기에 적지 않는다.
     _write_json(cache / CACHE_CORRECTIONS, corrections)
     # 다섯 번째 소스 — 근거는 CACHE_LABEL_SOURCES 선언 옆 주석 참조.
     _write_json(cache / CACHE_LABEL_SOURCES, label_sources)
