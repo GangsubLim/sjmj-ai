@@ -519,6 +519,7 @@ def _write_cache(
     pairs,
     jobs,
     corrections=None,
+    label_sources=None,
     bank_labels=None,
     retrieval_version=_CUR_VERSION,
     reeval=None,
@@ -533,6 +534,10 @@ def _write_cache(
     # 네 번째 소스. 기본값은 빈 목록 — 가드 테스트만 이 파일을 일부러 만들지 않는다.
     (tmp_path / "corrections.json").write_text(
         json.dumps(corrections or [], ensure_ascii=False), encoding="utf-8"
+    )
+    # 다섯 번째 소스. 기본값은 빈 목록 — 가드 테스트만 이 파일을 일부러 지우거나 망가뜨린다.
+    (tmp_path / "label_sources.json").write_text(
+        json.dumps(label_sources or [], ensure_ascii=False), encoding="utf-8"
     )
     (tmp_path / "bank.json").write_text(
         json.dumps(
@@ -656,6 +661,46 @@ def test_report_command_rejects_a_corrections_cache_that_is_not_an_array(tmp_pat
     with pytest.raises(ValueError) as err:
         main(["--cache", str(tmp_path), "report"])
     _assert_names_file_and_recovery(err, "corrections.json")
+
+
+def test_report_command_fails_fast_on_a_cache_without_the_label_sources(tmp_path):
+    """구버전 캐시(조작 출처 없음)에서 report가 조용히 "미기록 0건"을 인쇄하지 않는다."""
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").unlink()
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "label_sources.json")
+    # 이 가드가 주로 잡는 것은 손상이 아니라 구버전 캐시다(_require_corrections와 같은 규약).
+    assert "손상" not in str(err.value)
+
+
+@pytest.mark.parametrize("body", ["{not json}", "{}", '"corrupt"', "null"])
+def test_report_command_rejects_a_broken_label_sources_cache(tmp_path, body):
+    """비원자 `_write_json`으로 쓰이므로 중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다."""
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").write_text(body, encoding="utf-8")
+    with pytest.raises(ValueError) as err:
+        main(["--cache", str(tmp_path), "report"])
+    _assert_names_file_and_recovery(err, "label_sources.json")
+
+
+def test_pull_images_still_runs_without_the_label_sources(tmp_path, monkeypatch):
+    """가드는 report 분기에만 둔다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+
+    하필 그 상황이 `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는
+    상황이다(corrections 축의 같은 테스트와 골격이 같고 축만 다르다).
+    """
+    _write_cache(tmp_path, pairs=[_pair()], jobs=[_job(rows=[_row()])])
+    (tmp_path / "label_sources.json").unlink()
+    pulled: list[list[int]] = []
+
+    def fake_pull(host, backend_env, cache, job_ids, with_originals):
+        pulled.append(job_ids)
+        return PullResult(cache / "images", saved=0, failed=0)
+
+    monkeypatch.setattr("tools.curation_report.pull_images", fake_pull)
+    main(["--cache", str(tmp_path), "pull-images"])
+    assert pulled == [[1]]
 
 
 def test_pull_images_still_runs_without_the_correction_history(tmp_path, monkeypatch):

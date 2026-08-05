@@ -561,23 +561,54 @@ def _require_exclusion_reason(enriched: list[dict]) -> None:
         )
 
 
+def _require_cache_file(cache: Path, name: str) -> None:
+    """`name` 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    `_require_corrections`·`_require_label_sources`가 공유하는 본문이다 —
+    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
+    두 캐시 모두 판정에 쓰지 않으므로 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다.
+    하필 그 상황이 `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는
+    상황이다.
+
+    Raises:
+        ValueError: `name` 캐시가 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    if not (cache / name).exists():
+        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
+        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
+        raise ValueError(f"{name} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}")
+
+
 def _require_corrections(cache: Path) -> None:
     """교정 이력 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
 
-    `_require_exclusion_reason`과 같은 관용구·같은 자리다(공통 경로가 아니다): `pull-images`는
-    교정 이력을 판정에 쓰지 않으므로 — §6의 원본 경로 폴백은 파일이 **있을 때만** 쓰는
-    최적화다 — 공통 경로에서 막으면 크롭 검수 루프까지 함께 죽는다. 하필 그 상황이
-    `fetch_error_message`가 "기존 캐시로 검수 루프를 계속하라"고 안내하는 상황이다.
+    본문은 `_require_cache_file`에 위임한다 — `_require_label_sources`와 같은 관용구다.
 
     Raises:
         ValueError: corrections.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
     """
-    if not (cache / CACHE_CORRECTIONS).exists():
-        # 절차만 싣는다(`_CACHE_RECOVERY` 아님) — 이 가드가 주로 잡는 것은 손상 캐시가 아니라
-        # 멀쩡한 구버전 캐시다. "손상이다"를 단정하면 진단이 앞줄의 사유와 어긋난다.
+    _require_cache_file(cache, CACHE_CORRECTIONS)
+
+
+def _load_cache_array(path: Path) -> list[dict]:
+    """캐시 JSON 배열 1개를 손상 방어와 함께 읽는다 — corrections·label_sources가 공유한다.
+
+    `_reeval_info`(H2)와 같은 관용구다(M4): 두 캐시 모두 비원자 `_write_json`으로 쓰이므로
+    중단된 fetch가 잘린 파일을 남기는 것이 현실적 상태다. 파싱은 되지만 배열이 아닌 캐시도
+    여기서 막는다 — 통과시키면 렌더 안쪽에서 파일명도 복구 절차도 없는 TypeError로 죽는다.
+
+    Raises:
+        ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
+    if not isinstance(data, list):
         raise ValueError(
-            f"{CACHE_CORRECTIONS} 캐시가 없다(구버전 또는 중단된 fetch) — {_CACHE_REFETCH}"
+            f"{path.name}이 JSON 배열이 아니다({type(data).__name__}) — {_CACHE_RECOVERY}"
         )
+    return data
 
 
 def _load_corrections(cache: Path) -> list[dict]:
@@ -591,16 +622,23 @@ def _load_corrections(cache: Path) -> list[dict]:
     Raises:
         ValueError: JSON이 파싱되지 않거나 배열이 아닐 때.
     """
-    path = cache / CACHE_CORRECTIONS
-    try:
-        corrections = json.loads(path.read_text(encoding="utf-8"))
-    except json.JSONDecodeError as e:
-        raise ValueError(f"{path.name} 손상({e.msg}) — {_CACHE_RECOVERY}") from e
-    if not isinstance(corrections, list):
-        raise ValueError(
-            f"{path.name}이 JSON 배열이 아니다({type(corrections).__name__}) — {_CACHE_RECOVERY}"
-        )
-    return corrections
+    return _load_cache_array(cache / CACHE_CORRECTIONS)
+
+
+def _require_label_sources(cache: Path) -> None:
+    """조작 출처 캐시가 없는 구버전 캐시를 report 소비자 앞에서 막는다.
+
+    본문은 `_require_cache_file`에 위임한다 — `_require_corrections`와 같은 관용구다.
+
+    Raises:
+        ValueError: label_sources.json이 없는 구버전 또는 중단된 fetch의 캐시일 때.
+    """
+    _require_cache_file(cache, CACHE_LABEL_SOURCES)
+
+
+def _load_label_sources(cache: Path) -> list[dict]:
+    """조작 출처 캐시를 읽는다 — 손상 방어는 `_load_corrections`와 공유한다."""
+    return _load_cache_array(cache / CACHE_LABEL_SOURCES)
 
 
 def _failure_job_ids(enriched: list[dict]) -> list[int]:
@@ -632,6 +670,32 @@ def _cmd_fetch(host: str, backend_env: str, worker_env: str, ml_root: str, cache
         print(NO_FINGERPRINT_NOTICE)
 
 
+def _cmd_report(enriched: list[dict], meta: dict, cache: Path) -> None:
+    """report 서브커맨드 — 캐시를 분석해 report.md·failures.jsonl을 만든다.
+
+    `_cmd_fetch`와 같은 관용구다: 구버전·손상 캐시(exclusion_reason·corrections·label_sources
+    3종)는 렌더 진입 전에 fail-fast로 막는다.
+    """
+    _require_exclusion_reason(enriched)
+    _require_corrections(cache)
+    _require_label_sources(cache)
+    # 손상 방어(fail-fast)만 한다 — render_report에 넘기는 배선은 후속 task 범위라 반환값은
+    # 아직 소비처가 없다(ruff F841 회피).
+    _load_label_sources(cache)
+    report = render_report(enriched, meta, _load_corrections(cache))
+    report_path = cache / "report.md"
+    report_path.write_text(report)
+    # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
+    # 산출물에 그대로 남는다(spec §3-C).
+    failures = [r for r in enriched if is_item_failure(r)]
+    fail_path = cache / "failures.jsonl"
+    fail_path.write_text(
+        "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
+    )
+    print(report)
+    print(f"저장: {report_path}\n저장: {fail_path}")
+
+
 def main(argv: list[str] | None = None) -> None:
     """서브커맨드(fetch/report/pull-images)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="curation_report", description=__doc__)
@@ -656,20 +720,7 @@ def main(argv: list[str] | None = None) -> None:
     enriched, meta = _load_enriched(args.cache)
 
     if args.cmd == "report":
-        _require_exclusion_reason(enriched)
-        _require_corrections(args.cache)
-        report = render_report(enriched, meta, _load_corrections(args.cache))
-        report_path = args.cache / "report.md"
-        report_path.write_text(report)
-        # 에이전트가 소비하는 실패 목록 — unevaluable이 섞이면 이슈가 지적한 왜곡이
-        # 산출물에 그대로 남는다(spec §3-C).
-        failures = [r for r in enriched if is_item_failure(r)]
-        fail_path = args.cache / "failures.jsonl"
-        fail_path.write_text(
-            "\n".join(json.dumps(r, ensure_ascii=False, default=str) for r in failures) + "\n"
-        )
-        print(report)
-        print(f"저장: {report_path}\n저장: {fail_path}")
+        _cmd_report(enriched, meta, args.cache)
         return
 
     if args.cmd == "pull-images":
