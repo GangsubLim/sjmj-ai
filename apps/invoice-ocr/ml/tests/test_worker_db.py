@@ -102,6 +102,48 @@ def test_commit_job_marks_orphans_excluded_with_reason_and_clears_review():
     assert params["reason"] == RELINK_FAILED
 
 
+def test_commit_job_restores_machine_excluded_pairs_when_relink_succeeds():
+    """지난 재처리가 미결로 배제한 쌍이 이번에 승계되면 배제를 자동 해제한다.
+
+    반복 재처리가 이 기능의 전제라, 여기서 되돌리지 않으면 그림이 돌아온 쌍이
+    excluded·relink_failed인 채 남아 뱅크에 영영 들어가지 않는다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    sql, params = _executed(conn)[-1]
+    assert "status = CASE WHEN exclusion_reason=:reason THEN 'included' ELSE status END" in sql
+    assert (
+        "exclusion_reason = CASE WHEN exclusion_reason=:reason THEN NULL ELSE exclusion_reason END"
+        in sql
+    )
+    assert params["reason"] == RELINK_FAILED
+
+
+def test_commit_job_leaves_human_excluded_pairs_excluded_when_relink_succeeds():
+    """사람이 배제한 쌍은 승계돼도 배제로 남는다 — 복원 조건이 기계 사유에만 걸려 있다.
+
+    사람이 배제하면 backend의 curation_repository.update_pair가 같은 UPDATE에서
+    exclusion_reason을 NULL로 지운다(ADR 0006). 사유가 남아 있다는 것 자체가 "아직 기계
+    판정이며 사람이 손대지 않았다"의 표식이라, 조건을 사유에 걸면 사람 소유 배제는
+    자동으로 제외된다. 무조건 복원으로 바뀌면 이 단언이 RED가 된다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    sql, params = _executed(conn)[-1]
+    assert sql.count("CASE WHEN exclusion_reason=:reason") == 2, "복원 조건은 기계 사유에만 건다"
+    assert params["reason"] == RELINK_FAILED
+    assert "status='included'" not in sql, "무조건 복원이면 사람 배제까지 되돌아온다"
+    assert "exclusion_reason=NULL" not in sql, "사람 소유 표식(NULL 사유)을 덮어쓰지 않는다"
+
+
 def test_commit_job_keeps_reviewed_at_of_relinked_pairs():
     """승계 성공 쌍의 reviewed_at은 그대로 둔다 — 사람이 볼 것이 미결뿐이 되도록(§7)."""
     engine = MagicMock()

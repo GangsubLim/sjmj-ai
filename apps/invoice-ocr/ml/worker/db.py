@@ -87,6 +87,10 @@ class WorkerQueue:
         설계의 핵심 순서 제약이다 — 뒤로 미루면 미결 쌍이 옛 row-N을 점유한 채 남아
         승계 쌍의 최종 좌표와 충돌한다.
 
+        ②는 좌표만 쓰지 않는다 — 지난 재처리가 미결로 배제해 둔 쌍이 이번에 승계되면
+        배제까지 함께 되돌린다(아래 주석의 판별자 근거 참조). 반복 재처리로 회수된 쌍이
+        excluded인 채 뱅크 밖에 남는 것을 막는 자리다.
+
         락 순서는 부모(ocr_jobs) → 자식(training_pairs)로, 사람의 PATCH 경로
         (backend CurationService.patch_pair)와 같다 — 뒤집으면 순환 대기가 성립한다.
 
@@ -120,11 +124,34 @@ class WorkerQueue:
                     ),
                     {"ref": item.orphan_ref, "reason": RELINK_FAILED, "id": item.pair_id},
                 )
-            # ② 최종 좌표 기입
+            # ② 최종 좌표 기입 + 기계 소유 배제의 자동 복원.
+            #    지난 재처리가 미결로 배제한 쌍이 이번엔 승계됐다면 그림이 돌아온 것이므로
+            #    배제를 되돌린다 — 반복 재처리가 이 기능의 전제인데 되돌리지 않으면 회수된
+            #    쌍이 excluded인 채 뱅크 밖에 영영 남는다.
+            #    **판별자로 사유를 쓰는 근거.** 사람이 배제하면 backend의
+            #    curation_repository.update_pair가 같은 UPDATE에서 exclusion_reason을 NULL로
+            #    지운다(ADR 0006 §6) — 사유가 relink_failed로 남아 있다는 것 자체가 "아직
+            #    기계 판정이며 사람이 손대지 않았다"는 뜻이라, 사람의 배제는 자동으로 빠진다.
+            #    reviewed_at은 건드리지 않는다 — NULL로 남아 사람이 검수 큐에서 확인한다.
+            #    런북 0단계의 결정(재처리 이전부터 blank_crop으로 배제돼 있던 쌍도 승계 실패
+            #    시 relink_failed로 덮인다)과 맞물려 원래 blank_crop이던 쌍이 여기서 included로
+            #    돌아올 수 있다 — 크롭이 여전히 비었다면 빈 크롭 가드가 다음 실행에서 다시
+            #    배제하므로 그 결정의 논리("옛 사유가 가리키던 그림은 이미 없다")와 정합한다.
             for item in plan.relinked:
                 conn.execute(
-                    text("UPDATE training_pairs SET crop_ref=:ref, row_index=:ri WHERE id=:id"),
-                    {"ref": item.final_ref, "ri": item.final_row_index, "id": item.pair_id},
+                    text(
+                        "UPDATE training_pairs SET crop_ref=:ref, row_index=:ri, "
+                        "status = CASE WHEN exclusion_reason=:reason THEN 'included' "
+                        "ELSE status END, "
+                        "exclusion_reason = CASE WHEN exclusion_reason=:reason THEN NULL "
+                        "ELSE exclusion_reason END WHERE id=:id"
+                    ),
+                    {
+                        "ref": item.final_ref,
+                        "ri": item.final_row_index,
+                        "reason": RELINK_FAILED,
+                        "id": item.pair_id,
+                    },
                 )
 
     def mark_failed(self, job_id: int, error_json: dict) -> None:
