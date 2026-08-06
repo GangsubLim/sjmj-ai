@@ -23,7 +23,12 @@ def _seed_pair(engine, *, status="included", reason=None):
             {"r": f"job-{job_id}/row-0", "j": job_id, "s": status, "e": reason},
         )
         pair_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
-    return pair_id
+    return job_id, pair_id
+
+
+def _token(client, job_id):
+    """잡 상세에서 세대 토큰을 읽어 요청 body 조각으로 만든다(spec §12 — PATCH 필수 필드)."""
+    return {"job_token": client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]}
 
 
 def _state(engine, pair_id):
@@ -41,16 +46,20 @@ def _state(engine, pair_id):
 
 def test_full_transition_closure_machine_exclude_human_include_human_exclude(client, db_conn):
     # 1) 기계가 배제한 상태에서 출발
-    pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
+    job_id, pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
     assert _state(db_conn, pair_id) == ("excluded", "blank_crop")
 
     # 2) 사람이 포함으로 되돌림 — 사유는 유지된다(오탐 관측치 · 영구 보호)
-    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"status": "included"})
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"status": "included", **_token(client, job_id)}
+    )
     assert res.status_code == 200
     assert _state(db_conn, pair_id) == ("included", "blank_crop")
 
     # 3) 사람이 다시 배제 — 사유가 지워져 '사람이 배제'(첫 칸)로 간다
-    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"status": "excluded"})
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"status": "excluded", **_token(client, job_id)}
+    )
     assert res.status_code == 200
     assert _state(db_conn, pair_id) == ("excluded", None)
     # (excluded, NULL)은 ml의 is_machine_writable이 거부하는 칸이다 —
@@ -58,14 +67,19 @@ def test_full_transition_closure_machine_exclude_human_include_human_exclude(cli
 
 
 def test_patch_included_preserves_machine_reason(client, db_conn):
-    pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
-    client.patch(f"/api/curation/pairs/{pair_id}", json={"status": "included"})
+    job_id, pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
+    client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"status": "included", **_token(client, job_id)}
+    )
     assert _state(db_conn, pair_id) == ("included", "blank_crop")
 
 
 def test_patch_canonical_label_only_does_not_touch_reason(client, db_conn):
-    pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
-    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "정식명"})
+    job_id, pair_id = _seed_pair(db_conn, status="excluded", reason="blank_crop")
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}",
+        json={"canonical_label": "정식명", **_token(client, job_id)},
+    )
     # PATCH가 실제로 성공하고 라벨을 바꿨는지부터 고정한다 — 이 단언이 없으면
     # 400/404/500으로 아무 일도 안 일어나도 기대 상태(= 시드 상태)가 그대로라 통과한다.
     assert res.status_code == 200
@@ -74,6 +88,8 @@ def test_patch_canonical_label_only_does_not_touch_reason(client, db_conn):
 
 
 def test_human_exclude_from_clean_state_keeps_reason_null(client, db_conn):
-    pair_id = _seed_pair(db_conn)
-    client.patch(f"/api/curation/pairs/{pair_id}", json={"status": "excluded"})
+    job_id, pair_id = _seed_pair(db_conn)
+    client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"status": "excluded", **_token(client, job_id)}
+    )
     assert _state(db_conn, pair_id) == ("excluded", None)

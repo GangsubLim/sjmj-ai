@@ -33,6 +33,11 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical
     return job_id
 
 
+def _token(client, job_id):
+    """잡 상세에서 세대 토큰을 읽어 요청 body 조각으로 만든다(spec §12 — 필수 필드)."""
+    return {"job_token": client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]}
+
+
 def test_list_jobs_returns_queue_with_counts(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=3, unreviewed=2)
     res = client.get("/api/curation/jobs")
@@ -219,7 +224,9 @@ def test_patch_pair_response_includes_exclusion_reason(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
     _set_exclusion(db_conn, pid, status="excluded", reason="blank_crop")
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명", **_token(client, job_id)}
+    )
     assert res.status_code == 200
     # 라벨만 고치는 PATCH는 사유를 건드리지 않는다.
     assert res.json()["data"]["exclusion_reason"] == "blank_crop"
@@ -228,7 +235,9 @@ def test_patch_pair_response_includes_exclusion_reason(client, db_conn):
 def test_patch_pair_updates_canonical_label(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "정식명", **_token(client, job_id)}
+    )
     assert res.status_code == 200
     assert res.json()["data"]["canonical_label"] == "정식명"
 
@@ -236,7 +245,9 @@ def test_patch_pair_updates_canonical_label(client, db_conn):
 def test_patch_pair_updates_status(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"status": "excluded", **_token(client, job_id)}
+    )
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "excluded"
 
@@ -244,7 +255,7 @@ def test_patch_pair_updates_status(client, db_conn):
 def test_patch_pair_empty_body_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={})
+    res = client.patch(f"/api/curation/pairs/{pid}", json={**_token(client, job_id)})
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
     assert "body" in res.json()["error"]["details"]  # model_validator 실패는 "body" 키(계약 고정)
@@ -253,12 +264,14 @@ def test_patch_pair_empty_body_is_400(client, db_conn):
 def test_patch_pair_invalid_status_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "garbage"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"status": "garbage", **_token(client, job_id)}
+    )
     assert res.status_code == 400
 
 
 def test_patch_pair_404_when_missing(client, db_conn):
-    res = client.patch("/api/curation/pairs/999999", json={"status": "excluded"})
+    res = client.patch("/api/curation/pairs/999999", json={"status": "excluded", "job_token": "0"})
     assert res.status_code == 404
 
 
@@ -268,7 +281,8 @@ def test_patch_pair_null_field_does_not_overwrite_status(client, db_conn):
     pid = _first_pair_id(db_conn, job_id)
     # Act — status: null 명시, canonical_label만 실제 변경 값
     res = client.patch(
-        f"/api/curation/pairs/{pid}", json={"status": None, "canonical_label": "정상"}
+        f"/api/curation/pairs/{pid}",
+        json={"status": None, "canonical_label": "정상", **_token(client, job_id)},
     )
     # Assert — 500 아닌 200, status는 'included' 보존
     assert res.status_code == 200
@@ -280,7 +294,9 @@ def test_patch_pair_null_field_does_not_overwrite_status(client, db_conn):
 def test_patch_pair_canonical_label_empty_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": ""})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "", **_token(client, job_id)}
+    )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -288,7 +304,9 @@ def test_patch_pair_canonical_label_empty_is_400(client, db_conn):
 def test_patch_pair_canonical_label_whitespace_only_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "   "})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "   ", **_token(client, job_id)}
+    )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -296,7 +314,9 @@ def test_patch_pair_canonical_label_whitespace_only_is_400(client, db_conn):
 def test_patch_pair_canonical_label_too_long_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "x" * 201})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "x" * 201, **_token(client, job_id)}
+    )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -306,7 +326,9 @@ def test_patch_pair_updates_canonical_label_preserves_status(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
     # Act — canonical_label만 변경
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "갱신명"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "갱신명", **_token(client, job_id)}
+    )
     # Assert — status는 원래 값 보존(exclude_unset 핵심 동작)
     assert res.status_code == 200
     assert res.json()["data"]["canonical_label"] == "갱신명"
@@ -318,7 +340,9 @@ def test_patch_pair_updates_status_preserves_canonical_label(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
     # Act — status만 변경
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"status": "excluded", **_token(client, job_id)}
+    )
     # Assert — canonical_label은 '품목' 보존
     assert res.status_code == 200
     assert res.json()["data"]["status"] == "excluded"
@@ -339,7 +363,7 @@ def test_patch_pair_ignores_client_sent_exclusion_reason(client, db_conn):
     # status는 included 유지 + 사유를 심으려는 시도 — 사유는 무시된다(기계만 채운다).
     res = client.patch(
         f"/api/curation/pairs/{pid}",
-        json={"status": "included", "exclusion_reason": "blank_crop"},
+        json={"status": "included", "exclusion_reason": "blank_crop", **_token(client, job_id)},
     )
     assert res.status_code == 200
     assert res.json()["data"]["exclusion_reason"] is None
@@ -352,7 +376,7 @@ def test_patch_pair_client_sent_reason_cannot_forge_machine_exclusion(client, db
     # Act — 배제하면서 기계 사유를 함께 밀어넣으려는 시도(위험 방향)
     res = client.patch(
         f"/api/curation/pairs/{pid}",
-        json={"status": "excluded", "exclusion_reason": "blank_crop"},
+        json={"status": "excluded", "exclusion_reason": "blank_crop", **_token(client, job_id)},
     )
     # Assert — 사유는 NULL로 남아 '사람이 배제'로 기록된다. 여기서 사유가 심어지면
     # 사람의 배제가 기계 배제로 위조돼 이후 기계가 사람 판정을 되돌린다(ADR 0006 §6).
@@ -368,7 +392,7 @@ def test_patch_pair_client_sent_reason_does_not_overwrite_machine_reason(client,
     # Act — 포함으로 되돌리면서 사유를 클라이언트 값으로 덮으려는 시도
     res = client.patch(
         f"/api/curation/pairs/{pid}",
-        json={"status": "included", "exclusion_reason": "hacked"},
+        json={"status": "included", "exclusion_reason": "hacked", **_token(client, job_id)},
     )
     # Assert — 화이트리스트가 클라이언트 사유를 버리고, 포함 방향은 사유를 지우지도 않는다.
     assert res.status_code == 200
@@ -378,7 +402,10 @@ def test_patch_pair_client_sent_reason_does_not_overwrite_machine_reason(client,
 def test_patch_pair_with_only_exclusion_reason_is_400(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"exclusion_reason": "blank_crop"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"exclusion_reason": "blank_crop", **_token(client, job_id)},
+    )
     assert res.status_code == 400
     assert res.json()["error"]["code"] == "VALIDATION_ERROR"
 
@@ -388,7 +415,7 @@ def test_patch_pair_with_only_exclusion_reason_is_400(client, db_conn):
 
 def test_review_marks_job_and_stamps_unreviewed_pairs(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=2, unreviewed=2)
-    res = client.post(f"/api/curation/jobs/{job_id}/review")
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
     assert res.status_code == 200
     assert res.json()["data"]["curation_reviewed"] is True
 
@@ -431,21 +458,27 @@ def test_review_is_idempotent(client, db_conn):
             {"ts": sentinel, "id": job_id},
         )
 
-    assert client.post(f"/api/curation/jobs/{job_id}/review").status_code == 200
+    assert (
+        client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id)).status_code
+        == 200
+    )
     after_first = _stamps(db_conn, job_id)
     # 모든 쌍이 검수됨 + 이미 찍힌 row 0은 sentinel 그대로(덮어쓰기 방지 입증).
     assert all(ts is not None for ts in after_first)
     assert str(after_first[0]) == sentinel
 
     # 2차 호출도 멱등 — 이미 찍힌 값은 불변.
-    assert client.post(f"/api/curation/jobs/{job_id}/review").status_code == 200
+    assert (
+        client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id)).status_code
+        == 200
+    )
     after_second = _stamps(db_conn, job_id)
     assert str(after_second[0]) == sentinel
     assert after_first == after_second
 
 
 def test_review_404_when_missing(client, db_conn):
-    res = client.post("/api/curation/jobs/999999/review")
+    res = client.post("/api/curation/jobs/999999/review", json={"job_token": "0"})
     assert res.status_code == 404
 
 
@@ -553,7 +586,7 @@ def test_review_registers_included_labels_end_to_end(client, db_conn):
     """
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1, canonical="정식품목")
 
-    res = client.post(f"/api/curation/jobs/{job_id}/review")
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
 
     assert res.status_code == 200
     assert res.json() == {"success": True, "data": {"job_id": job_id, "curation_reviewed": True}}
@@ -564,8 +597,8 @@ def test_review_registers_included_labels_end_to_end(client, db_conn):
 
 def test_review_is_idempotent_for_the_dictionary(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
-    first = client.post(f"/api/curation/jobs/{job_id}/review")
-    second = client.post(f"/api/curation/jobs/{job_id}/review")
+    first = client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
+    second = client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
     # 2차 호출도 200이어야 한다 — ensure_exists가 평범한 INSERT로 회귀하면 여기서 깨진다.
     assert (first.status_code, second.status_code) == (200, 200)
     assert _suggestion_names(db_conn).count("품목") == 1
@@ -597,7 +630,7 @@ def _pair_status(engine, pair_id):
 def test_patch_pair_releases_gate_of_reviewed_job(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
     held_flag, first_stamp = _gate(db_conn, job_id)
     # 전제 단언 — 게이트가 실제로 걸렸고 첫 검수 시각이 찍혔다. 이게 없으면 mark_reviewed가
     # 퇴행해 전 상태가 (0, None)이어도 아래 flag == 0 / stamp == first_stamp가 둘 다
@@ -605,7 +638,9 @@ def test_patch_pair_releases_gate_of_reviewed_job(client, db_conn):
     assert held_flag == 1
     assert first_stamp is not None
 
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨", **_token(client, job_id)}
+    )
 
     assert res.status_code == 200
     assert res.json()["data"]["job_curation_reviewed"] is False
@@ -628,7 +663,9 @@ def test_patch_pair_on_unreviewed_job_applies_edit_and_reports_false(client, db_
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
 
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"status": "excluded"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}", json={"status": "excluded", **_token(client, job_id)}
+    )
 
     assert res.status_code == 200
     assert res.json()["data"]["job_curation_reviewed"] is False
@@ -641,14 +678,17 @@ def test_patch_pair_does_not_register_after_job_reviewed(client, db_conn):
     """검수완료 후 라벨을 고쳐도 사전에 등록되지 않는다 — 재확정이 유일한 등록 트리거."""
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
 
-    res = client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "검수후라벨"})
+    res = client.patch(
+        f"/api/curation/pairs/{pid}",
+        json={"canonical_label": "검수후라벨", **_token(client, job_id)},
+    )
     assert res.status_code == 200
     assert "검수후라벨" not in _suggestion_names(db_conn)
 
     # 재확정하면 그때 등록된다.
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
     assert "검수후라벨" in _suggestion_names(db_conn)
 
 
@@ -664,15 +704,17 @@ def test_re_review_after_gate_release_keeps_first_review_stamp(client, db_conn):
     """
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
     with db_conn.begin() as conn:
         conn.execute(
             text("UPDATE ocr_jobs SET curation_reviewed_at = '2020-01-01 00:00:00' WHERE id = :id"),
             {"id": job_id},
         )
 
-    client.patch(f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨"})
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.patch(
+        f"/api/curation/pairs/{pid}", json={"canonical_label": "수정라벨", **_token(client, job_id)}
+    )
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
 
     job = next(j for j in client.get("/api/curation/jobs").json()["data"] if j["job_id"] == job_id)
     assert job["curation_reviewed_at"] == "2020-01-01T00:00:00"
@@ -680,7 +722,7 @@ def test_re_review_after_gate_release_keeps_first_review_stamp(client, db_conn):
 
 def test_list_jobs_exposes_curation_reviewed_at(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
 
     res = client.get("/api/curation/jobs")
 
@@ -699,7 +741,7 @@ def test_list_jobs_curation_reviewed_at_is_null_for_never_reviewed(client, db_co
 
 def test_job_detail_exposes_curation_reviewed_at(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
-    client.post(f"/api/curation/jobs/{job_id}/review")
+    client.post(f"/api/curation/jobs/{job_id}/review", json=_token(client, job_id))
 
     res = client.get(f"/api/curation/jobs/{job_id}")
 
@@ -711,7 +753,7 @@ def test_patch_pair_validation_error_envelope_is_unchanged(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
     pid = _first_pair_id(db_conn, job_id)
 
-    res = client.patch(f"/api/curation/pairs/{pid}", json={})
+    res = client.patch(f"/api/curation/pairs/{pid}", json={**_token(client, job_id)})
 
     assert res.status_code == 400
     body = res.json()
@@ -881,3 +923,175 @@ def test_job_detail_exposes_crop_available_for_orphaned_pairs(client, db_conn):
     assert [p["crop_available"] for p in pairs] == [True, False]
     assert pairs[1]["top5"] == []
     assert pairs[1]["uncertain"] is False
+
+
+# ---------------------------------------------------------------------------
+# 낙관적 잠금 (spec §12)
+# ---------------------------------------------------------------------------
+
+
+def _push_token_forward(engine, job_id):
+    """updated_at을 1초 **앞으로** 밀어 세대 토큰을 결정론적으로 벌린다(spec §12).
+
+    updated_at은 초 단위라 같은 초 안에서 상태를 전이하면 토큰이 전이 전과 같아진다.
+    UPDATE 문이 updated_at을 **명시 지정**하면 ON UPDATE CURRENT_TIMESTAMP가 발동하지
+    않으므로 여기서 쓴 값이 그대로 남는다 — 그래서 이 호출은 그 테스트의 **마지막 쓰기**
+    여야 한다(앞에 두면 뒤따르는 쓰기가 NOW로 되돌려 무효가 된다).
+
+    뒤가 아니라 앞으로 미는 이유: 중간 쓰기가 초 경계를 넘었다면 현재 값이 이미
+    stale + 1초라, 거기서 1초를 빼면 정확히 stale에 착지해 테스트가 거꾸로 실패한다.
+    앞으로 밀면 현재 값이 stale이든 stale + 1이든 결과가 stale과 절대 같지 않다.
+    """
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE ocr_jobs SET updated_at = updated_at + INTERVAL 1 SECOND WHERE id = :id"),
+            {"id": job_id},
+        )
+
+
+def test_job_detail_carries_a_job_token(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+
+    token = client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]
+
+    assert isinstance(token, str) and token
+
+
+def test_patch_pair_requires_a_job_token(client, db_conn):
+    """토큰 없는 PATCH는 400 — 계약을 옵션으로 두면 방어가 없는 클라이언트가 살아남는다."""
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠"})
+
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "job_token" in res.json()["error"]["details"]
+
+
+def test_patch_pair_rejects_a_stale_token_with_409(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}",
+        json={"canonical_label": "휠", "job_token": "0"},
+    )
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+
+
+def test_reprocess_invalidates_an_open_editors_token(client, db_conn):
+    """재처리는 status를 전이하므로 updated_at이 반드시 튄다 — 새 컬럼이 필요 없다(§12)."""
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+    stale = _token(client, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    _push_token_forward(db_conn, job_id)  # 마지막 쓰기여야 한다 — 헬퍼 docstring 참조
+
+    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠", **stale})
+
+    assert res.status_code == 409
+    # 옛 화면이 심으려던 라벨이 실제로 반영되지 않았는지 DB로 확인한다 — 409만 보면
+    # 거부 응답만 확인하고 쓰기가 새는 경로는 못 잡는다.
+    with db_conn.begin() as conn:
+        label = conn.execute(
+            text("SELECT canonical_label FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+    assert label == "품목"
+
+
+def test_patch_pair_response_carries_the_refreshed_token(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠", **_token(client, job_id)}
+    )
+
+    assert res.status_code == 200
+    assert isinstance(res.json()["data"]["job_token"], str)
+
+
+def test_the_refreshed_token_lets_the_editor_continue_without_reloading(client, db_conn):
+    """연속 편집 — 응답 토큰으로 곧바로 다음 PATCH가 통과해야 한다(Task 8이 이 왕복에 의존).
+
+    게이트가 걸린 잡(reviewed=1)으로 시작해야 첫 PATCH의 release_gate가 값을 실제로 바꿔
+    updated_at이 튄다(같은 값 UPDATE는 ON UPDATE CURRENT_TIMESTAMP를 발동시키지 않는다).
+    시드의 updated_at을 1초 **뒤로** 밀어 그 튐이 초 경계를 반드시 넘게 만든다 — 여기서는
+    앞선 stale 테스트와 의도가 반대라 방향도 반대다. 같은 초에 머물면 쓰기 **이전**
+    토큰을 돌려주는 구현도 통과해(false-green) 연속 편집 회귀를 못 잡는다.
+    """
+    job_id = _seed_job_with_pairs(db_conn, reviewed=1, pairs=1, unreviewed=1)
+    pair_id = _first_pair_id(db_conn, job_id)
+    with db_conn.begin() as conn:
+        conn.execute(
+            text("UPDATE ocr_jobs SET updated_at = updated_at - INTERVAL 1 SECOND WHERE id = :id"),
+            {"id": job_id},
+        )
+
+    first = client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠", **_token(client, job_id)}
+    )
+    second = client.patch(
+        f"/api/curation/pairs/{pair_id}",
+        json={"canonical_label": "타이어", "job_token": first.json()["data"]["job_token"]},
+    )
+
+    assert (first.status_code, second.status_code) == (200, 200)
+    assert second.json()["data"]["canonical_label"] == "타이어"
+
+
+def test_review_requires_a_job_token(client, db_conn):
+    """토큰 없는 review는 400 — PATCH만 막으면 게이트를 닫는 쪽에 구멍이 남는다."""
+    job_id = _seed_job_with_pairs(db_conn)
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json={})
+
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "job_token" in res.json()["error"]["details"]
+
+
+def test_review_rejects_a_stale_token_with_409(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json={"job_token": "0"})
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+
+
+def test_stale_review_after_reprocess_cannot_close_the_gate(client, db_conn):
+    """재처리로 열린 게이트를 옛 화면의 검수 완료가 다시 닫지 못한다(§7 · §11-1).
+
+    통과시키면 사람이 새 미결 쌍을 보지 않은 채 --reembed-job 가드를 통과시킨다.
+    """
+    job_id = _seed_job_with_pairs(db_conn)
+    stale = _token(client, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    # 재처리 요청 직후의 잡은 pending이므로 상태 가드에도 걸린다 — done으로 되돌려
+    # 토큰 대조만을 단독으로 검증한다(워커가 커밋을 끝낸 시점의 모사).
+    with db_conn.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET status = 'done' WHERE id = :id"), {"id": job_id})
+    _push_token_forward(db_conn, job_id)  # 마지막 쓰기여야 한다 — 헬퍼 docstring 참조
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json=stale)
+
+    assert res.status_code == 409
+    with db_conn.begin() as conn:
+        gate = conn.execute(
+            text("SELECT curation_reviewed FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+    assert gate == 0, "게이트가 열린 채 남아 재검수가 강제된다"
+
+
+def test_review_rejects_a_job_that_is_not_done(client, db_conn):
+    """재처리 큐에 들어간 잡의 검수 완료는 곧 덮어써질 사실이다."""
+    job_id = _seed_job_with_pairs(db_conn)
+    with db_conn.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET status = 'pending' WHERE id = :id"), {"id": job_id})
+    token = _token(client, job_id)  # 상태 전이 뒤에 읽어 토큰은 최신이다
+
+    assert client.post(f"/api/curation/jobs/{job_id}/review", json=token).status_code == 409

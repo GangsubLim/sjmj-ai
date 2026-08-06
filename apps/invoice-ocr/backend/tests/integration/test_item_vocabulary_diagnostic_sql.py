@@ -199,7 +199,8 @@ def test_diagnostic_is_empty_after_real_service_registration_path(db_conn):
     _seed_pair(db_conn, job_id, 2, "")  # 등록이 건너뛰는 빈 라벨
     _seed_pair(db_conn, job_id, 3, "제외품목", status="excluded")
 
-    CurationService(CurationRepository(), ItemRepository()).mark_reviewed(job_id)
+    repo = CurationRepository()
+    CurationService(repo, ItemRepository()).mark_reviewed(job_id, repo.get_job_token(job_id))
 
     assert _diverged(db_conn) == []
 

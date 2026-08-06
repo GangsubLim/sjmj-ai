@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 
 from app.core import envelope
 from app.repositories.items_repository import ItemRepository
-from app.schemas.curation import CurationPairPatch
+from app.schemas.curation import CurationPairPatch, CurationReviewRequest
 from app.services.curation_service import CurationService
 
 router = APIRouter()
@@ -52,18 +52,19 @@ def job_detail(job_id: int):
 
 @router.patch("/curation/pairs/{id}")
 def patch_pair(id: int, patch: CurationPairPatch):
-    """학습쌍의 status 또는 canonical_label을 갱신한다."""
+    """학습쌍의 status 또는 canonical_label을 갱신한다(잡 세대 토큰 대조)."""
     # exclude_none=True: status/canonical_label을 null로 명시 전송해도 SET NULL 쿼리가 발행되지 않도록 차단.
     # status는 NOT NULL VARCHAR, canonical_label은 min_length=1 — null 덮어쓰기 의미 없음.
-    return envelope.single(
-        _service().patch_pair(id, patch.model_dump(exclude_unset=True, exclude_none=True))
-    )
+    fields = patch.model_dump(exclude_unset=True, exclude_none=True)
+    # 토큰은 갱신 필드가 아니라 사전 조건이라 화이트리스트에서 떼어 서비스에 따로 넘긴다.
+    job_token = fields.pop("job_token")
+    return envelope.single(_service().patch_pair(id, fields, job_token))
 
 
 @router.post("/curation/jobs/{job_id}/review")
-def review(job_id: int):
-    """잡을 검수 완료로 표시한다(미처리 쌍 reviewed_at 스탬프)."""
-    return envelope.single(_service().mark_reviewed(job_id))
+def review(job_id: int, body: CurationReviewRequest):
+    """잡을 검수 완료로 표시한다(미처리 쌍 reviewed_at 스탬프 · 잡 세대 토큰 대조)."""
+    return envelope.single(_service().mark_reviewed(job_id, body.job_token))
 
 
 @router.post("/curation/jobs/{job_id}/reprocess")

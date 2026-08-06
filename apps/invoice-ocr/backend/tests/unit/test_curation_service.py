@@ -37,6 +37,7 @@ class _Repo:
                 "curation_reviewed": 0,
                 "curation_reviewed_at": None,
                 "created_at": "2026-07-28T09:00:00",
+                "job_token": "1000",
                 "result_json": self._result_json,
             },
             "pairs": self._pairs,
@@ -138,13 +139,25 @@ def _registered(item_repo) -> list[str]:
     return [c.args[0] for c in item_repo.ensure_exists.call_args_list]
 
 
-def test_mark_reviewed_registers_included_labels():
+def _reviewable(status="done", token="1000"):
+    """mark_reviewed 경로용 repo mock.
+
+    MagicMock의 기본 반환은 dict가 아니라 Mock이라 find_job_for_update를 세우지 않으면
+    job["status"]가 TypeError가 된다.
+    """
     repo = MagicMock()
-    repo.job_exists.return_value = True
+    repo.find_job_for_update.return_value = {"id": 7, "status": status}
+    repo.get_job_token.return_value = token
+    repo.list_included_labels.return_value = []
+    return repo
+
+
+def test_mark_reviewed_registers_included_labels():
+    repo = _reviewable()
     repo.list_included_labels.return_value = ["휠", "중고"]
     item_repo = MagicMock()
 
-    _sync_svc(repo, item_repo).mark_reviewed(7)
+    _sync_svc(repo, item_repo).mark_reviewed(7, "1000")
 
     assert _registered(item_repo) == ["휠", "중고"]
     repo.list_included_labels.assert_called_once_with(7)
@@ -156,12 +169,11 @@ def test_mark_reviewed_skips_blank_labels():
     확정 요청의 품목 name은 빈 문자열이 허용되고(app/schemas/ocr.py), ocr_correction이
     그 값을 그대로 canonical_label로 삼아 included 쌍을 만든다 — 실재하는 입력이다.
     """
-    repo = MagicMock()
-    repo.job_exists.return_value = True
+    repo = _reviewable()
     repo.list_included_labels.return_value = ["", "   ", "  배선수리  "]
     item_repo = MagicMock()
 
-    _sync_svc(repo, item_repo).mark_reviewed(7)
+    _sync_svc(repo, item_repo).mark_reviewed(7, "1000")
 
     assert _registered(item_repo) == ["배선수리"]  # strip 후 등록, 빈 값은 skip
 
@@ -174,21 +186,18 @@ def test_mark_reviewed_dedupes_repeated_labels_across_rows():
     넘기므로(SQL은 NULL만 거른다), 원본 문자열 기준 dedup은 이 케이스를 놓쳐
     동일한 ensure_exists("휠")를 두 번 발행한다. 정규화 후에 dedup해야 한다.
     """
-    repo = MagicMock()
-    repo.job_exists.return_value = True
+    repo = _reviewable()
     repo.list_included_labels.return_value = ["휠", "중고", "휠", " 휠 "]
     item_repo = MagicMock()
 
-    _sync_svc(repo, item_repo).mark_reviewed(7)
+    _sync_svc(repo, item_repo).mark_reviewed(7, "1000")
 
     assert _registered(item_repo) == ["휠", "중고"]
 
 
 def test_mark_reviewed_response_shape_is_unchanged():
-    repo = MagicMock()
-    repo.job_exists.return_value = True
-    repo.list_included_labels.return_value = []
-    result = _sync_svc(repo, MagicMock()).mark_reviewed(7)
+    repo = _reviewable()
+    result = _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
     assert result == {"job_id": 7, "curation_reviewed": True}
 
 
@@ -209,13 +218,14 @@ def _patched(status, label):
         "reviewed_at": None,
     }
     repo.find_pair.return_value = pair
+    repo.get_job_token.return_value = "1000"
     return repo
 
 
 def test_patch_pair_releases_the_job_gate():
     repo = _patched("included", "휠")
 
-    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
     repo.release_gate.assert_called_once_with(3)
 
@@ -229,7 +239,7 @@ def test_patch_pair_releases_gate_before_updating_pair():
     """
     repo = _patched("included", "휠")
 
-    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
     calls = [c[0] for c in repo.method_calls]
     assert calls.index("release_gate") < calls.index("update_pair")
@@ -252,7 +262,7 @@ def test_patch_pair_does_not_register_labels_even_if_a_reviewed_check_returns_tr
     repo.is_job_reviewed.return_value = True
     item_repo = MagicMock()
 
-    _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "휠"})
+    _sync_svc(repo, item_repo).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
     # _registered가 ensure_exists.call_args_list에서 파생되므로 assert_not_called와 같은 검사다.
     assert _registered(item_repo) == []
@@ -260,7 +270,7 @@ def test_patch_pair_does_not_register_labels_even_if_a_reviewed_check_returns_tr
 
 def test_patch_pair_response_shape_adds_job_gate():
     repo = _patched("included", "휠")
-    result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"})
+    result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
     assert set(result) == {
         "id",
         "crop_ref",
@@ -274,6 +284,7 @@ def test_patch_pair_response_shape_adds_job_gate():
         "exclusion_reason",
         "reviewed_at",
         "job_curation_reviewed",
+        "job_token",
     }
     assert result["canonical_label"] == "휠"
     # 해제는 무조건이므로(spec §3.4) 항상 False다.
@@ -286,7 +297,7 @@ def test_patch_pair_404_when_pair_missing():
     repo.find_pair.return_value = None
 
     with pytest.raises(AppError) as ei:
-        _sync_svc(repo, MagicMock()).patch_pair(999, {"status": "included"})
+        _sync_svc(repo, MagicMock()).patch_pair(999, {"status": "included"}, "1000")
 
     # AppError 기반 타입만 보면 400/409로 바뀌어도 통과한다 — status를 고정한다.
     assert ei.value.status == 404
@@ -345,6 +356,7 @@ def _detail_repo(pairs):
             "curation_reviewed": 0,
             "curation_reviewed_at": None,
             "created_at": "2026-08-06T00:00:00",
+            "job_token": "1000",
             "result_json": {
                 "rows": [
                     {
@@ -439,3 +451,92 @@ def test_get_detail_does_not_use_exclusion_reason_as_the_marker():
     repo = _detail_repo([orphan])
 
     assert _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]["crop_available"] is False
+
+
+# ---------------------------------------------------------------------------
+# 낙관적 잠금 (spec §12)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_pair_rejects_a_stale_token_with_409():
+    """재처리 이전 화면을 열어둔 사용자가 옛 그림을 근거로 새 쌍을 고치는 것을 막는다."""
+    repo = _patched("included", "휠")
+    repo.get_job_token.return_value = "2000"
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    assert exc.value.status == 409
+    assert exc.value.code == "CONFLICT"
+    repo.update_pair.assert_not_called()
+    repo.release_gate.assert_not_called()
+
+
+def test_patch_pair_reads_the_token_before_touching_the_pair():
+    """락 순서 — 토큰 조회(FOR UPDATE)가 부모를 먼저 잡는다."""
+    repo = _patched("included", "휠")
+
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    calls = [c[0] for c in repo.method_calls]
+    assert calls.index("get_job_token") < calls.index("update_pair")
+
+
+def test_patch_pair_returns_the_refreshed_token():
+    """프론트가 연속 편집을 이어갈 수 있도록 갱신된 토큰을 돌려준다."""
+    repo = _patched("included", "휠")
+    repo.get_job_token.side_effect = ["1000", "1001"]
+
+    result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    assert result["job_token"] == "1001"
+
+
+def test_mark_reviewed_rejects_a_stale_token_with_409():
+    """재처리 이전에 열어둔 화면의 검수 완료가 새 미결 쌍을 덮는 것을 막는다.
+
+    통과시키면 미결 쌍의 reviewed_at이 찍혀 검수 큐에서 사라지고(복구는 수동 SQL),
+    --reembed-job 가드가 통과되어 그 잡이 재검수 없이 재임베딩된다(§7·§11-1).
+    """
+    repo = _reviewable(token="2000")
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    assert exc.value.status == 409
+    assert exc.value.code == "CONFLICT"
+    repo.mark_reviewed.assert_not_called()
+
+
+def test_mark_reviewed_rejects_a_job_that_is_not_done_with_409():
+    """워커가 곧 덮어쓸 잡의 검수 완료는 의미가 없다 — reprocess와 같은 규칙이다."""
+    repo = _reviewable(status="pending")
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    assert exc.value.status == 409
+    repo.mark_reviewed.assert_not_called()
+
+
+def test_mark_reviewed_404_when_job_missing():
+    """존재 확인은 토큰 대조보다 앞선다 — 없는 잡은 409가 아니라 404다."""
+    repo = _reviewable()
+    repo.find_job_for_update.return_value = None
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    assert exc.value.status == 404
+    repo.mark_reviewed.assert_not_called()
+
+
+def test_mark_reviewed_locks_the_job_before_stamping_pairs():
+    """락 순서 — 상태·토큰 조회(FOR UPDATE)가 자식 쓰기보다 앞선다."""
+    repo = _reviewable()
+
+    _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    calls = [c[0] for c in repo.method_calls]
+    assert calls.index("find_job_for_update") < calls.index("mark_reviewed")
+    assert calls.index("get_job_token") < calls.index("mark_reviewed")

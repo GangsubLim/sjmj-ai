@@ -19,8 +19,13 @@ CanonicalLabel = Annotated[
 
 
 class CurationPairPatch(BaseModel):
-    """학습쌍 부분 갱신 요청 — status 또는 canonical_label 중 하나 이상."""
+    """학습쌍 부분 갱신 요청 — 잡 세대 토큰 + status/canonical_label 중 하나 이상.
 
+    job_token은 필수다(spec §12). 옵션으로 두면 방어 없는 클라이언트가 살아남아, 재처리
+    이전에 열어둔 화면이 옛 그림을 근거로 새 쌍을 덮는 경로가 그대로 남는다.
+    """
+
+    job_token: str
     status: CurationStatus | None = None
     canonical_label: CanonicalLabel | None = None
 
@@ -30,3 +35,14 @@ class CurationPairPatch(BaseModel):
         if self.status is None and self.canonical_label is None:
             raise ValueError("status 또는 canonical_label 중 하나는 필요합니다.")
         return self
+
+
+class CurationReviewRequest(BaseModel):
+    """검수 완료 요청 — 잡 세대 토큰만 받는다(spec §12).
+
+    쌍 수정(PATCH)만 막으면 게이트를 **닫는** 쪽에 구멍이 남는다. 재처리 이전에 열어둔
+    화면이 보내는 검수 완료는 새로 생긴 미결 쌍에 reviewed_at을 찍어 사람 눈에 닿기 전에
+    큐에서 지우고, 그 상태로 --reembed-job 가드를 통과시킨다(§7 · §11-1).
+    """
+
+    job_token: str
