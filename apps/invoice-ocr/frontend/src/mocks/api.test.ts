@@ -10,9 +10,24 @@ beforeEach(async () => {
   ({ mockCurationAPI } = await import("./api"));
 });
 
+// 세대 토큰은 mock도 대조한다(서버 미러) — 각 호출은 그 쌍이 속한 잡의 현재 토큰을 싣는다.
+async function tokenOfJob(jobId: number): Promise<string> {
+  return (await mockCurationAPI.getJob(jobId)).data.job_token;
+}
+
+async function tokenOfPair(pairId: number): Promise<string> {
+  const { data } = await mockCurationAPI.getJobs();
+  for (const summary of data) {
+    const job = await mockCurationAPI.getJob(summary.job_id);
+    if (job.data.pairs.some((p) => p.id === pairId)) return job.data.job_token;
+  }
+  throw new Error(`쌍 ${pairId}의 잡을 찾을 수 없다`);
+}
+
 describe("mockCurationAPI.patchPair", () => {
   it("실제 백엔드 PATCH 응답과 동일하게 uncertain을 포함하지 않는다", async () => {
     const { data } = await mockCurationAPI.patchPair(9001, {
+      job_token: await tokenOfPair(9001),
       canonical_label: "배추",
     });
 
@@ -21,6 +36,7 @@ describe("mockCurationAPI.patchPair", () => {
 
   it("실제 백엔드 PATCH 응답과 동일하게 top5를 포함하지 않는다", async () => {
     const { data } = await mockCurationAPI.patchPair(9002, {
+      job_token: await tokenOfPair(9002),
       canonical_label: "무",
     });
 
@@ -31,6 +47,7 @@ describe("mockCurationAPI.patchPair", () => {
     // 시드 8001(job 127)은 status=included, exclusion_reason="blank_crop"에서 출발
     // (curation_repository.update_pair의 파생 쓰기 미러 — ADR 0006).
     const { data } = await mockCurationAPI.patchPair(8001, {
+      job_token: await tokenOfPair(8001),
       status: "excluded",
     });
 
@@ -40,6 +57,7 @@ describe("mockCurationAPI.patchPair", () => {
   it("포함 방향 PATCH는 기존 exclusion_reason을 지우지 않는다", async () => {
     // 시드 8002(job 127)는 status=excluded, exclusion_reason="blank_crop"에서 출발.
     const { data } = await mockCurationAPI.patchPair(8002, {
+      job_token: await tokenOfPair(8002),
       status: "included",
     });
 
@@ -52,6 +70,7 @@ describe("mockCurationAPI.patchPair", () => {
     expect(before.data.curation_reviewed).toBe(true);
 
     const { data } = await mockCurationAPI.patchPair(8001, {
+      job_token: await tokenOfPair(8001),
       canonical_label: "당근",
     });
     expect(data.reviewed_at).toBeNull();
@@ -69,6 +88,7 @@ describe("mockCurationAPI.patchPair", () => {
     expect(before.data.curation_reviewed).toBe(true);
 
     const { data } = await mockCurationAPI.patchPair(8001, {
+      job_token: await tokenOfPair(8001),
       canonical_label: "당근",
     });
     expect(data.job_curation_reviewed).toBe(false);
@@ -81,12 +101,12 @@ describe("mockCurationAPI.patchPair", () => {
 describe("mockCurationAPI.reviewJob — COALESCE 미러", () => {
   it("최초 검수 시 curation_reviewed_at을 채우고 재확정 시에는 유지한다", async () => {
     // 잡 128은 시드에서 curation_reviewed_at=null(한 번도 검수 안 함)로 출발한다.
-    await mockCurationAPI.reviewJob(128);
+    await mockCurationAPI.reviewJob(128, await tokenOfJob(128));
     const firstPass = await mockCurationAPI.getJob(128);
     const firstStamp = firstPass.data.curation_reviewed_at;
     expect(firstStamp).not.toBeNull();
 
-    await mockCurationAPI.reviewJob(128);
+    await mockCurationAPI.reviewJob(128, await tokenOfJob(128));
     const secondPass = await mockCurationAPI.getJob(128);
     expect(secondPass.data.curation_reviewed_at).toBe(firstStamp);
   });
@@ -94,7 +114,7 @@ describe("mockCurationAPI.reviewJob — COALESCE 미러", () => {
   it("스탬프를 서버와 같은 naive 로컬 ISO(초 정밀도)로 만든다", async () => {
     // 백엔드는 MySQL DATETIME을 "2026-06-30T08:30:00"로 낸다. toISOString()의
     // UTC "Z"·밀리초 형태를 쓰면 mock 저장소에 서버가 만들 수 없는 값이 섞인다.
-    await mockCurationAPI.reviewJob(128);
+    await mockCurationAPI.reviewJob(128, await tokenOfJob(128));
     const { data } = await mockCurationAPI.getJob(128);
     expect(data.curation_reviewed_at).toMatch(
       /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/,

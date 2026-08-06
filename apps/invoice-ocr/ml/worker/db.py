@@ -19,6 +19,27 @@ def build_engine():
     return create_engine(url, pool_pre_ping=True, future=True)
 
 
+def _draft_supplies(result_json) -> dict[int, int | None]:
+    """옛 초안에서 {row_index: 모델이 읽은 supply}를 뽑는다(못 읽으면 빈 dict).
+
+    result_json은 워커가 쓴 외부 데이터다 — 형식이 깨져 있어도 승계 자체는 계속돼야 하므로
+    (draft 앵커만 비워지고 확정 앵커는 그대로 산다) 파싱 실패를 예외로 올리지 않는다.
+    """
+    if isinstance(result_json, str | bytes):
+        try:
+            result_json = json.loads(result_json)
+        except (ValueError, TypeError):
+            return {}
+    rows = (result_json or {}).get("rows") if isinstance(result_json, dict) else None
+    if not isinstance(rows, list):
+        return {}
+    return {
+        r["row_index"]: r.get("supply")
+        for r in rows
+        if isinstance(r, dict) and isinstance(r.get("row_index"), int)
+    }
+
+
 class WorkerQueue:
     """ocr_jobs 큐 접근 — pending 점유 및 done/failed 전이."""
 
@@ -62,9 +83,18 @@ class WorkerQueue:
     def fetch_pairs(self, job_id: int) -> list[OldPair]:
         """그 잡의 확정 학습쌍에서 행 앵커 입력만 뽑는다(승계는 라벨을 건드리지 않는다).
 
+        앵커를 둘 싣는다. `supply`는 사람이 확정한 값(ocr_correction이 final_supply로
+        적재)이고, `draft_supply`는 **아직 덮이지 않은 옛 result_json**에서 같은 row_index를
+        찾아 온 그때의 모델 인식값이다. 새 쪽은 언제나 모델값이라 축이 맞는 것은 후자이고,
+        전자는 엔진이 금액을 새로 맞힌 경우를 잡는다(handwriting/relink.plan_relink 참조).
+        이 조회가 commit_job보다 먼저 일어나는 것이 draft를 읽을 수 있는 유일한 창이다.
+
         신규 잡은 여기서 빈 리스트가 나와 승계가 자연히 no-op이 된다(spec §1).
         """
         with self.engine.begin() as conn:
+            draft = conn.execute(
+                text("SELECT result_json FROM ocr_jobs WHERE id=:id"), {"id": job_id}
+            ).fetchone()
             rows = conn.execute(
                 text(
                     "SELECT id, row_index, supply FROM training_pairs "
@@ -72,7 +102,11 @@ class WorkerQueue:
                 ),
                 {"id": job_id},
             ).fetchall()
-        return [OldPair(pair_id=r[0], row_index=r[1], supply=r[2]) for r in rows]
+        drafts = _draft_supplies(draft[0] if draft else None)
+        return [
+            OldPair(pair_id=r[0], row_index=r[1], supply=r[2], draft_supply=drafts.get(r[1]))
+            for r in rows
+        ]
 
     def commit_job(self, job_id: int, result_json: dict, plan: RelinkPlan) -> None:
         """초안 갱신과 라벨 승계를 한 트랜잭션으로 커밋한다(ADR 0010).
@@ -117,12 +151,29 @@ class WorkerQueue:
             for item in plan.orphaned:
                 # reviewed_at을 되돌리는 것은 미결 쌍뿐이다 — 그 잡의 unreviewed_count가
                 # 정확히 미결 수가 되어 사람이 볼 것만 큐에 뜬다(§7).
-                conn.execute(
+                #
+                # **두 문으로 가르는 이유.** 사람이 배제하면 사유가 NULL로 남는 것이 "사람
+                # 소유" 표식이다(ADR 0006 §6). 여기서 무조건 relink_failed로 덮으면 그
+                # 표식이 파괴되고, 다음 재처리에서 승계가 성공하는 순간 ②단계의 복원
+                # CASE가 참이 되어 사람이 "학습에 쓰지 말라"고 판정한 쌍이 조용히 뱅크로
+                # 돌아온다. 조건을 SET의 CASE가 아니라 WHERE에 두는 것이 핵심이다 —
+                # MySQL은 뒤 대입이 앞 대입의 결과를 보므로(같은 문장에서 status를 함께
+                # 쓰면 조건이 항상 참이 된다) SET 안의 조건은 대입 순서에 의존한다.
+                params = {"ref": item.orphan_ref, "reason": RELINK_FAILED, "id": item.pair_id}
+                human_owned = "status='excluded' AND exclusion_reason IS NULL"
+                conn.execute(  # 사람 소유 — 좌표만 옮기고 배제 결정은 그대로 둔다
+                    text(
+                        "UPDATE training_pairs SET crop_ref=:ref, reviewed_at=NULL "
+                        f"WHERE id=:id AND {human_owned}"
+                    ),
+                    params,
+                )
+                conn.execute(  # 그 밖 — 기계 판정이므로 미결 사유로 덮는다
                     text(
                         "UPDATE training_pairs SET crop_ref=:ref, status='excluded', "
-                        "exclusion_reason=:reason, reviewed_at=NULL WHERE id=:id"
+                        f"exclusion_reason=:reason, reviewed_at=NULL WHERE id=:id AND NOT ({human_owned})"
                     ),
-                    {"ref": item.orphan_ref, "reason": RELINK_FAILED, "id": item.pair_id},
+                    params,
                 )
             # ② 최종 좌표 기입 + 기계 소유 배제의 자동 복원.
             #    지난 재처리가 미결로 배제한 쌍이 이번엔 승계됐다면 그림이 돌아온 것이므로
@@ -132,6 +183,8 @@ class WorkerQueue:
             #    curation_repository.update_pair가 같은 UPDATE에서 exclusion_reason을 NULL로
             #    지운다(ADR 0006 §6) — 사유가 relink_failed로 남아 있다는 것 자체가 "아직
             #    기계 판정이며 사람이 손대지 않았다"는 뜻이라, 사람의 배제는 자동으로 빠진다.
+            #    이 판별자는 위 ①이 사람 소유 쌍의 NULL 사유를 보존해야만 성립한다 — 거기서
+            #    덮으면 한 번 미결을 거친 사람의 배제가 다음 승계에서 여기로 흘러든다.
             #    reviewed_at은 건드리지 않는다 — 아직 재검수 전이면 NULL로 남아 검수 큐에
             #    그대로 있고, 이미 검수 완료를 거친 쌍이면(mark_reviewed가 그때 미처리 쌍
             #    전량에 찍는다) 그 사실이 보존돼 복원이 조용히 일어난다.

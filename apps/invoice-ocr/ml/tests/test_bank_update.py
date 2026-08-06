@@ -43,6 +43,7 @@ from tools.bank_update import (
     partition_valid,
     plan_records,
     prune_missing_crops,
+    prune_unsettled_jobs,
     refs_of_jobs,
     render_score_md,
     require_env,
@@ -2071,3 +2072,36 @@ def test_cmd_score_inline_fingerprint_matches_compute_retrieval_version(tmp_path
     expected = compute_retrieval_version(models_dir / MODEL_FILENAME, keys, labs, emb)
     assert meta["retrieval_version"]["before"] == expected
     assert meta["retrieval_version"]["after"] == expected
+
+
+# --- 기본 plan 경로의 교체 미완 보류 (리뷰 Medium) ---
+
+
+def test_prune_unsettled_jobs_holds_add_and_replace_of_unfinished_swaps():
+    """교체가 끝나지 않은 잡의 추가·교체는 보류한다 — --reembed-job 밖에서도 같은 오염이다.
+
+    승계는 row_index를 옮기므로 미결이 0건이어도(게이트 유지) 새 좌표가 add로 계획되는데,
+    그 좌표의 PNG는 아직 옛 그림일 수 있다. 존재 검사(prune_missing_crops)는 파일이
+    있으므로 통과한다 — 잔여 디렉터리가 유일한 방어선이다.
+    """
+    diff = BankDiff(
+        add=("job-7/row-0", "job-8/row-0"),
+        replace=("job-7/row-1",),
+        remove=("job-7/row-9",),
+        unchanged=(),
+    )
+
+    pruned, held = prune_unsettled_jobs(diff, lambda name: name == "job-7.tmp")
+
+    assert pruned.add == ("job-8/row-0",)
+    assert pruned.replace == ()
+    assert pruned.remove == ("job-7/row-9",), "제거는 옛 항목 정리라 보류하지 않는다"
+    assert held == ("job-7/row-0", "job-7/row-1")
+
+
+def test_prune_unsettled_jobs_is_a_noop_when_every_swap_finished():
+    diff = BankDiff(add=("job-7/row-0",), replace=(), remove=(), unchanged=())
+
+    pruned, held = prune_unsettled_jobs(diff, lambda name: False)
+
+    assert (pruned, held) == (diff, ())

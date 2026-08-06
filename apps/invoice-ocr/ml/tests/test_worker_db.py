@@ -1,9 +1,63 @@
 """WorkerQueue 단위 테스트 — MagicMock engine, 라이브 MySQL 불필요."""
 
+import json
 from unittest.mock import MagicMock
+
+from sqlalchemy import create_engine, text
 
 from handwriting.relink import RELINK_FAILED, NewRow, OldPair, plan_relink
 from worker.db import WorkerQueue
+
+# ---------------------------------------------------------------------------
+# 실행형 픽스처 — SQL 문자열이 아니라 행의 최종 상태를 본다.
+#
+# 배제 소유권(사람/기계) 규칙은 CASE·WHERE의 의미론이 걸린 자리라, 문자열 단언으로는
+# 조건을 뒤집어도 GREEN이 유지된다. 인메모리 엔진에 실제로 문장을 실어 결과 행을 읽는다.
+# ⚠️ 이 경로에 쓰는 SQL은 UPDATE 대입 순서에 의존해선 안 된다 — MySQL은 뒤 대입이 앞
+#    대입의 결과를 보고 SQLite는 항상 옛 값을 본다. 조건은 전부 WHERE로 나가야 두 엔진에서
+#    같은 뜻이 된다.
+# ---------------------------------------------------------------------------
+
+_SCHEMA = (
+    "CREATE TABLE ocr_jobs (id INTEGER PRIMARY KEY, status TEXT, result_json TEXT, "
+    "curation_reviewed INTEGER DEFAULT 1)",
+    # crop_ref UNIQUE는 운영 스키마 그대로다(migration_008) — 2-pass 순서 제약의 근거라
+    # 여기서도 걸어야 순서를 뒤집었을 때 테스트가 실제로 깨진다.
+    "CREATE TABLE training_pairs (id INTEGER PRIMARY KEY, job_id INTEGER, "
+    "crop_ref TEXT UNIQUE, row_index INTEGER, supply INTEGER, status TEXT, "
+    "exclusion_reason TEXT, reviewed_at TEXT)",
+)
+
+
+def _live_engine(pairs):
+    """ocr_jobs 1건 + 주어진 training_pairs로 채운 인메모리 엔진을 만든다."""
+    engine = create_engine("sqlite://", future=True)
+    with engine.begin() as conn:
+        for ddl in _SCHEMA:
+            conn.execute(text(ddl))
+        conn.execute(
+            text("INSERT INTO ocr_jobs (id, status, result_json) VALUES (5, 'running', '{}')")
+        )
+        for p in pairs:
+            conn.execute(
+                text(
+                    "INSERT INTO training_pairs (id, job_id, crop_ref, row_index, supply, "
+                    "status, exclusion_reason, reviewed_at) VALUES (:id, 5, :ref, :ri, :sup, "
+                    ":st, :reason, :rev)"
+                ),
+                p,
+            )
+    return engine
+
+
+def _pair(engine, pair_id):
+    with engine.begin() as conn:
+        row = conn.execute(
+            text("SELECT status, exclusion_reason, crop_ref FROM training_pairs WHERE id=:id"),
+            {"id": pair_id},
+        ).fetchone()
+    return {"status": row[0], "exclusion_reason": row[1], "crop_ref": row[2]}
+
 
 # ---------------------------------------------------------------------------
 # commit_job — 초안 갱신 + 2-pass 승계를 한 트랜잭션으로
@@ -75,17 +129,37 @@ def test_commit_job_moves_orphans_out_in_stage_one():
 
     옛 row-0이 미결이고 옛 row-1이 row-0으로 승계되는 경우가 정확히 그 충돌이다.
     """
-    engine = MagicMock()
-    conn = engine.begin.return_value.__enter__.return_value
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 3000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/row-1",
+                "ri": 1,
+                "sup": 5000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+        ]
+    )
     olds = [OldPair(1, 0, 3000), OldPair(2, 1, 5000)]
     plan = plan_relink(5, olds, [NewRow(0, 5000)])
 
+    # crop_ref UNIQUE 위에서 도는 실제 문장이다 — 미결 전환을 뒤로 미루면 쌍 1이 row-0을
+    # 점유한 채 남아 쌍 2의 최종 좌표 기입이 duplicate key로 죽는다.
     WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
 
-    calls = _executed(conn)[1:]
-    stage_one_refs = [p["ref"] for _, p in calls[:2]]
-    assert set(stage_one_refs) == {"job-5/orphan-1", "job-5/tmp-2"}
-    assert calls[2][1]["ref"] == "job-5/row-0"
+    assert _pair(engine, 1)["crop_ref"] == "job-5/orphan-1"
+    assert _pair(engine, 2)["crop_ref"] == "job-5/row-0"
 
 
 def test_commit_job_marks_orphans_excluded_with_reason_and_clears_review():
@@ -142,6 +216,84 @@ def test_commit_job_leaves_human_excluded_pairs_excluded_when_relink_succeeds():
     assert params["reason"] == RELINK_FAILED
     assert "status='included'" not in sql, "무조건 복원이면 사람 배제까지 되돌아온다"
     assert "exclusion_reason=NULL" not in sql, "사람 소유 표식(NULL 사유)을 덮어쓰지 않는다"
+
+
+def test_orphaning_a_human_excluded_pair_keeps_its_null_reason():
+    """사람이 배제한 쌍(사유 NULL)은 미결로 밀려도 사유가 NULL로 남는다.
+
+    사유를 relink_failed로 덮으면 사람 소유 표식이 파괴되고, 다음 재처리에서 승계가
+    성공하는 순간 ②단계의 복원 CASE가 참이 되어 사람이 "학습에 쓰지 말라"고 판정한 쌍이
+    included로 되돌아간다(검수완료 잡이면 reviewed_at이 있어 큐에도 뜨지 않는다).
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 3000,
+                "st": "excluded",
+                "reason": None,
+                "rev": "2026-01-01",
+            }
+        ]
+    )
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert _pair(engine, 1) == {
+        "status": "excluded",
+        "exclusion_reason": None,
+        "crop_ref": "job-5/orphan-1",
+    }
+
+
+def test_machine_excluded_pair_still_gets_relink_failed_when_orphaned():
+    """기계 배제(blank_crop)는 미결 사유로 덮인다 — 그 사유가 가리키던 그림이 이미 없다."""
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 3000,
+                "st": "excluded",
+                "reason": "blank_crop",
+                "rev": "2026-01-01",
+            }
+        ]
+    )
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert _pair(engine, 1)["exclusion_reason"] == RELINK_FAILED
+
+
+def test_human_exclusion_survives_a_full_orphan_then_relink_cycle():
+    """미결 → 재승계 왕복을 거쳐도 사람의 배제 결정이 살아남는다(반복 재처리 전제)."""
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 3000,
+                "st": "excluded",
+                "reason": None,
+                "rev": "2026-01-01",
+            }
+        ]
+    )
+    queue = WorkerQueue(engine)
+    queue.commit_job(5, {"rows": []}, plan_relink(5, [OldPair(1, 0, 3000)], []))  # 1회차: 미결
+    queue.commit_job(  # 2회차: 승계 성공
+        5, {"rows": []}, plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+    )
+
+    assert _pair(engine, 1)["status"] == "excluded", "사람의 배제가 자동 복원되면 안 된다"
+    assert _pair(engine, 1)["exclusion_reason"] is None
 
 
 def test_commit_job_keeps_reviewed_at_of_relinked_pairs():
@@ -327,15 +479,85 @@ def test_claim_next_pending_returns_none_when_empty():
 # ---------------------------------------------------------------------------
 
 
+def _fetch_engine(pairs, result_json):
+    """fetch_pairs 경로용 실행형 엔진 — 옛 초안이 실제로 조인되는지 본다."""
+    engine = _live_engine(pairs)
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE ocr_jobs SET result_json=:r WHERE id=5"),
+            {"r": json.dumps(result_json)},
+        )
+    return engine
+
+
 def test_fetch_pairs_returns_anchor_inputs_in_row_order():
     """승계 입력은 (pair_id, row_index, supply) 셋뿐 — 라벨은 승계가 건드리지 않는다."""
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = None
     conn.execute.return_value.fetchall.return_value = [(1, 0, 3000), (2, 1, None)]
 
     pairs = WorkerQueue(engine).fetch_pairs(9)
 
-    assert pairs == [OldPair(1, 0, 3000), OldPair(2, 1, None)]
+    assert [(p.pair_id, p.row_index, p.supply) for p in pairs] == [(1, 0, 3000), (2, 1, None)]
     sql = str(conn.execute.call_args[0][0])
     assert "ORDER BY row_index" in sql
     assert conn.execute.call_args[0][1]["id"] == 9
+
+
+def test_fetch_pairs_joins_the_old_draft_supply_by_row_index():
+    """옛 초안의 모델 인식값을 함께 싣는다 — 2단계 회수 앵커의 유일한 출처다.
+
+    training_pairs.supply는 사람이 확정한 값이라(ocr_correction) 새 쪽 모델값과 축이
+    다르다. 이 조인이 없으면 draft 앵커가 전부 None이 되어 ②단계가 항상 no-op이다.
+    """
+    engine = _fetch_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 5000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/row-9",
+                "ri": 9,
+                "sup": 7000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+        ],
+        {"rows": [{"row_index": 0, "supply": 5100}]},
+    )
+
+    pairs = WorkerQueue(engine).fetch_pairs(5)
+
+    assert [(p.pair_id, p.supply, p.draft_supply) for p in pairs] == [
+        (1, 5000, 5100),
+        (2, 7000, None),  # 옛 초안에 없는 행(지난 재처리의 미결 쌍)은 draft가 없다
+    ]
+
+
+def test_fetch_pairs_tolerates_an_unusable_old_draft():
+    """옛 result_json이 깨졌거나 rows가 없어도 승계 자체는 계속된다(draft만 비워진다)."""
+    engine = _fetch_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 5000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            }
+        ],
+        {"rows": "깨진값"},
+    )
+
+    assert WorkerQueue(engine).fetch_pairs(5)[0].draft_supply is None

@@ -10,6 +10,7 @@ import type {
   CurationJobDetail,
   CurationJobSummary,
   CurationPairPatch,
+  CurationPairPatchBody,
 } from "./curation";
 
 describe("curation 타입 계약", () => {
@@ -76,13 +77,21 @@ describe("curation 타입 계약", () => {
     >();
   });
 
-  it("PATCH 본문은 status·canonical_label·job_token 모두 선택적이다", () => {
-    // job_token은 훅이 채운다(컴포넌트는 만들지 않는다) — 타입상 optional이어야 컴포넌트
-    // 쪽 호출부가 이 필드 없이도 컴파일된다.
+  it("컴포넌트가 만드는 PATCH는 status·canonical_label만 갖는다", () => {
+    // job_token은 훅이 채운다 — 컴포넌트 쪽 호출부가 이 필드 없이 컴파일돼야 한다.
     expectTypeOf<CurationPairPatch>().toEqualTypeOf<{
       status?: "included" | "excluded";
       canonical_label?: string;
-      job_token?: string;
     }>();
+  });
+
+  it("와이어에 나가는 PATCH 본문은 job_token을 필수로 요구한다", () => {
+    // 서버가 필수로 요구하므로(spec §12) optional로 두면 훅이 토큰을 못 채운 창에서
+    // axios가 키를 떨궈 의도한 409 대신 400이 나간다 — 방어를 타입으로 강제한다.
+    // optional이면 이 타입이 `string | undefined`가 되어 단언이 깨진다 — 필수임의 증명이다.
+    expectTypeOf<CurationPairPatchBody["job_token"]>().toEqualTypeOf<string>();
+    expectTypeOf<CurationPairPatchBody["canonical_label"]>().toEqualTypeOf<
+      string | undefined
+    >();
   });
 });

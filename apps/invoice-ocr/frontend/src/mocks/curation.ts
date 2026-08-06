@@ -11,7 +11,9 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:10:00",
-    job_token: "1000",
+    // 잡마다 다른 토큰 — 전부 같으면 교차 잡 토큰 누수(옛 잡 응답이 새 잡 토큰을 덮는
+    // 회귀)가 mock에서 전혀 드러나지 않는다. 값은 서버의 UNIX_TIMESTAMP 형태를 흉내 낸다.
+    job_token: "1780000010",
     pairs: [
       {
         id: 9001,
@@ -68,7 +70,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: "2026-06-30T08:30:00",
     warp_ok: false,
     created_at: "2026-06-30T08:00:00",
-    job_token: "1000",
+    job_token: "1780000020",
     pairs: [
       {
         id: 8001,
@@ -125,7 +127,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: "2026-06-29T17:20:00",
     warp_ok: true,
     created_at: "2026-06-29T17:00:00",
-    job_token: "1000",
+    job_token: "1780000030",
     pairs: [
       {
         // 검수 후 다시 손댄 쌍 — 서버가 같은 UPDATE에서 reviewed_at을 NULL로 되돌린다.
@@ -158,6 +160,24 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         uncertain: false,
         crop_available: true,
         top5: [{ label: "양파", sim: 0.93 }],
+      },
+      {
+        // 재처리 승계에 실패한 미결 쌍 — 시드에 하나도 없으면 "그림 없음" 분기와
+        // 승계 실패 배지가 mock QA·디자인 리뷰에서 한 번도 렌더되지 않는다.
+        // row_index는 옛 세대 값 그대로다(승계 실패 쌍은 갱신 대상에서 빠진다).
+        id: 7003,
+        crop_ref: "job-126/orphan-7003",
+        row_index: 2,
+        draft_label: "감자",
+        final_label: "감자",
+        canonical_label: "감자",
+        supply: 6000,
+        status: "excluded",
+        exclusion_reason: "relink_failed",
+        reviewed_at: null,
+        uncertain: false,
+        crop_available: false,
+        top5: [],
       },
     ],
   },

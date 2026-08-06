@@ -215,3 +215,56 @@ def test_exclusion_reason_value_is_relink_failed():
     """미결 쌍의 배제 사유 값은 exclusion_reason VARCHAR(32)에 그대로 들어간다."""
     assert RELINK_FAILED == "relink_failed"
     assert len(RELINK_FAILED) <= 32
+
+
+# --- ⑤ 앵커 축 정합: 사람 교정값(final) + 옛 모델값(draft) 양쪽 허용 (리뷰 High #2) ---
+
+
+def _olds_with_draft(*pairs):
+    """(final_supply, draft_supply) 목록을 row_index 0..n-1 의 옛 쌍으로 만든다."""
+    return [
+        OldPair(pair_id=100 + i, row_index=i, supply=f, draft_supply=d)
+        for i, (f, d) in enumerate(pairs)
+    ]
+
+
+def test_a_row_whose_amount_the_human_corrected_still_relinks():
+    """금액을 사람이 고쳤던 행도 승계된다 — 두 앵커의 출처가 다르기 때문이다.
+
+    training_pairs.supply는 ocr_correction이 final_supply(사람 확정)로 적재하는데
+    새 쪽은 이번 실행의 모델 인식값이다. final만 앵커로 쓰면 "행 구조가 바뀌었는가"가
+    아니라 "이번 인식이 사람 정답과 일치하는가"를 재게 되어, 승계 실패율이 행 검출
+    변화율이 아니라 금액 인식 오류율을 따라간다.
+    """
+    # 2번째 행: 모델은 예나 지금이나 5100으로 읽고, 사람이 5000으로 고쳤다.
+    olds = _olds_with_draft((3000, 3000), (5000, 5100), (7000, 7000))
+    plan = plan_relink(JOB, olds, _news(3000, 5100, 7000))
+
+    assert plan.orphaned == ()
+    assert _final_by_pair(plan)[101] == f"job-{JOB}/row-1"
+
+
+def test_same_engine_rerun_is_identity_even_when_every_amount_was_corrected():
+    """같은 사진·같은 엔진 재실행은 항등이다 — requeue_for_reprocess의 복구 전제(§9)."""
+    olds = _olds_with_draft((3000, 3100), (5000, 5100), (7000, 7100))
+    plan = plan_relink(JOB, olds, _news(3100, 5100, 7100))
+
+    assert plan.orphaned == ()
+    assert [r.final_row_index for r in plan.relinked] == [0, 1, 2]
+
+
+def test_draft_fallback_never_matches_across_an_anchored_row():
+    """draft 회수는 확정 앵커 사이의 빈칸 안에서만 일어난다 — 순서 제약이 살아 있어야 한다."""
+    # 옛 0행의 draft(9000)가 새 2행과 같지만, 옛 1행이 새 1행에 앵커돼 있어 넘어갈 수 없다.
+    olds = _olds_with_draft((1111, 9000), (5000, 5000))
+    plan = plan_relink(JOB, olds, _news(4000, 5000, 9000))
+
+    assert [o.pair_id for o in plan.orphaned] == [100]
+
+
+def test_draft_fallback_stays_out_when_the_gap_is_ambiguous():
+    """빈칸 안에서 같은 draft 금액이 여러 새 행과 맞으면 데이터에 답이 없다 — 미결로 민다."""
+    olds = _olds_with_draft((1111, 8000), (2222, 8000))
+    plan = plan_relink(JOB, olds, _news(8000, 8000, 8000))
+
+    assert len(plan.orphaned) == 2

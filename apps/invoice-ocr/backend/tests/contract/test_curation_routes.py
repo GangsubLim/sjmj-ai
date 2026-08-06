@@ -1002,6 +1002,30 @@ def test_reprocess_invalidates_an_open_editors_token(client, db_conn):
     assert label == "품목"
 
 
+def test_patch_pair_rejects_edits_on_a_job_queued_for_reprocess(client, db_conn):
+    """재처리 큐에 든 잡의 쌍은 **유효한 최신 토큰으로도** 고칠 수 없다.
+
+    세대 토큰만으로는 이 경로를 못 막는다 — 409 메시지가 "새로고침한 뒤 다시 시도하세요"라고
+    직접 안내하고, 새로고침하면 pending 잡의 유효한 새 토큰이 손에 들어와 같은 PATCH가
+    통과한다. 그 사이 워커의 commit_job이 쌍 전량을 재배치하므로 사람의 결정이 경고 없이
+    사라진다. mark_reviewed와 같은 상태 가드를 둬야 방어가 대칭이 된다.
+    """
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    fresh = _token(client, job_id)  # 사람이 안내대로 새로고침해 받은 유효한 토큰
+
+    res = client.patch(f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠", **fresh})
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+    with db_conn.begin() as conn:
+        label = conn.execute(
+            text("SELECT canonical_label FROM training_pairs WHERE id = :id"), {"id": pair_id}
+        ).scalar()
+    assert label == "품목", "거부 응답만 보면 쓰기가 새는 경로를 못 잡는다"
+
+
 def test_patch_pair_response_carries_the_refreshed_token(client, db_conn):
     job_id = _seed_job_with_pairs(db_conn)
     pair_id = _first_pair_id(db_conn, job_id)
@@ -1095,3 +1119,29 @@ def test_review_rejects_a_job_that_is_not_done(client, db_conn):
     token = _token(client, job_id)  # 상태 전이 뒤에 읽어 토큰은 최신이다
 
     assert client.post(f"/api/curation/jobs/{job_id}/review", json=token).status_code == 409
+
+
+def test_patch_pair_rejects_a_blank_job_token_as_a_validation_error(client, db_conn):
+    """빈 토큰은 400이다 — 통과시키면 형식 오류가 409(세대 충돌)로 둔갑한다.
+
+    409는 "새로고침하면 낫는다"는 뜻인데 이 경우는 새로고침해도 낫지 않고, 로그에서도
+    진짜 세대 충돌과 구분되지 않는다.
+    """
+    job_id = _seed_job_with_pairs(db_conn)
+    pair_id = _first_pair_id(db_conn, job_id)
+
+    res = client.patch(
+        f"/api/curation/pairs/{pair_id}", json={"canonical_label": "휠", "job_token": "   "}
+    )
+
+    assert res.status_code == 400
+    assert "job_token" in res.json()["error"]["details"]
+
+
+def test_review_rejects_a_blank_job_token_as_a_validation_error(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+
+    res = client.post(f"/api/curation/jobs/{job_id}/review", json={"job_token": ""})
+
+    assert res.status_code == 400
+    assert "job_token" in res.json()["error"]["details"]

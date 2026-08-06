@@ -221,6 +221,41 @@ def prune_missing_crops(
     return pruned, missing
 
 
+def prune_unsettled_jobs(
+    diff: BankDiff, dir_exists: Callable[[str], bool]
+) -> tuple[BankDiff, tuple[str, ...]]:
+    """크롭 교체가 끝나지 않은 잡의 추가·교체를 계획에서 뺀다(§9 · §11-1).
+
+    `require_settled_crops`가 `--reembed-job`에 거는 것과 같은 방어를 기본 plan 경로에도
+    건다. 승계는 row_index를 옮기므로 미결이 0건이어도(그 잡은 게이트가 유지돼 reviewed
+    범위에 그대로 남는다) 새 좌표가 추가로 계획되는데, 그 좌표의 PNG는 아직 옛 그림일 수
+    있다 — 파일이 존재하므로 `prune_missing_crops`는 통과시킨다.
+
+    거부가 아니라 보류인 것이 `--reembed-job`과 다른 점이다. 그쪽은 사람이 잡을 지목했으니
+    틀린 지목을 알려야 하지만, 여기서 하드 페일하면 어느 한 잡이 멈춰 있는 동안 뱅크 갱신
+    전체가 막힌다. 제거(remove)에는 적용하지 않는다 — `prune_missing_crops`와 같은 이유로
+    멀쩡한 뱅크 항목이 조용히 지워진다.
+
+    Args:
+        diff: 크롭 존재 검사 이전의 뱅크 diff.
+        dir_exists: 크롭 루트 기준 디렉터리 이름을 받아 존재 여부를 답하는 콜백.
+
+    Returns:
+        (보류분을 뺀 diff, 보류된 crop_ref 튜플).
+    """
+    jobs = {inv_of(r) for r in diff.add + diff.replace}
+    unsettled = {j for j in jobs if any(dir_exists(f"{j}{sfx}") for sfx in UNSETTLED_SUFFIXES)}
+    held = tuple(sorted(r for r in diff.add + diff.replace if inv_of(r) in unsettled))
+    skip = set(held)
+    pruned = BankDiff(
+        add=tuple(r for r in diff.add if r not in skip),
+        replace=tuple(r for r in diff.replace if r not in skip),
+        remove=diff.remove,
+        unchanged=diff.unchanged,
+    )
+    return pruned, held
+
+
 ACTIONS = ("add", "replace", "remove")
 LABEL_REQUIRED_ACTIONS = ("add", "replace")
 
@@ -822,9 +857,11 @@ def require_settled_crops(dir_exists: Callable[[str], bool], job_ids: list[int])
 
     워커는 크롭을 job-N.tmp에 쓰고 DB 커밋 성공 후에만 job-N으로 교체한다. 그 사이에
     프로세스가 죽으면 **DB는 새 좌표인데 파일은 옛 그림**인 상태가 status='done'인 채로
-    남고, 재큐잉조차 없다. 이 갈래만이 옛 PNG를 제자리에 남기므로 prune_missing_crops의
+    남는다. 교체가 OSError로 실패한 경우엔 워커가 스스로 재처리 큐에 되돌리지만, 프로세스
+    사망에는 그 재큐잉조차 없다. 이 갈래가 옛 PNG를 제자리에 남기므로 prune_missing_crops의
     크롭 존재 검사를 통과한다 — 재임베딩이 옛 그림을 새 라벨로 뱅크에 정식 등록하는
-    유일한 경로다. 남은 job-N.tmp / job-N.old가 그 상태의 durable 마커다.
+    경로다. 남은 job-N.tmp / job-N.old가 그 상태의 durable 마커이며, 재실행이 잔여 tmp를
+    지우지 않고 .old로 옮기는 것(worker/poll.process_one_job)이 durable의 근거다.
 
     잡의 DB 상태를 따로 조회하지 않는 이유: 교체가 미완인 잡은 어느 실패 경로에서도
     잔여를 남기므로(첫 rename 실패 → .tmp, 두 번째 rename 실패 → .old, 처리 중 → .tmp)
@@ -947,13 +984,18 @@ def cmd_plan(args) -> None:
     _, labs, _, keys = load_bank(bank_path)
     desired = {p["crop_ref"]: p["canonical_label"] for p in valid}
     diff = diff_bank(bank_current_map(labs=labs, keys=keys), desired)
+    promoted: set[str] = set()
     if args.reembed_job:
         # 가드가 먼저다 — 미검수 잡을 지정하면 승격은 no-op인 채 remove만 계획된다(§11-1).
         require_reviewed_jobs(reviewed, args.reembed_job)
         # 교체가 끝나지 않은 잡은 "새 좌표 + 옛 그림"일 수 있고, 그 옛 PNG는 아래 크롭
         # 존재 검사를 통과해 버린다 — 잔여 디렉터리가 유일한 방어선이다(§9).
         require_settled_crops(lambda name: (crops_root / name).is_dir(), args.reembed_job)
-        diff = force_replace(diff, refs_of_jobs(diff.unchanged, args.reembed_job))
+        promoted = refs_of_jobs(diff.unchanged, args.reembed_job)
+        diff = force_replace(diff, promoted)
+    # 지정 잡 밖에도 교체 미완 잡이 있을 수 있다 — 승계가 좌표를 옮긴 뒤 아직 파일이 옛
+    # 그림이면 아래 존재 검사는 통과하므로, 잔여 디렉터리로 먼저 걸러 낸다(§9).
+    diff, unsettled = prune_unsettled_jobs(diff, lambda name: (crops_root / name).is_dir())
     # 크롭 존재 검사는 diff 이후 추가·교체에만 — desired에서 미리 빼면 기존 뱅크 항목이 remove된다.
     # force_replace가 replace로 올린 ref도 여기서 크롭 존재 검사를 함께 받는다.
     diff, missing = prune_missing_crops(diff, lambda ref: (crops_root / f"{ref}.png").exists())
@@ -967,9 +1009,16 @@ def cmd_plan(args) -> None:
         f"불변 {len(diff.unchanged)}\n저장: {out}"
     )
     if args.reembed_job:
-        print(f"  강제 재임베딩 지정 잡: {sorted(set(args.reembed_job))}")
+        # 승격 건수를 함께 낸다 — 오타 id나 이미 add/replace인 잡은 승격이 0건인데, 그
+        # 사실을 알리지 않으면 조용한 no-op이 계획대로 돈 것처럼 보인다.
+        print(
+            f"  강제 재임베딩 지정 잡: {sorted(set(args.reembed_job))} — "
+            f"불변 {len(promoted)}건을 교체로 승격"
+        )
     for p in invalid:
         print(f"  제외 {p['crop_ref']}: {p['reason']} (label={p.get('canonical_label')!r})")
+    for ref in unsettled:
+        print(f"  보류 {ref}: unsettled_swap (크롭 교체 미완 — 다시 재처리한 뒤 실행하세요)")
     for ref in missing:
         print(f"  보류 {ref}: missing_crop (추가·교체만 보류 — 기존 뱅크 항목은 유지)")
 

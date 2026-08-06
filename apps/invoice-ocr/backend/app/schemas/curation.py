@@ -17,6 +17,11 @@ CanonicalLabel = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=200)
 ]
 
+# 잡 세대 토큰 — 빈 값·공백뿐인 값은 형식 오류(400)로 닫는다. 통과시키면 절대 일치하지
+# 않는 값이 세대 대조까지 흘러가 409(세대 충돌)로 둔갑하고, 사용자는 새로고침해도 낫지
+# 않는 안내를 반복해서 받는다. 로그에서도 진짜 충돌과 구분되지 않는다.
+JobToken = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+
 
 class CurationPairPatch(BaseModel):
     """학습쌍 부분 갱신 요청 — 잡 세대 토큰 + status/canonical_label 중 하나 이상.
@@ -25,7 +30,7 @@ class CurationPairPatch(BaseModel):
     이전에 열어둔 화면이 옛 그림을 근거로 새 쌍을 덮는 경로가 그대로 남는다.
     """
 
-    job_token: str
+    job_token: JobToken
     status: CurationStatus | None = None
     canonical_label: CanonicalLabel | None = None
 
@@ -45,4 +50,4 @@ class CurationReviewRequest(BaseModel):
     큐에서 지우고, 그 상태로 --reembed-job 가드를 통과시킨다(§7 · §11-1).
     """
 
-    job_token: str
+    job_token: JobToken

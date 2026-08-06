@@ -17,8 +17,14 @@ NO_FINGERPRINT_NOTICE(지문 미확정 안내 — fetch 직후 안내에도 재�
 draft_label은 **확정 시점의 기록**이라 재처리가 갱신하지 않는다(spec §8) — 한쪽만 갱신하면
 "사람이 무엇을 보고 무엇으로 고쳤는가"(label_changed)의 짝이 깨지고, 둘 다 갱신하면 확정
 이력을 사후 조작하게 된다. 따라서 재처리된 잡의 리포트에는 옛 엔진의 draft와 새 엔진 기준
-버킷이 나란히 찍힌다. 품목축 지표는 draft_label을 쓰지 않으므로(curation_enrich.label_bucket이
-result_json의 top5와 canonical_label만 본다) 지표 자체는 자동으로 새 엔진 기준이 된다.
+버킷이 나란히 찍힌다.
+
+품목축 지표는 draft_label을 쓰지 않는다 — curation_enrich.label_bucket의 입력은 top5·
+canonical_label·**현재 뱅크**이고, top5의 진실원은 재평가 preds가 있으면 그쪽이 우선한다
+(재평가는 result_json 조인과 무관하게 preds를 직접 준다). 다만 그 결과가 곧 "새 엔진 기준"인
+것은 아니다: 시점 판정이 안 되는 쌍은 `unevaluable`로, 재처리로 조인이 어긋난 쌍은
+`row_missing`으로 각각 격리돼 성능 수치의 분모에서 빠진다(curation_cohort 참조). 재처리 직후
+리포트의 품목 수치는 그래서 모수가 줄어든 값이며, 재처리 이전 수치와 직접 비교하지 않는다.
 """
 
 from tools.curation_cohort import (

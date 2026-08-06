@@ -156,6 +156,31 @@ def test_swap_failure_after_commit_requeues_the_job(tmp_path, monkeypatch):
     q.rollback_to_done.assert_not_called()
 
 
+def test_a_failing_rerun_keeps_the_unfinished_swap_marker_alive(tmp_path):
+    """앞선 실행의 미완 교체 마커는 재실행이 실패해도 사라지지 않는다.
+
+    run A가 커밋 성공 후 교체 직전에 죽으면 잔여 tmp가 유일한 마커다(위 death 테스트).
+    재처리 run B가 그것을 지운 뒤 추론에 실패하면 최종 상태는 "DB는 run A의 새 좌표,
+    파일은 옛 PNG, 마커 없음"이 되어 require_settled_crops도 prune_missing_crops도
+    통과한다 — --reembed-job이 "옛 그림 + 새 라벨"을 정식 등록하는 경로가 열린다.
+    """
+    live = tmp_path / "job-9"
+    live.mkdir()
+    (live / "row-0.png").write_bytes(b"old")
+    leftover = tmp_path / "job-9.tmp"  # run A가 남긴 미완 교체 마커
+    leftover.mkdir()
+    (leftover / "row-0.png").write_bytes(b"committed")
+
+    def failing_infer(image_path, crop_dir, job_id):
+        raise RuntimeError("추론 실패")
+
+    q = _queue(_job(is_reprocess=True))
+    process_one_job(q, failing_infer, tmp_path)
+
+    markers = [p.name for p in tmp_path.iterdir() if p.name.startswith("job-9.")]
+    assert markers, "미완 교체 마커가 남아야 재임베딩 가드가 이 잡을 거부한다"
+
+
 def test_leftover_tmp_directory_from_a_previous_crash_is_cleared(tmp_path):
     """앞선 실패가 남긴 tmp가 새 추론 결과와 섞이지 않는다."""
     stale = tmp_path / "job-9.tmp"

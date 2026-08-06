@@ -57,15 +57,26 @@ def process_one_job(queue, infer_fn, crops_root) -> bool:
     crops_root = Path(crops_root)
     final_dir = crops_root / f"job-{job_id}"
     tmp_dir = crops_root / f"job-{job_id}.tmp"
+    old_dir = crops_root / f"job-{job_id}.old"
     try:
-        shutil.rmtree(tmp_dir, ignore_errors=True)  # 앞선 실패가 남긴 잔여
+        if tmp_dir.exists():
+            # 앞선 실패가 남긴 잔여 — **지우지 않고 .old로 옮긴다.** 커밋 성공 후 교체
+            # 직전에 죽은 실행에서는 이 tmp가 "교체가 끝나지 않았다"의 유일한 마커다.
+            # 여기서 지우면 이번 실행마저 실패했을 때 DB는 새 좌표인데 파일은 옛 그림이고
+            # 마커는 없는 상태가 되어, --reembed-job 가드가 그대로 통과한다(§11-1).
+            # 내용은 판별 근거가 아니다(마커는 존재 자체가 신호다) — 접미사만 옮긴다.
+            shutil.rmtree(old_dir, ignore_errors=True)
+            tmp_dir.rename(old_dir)
         result = infer_fn(job["image_path"], tmp_dir, job_id)
         plan = plan_relink(job_id, queue.fetch_pairs(job_id), _new_rows(result))
         queue.commit_job(job_id, result, plan)
     except Exception as exc:  # noqa: BLE001 — 잡 단위 격리(워커 생존)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         if job["is_reprocess"]:
-            # 재처리 실패는 failed가 아니라 done이다 — 옛 초안·옛 크롭이 그대로 정합이다.
+            # 재처리 실패는 failed가 아니라 done이다 — 이번 실행은 커밋에 닿지 못했으므로
+            # 초안·크롭이 실행 전 그대로다. 단, 앞선 실행이 커밋 후 교체 전에 죽었다면
+            # 실행 전 상태 자체가 이미 어긋나 있다(DB는 새 좌표, 파일은 옛 그림) — 그
+            # 경우는 위에서 .old로 보존한 마커가 남아 재임베딩 가드가 잡아낸다.
             queue.rollback_to_done(job_id)
         else:
             queue.mark_failed(job_id, {"error": str(exc)})

@@ -3786,7 +3786,7 @@
             "type": "string",
             "enum": ["blank_crop", "relink_failed", null],
             "nullable": true,
-            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400. relink_failed는 재처리 승계에 실패한 미결 쌍(그림 자체가 없다 — 빈 크롭과 다르다)."
+            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 400이다 — 원인은 at-least-one 검증이 아니라 필수 필드 job_token 누락이며(필드 검증이 model_validator보다 먼저 돈다) details 키도 job_token으로 잡힌다. job_token까지 실은 채 이 필드만 보내면 그때 at-least-one 검증에 걸린다. relink_failed는 재처리 승계에 실패한 미결 쌍(그림 자체가 없다 — 빈 크롭과 다르다)."
           },
           "reviewed_at": {
             "type": "string",

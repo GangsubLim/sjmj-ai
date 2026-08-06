@@ -65,11 +65,17 @@ export interface CurationJobDetail {
   pairs: CurationJobPair[];
 }
 
+// 컴포넌트가 만드는 부분 갱신 — 토큰은 없다(훅이 채운다).
 export type CurationPairPatch = {
   status?: "included" | "excluded";
   canonical_label?: string;
-  // 훅이 잡 상세의 토큰을 채워 넣는다 — 컴포넌트는 이 필드를 만들지 않는다.
-  job_token?: string;
+};
+
+// 실제로 와이어에 나가는 본문. job_token은 서버가 **필수**로 요구하므로 여기서도 필수다 —
+// optional로 두면 훅이 토큰을 못 채운 창에서 axios가 키를 떨궈, 의도한 409(세대 충돌)
+// 대신 400(형식 오류)이 나가고 세대 방어가 타입 차원에서 강제되지 않는다.
+export type CurationPairPatchBody = CurationPairPatch & {
+  job_token: string;
 };
 
 export type CurationImageKind = "original" | "warped";

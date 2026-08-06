@@ -201,9 +201,14 @@ def test_mark_reviewed_response_shape_is_unchanged():
     assert result == {"job_id": 7, "curation_reviewed": True}
 
 
-def _patched(status, label):
-    """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다."""
+def _patched(status, label, job_status="done"):
+    """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다.
+
+    MagicMock의 기본 반환은 dict가 아니라 Mock이라 find_job_for_update를 세우지 않으면
+    잡 상태 가드가 Mock != "done"으로 걸린다(_reviewable과 같은 이유).
+    """
     repo = MagicMock()
+    repo.find_job_for_update.return_value = {"id": 3, "status": job_status}
     pair = {
         "id": 5,
         "crop_ref": "job-3/row-0",
@@ -456,6 +461,21 @@ def test_get_detail_does_not_use_exclusion_reason_as_the_marker():
 # ---------------------------------------------------------------------------
 # 낙관적 잠금 (spec §12)
 # ---------------------------------------------------------------------------
+
+
+def test_patch_pair_rejects_a_job_that_is_not_done_before_comparing_tokens():
+    """재처리 큐에 든 잡은 토큰이 맞아도 거부한다 — 토큰만으로는 이 경로를 못 막는다.
+
+    409 안내대로 새로고침하면 pending 잡의 유효한 새 토큰이 손에 들어와 같은 PATCH가
+    통과하기 때문이다. 상태 가드를 지우면 이 단언이 RED가 된다.
+    """
+    repo = _patched("included", "휠", job_status="pending")
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    assert exc.value.status == 409
+    repo.update_pair.assert_not_called()
 
 
 def test_patch_pair_rejects_a_stale_token_with_409():

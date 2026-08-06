@@ -18,11 +18,22 @@ RELINK_FAILED = "relink_failed"
 
 @dataclass(frozen=True)
 class OldPair:
-    """재처리 이전의 확정 학습쌍(training_pairs 1행에서 필요한 것만)."""
+    """재처리 이전의 확정 학습쌍(training_pairs 1행에서 필요한 것만).
+
+    앵커가 두 개인 이유는 두 값의 **출처가 다르기 때문**이다. `supply`는
+    ocr_correction이 `final_supply`, 즉 사람이 확정한 값으로 적재하고, `draft_supply`는
+    같은 행을 그때의 모델이 읽은 값이다(옛 result_json에서 온다). 새 쪽은 언제나 이번
+    실행의 모델 인식값이라, final만 앵커로 쓰면 "행 구조가 바뀌었는가"가 아니라 "이번
+    인식이 사람 정답과 일치하는가"를 재게 된다. 둘 다 허용해야 축이 맞는다.
+
+    `draft_supply`는 옛 초안을 못 찾으면 None이다(형식이 깨졌거나 지난 재처리에서 미결로
+    남아 row_index가 낡은 쌍) — None 앵커는 서로 절대 같지 않으므로 자연히 회수에서 빠진다.
+    """
 
     pair_id: int
     row_index: int
     supply: int | None
+    draft_supply: int | None = None
 
 
 @dataclass(frozen=True)
@@ -104,6 +115,35 @@ def _ambiguous_amounts(old: list[int | None], new: list[int | None]) -> set[int]
     return {v for v in set(old_counts) | set(new_counts) if old_counts[v] != new_counts[v]}
 
 
+def _lcs_match(old_anchor: list[object], new_anchor: list[object]) -> dict[int, int]:
+    """순서를 보존하는 최장 공통 부분수열 매칭(옛 인덱스 → 새 인덱스).
+
+    autojunk=False — 기본 휴리스틱은 원소가 200개를 넘을 때 흔한 값을 junk로 빼는데,
+    여기서 흔한 값(반복 금액)은 버릴 대상이 아니라 그룹 게이트가 판정할 대상이다.
+    """
+    matcher = SequenceMatcher(a=old_anchor, b=new_anchor, autojunk=False)
+    out: dict[int, int] = {}
+    for block in matcher.get_matching_blocks():
+        for k in range(block.size):
+            out[block.a + k] = block.b + k
+    return out
+
+
+def _gaps(matched: dict[int, int], old_count: int, new_count: int):
+    """확정 앵커 사이의 빈칸을 (옛 인덱스 목록, 새 인덱스 목록)으로 끊어 낸다.
+
+    회수(2단계)는 이 빈칸 안에서만 허용된다 — 빈칸을 넘어 짝을 지으면 LCS가 지킨 순서
+    제약이 무너져, 확정 라벨이 전혀 다른 줄의 그림에 붙는다.
+    """
+    anchors = sorted(matched.items())
+    bounds = [(-1, -1), *anchors, (old_count, new_count)]
+    for (i_left, j_left), (i_right, j_right) in zip(bounds, bounds[1:], strict=False):
+        olds = list(range(i_left + 1, i_right))
+        news = list(range(j_left + 1, j_right))
+        if olds and news:
+            yield olds, news
+
+
 def plan_relink(job_id: int, old_pairs: list[OldPair], new_rows: list[NewRow]) -> RelinkPlan:
     """옛 확정 쌍을 새 검출 행에 짝지어 승계·미결 계획을 만든다.
 
@@ -111,6 +151,12 @@ def plan_relink(job_id: int, old_pairs: list[OldPair], new_rows: list[NewRow]) -
     따라서 매칭은 최장 공통 부분수열이며 stdlib difflib으로 코어 규약을 지킨 채 구현한다.
     ocr_poc/score.py:align_rows는 선례지만 greedy first-match에 순서 제약이 없어 승계용으로
     쓰지 않는다(틀리면 오염된 학습쌍이 뱅크에 들어간다).
+
+    **2단계인 이유(OldPair docstring 참조).** 옛 쪽 앵커는 사람이 확정한 금액이고 새 쪽은
+    모델 인식값이라 축이 다르다. ①에서 확정 금액으로 못 박고, ②에서 남은 쌍을 옛 모델값
+    (draft)으로 **①이 만든 빈칸 안에서만** 회수한다. ②가 없으면 금액을 교정했던 행이 전부
+    미결이 되어, 같은 사진·같은 엔진으로 다시 돌려도 멱등이 깨지고(§9 복구 전제) 재처리가
+    곧 전량 재검수가 된다.
 
     Args:
         job_id: 대상 OCR 잡 id(좌표 접두).
@@ -127,18 +173,30 @@ def plan_relink(job_id: int, old_pairs: list[OldPair], new_rows: list[NewRow]) -
     new_supplies = [r.supply for r in news]
     ambiguous = _ambiguous_amounts(old_supplies, new_supplies)
 
-    # autojunk=False — 기본 휴리스틱은 원소가 200개를 넘을 때 흔한 값을 junk로 빼는데,
-    # 여기서 흔한 값(반복 금액)은 버릴 대상이 아니라 그룹 게이트가 판정할 대상이다.
-    matcher = SequenceMatcher(
-        a=_anchor_seq(old_supplies, "old"), b=_anchor_seq(new_supplies, "new"), autojunk=False
-    )
+    # ① 확정 앵커 — 사람이 확정한 금액이 이번 인식과 일치하는 행을 먼저 못 박는다.
     matched: dict[int, int] = {}
-    for block in matcher.get_matching_blocks():
-        for k in range(block.size):
-            i = block.a + k
-            if olds[i].supply in ambiguous:
-                continue  # 정렬이 짝을 지었어도 개수가 어긋난 값은 전량 미결로 민다
-            matched[i] = block.b + k
+    for i, j in _lcs_match(
+        _anchor_seq(old_supplies, "old"), _anchor_seq(new_supplies, "new")
+    ).items():
+        if olds[i].supply in ambiguous:
+            continue  # 정렬이 짝을 지었어도 개수가 어긋난 값은 전량 미결로 민다
+        matched[i] = j
+
+    # ② draft 회수 — ①에서 남은 쌍을 **확정 앵커 사이의 빈칸 안에서만** 옛 모델값으로
+    #    다시 맞춘다. 사람이 금액을 고쳤던 행이 ①을 통과하지 못하는 것이 정상 케이스이고
+    #    (두 앵커의 출처가 다르다), 그 행을 여기서 회수하지 않으면 승계 실패율이 행 검출
+    #    변화율이 아니라 금액 인식 오류율을 따라가 재처리가 곧 전량 재검수가 된다.
+    #    빈칸을 나누는 것이 순서 제약을 지키는 장치다 — 넘어가면 확정 라벨이 다른 줄에 붙는다.
+    for gap_olds, gap_news in list(_gaps(matched, len(olds), len(news))):
+        gap_old_supplies = [olds[i].draft_supply for i in gap_olds]
+        gap_new_supplies = [news[j].supply for j in gap_news]
+        gap_ambiguous = _ambiguous_amounts(gap_old_supplies, gap_new_supplies)
+        for a, b in _lcs_match(
+            _anchor_seq(gap_old_supplies, "old"), _anchor_seq(gap_new_supplies, "new")
+        ).items():
+            if gap_old_supplies[a] in gap_ambiguous:
+                continue
+            matched[gap_olds[a]] = gap_news[b]
 
     relinked = tuple(
         Relinked(

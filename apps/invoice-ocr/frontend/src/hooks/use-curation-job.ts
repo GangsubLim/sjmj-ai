@@ -119,6 +119,11 @@ export function useCurationJob(
       }
       try {
         const res = await curationAPI.getJob(jobId);
+        // dispatch와 같은 소유권 가드 — 같은 컴포넌트 인스턴스가 언마운트 없이 jobId만
+        // 바꿔 재사용되면(“다음 잡” 이동) 늦게 도착한 옛 잡의 GET이 새 잡의 토큰·화면·
+        // 확정 스냅샷을 통째로 덮는다. PATCH 경로만 막고 여기를 비워두면 이 diff가
+        // 없애려던 오염이 GET으로 그대로 남는다.
+        if (jobId !== jobIdRef.current) return;
         setJob(res.data);
         jobTokenRef.current = res.data.job_token;
         confirmedRef.current = new Map(res.data.pairs.map((p) => [p.id, p]));
@@ -169,7 +174,9 @@ export function useCurationJob(
         try {
           const res = await curationAPI.patchPair(id, {
             ...patch,
-            job_token: jobToken,
+            // 토큰이 비어 있으면 서버가 400으로 닫는다 — 키를 떨궈 원인이 흐려지는 것보다
+            // 형식 오류로 드러나는 편이 낫다(reviewJob과 같은 처리).
+            job_token: jobToken ?? "",
           });
           // 2) 성공: 응답을 merge. job_id·게이트·토큰은 pair에서 떼고 top5는 기존 값 보존(계약 비대칭).
           const {
@@ -241,11 +248,12 @@ export function useCurationJob(
       };
 
       // 옵티미스틱 반영(위)은 즉시 끝났다 — 큐는 "네트워크 발행"만 늦춘다.
-      // dispatch는 내부에서 모든 에러를 삼키므로 이 프라미스는 reject하지 않는다 —
-      // 한 pair의 실패가 다른(또는 같은) pair의 다음 발행을 영원히 막지 않는다
-      // (각 요청의 성공/실패 처리는 위 dispatch 안에서 pair별로 이미 완결된다).
+      // 큐 링크는 rejection을 물려받지 않는다(catch로 잘라낸다) — 한 번이라도 새면
+      // patchQueueRef가 rejected로 굳어 이후 모든 발행이 요청 없이 옵티미스틱 반영만
+      // 되고 토스트도 뜨지 않는(무성 유실) 상태가 된다. dispatch가 지금은 모든 에러를
+      // 삼키지만, 그 사실에 큐의 생존을 걸지 않는다.
       const queued = patchQueueRef.current.then(dispatch);
-      patchQueueRef.current = queued;
+      patchQueueRef.current = queued.catch(() => undefined);
       await queued;
     },
     [],
@@ -253,28 +261,40 @@ export function useCurationJob(
 
   const reviewJob = useCallback(async (): Promise<boolean> => {
     if (!jobId) return false;
-    try {
-      // 게이트를 닫는 쓰기도 세대 대조를 받는다 — 재처리로 열린 게이트를 옛 화면이
-      // 다시 닫으면 새 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라진다(spec §7·§12).
-      // jobTokenRef를 읽는다 — patchPair의 네트워크 발행이 쓰는 진실원과 같은 곳이어야
-      // review와 PATCH가 겹쳤을 때 서로 다른(어긋난) 토큰을 들고 나가지 않는다.
-      await curationAPI.reviewJob(jobId, jobTokenRef.current ?? "");
-      // review 응답에는 갱신된 토큰이 없다(계약 갭) — 재조회로 메꾸지 않으면 검수 완료
-      // 직후 같은 화면에서 라벨을 고치는 흐름(Issue #52가 게이트 해제로 만든 1급 흐름)이
-      // 사용자 자신의 검수 완료 클릭 때문에 409가 된다. silent로 불러 페이지 전체를
-      // 스켈레톤/에러로 갈아치우지 않는다(§리뷰 Important 2) — 그건 review POST 성공과
-      // 무관한 화면 상태다.
-      await fetch({ silent: true });
-      toast.success("검수가 완료되었습니다");
-      return true;
-    } catch (e) {
-      toast.error(
-        isStaleJobError(e)
-          ? STALE_JOB_MESSAGE
-          : errorMessage(e, "검수 완료에 실패했습니다"),
-      );
-      return false;
-    }
+    const run = async (): Promise<boolean> => {
+      try {
+        // 게이트를 닫는 쓰기도 세대 대조를 받는다 — 재처리로 열린 게이트를 옛 화면이
+        // 다시 닫으면 새 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라진다(spec §7·§12).
+        // jobTokenRef를 읽는다 — patchPair의 네트워크 발행이 쓰는 진실원과 같은 곳이어야
+        // review와 PATCH가 겹쳤을 때 서로 다른(어긋난) 토큰을 들고 나가지 않는다.
+        await curationAPI.reviewJob(jobId, jobTokenRef.current ?? "");
+        // review 응답에는 갱신된 토큰이 없다(계약 갭) — 재조회로 메꾸지 않으면 검수 완료
+        // 직후 같은 화면에서 라벨을 고치는 흐름(Issue #52가 게이트 해제로 만든 1급 흐름)이
+        // 사용자 자신의 검수 완료 클릭 때문에 409가 된다. silent로 불러 페이지 전체를
+        // 스켈레톤/에러로 갈아치우지 않는다(§리뷰 Important 2) — 그건 review POST 성공과
+        // 무관한 화면 상태다.
+        await fetch({ silent: true });
+        toast.success("검수가 완료되었습니다");
+        return true;
+      } catch (e) {
+        toast.error(
+          isStaleJobError(e)
+            ? STALE_JOB_MESSAGE
+            : errorMessage(e, "검수 완료에 실패했습니다"),
+        );
+        return false;
+      }
+    };
+    // review도 PATCH와 같은 큐 뒤에 선다. 가장 흔한 흐름인 "라벨 수정 → 검수 완료
+    // 클릭"에서 버튼 mousedown이 Autocomplete를 blur시켜 patchPair가 먼저 나가는데,
+    // 큐에 합류하지 않으면 응답 전에 GET 시점의 옛 토큰을 실어 확정적 409가 된다
+    // (반대 순서로 서버에 닿으면 PATCH가 409로 롤백돼 방금 고친 라벨이 사라진다).
+    const queued = patchQueueRef.current.then(run);
+    patchQueueRef.current = queued.then(
+      () => undefined,
+      () => undefined,
+    );
+    return queued;
   }, [jobId, fetch]);
 
   return { job, loading, error, patchPair, reviewJob, refetch: fetch };

@@ -138,19 +138,29 @@ class CurationService:
             job_token: 클라이언트가 잡 상세에서 받아 되보낸 세대 토큰.
 
         Raises:
-            AppError: 쌍이 없으면 404, 토큰이 현재 값과 다르면 409.
+            AppError: 쌍·잡이 없으면 404, 잡이 done이 아니거나 토큰이 다르면 409.
         """
         prev = self.repo.find_pair(pair_id)  # non-locking read — 트랜잭션 밖
         if prev is None:
             not_found("학습쌍을 찾을 수 없습니다.")
         job_id = int(prev["job_id"])
         with self._transaction():
-            # ①→③ 순서는 락 순서 불변식이다(spec §4.2). ocr_jobs(부모) → training_pairs(자식).
-            current = self.repo.get_job_token(job_id)  # ① ocr_jobs — 행잠금 + 세대 대조
+            # ①→④ 순서는 락 순서 불변식이다(spec §4.2). ocr_jobs(부모) → training_pairs(자식).
+            job = self.repo.find_job_for_update(job_id)  # ① ocr_jobs — 행잠금 + 상태
+            if job is None:
+                not_found("OCR 잡을 찾을 수 없습니다.")
+            # 세대 토큰만으로는 "재처리 큐에 든 잡 편집"을 막지 못한다 — 토큰 불일치 409는
+            # 새로고침을 안내하고, 새로고침하면 pending 잡의 **유효한** 새 토큰이 손에 들어와
+            # 같은 PATCH가 통과한다. 그 사이 워커의 commit_job이 쌍 전량을 재배치하므로
+            # 사람의 결정이 경고 없이 사라진다. mark_reviewed와 같은 규칙을 써 방어를
+            # 대칭으로 둔다 — 한쪽만 막으면 방어가 반쪽이다.
+            if job["status"] != "done":
+                conflict("아직 처리 중인 잡입니다. 처리가 끝난 뒤 다시 시도하세요.")
+            current = self.repo.get_job_token(job_id)  # ② ocr_jobs — 세대 대조
             if current != job_token:
                 conflict("다른 곳에서 이 잡이 변경되었습니다. 새로고침한 뒤 다시 시도하세요.")
-            self.repo.release_gate(job_id)  # ② ocr_jobs — 게이트 해제
-            self.repo.update_pair(pair_id, fields)  # ③ training_pairs — reviewed_at → NULL
+            self.repo.release_gate(job_id)  # ③ ocr_jobs — 게이트 해제
+            self.repo.update_pair(pair_id, fields)  # ④ training_pairs — reviewed_at → NULL
             updated = self.repo.find_pair(pair_id)
             new_token = self.repo.get_job_token(job_id)
         return {
