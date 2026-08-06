@@ -291,6 +291,7 @@ def test_patch_pair_404_when_pair_missing():
     # AppError 기반 타입만 보면 400/409로 바뀌어도 통과한다 — status를 고정한다.
     assert ei.value.status == 404
     repo.release_gate.assert_not_called()
+    repo.update_pair.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -328,4 +329,3 @@ def test_request_reprocess_409_when_job_is_not_done():
 
     assert exc.value.status == 409
     repo.requeue_for_reprocess.assert_not_called()
-    repo.update_pair.assert_not_called()

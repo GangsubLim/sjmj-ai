@@ -782,8 +782,9 @@ def test_reprocess_preserves_result_json(client, db_conn):
     """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10)."""
     job_id = _seed_job(db_conn, result_json='{"rows": [{"row_index": 0}]}')
 
-    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
 
+    assert res.status_code == 200
     assert '"row_index"' in _job_row(db_conn, job_id)["result_json"]
 
 
@@ -835,8 +836,9 @@ def test_reprocess_never_touches_the_confirmed_invoice(client, db_conn):
         )
         job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
 
-    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
 
+    assert res.status_code == 200
     with db_conn.begin() as conn:
         linked = conn.execute(
             text("SELECT invoice_id FROM ocr_jobs WHERE id = :id"), {"id": job_id}
