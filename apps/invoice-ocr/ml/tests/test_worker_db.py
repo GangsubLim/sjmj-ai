@@ -64,18 +64,16 @@ def test_mark_failed_serializes_json():
 
 def test_claim_next_pending_transitions_and_returns():
     """pending 행이 있으면 SELECT(FOR UPDATE) → UPDATE(running) 순서로 2회 execute,
-    {id, image_path} dict 반환.
+    {id, image_path, is_reprocess} dict 반환.
     """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
 
-    # SELECT 결과로 반환될 가짜 행
     fake_row = MagicMock()
     fake_row.id = 42
     fake_row.image_path = "/data/images/invoice_042.jpg"
+    fake_row.is_reprocess = 0
 
-    # 첫 번째 execute() 호출 → fetchone()이 fake_row 반환
-    # 두 번째 execute() 호출 → UPDATE (반환값 미사용)
     first_result = MagicMock()
     first_result.fetchone.return_value = fake_row
     second_result = MagicMock()
@@ -84,22 +82,69 @@ def test_claim_next_pending_transitions_and_returns():
     q = WorkerQueue(engine)
     result = q.claim_next_pending()
 
-    # SELECT + UPDATE = 2회 execute
     assert conn.execute.call_count == 2, "SELECT와 UPDATE 각 1회씩 execute해야 함"
-
-    # 첫 번째 호출 SQL에 FOR UPDATE 포함
     select_sql = str(conn.execute.call_args_list[0][0][0])
     assert "FOR UPDATE" in select_sql
-
-    # 두 번째 호출 SQL에 status='running' 포함, id 바인딩
     update_args = conn.execute.call_args_list[1]
-    update_sql = str(update_args[0][0])
-    assert "status='running'" in update_sql
-    update_params = update_args[0][1]
-    assert update_params["id"] == 42
+    assert "status='running'" in str(update_args[0][0])
+    assert update_args[0][1]["id"] == 42
+    assert result == {
+        "id": 42,
+        "image_path": "/data/images/invoice_042.jpg",
+        "is_reprocess": False,
+    }
 
-    # 반환값 검증
-    assert result == {"id": 42, "image_path": "/data/images/invoice_042.jpg"}
+
+def test_claim_next_pending_orders_new_uploads_before_reprocessing():
+    """재처리 잡은 정의상 옛 id라 순번만으로 세우면 신규 업로드를 밀어낸다(spec §2)."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = None
+
+    WorkerQueue(engine).claim_next_pending()
+
+    select_sql = str(conn.execute.call_args_list[0][0][0])
+    assert "ORDER BY (result_json IS NOT NULL), id" in select_sql
+
+
+def test_claim_next_pending_flags_reprocessing_jobs():
+    """pending인데 result_json이 이미 있으면 재처리다 — 표식 컬럼을 만들지 않는다(§1)."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    fake_row = MagicMock()
+    fake_row.id = 7
+    fake_row.image_path = "/x.jpg"
+    fake_row.is_reprocess = 1
+    first = MagicMock()
+    first.fetchone.return_value = fake_row
+    conn.execute.side_effect = [first, MagicMock()]
+
+    assert WorkerQueue(engine).claim_next_pending()["is_reprocess"] is True
+
+
+def test_rollback_to_done_preserves_result_json():
+    """재처리 실패는 failed가 아니라 done으로 되돌린다 — 옛 초안·옛 크롭이 그대로 정합이다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+
+    WorkerQueue(engine).rollback_to_done(11)
+
+    sql = str(conn.execute.call_args[0][0])
+    assert "status='done'" in sql
+    assert "result_json" not in sql, "옛 초안을 덮으면 되돌릴 대상이 사라진다"
+    assert conn.execute.call_args[0][1]["id"] == 11
+
+
+def test_requeue_for_reprocess_sets_pending_without_touching_result_json():
+    """커밋 후 교체 실패의 복구 경로 — result_json이 남아야 다시 재처리로 판별된다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+
+    WorkerQueue(engine).requeue_for_reprocess(11)
+
+    sql = str(conn.execute.call_args[0][0])
+    assert "status='pending'" in sql
+    assert "result_json" not in sql
 
 
 # ---------------------------------------------------------------------------
