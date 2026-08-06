@@ -31,6 +31,7 @@ from tools.bank_update import (
     diff_bank,
     diff_from_records,
     excluded_indices,
+    force_replace,
     has_peer_sample,
     inv_of,
     is_crop_ref,
@@ -42,9 +43,12 @@ from tools.bank_update import (
     partition_valid,
     plan_records,
     prune_missing_crops,
+    refs_of_jobs,
     render_score_md,
     require_env,
     require_removal_confirmation,
+    require_reviewed_jobs,
+    require_settled_crops,
     save_bank_atomic,
     score_meta,
     score_one,
@@ -311,6 +315,118 @@ def test_diff_from_records_rejects_duplicate_crop_ref():
     ]
     with pytest.raises(ValueError, match="중복"):
         diff_from_records(records)
+
+
+# --- 강제 재임베딩 (§11) ---
+
+
+def test_force_replace_promotes_only_the_named_refs():
+    """좌표가 그대로이고 그림만 개선된 갈래는 라벨이 같아 unchanged로 판정된다 — 이때만 쓴다."""
+    diff = BankDiff(add=(), replace=(), remove=(), unchanged=("job-42/row-0", "job-43/row-0"))
+
+    out = force_replace(diff, {"job-42/row-0"})
+
+    assert out.replace == ("job-42/row-0",)
+    assert out.unchanged == ("job-43/row-0",)
+
+
+def test_force_replace_is_a_noop_without_targets():
+    """기본 경로(플래그 없음)는 손대지 않으므로 재실행 멱등성이 그대로 유지된다."""
+    diff = BankDiff(add=("a",), replace=("b",), remove=("c",), unchanged=("job-42/row-0",))
+
+    assert force_replace(diff, set()) == diff
+
+
+def test_force_replace_never_touches_add_or_remove():
+    diff = BankDiff(add=("job-1/row-0",), replace=(), remove=("job-2/row-0",), unchanged=())
+
+    out = force_replace(diff, {"job-1/row-0", "job-2/row-0"})
+
+    assert (out.add, out.remove, out.replace) == (("job-1/row-0",), ("job-2/row-0",), ())
+
+
+def test_force_replace_keeps_replace_sorted_and_deduped():
+    diff = BankDiff(add=(), replace=("job-9/row-0",), remove=(), unchanged=("job-1/row-0",))
+
+    assert force_replace(diff, {"job-1/row-0"}).replace == ("job-1/row-0", "job-9/row-0")
+
+
+def test_refs_of_jobs_selects_by_invoice_prefix():
+    refs = ("job-42/row-0", "job-42/row-1", "job-430/row-0")
+
+    assert refs_of_jobs(refs, [42]) == {"job-42/row-0", "job-42/row-1"}
+
+
+# --- 미검수 가드 (§11-1) ---
+
+
+def test_require_reviewed_jobs_passes_when_all_are_reviewed():
+    """전원 검수 완료면 조용히 통과한다 — 반환값 None 자체가 '예외 없음'의 명시적 단언이다.
+
+    가드가 무력화돼 항상 raise하도록 바뀌면 이 assert에 도달하기 전에 예외로 즉시 RED.
+    """
+    result = require_reviewed_jobs({42, 43}, [42, 43])
+
+    assert result is None
+
+
+def test_require_reviewed_jobs_names_the_unreviewed_jobs():
+    with pytest.raises(RuntimeError, match="44"):
+        require_reviewed_jobs({42}, [42, 44])
+
+
+def test_unreviewed_job_makes_plan_remove_its_entire_bank_share():
+    """가드가 막는 것이 무엇인지 고정한다 — 플래그가 아무 일도 안 하는 동안 plan은
+    그 잡의 뱅크 항목 전량 삭제를 계획한다(§11-1). --yes로 실행하면 되돌릴 수 없다.
+    """
+    pairs = [_pair(job_id=42, crop_ref="job-42/row-0", canonical_label="무")]
+    desired = {p["crop_ref"]: p["canonical_label"] for p in select_desired(pairs, set())}
+    diff = diff_bank({"job-42/row-0": "무"}, desired)
+
+    assert diff.remove == ("job-42/row-0",)
+    assert diff.unchanged == ()
+    assert force_replace(diff, {"job-42/row-0"}) == diff, "승격할 unchanged가 하나도 없다"
+
+
+# --- 교체 미완 가드 (§9 · §11-1) ---
+
+
+def test_require_settled_crops_passes_when_no_leftovers():
+    """잔여 마커가 전혀 없으면 조용히 통과한다 — 반환값 None이 그 통과의 명시적 증거다.
+
+    가드가 무력화돼 dir_exists 결과와 무관하게 항상 raise하도록 바뀌면 이 assert 이전에
+    예외로 즉시 RED.
+    """
+    result = require_settled_crops(lambda name: False, [42, 43])
+
+    assert result is None
+
+
+def test_require_settled_crops_rejects_a_job_with_a_leftover_tmp():
+    """커밋 성공 후 교체 전에 죽은 잡 — DB는 새 좌표인데 파일은 옛 그림이다.
+
+    옛 PNG가 제자리에 남아 크롭 존재 검사를 통과하므로, prune_missing_crops가 걸러주지
+    못하는 유일한 오염 경로다(§9). 잔여 tmp가 그 상태의 durable 마커다.
+    """
+    with pytest.raises(RuntimeError, match="job-42.tmp"):
+        require_settled_crops(lambda name: name == "job-42.tmp", [42, 43])
+
+
+def test_require_settled_crops_rejects_a_job_with_a_leftover_old():
+    """두 번째 rename이 실패한 잡 — .old가 남고 live 크롭이 없다."""
+    with pytest.raises(RuntimeError, match="job-43.old"):
+        require_settled_crops(lambda name: name == "job-43.old", [42, 43])
+
+
+def test_require_settled_crops_ignores_leftovers_of_other_jobs():
+    """지정하지 않은 잡의 잔여는 이 실행의 관심사가 아니다 — 배치가 멈추지 않는다.
+
+    지정 안 한 job-99의 잔여만 있는데도 가드가 걸리도록(무력화로 과잉 반응) 바뀌면
+    이 assert 이전에 예외로 즉시 RED.
+    """
+    result = require_settled_crops(lambda name: name == "job-99.tmp", [42])
+
+    assert result is None
 
 
 # --- 병합 계획 ---
@@ -1183,7 +1299,7 @@ def test_cmd_plan_writes_plan_jsonl_and_only_prunes_missing_crops_for_add_or_rep
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
 
     out_dir = tmp_path / "out"
-    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir))
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, reembed_job=[]))
 
     records = [
         json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
@@ -1569,7 +1685,7 @@ def test_cmd_plan_ignores_scope_and_never_sees_unreviewed_pairs(tmp_path, monkey
 
     out_dir = tmp_path / "out"
     # args에 scope="all"이 실려 있어도 plan은 그것을 읽지 않는다.
-    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, scope="all"))
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, scope="all", reembed_job=[]))
 
     records = [
         json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()

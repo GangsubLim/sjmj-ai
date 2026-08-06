@@ -124,6 +124,42 @@ def diff_bank(current: dict[str, str], desired: dict[str, str]) -> BankDiff:
     )
 
 
+def force_replace(diff: BankDiff, refs: set[str]) -> BankDiff:
+    """지정 ref를 unchanged에서 빼 replace로 올린다(§11 — 좌표 유지·그림 개선 갈래).
+
+    재처리의 세 갈래 중 둘(좌표 이동·미결)은 key 집합이 달라져 diff_bank가 이미 잡는다.
+    남는 한 줄기 — 좌표가 그대로이고 크롭 그림만 개선된 경우 — 는 라벨이 같아 unchanged로
+    판정되므로 명시 지정이 필요하다. 해시를 뱅크에 저장하는 안은 기각했다: 현재 크롭을
+    바꾸는 경로는 재처리뿐이라(ADR 0007) 언제 바뀌었는지 우리가 이미 안다.
+
+    기본 경로(refs가 비었을 때)는 손대지 않으므로 재실행 멱등성이 그대로 유지된다.
+    구세대 key는 bank_current_map이 애초에 unchanged에 넣지 않으므로 구조적으로 안전하다.
+
+    Args:
+        diff: 승격 대상을 고를 원본 diff.
+        refs: 강제 재임베딩할 crop_ref 집합.
+
+    Returns:
+        지정 ref가 replace로 옮겨간 새 BankDiff. add/remove는 손대지 않는다.
+    """
+    promote = set(diff.unchanged) & refs
+    return BankDiff(
+        add=diff.add,
+        replace=tuple(sorted(set(diff.replace) | promote)),
+        remove=diff.remove,
+        unchanged=tuple(r for r in diff.unchanged if r not in promote),
+    )
+
+
+def refs_of_jobs(refs: tuple[str, ...], job_ids: list[int]) -> set[str]:
+    """지정 잡에 속한 crop_ref만 고른다(전표 판정은 inv_of — 문자열 startswith 아님).
+
+    startswith였다면 job-4가 job-42/row-0까지 집는다.
+    """
+    targets = {f"job-{i}" for i in job_ids}
+    return {r for r in refs if inv_of(r) in targets}
+
+
 def inv_of(crop_ref: str) -> str:
     """crop_ref('job-42/row-0')에서 전표 식별자('job-42')를 얻는다 — 뱅크 inv 열.
 
@@ -742,6 +778,75 @@ def fetch_reviewed_job_ids(backend_env: str) -> set[int]:
     return parse_reviewed_job_ids(_mysql(backend_env, REVIEWED_SQL))
 
 
+def require_reviewed_jobs(reviewed_job_ids: set[int], job_ids: list[int]) -> None:
+    """--reembed-job 대상이 전부 검수 완료인지 확인한다 — 하나라도 아니면 즉시 실패(§11-1).
+
+    미검수 잡에 이 플래그를 걸면 조용히 무해하지 않고 **조용히 파괴적**이다. select_desired가
+    curation_reviewed=1인 잡만 남기므로(ADR 0004) 게이트가 해제된 잡의 쌍은 desired에서 통째로
+    빠져 전부 remove로 분류되고, force_replace는 unchanged만 승격하므로 승격할 대상이 하나도
+    없다 — 플래그가 아무 일도 안 하는 동안 plan은 그 잡의 뱅크 항목 전량 삭제를 계획한다.
+
+    §7로 인해 정상 흐름에서는 거의 걸리지 않는다(미결이 없던 잡은 게이트가 유지된다).
+    걸리는 것은 미결이 나와 재검수가 필요한 잡을 사람이 잊고 지정했을 때이고, 그때
+    알려주는 것이 이 가드의 목적이다.
+
+    Args:
+        reviewed_job_ids: 검수 완료 잡 id 집합.
+        job_ids: --reembed-job으로 지정한 잡 id 목록.
+
+    Raises:
+        RuntimeError: 미검수 잡이 하나라도 있을 때(어느 것인지 담는다).
+    """
+    unreviewed = sorted(set(job_ids) - reviewed_job_ids)
+    if unreviewed:
+        raise RuntimeError(
+            f"--reembed-job에 미검수 잡이 있습니다: {unreviewed} — 게이트가 해제된 잡의 쌍은 "
+            "desired에서 빠져 plan이 그 잡의 뱅크 항목 전량 삭제를 계획합니다. "
+            "재검수를 먼저 끝낸 뒤 다시 실행하세요."
+        )
+
+
+# 크롭 디렉터리 교체가 끝나지 않았음을 뜻하는 잔여 접미사(worker/poll._swap_crop_dir).
+UNSETTLED_SUFFIXES = (".tmp", ".old")
+
+
+def require_settled_crops(dir_exists: Callable[[str], bool], job_ids: list[int]) -> None:
+    """지정 잡의 크롭 교체가 끝났는지 확인한다 — 잔여가 하나라도 있으면 즉시 실패(§9).
+
+    워커는 크롭을 job-N.tmp에 쓰고 DB 커밋 성공 후에만 job-N으로 교체한다. 그 사이에
+    프로세스가 죽으면 **DB는 새 좌표인데 파일은 옛 그림**인 상태가 status='done'인 채로
+    남고, 재큐잉조차 없다. 이 갈래만이 옛 PNG를 제자리에 남기므로 prune_missing_crops의
+    크롭 존재 검사를 통과한다 — 재임베딩이 옛 그림을 새 라벨로 뱅크에 정식 등록하는
+    유일한 경로다. 남은 job-N.tmp / job-N.old가 그 상태의 durable 마커다.
+
+    잡의 DB 상태를 따로 조회하지 않는 이유: 교체가 미완인 잡은 어느 실패 경로에서도
+    잔여를 남기므로(첫 rename 실패 → .tmp, 두 번째 rename 실패 → .old, 처리 중 → .tmp)
+    이 검사가 상태 검사를 포섭한다. 처리 중인 잡을 함께 거부하는 것은 안전측이다 —
+    워커가 끝난 뒤 다시 실행하면 된다.
+
+    복구는 그 잡을 다시 재처리하는 것이다(재처리는 멱등 — spec 에러 처리 전수).
+
+    Args:
+        dir_exists: 크롭 루트 기준 디렉터리 이름을 받아 존재 여부를 답하는 콜백.
+        job_ids: --reembed-job으로 지정한 잡 id 목록.
+
+    Raises:
+        RuntimeError: 잔여 디렉터리가 하나라도 있을 때(어느 것인지 담는다).
+    """
+    unsettled = sorted(
+        name
+        for i in set(job_ids)
+        for name in (f"job-{i}{sfx}" for sfx in UNSETTLED_SUFFIXES)
+        if dir_exists(name)
+    )
+    if unsettled:
+        raise RuntimeError(
+            f"--reembed-job 대상에 크롭 교체가 끝나지 않은 잡이 있습니다: {unsettled} — "
+            "DB는 새 좌표인데 파일이 옛 그림일 수 있어 재임베딩이 오염을 정식 등록합니다. "
+            "해당 잡을 다시 재처리해 교체를 완료한 뒤 실행하세요."
+        )
+
+
 def prod_embed_fn(models_dir):
     """운영 추론과 동일 경로(square → EVAL_TF → ItemEncoder projection) 임베딩 함수를 만든다.
 
@@ -772,7 +877,7 @@ def prod_embed_fn(models_dir):
 # ---------------------------------------------------------------------------
 
 
-def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dict]]:
+def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dict], set[int]]:
     """모집단 쌍을 조회해 라벨/crop_ref 유효 여부로 나눈다(plan·score 공용 입구).
 
     scope는 호출자가 명시한다 — 기본값을 두지 않는다. 기본값이 있으면 plan 경로가 실수로
@@ -781,13 +886,18 @@ def _desired_pairs(backend_env: str, scope: Scope) -> tuple[list[dict], list[dic
     M3: crop_ref 형식 게이트를 라벨 게이트보다 먼저 적용한다 — 둘 다 뱅크에 넣을 수
     없는 사유이므로 같은 invalid 목록에 합류시켜, 형식 불량 쌍이 plan.jsonl까지
     흘러가 apply에서야(diff_from_records) 늦게 발각되는 것을 막는다.
+
+    Returns:
+        (valid, invalid, reviewed_job_ids). reviewed 집합을 함께 돌려주는 이유는
+        --reembed-job 가드(require_reviewed_jobs)가 같은 조회 결과를 써야 하기 때문이다 —
+        따로 질의하면 두 시점 사이에 게이트가 바뀌어 가드가 옛 사실로 판정할 수 있다.
     """
     pairs = fetch_pairs(backend_env)
     reviewed = fetch_reviewed_job_ids(backend_env)
     desired = select_scoped(pairs, reviewed, scope)
     crop_ref_ok, bad_crop_ref = partition_crop_ref(desired)
     valid, invalid = partition_valid(crop_ref_ok)
-    return valid, invalid + bad_crop_ref
+    return valid, invalid + bad_crop_ref, reviewed
 
 
 def _atomic_write_text(path: Path, text: str) -> None:
@@ -825,15 +935,21 @@ def cmd_plan(args) -> None:
     """desired 대비 뱅크 diff를 계산해 plan.jsonl과 요약을 낸다."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     bank_path = Path(require_env("SJMJ_ML_MODELS_DIR")) / "bank.npz"
-    valid, invalid = _desired_pairs(args.backend_env, PLAN_SCOPE)
+    valid, invalid, reviewed = _desired_pairs(args.backend_env, PLAN_SCOPE)
 
     _, labs, _, keys = load_bank(bank_path)
     desired = {p["crop_ref"]: p["canonical_label"] for p in valid}
+    diff = diff_bank(bank_current_map(labs=labs, keys=keys), desired)
+    if args.reembed_job:
+        # 가드가 먼저다 — 미검수 잡을 지정하면 승격은 no-op인 채 remove만 계획된다(§11-1).
+        require_reviewed_jobs(reviewed, args.reembed_job)
+        # 교체가 끝나지 않은 잡은 "새 좌표 + 옛 그림"일 수 있고, 그 옛 PNG는 아래 크롭
+        # 존재 검사를 통과해 버린다 — 잔여 디렉터리가 유일한 방어선이다(§9).
+        require_settled_crops(lambda name: (crops_root / name).is_dir(), args.reembed_job)
+        diff = force_replace(diff, refs_of_jobs(diff.unchanged, args.reembed_job))
     # 크롭 존재 검사는 diff 이후 추가·교체에만 — desired에서 미리 빼면 기존 뱅크 항목이 remove된다.
-    diff, missing = prune_missing_crops(
-        diff_bank(bank_current_map(labs=labs, keys=keys), desired),
-        lambda ref: (crops_root / f"{ref}.png").exists(),
-    )
+    # force_replace가 replace로 올린 ref도 여기서 크롭 존재 검사를 함께 받는다.
+    diff, missing = prune_missing_crops(diff, lambda ref: (crops_root / f"{ref}.png").exists())
     records = plan_records(diff, desired)
 
     out = args.out / "plan.jsonl"
@@ -843,6 +959,8 @@ def cmd_plan(args) -> None:
         f"추가 {len(diff.add)} · 교체 {len(diff.replace)} · 제거 {len(diff.remove)} · "
         f"불변 {len(diff.unchanged)}\n저장: {out}"
     )
+    if args.reembed_job:
+        print(f"  강제 재임베딩 지정 잡: {sorted(set(args.reembed_job))}")
     for p in invalid:
         print(f"  제외 {p['crop_ref']}: {p['reason']} (label={p.get('canonical_label')!r})")
     for ref in missing:
@@ -995,7 +1113,7 @@ def cmd_score(args) -> None:
     """before/after 뱅크를 동일 채점기로 비교한다(임베딩은 1회만 계산해 공정 비교)."""
     crops_root = Path(require_env("SJMJ_DATA_DIR")) / "ocr_crops"
     models_dir = Path(require_env("SJMJ_ML_MODELS_DIR"))
-    valid, _ = _desired_pairs(args.backend_env, args.scope)
+    valid, _, _ = _desired_pairs(args.backend_env, args.scope)
     # 크롭이 없는 쌍은 임베딩할 수 없으므로 채점 대상에서 뺀다(뱅크 항목은 그대로 둔다).
     valid = [p for p in valid if (crops_root / f"{p['crop_ref']}.png").exists()]
     queries = prod_embed_fn(models_dir)([crops_root / f"{p['crop_ref']}.png" for p in valid])
@@ -1052,7 +1170,17 @@ def main(argv: list[str] | None = None) -> None:
     )
     common.add_argument("--out", type=Path, default=DEFAULT_OUT, help="산출물 디렉터리")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("plan", parents=[common], help="diff 계산 → plan.jsonl")
+    p_plan = sub.add_parser("plan", parents=[common], help="diff 계산 → plan.jsonl")
+    p_plan.add_argument(
+        "--reembed-job",
+        type=int,
+        nargs="+",
+        default=[],
+        metavar="JOB_ID",
+        help="지정 잡의 unchanged 항목을 강제로 교체(재임베딩) 대상으로 올린다 — "
+        "재처리로 크롭 그림만 바뀐 갈래용. 미검수 잡이나 크롭 교체가 끝나지 않은 잡을 "
+        "지정하면 즉시 실패한다",
+    )
     # M6: apply는 backend_env/out을 쓰지 않으므로(plan.jsonl만 소비) common을 상속하지 않는다
     # — 조용히 무시되던 옵션을 파서 단계에서 거부한다.
     p_apply = sub.add_parser("apply", help="plan.jsonl대로 뱅크 sync(백업 자동)")
