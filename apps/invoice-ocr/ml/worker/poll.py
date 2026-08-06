@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from handwriting.relink import RelinkPlan
+
 
 def process_one_job(queue, infer_fn, crops_root) -> bool:
     """대기 중인 잡 1건을 처리한다. 처리했으면 True, 큐가 비었으면 False."""
@@ -11,7 +13,7 @@ def process_one_job(queue, infer_fn, crops_root) -> bool:
     crop_dir = Path(crops_root) / f"job-{job['id']}"
     try:
         result = infer_fn(job["image_path"], crop_dir, job["id"])
-        queue.mark_done(job["id"], result)
+        queue.commit_job(job["id"], result, RelinkPlan(relinked=(), orphaned=()))
     except Exception as exc:  # noqa: BLE001 — 잡 단위 격리(워커 생존)
         queue.mark_failed(job["id"], {"error": str(exc)})
     return True

@@ -5,6 +5,8 @@ import os
 
 from sqlalchemy import create_engine, text
 
+from handwriting.relink import RELINK_FAILED, OldPair, RelinkPlan
+
 
 def build_engine():
     """DB_* env로 backend와 동일한 MySQL 엔진을 만든다."""
@@ -57,13 +59,73 @@ class WorkerQueue:
                 "is_reprocess": bool(row.is_reprocess),
             }
 
-    def mark_done(self, job_id: int, result_json: dict) -> None:
-        """잡을 done으로 전이하고 결과 JSON을 기록한다."""
+    def fetch_pairs(self, job_id: int) -> list[OldPair]:
+        """그 잡의 확정 학습쌍에서 행 앵커 입력만 뽑는다(승계는 라벨을 건드리지 않는다).
+
+        신규 잡은 여기서 빈 리스트가 나와 승계가 자연히 no-op이 된다(spec §1).
+        """
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text(
+                    "SELECT id, row_index, supply FROM training_pairs "
+                    "WHERE job_id=:id ORDER BY row_index, id"
+                ),
+                {"id": job_id},
+            ).fetchall()
+        return [OldPair(pair_id=r[0], row_index=r[1], supply=r[2]) for r in rows]
+
+    def commit_job(self, job_id: int, result_json: dict, plan: RelinkPlan) -> None:
+        """초안 갱신과 라벨 승계를 한 트랜잭션으로 커밋한다(ADR 0010).
+
+        세로선이 여기 한 번만 그어진다 — 커밋 이전엔 아무것도 바뀌지 않고, 커밋 이후엔
+        파일만 바뀐다(크롭 디렉터리 교체는 worker/poll.py가 커밋 성공 후에만 한다).
+
+        **왜 2-pass인가.** crop_ref가 UNIQUE(migration_008)라 순차 UPDATE는 첫 문장부터
+        duplicate key로 죽는다 — 전부 한 칸씩 밀리는 것이 이 작업의 주 케이스다. 그래서
+        ① 그 잡의 쌍 **전량**을 row- 네임스페이스 밖(임시·orphan 좌표)으로 비우고
+        ② 승계 대상에만 최종 좌표를 기입한다. 미결 전환이 ①에 함께 들어가는 것이 이
+        설계의 핵심 순서 제약이다 — 뒤로 미루면 미결 쌍이 옛 row-N을 점유한 채 남아
+        승계 쌍의 최종 좌표와 충돌한다.
+
+        락 순서는 부모(ocr_jobs) → 자식(training_pairs)로, 사람의 PATCH 경로
+        (backend CurationService.patch_pair)와 같다 — 뒤집으면 순환 대기가 성립한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+            result_json: 새 초안. 신규 잡·재처리 모두 이 경로로 기록된다.
+            plan: 승계 계획. 신규 잡은 비어 있어 ①만 수행된다.
+        """
+        # 미결이 나온 잡만 게이트를 해제한다(ADR 0011). curation_reviewed_at은 지우지
+        # 않는다 — migration_011의 3-state가 그 잡을 "재검수 필요"로 분류해야 한다.
+        gate = ", curation_reviewed = 0" if plan.should_release_gate else ""
         with self.engine.begin() as conn:
             conn.execute(
-                text("UPDATE ocr_jobs SET status='done', result_json=:r WHERE id=:id"),
+                text(f"UPDATE ocr_jobs SET status='done', result_json=:r{gate} WHERE id=:id"),
                 {"r": json.dumps(result_json, ensure_ascii=False), "id": job_id},
             )
+            # ① 전량을 row- 밖으로 — 이 시점에 그 잡의 어떤 쌍도 job-\d+/row-\d+ 형식을
+            #    갖지 않는다는 것이 ②의 충돌 불가능성의 근거다.
+            for item in plan.relinked:
+                conn.execute(
+                    text("UPDATE training_pairs SET crop_ref=:ref WHERE id=:id"),
+                    {"ref": item.tmp_ref, "id": item.pair_id},
+                )
+            for item in plan.orphaned:
+                # reviewed_at을 되돌리는 것은 미결 쌍뿐이다 — 그 잡의 unreviewed_count가
+                # 정확히 미결 수가 되어 사람이 볼 것만 큐에 뜬다(§7).
+                conn.execute(
+                    text(
+                        "UPDATE training_pairs SET crop_ref=:ref, status='excluded', "
+                        "exclusion_reason=:reason, reviewed_at=NULL WHERE id=:id"
+                    ),
+                    {"ref": item.orphan_ref, "reason": RELINK_FAILED, "id": item.pair_id},
+                )
+            # ② 최종 좌표 기입
+            for item in plan.relinked:
+                conn.execute(
+                    text("UPDATE training_pairs SET crop_ref=:ref, row_index=:ri WHERE id=:id"),
+                    {"ref": item.final_ref, "ri": item.final_row_index, "id": item.pair_id},
+                )
 
     def mark_failed(self, job_id: int, error_json: dict) -> None:
         """잡을 failed로 전이하고 에러 JSON을 기록한다."""

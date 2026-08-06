@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+from handwriting.relink import RelinkPlan
 from worker.poll import process_one_job
 
 
@@ -14,7 +15,7 @@ def test_done_path_marks_done_with_result():
     q.claim_next_pending.return_value = {"id": 9, "image_path": "/x.jpg"}
     canned = {"rows": [], "supply_sum": 0, "warp_ok": True}
     assert process_one_job(q, lambda *a: canned, "/tmp/crops") is True
-    q.mark_done.assert_called_once_with(9, canned)
+    q.commit_job.assert_called_once_with(9, canned, RelinkPlan(relinked=(), orphaned=()))
     q.mark_failed.assert_not_called()
 
 

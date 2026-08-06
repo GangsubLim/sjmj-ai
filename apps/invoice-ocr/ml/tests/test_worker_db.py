@@ -2,35 +2,149 @@
 
 from unittest.mock import MagicMock
 
+from handwriting.relink import RELINK_FAILED, NewRow, OldPair, plan_relink
 from worker.db import WorkerQueue
 
 # ---------------------------------------------------------------------------
-# mark_done
+# commit_job — 초안 갱신 + 2-pass 승계를 한 트랜잭션으로
 # ---------------------------------------------------------------------------
 
 
-def test_mark_done_serializes_json():
-    """mark_done은 result_json을 JSON 직렬화해 :r 에 바인딩한다.
+def _executed(conn):
+    """conn.execute 호출을 (sql, params) 목록으로 편다."""
+    return [(str(c[0][0]), c[0][1] if len(c[0]) > 1 else {}) for c in conn.execute.call_args_list]
 
-    브리프 예시 테스트의 `params["s"] == "done"` 어설션은 실제 SQL과 불일치한다.
-    (mark_done SQL: `SET status='done', result_json=:r` — status는 SQL 리터럴, :s 없음)
-    실제 params 키는 "r"과 "id"뿐이므로 SQL 문자열과 params["r"]을 검증한다.
+
+def test_commit_job_updates_draft_and_marks_done():
+    """신규 잡(빈 계획)은 ① 초안 갱신 + done 전이만 수행한다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [], [NewRow(row_index=0, supply=3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": [], "supply_sum": 0, "warp_ok": True}, plan)
+
+    calls = _executed(conn)
+    assert len(calls) == 1, "빈 계획이면 training_pairs를 건드리지 않는다"
+    sql, params = calls[0]
+    assert "status='done'" in sql
+    assert '"warp_ok"' in params["r"]
+    assert params["id"] == 5
+
+
+def test_commit_job_uses_a_single_transaction():
+    """초안 갱신과 승계가 갈라지면 그 사이가 정식 중간 단계로 승격된다(ADR 0010)."""
+    engine = MagicMock()
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert engine.begin.call_count == 1
+
+
+def test_commit_job_locks_parent_before_children():
+    """락 순서는 잡(부모) → 쌍(자식) — 사람의 PATCH와 순환 대기에 걸리지 않는다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    tables = ["ocr_jobs" if "ocr_jobs" in sql else "training_pairs" for sql, _ in _executed(conn)]
+    assert tables[0] == "ocr_jobs"
+    assert "ocr_jobs" not in tables[1:]
+
+
+def test_commit_job_empties_row_namespace_before_writing_final_refs():
+    """1단계가 그 잡의 쌍 전량을 row- 밖으로 뺀 뒤에야 2단계가 최종 좌표를 쓴다(§5).
+
+    전부 한 칸씩 밀리는 케이스 — 순차 UPDATE였다면 첫 문장부터 duplicate key로 죽는다.
     """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
-    q = WorkerQueue(engine)
-    q.mark_done(5, {"rows": [], "supply_sum": 0, "warp_ok": True})
+    olds = [OldPair(1, 0, 3000), OldPair(2, 1, 5000)]
+    plan = plan_relink(5, olds, [NewRow(0, 9000), NewRow(1, 3000), NewRow(2, 5000)])
 
-    args = conn.execute.call_args
-    assert args is not None
-    # 첫 번째 위치 인자: text() 객체 (str로 변환 시 SQL 문자열 포함)
-    sql_obj = args[0][0]
-    assert "status='done'" in str(sql_obj)
-    # 두 번째 위치 인자: params dict
-    params = args[0][1]
-    assert "s" not in params, "status는 SQL 리터럴로 하드코딩 — :s 바인딩 없음"
-    assert '"warp_ok"' in params["r"]
-    assert params["id"] == 5
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    refs = [params.get("ref") for _, params in _executed(conn)[1:]]
+    assert refs == ["job-5/tmp-1", "job-5/tmp-2", "job-5/row-1", "job-5/row-2"]
+
+
+def test_commit_job_moves_orphans_out_in_stage_one():
+    """미결 전환이 1단계에 함께 들어가야 한다 — 뒤로 미루면 옛 row-N을 점유한 채 남는다.
+
+    옛 row-0이 미결이고 옛 row-1이 row-0으로 승계되는 경우가 정확히 그 충돌이다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    olds = [OldPair(1, 0, 3000), OldPair(2, 1, 5000)]
+    plan = plan_relink(5, olds, [NewRow(0, 5000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    calls = _executed(conn)[1:]
+    stage_one_refs = [p["ref"] for _, p in calls[:2]]
+    assert set(stage_one_refs) == {"job-5/orphan-1", "job-5/tmp-2"}
+    assert calls[2][1]["ref"] == "job-5/row-0"
+
+
+def test_commit_job_marks_orphans_excluded_with_reason_and_clears_review():
+    """미결 쌍은 excluded + relink_failed + reviewed_at NULL로 사람 큐에 오른다(§6·§7)."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    sql, params = _executed(conn)[1]
+    assert "status='excluded'" in sql
+    assert "reviewed_at=NULL" in sql
+    assert params["reason"] == RELINK_FAILED
+
+
+def test_commit_job_keeps_reviewed_at_of_relinked_pairs():
+    """승계 성공 쌍의 reviewed_at은 그대로 둔다 — 사람이 볼 것이 미결뿐이 되도록(§7)."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert all("reviewed_at" not in sql for sql, _ in _executed(conn))
+
+
+def test_commit_job_releases_gate_only_when_orphans_exist():
+    """미결이 나온 잡만 게이트를 해제한다(ADR 0011). curation_reviewed_at은 지우지 않는다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    job_sql = _executed(conn)[0][0]
+    assert "curation_reviewed = 0" in job_sql
+    assert "curation_reviewed_at" not in job_sql
+
+
+def test_commit_job_keeps_gate_when_every_pair_is_relinked():
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert "curation_reviewed" not in _executed(conn)[0][0]
+
+
+def test_commit_job_does_not_touch_draft_label():
+    """correction_json.lines[].draft_label과의 짝을 깨지 않는다(§8)."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert all("draft_label" not in sql for sql, _ in _executed(conn))
 
 
 # ---------------------------------------------------------------------------
@@ -164,3 +278,22 @@ def test_claim_next_pending_returns_none_when_empty():
     assert result is None
     # SELECT만 1회, UPDATE 없음
     assert conn.execute.call_count == 1, "빈 큐면 SELECT만 실행, UPDATE 없어야 함"
+
+
+# ---------------------------------------------------------------------------
+# fetch_pairs
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_pairs_returns_anchor_inputs_in_row_order():
+    """승계 입력은 (pair_id, row_index, supply) 셋뿐 — 라벨은 승계가 건드리지 않는다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.fetchall.return_value = [(1, 0, 3000), (2, 1, None)]
+
+    pairs = WorkerQueue(engine).fetch_pairs(9)
+
+    assert pairs == [OldPair(1, 0, 3000), OldPair(2, 1, None)]
+    sql = str(conn.execute.call_args[0][0])
+    assert "ORDER BY row_index" in sql
+    assert conn.execute.call_args[0][1]["id"] == 9
