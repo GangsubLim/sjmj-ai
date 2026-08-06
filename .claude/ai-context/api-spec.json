@@ -429,6 +429,16 @@
         "source": "app/routers/curation.py"
       },
       {
+        "method": "POST",
+        "path": "/api/curation/jobs/{job_id}/reprocess",
+        "summary": "잡 재처리 큐잉(done → pending 전이; result_json은 보존 — 워커가 재처리로 판별하는 근거이자 실패 시 롤백 대상. 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 수행. done이 아니면 409)",
+        "auth": "public",
+        "req": null,
+        "res": "{job_id, status}",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}/image/{kind}",
         "summary": "원본/워프 전표 이미지",
@@ -2541,6 +2551,74 @@
           },
           "404": {
             "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}/reprocess": {
+      "post": {
+        "summary": "잡 재처리 큐잉(done → pending 전이; result_json 보존)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "큐잉 성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "job_id": {
+                              "type": "integer"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": ["pending"]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "done이 아닌 잡(이미 큐에 있거나 실패한 잡)",
             "content": {
               "application/json": {
                 "schema": {

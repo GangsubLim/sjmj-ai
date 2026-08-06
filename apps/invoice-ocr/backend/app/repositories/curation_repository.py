@@ -145,6 +145,42 @@ class CurationRepository:
                 is not None
             )
 
+    def find_job_for_update(self, job_id: int) -> dict | None:
+        """상태 전이 대상 잡의 현재 상태를 행잠금으로 읽는다(재처리 요청·검수 완료 공용).
+
+        FOR UPDATE로 잡히므로, 확인과 전이 사이에 워커의 claim_next_pending이 끼어들어
+        같은 잡을 두 번 집는 경합이 성립하지 않는다. 부모(ocr_jobs)를 먼저 잡는 자리라
+        락 순서 불변식(잡 → 쌍)의 시작점이기도 하다 — Task 7의 mark_reviewed가 이 호출을
+        재사용해 "done이 아니면 409"를 reprocess와 같은 규칙으로 적용한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            {"id", "status"} 또는 잡이 없으면 None.
+        """
+        with connection() as conn:
+            row = (
+                conn.execute(
+                    text("SELECT id, status FROM ocr_jobs WHERE id = :id FOR UPDATE"),
+                    {"id": job_id},
+                )
+                .mappings()
+                .first()
+            )
+            return {"id": int(row["id"]), "status": row["status"]} if row else None
+
+    def requeue_for_reprocess(self, job_id: int) -> None:
+        """잡을 다시 추론 큐에 넣는다 — result_json은 건드리지 않는다.
+
+        초안이 남아 있어야 워커가 이 잡을 재처리로 판별하고(spec §1), 재추론이 실패해도
+        옛 초안으로 되돌아갈 수 있다. 지우면 두 성질이 함께 사라진다.
+        """
+        with connection() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET status = 'pending' WHERE id = :id"), {"id": job_id}
+            )
+
     def get_image_path(self, job_id: int) -> str | None:
         """잡의 원본 업로드 이미지 경로를 반환한다."""
         with connection() as conn:

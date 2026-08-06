@@ -66,6 +66,12 @@ def review(job_id: int):
     return envelope.single(_service().mark_reviewed(job_id))
 
 
+@router.post("/curation/jobs/{job_id}/reprocess")
+def reprocess(job_id: int):
+    """확정 완료된 잡을 현재 엔진으로 다시 판정하도록 큐에 넣는다(초안은 보존)."""
+    return envelope.single(_service().request_reprocess(job_id))
+
+
 @router.get("/curation/jobs/{job_id}/image/{kind}")
 def image(job_id: int, kind: ImageKind):
     """원본/워프 전표 이미지를 raw 바이트로 반환한다(envelope 예외)."""

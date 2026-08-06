@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app import db
 from app.config import crop_dir
-from app.core.errors import not_found
+from app.core.errors import conflict, not_found
 from app.repositories.curation_repository import CurationRepository
 
 
@@ -149,6 +149,34 @@ class CurationService:
             for label in dict.fromkeys(labels):
                 self._register_label(label)
         return {"job_id": job_id, "curation_reviewed": True}
+
+    def request_reprocess(self, job_id: int) -> dict:
+        """확정 완료된 잡을 현재 엔진으로 다시 판정하도록 큐에 넣는다. 없으면 404.
+
+        status만 전이하고 result_json은 건드리지 않는다 — 재처리 판별의 근거이자 실패 시
+        롤백 대상이다(spec §10). 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 한다
+        (ADR 0010) — backend는 잡을 다시 큐에 넣는 것만 한다.
+
+        배치는 런북에서 잡 id 목록으로 이 엔드포인트를 반복 호출한다 — 배치 전용
+        엔드포인트를 만들지 않는다(부분 실패 시 어디까지 걸렸는지가 오히려 명확하다).
+
+        Args:
+            job_id: 재처리할 OCR 잡 id.
+
+        Returns:
+            {"job_id", "status"} — 전이 후 상태.
+
+        Raises:
+            AppError: 잡이 없으면 404, done이 아니면 409(중복 요청 차단).
+        """
+        with self._transaction():
+            job = self.repo.find_job_for_update(job_id)
+            if job is None:
+                not_found("OCR 잡을 찾을 수 없습니다.")
+            if job["status"] != "done":
+                conflict("재처리할 수 없는 잡입니다(추론이 끝난 잡만 다시 처리할 수 있습니다).")
+            self.repo.requeue_for_reprocess(job_id)
+        return {"job_id": job_id, "status": "pending"}
 
     def original_image(self, job_id: int) -> str:
         """원본 업로드 이미지 절대경로를 반환한다. 없으면 404."""

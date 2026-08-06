@@ -722,3 +722,127 @@ def test_patch_pair_validation_error_envelope_is_unchanged(client, db_conn):
     # "details는 {필드: 메시지} 문자열 맵"이라는 불변식이 사실상 고정되지 않는다.
     assert isinstance(details, dict) and details
     assert all(isinstance(k, str) and isinstance(v, str) for k, v in details.items())
+
+
+# ---------------------------------------------------------------------------
+# POST /api/curation/jobs/{job_id}/reprocess (spec §10)
+# ---------------------------------------------------------------------------
+
+
+def _seed_job(engine, *, status="done", result_json='{"rows": []}'):
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, result_json) VALUES (:s, '/x.jpg', :r)"
+            ),
+            {"s": status, "r": result_json},
+        )
+        return conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+
+def _job_row(engine, job_id):
+    with engine.begin() as conn:
+        return (
+            conn.execute(
+                text("SELECT status, result_json FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            )
+            .mappings()
+            .first()
+        )
+
+
+def test_reprocess_moves_a_done_job_back_to_pending(client, db_conn):
+    job_id = _seed_job(db_conn)
+
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "status": "pending"}}
+    assert _job_row(db_conn, job_id)["status"] == "pending"
+
+
+def test_reprocess_allows_a_done_job_that_was_never_confirmed(client, db_conn):
+    """확정 증거가 없는 done 잡도 200이다 — 모집단 가드를 두지 않는 것이 의도다(spec §10).
+
+    확정 전 잡은 training_pairs가 없어 승계가 no-op이 되고(spec §1) 초안 갱신 + 크롭 교체만
+    일어난다 — "신규 잡을 새 엔진으로 다시 돌린 것"과 동치라 오염 통로가 아니다. 등록 전에
+    크롭이 나쁜 걸 발견했을 때 쓸 수 있어야 하므로 열어 둔다. 재처리 **대상 모집단**을
+    확정 잡으로 좁히는 것은 런북의 책임이고, 그 술어는 ocr_repository._UNCONFIRMED_WHERE의
+    부정이다(런북 §2).
+    """
+    job_id = _seed_job(db_conn)  # invoice_id NULL · correction·pair 없음
+
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert res.status_code == 200
+    assert _job_row(db_conn, job_id)["status"] == "pending"
+
+
+def test_reprocess_preserves_result_json(client, db_conn):
+    """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10)."""
+    job_id = _seed_job(db_conn, result_json='{"rows": [{"row_index": 0}]}')
+
+    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert '"row_index"' in _job_row(db_conn, job_id)["result_json"]
+
+
+def test_reprocess_returns_404_for_unknown_job(client):
+    res = client.post("/api/curation/jobs/999999/reprocess")
+
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_reprocess_returns_409_when_job_is_already_queued(client, db_conn):
+    """이미 running/pending인 잡의 중복 요청을 막는다."""
+    job_id = _seed_job(db_conn, status="running")
+
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+    assert _job_row(db_conn, job_id)["status"] == "running"
+
+
+def test_reprocess_returns_409_for_a_failed_job(client, db_conn):
+    job_id = _seed_job(db_conn, status="failed")
+
+    assert client.post(f"/api/curation/jobs/{job_id}/reprocess").status_code == 409
+
+
+def test_reprocess_never_touches_the_confirmed_invoice(client, db_conn):
+    """불변식 4 — 확정된 거래명세서는 재처리가 건드리지 않는다.
+
+    OcrService.confirm의 `invoice_id is not None` 가드가 재확정을 막는데, 그 가드의 입력이
+    바로 ocr_jobs.invoice_id다. 재처리가 이 링크를 지우면 가드가 뚫려 같은 잡이 두 번째
+    거래명세서를 만든다 — 링크와 invoices 행이 그대로임을 고정한다.
+    """
+    with db_conn.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO invoices (issue_date, recipient, total_supply) "
+                "VALUES ('2026-08-01', '거래처', 1000)"
+            )
+        )
+        invoice_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, result_json, invoice_id) "
+                "VALUES ('done', '/x.jpg', '{\"rows\": []}', :inv)"
+            ),
+            {"inv": invoice_id},
+        )
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+    client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    with db_conn.begin() as conn:
+        linked = conn.execute(
+            text("SELECT invoice_id FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+        survives = conn.execute(
+            text("SELECT COUNT(*) FROM invoices WHERE id = :id"), {"id": invoice_id}
+        ).scalar()
+    assert linked == invoice_id
+    assert survives == 1

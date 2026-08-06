@@ -291,4 +291,41 @@ def test_patch_pair_404_when_pair_missing():
     # AppError 기반 타입만 보면 400/409로 바뀌어도 통과한다 — status를 고정한다.
     assert ei.value.status == 404
     repo.release_gate.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# request_reprocess (spec §10)
+# ---------------------------------------------------------------------------
+
+
+def test_request_reprocess_requeues_a_done_job():
+    repo = MagicMock()
+    repo.find_job_for_update.return_value = {"id": 7, "status": "done"}
+
+    result = _sync_svc(repo, MagicMock()).request_reprocess(7)
+
+    repo.requeue_for_reprocess.assert_called_once_with(7)
+    assert result == {"job_id": 7, "status": "pending"}
+
+
+def test_request_reprocess_404_when_job_missing():
+    repo = MagicMock()
+    repo.find_job_for_update.return_value = None
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).request_reprocess(7)
+
+    assert exc.value.status == 404
+    repo.requeue_for_reprocess.assert_not_called()
+
+
+def test_request_reprocess_409_when_job_is_not_done():
+    repo = MagicMock()
+    repo.find_job_for_update.return_value = {"id": 7, "status": "pending"}
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).request_reprocess(7)
+
+    assert exc.value.status == 409
+    repo.requeue_for_reprocess.assert_not_called()
     repo.update_pair.assert_not_called()
