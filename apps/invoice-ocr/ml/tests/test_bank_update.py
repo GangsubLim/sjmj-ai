@@ -1307,6 +1307,72 @@ def test_cmd_plan_writes_plan_jsonl_and_only_prunes_missing_crops_for_add_or_rep
     assert records == [{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}]
 
 
+def _reembed_workspace(tmp_path, monkeypatch, *, reviewed):
+    """--reembed-job 배선 테스트 공용 픽스처 — unchanged 쌍(job-1/row-0) 1건 + 크롭 PNG.
+
+    bank의 job-1/row-0 라벨과 pairs의 canonical_label을 동일하게 둬 diff_bank가 unchanged로
+    판정하게 만든다(force_replace가 승격할 대상이 있어야 배선을 검증할 수 있다).
+    """
+    models_dir = tmp_path / "models"
+    models_dir.mkdir()
+    data_dir = tmp_path / "data"
+    crops_root = data_dir / "ocr_crops"
+    crops_root.mkdir(parents=True)
+    _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"])
+    _touch_crop(crops_root, "job-1/row-0")
+
+    pairs = [_pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방")]
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: reviewed)
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(models_dir))
+    return crops_root
+
+
+def test_cmd_plan_reembed_job_promotes_unchanged_to_replace(tmp_path, monkeypatch):
+    """CLI 경로에서 --reembed-job이 실제로 force_replace까지 이어지는지 고정한다.
+
+    가드 유닛테스트(test_force_replace_*)는 force_replace를 직접 불러 승격을 증명하지만,
+    cmd_plan이 그 함수를 실제로 호출한다는 배선은 이 테스트가 유일한 방어선이다.
+    """
+    _reembed_workspace(tmp_path, monkeypatch, reviewed={1})
+
+    out_dir = tmp_path / "out"
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, reembed_job=[1]))
+
+    records = [
+        json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    assert records == [{"action": "replace", "crop_ref": "job-1/row-0", "label": "안가방"}]
+
+
+def test_cmd_plan_reembed_job_rejects_a_job_with_unsettled_crops(tmp_path, monkeypatch):
+    """require_settled_crops가 cmd_plan 안에서 crops_root 실제 파일시스템을 보고 있는지 고정한다.
+
+    잔여 job-1.tmp를 실제로 crops_root 밑에 만들어 두고, require_settled_crops에 넘기는
+    dir_exists 콜백이 그 경로를 정말로 조회하는지까지 함께 검증한다.
+    """
+    crops_root = _reembed_workspace(tmp_path, monkeypatch, reviewed={1})
+    (crops_root / "job-1.tmp").mkdir()
+
+    out_dir = tmp_path / "out"
+    with pytest.raises(RuntimeError, match=r"job-1\.tmp"):
+        cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, reembed_job=[1]))
+
+
+def test_cmd_plan_reembed_job_rejects_an_unreviewed_job(tmp_path, monkeypatch):
+    """require_reviewed_jobs가 cmd_plan 안에서 실제로 걸리는지 고정한다(§11-1).
+
+    fetch_reviewed_job_ids가 빈 집합을 돌려주면(job 1 미검수) --reembed-job 1은 즉시
+    실패해야 한다 — 이 순서가 어긋나면 승격 없이 조용히 remove가 계획된다.
+    """
+    _reembed_workspace(tmp_path, monkeypatch, reviewed=set())
+
+    out_dir = tmp_path / "out"
+    with pytest.raises(RuntimeError, match=r"\[1\]"):
+        cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, reembed_job=[1]))
+
+
 def _apply_workspace(tmp_path, monkeypatch, bank_refs, bank_labs):
     """cmd_apply용 합성 운영 트리(models/bank.npz + data/ocr_crops) + env·Fake 임베딩 주입."""
     models_dir = tmp_path / "models"
