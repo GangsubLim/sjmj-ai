@@ -44,6 +44,13 @@ export function useCurationJob(
     jobRef.current = job;
   }, [job]);
 
+  // "지금 이 훅이 보고 있는 잡"의 항상-최신 미러. useEffect가 아니라 렌더 본문에서 직접
+  // 대입한다 — 늦은 응답의 소유권 검사(아래 jobTokenRef 가드)가 커밋을 기다리면, 같은
+  // 컴포넌트 인스턴스가 언마운트 없이 jobId만 바꿔 재사용될 때(예: "다음 잡" 이동) 그
+  // 사이에 도착한 옛 잡의 응답이 새 잡의 토큰을 덮을 창이 생긴다.
+  const jobIdRef = useRef(jobId);
+  jobIdRef.current = jobId;
+
   // pair별 요청 시퀀스. 늦게 도착한 응답이 최신 선택을 덮거나 롤백하지 못하게 막는다.
   // 지금까지 이 레이스가 안 보인 이유는 commit이 텍스트 blur로만 나서 사람 손 속도가
   // 사실상 직렬화 역할을 했기 때문이다 — 후보 칩은 그 방어를 없앤다.
@@ -89,6 +96,13 @@ export function useCurationJob(
       for (const [pairId, seq] of seqs) {
         seqs.set(pairId, seq + 1);
       }
+      // 옛 잡의 큐/토큰을 새 잡으로 들고 가지 않는다 — 새 잡의 첫 PATCH가 옛 잡의
+      // 남은 발행(들)을 기다릴 이유가 없다(정확성은 아래 dispatch의 소유권 가드가
+      // 이미 보장하지만, 리셋 없이는 새 잡의 요청이 무관한 옛 잡 요청 뒤에 줄을 선다).
+      // 실제 정확성 백스톱은 jobIdRef 가드다 — 이 리셋만으로는 늦게 도착하는 옛 잡
+      // 응답의 쓰기를 막지 못한다(그 응답 자체는 취소되지 않는다).
+      patchQueueRef.current = Promise.resolve();
+      jobTokenRef.current = undefined;
     };
   }, [jobId]);
 
@@ -165,8 +179,15 @@ export function useCurationJob(
             ...base
           } = res.data;
           // 큐의 다음 항목이 곧바로 최신 토큰을 읽어야 한다 — jobRef(useEffect 동기화)는
-          // 렌더 커밋을 기다려 늦을 수 있어 여기서 동기로 먼저 갱신한다.
-          jobTokenRef.current = nextToken;
+          // 렌더 커밋을 기다려 늦을 수 있어 여기서 동기로 먼저 갱신한다. 단, 이 응답이
+          // "지금 이 훅이 보고 있는 잡"의 것일 때만 — jobId가 언마운트 없이 바뀐 뒤
+          // 도착한 옛 잡의 응답이 새 잡의 토큰을 덮으면, 다음 편집이 남의 토큰으로 나가
+          // 확정적 409가 된다(§리뷰 New Important). setJob의 job_id 대조(아래)와 같은
+          // 가드를 여기서도 반복한다 — 두 쓰기는 서로 다른 진실원(jobTokenRef vs job
+          // state)이라 각자 자기 가드가 필요하다.
+          if (pairJobId === jobIdRef.current) {
+            jobTokenRef.current = nextToken;
+          }
           // 게이트와 같은 이유로 토큰도 잡 단위 서버 사실이라 stale 가드보다 먼저 반영한다 —
           // 늦게 온 성공을 버리면 다음 PATCH가 낡은 토큰으로 나가 409를 만든다.
           setJob((prev) =>
@@ -235,7 +256,9 @@ export function useCurationJob(
     try {
       // 게이트를 닫는 쓰기도 세대 대조를 받는다 — 재처리로 열린 게이트를 옛 화면이
       // 다시 닫으면 새 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라진다(spec §7·§12).
-      await curationAPI.reviewJob(jobId, jobRef.current?.job_token ?? "");
+      // jobTokenRef를 읽는다 — patchPair의 네트워크 발행이 쓰는 진실원과 같은 곳이어야
+      // review와 PATCH가 겹쳤을 때 서로 다른(어긋난) 토큰을 들고 나가지 않는다.
+      await curationAPI.reviewJob(jobId, jobTokenRef.current ?? "");
       // review 응답에는 갱신된 토큰이 없다(계약 갭) — 재조회로 메꾸지 않으면 검수 완료
       // 직후 같은 화면에서 라벨을 고치는 흐름(Issue #52가 게이트 해제로 만든 1급 흐름)이
       // 사용자 자신의 검수 완료 클릭 때문에 409가 된다. silent로 불러 페이지 전체를

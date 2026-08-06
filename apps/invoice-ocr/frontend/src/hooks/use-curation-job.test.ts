@@ -677,6 +677,65 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
     });
   });
 
+  // 리뷰 New Important — 같은 컴포넌트 인스턴스가 언마운트 없이 jobId만 바꿔 재사용될
+  // 때(예: "다음 잡" 이동), 옛 잡의 in-flight PATCH 응답이 늦게 도착하면 그 응답이
+  // 튀긴 토큰으로 jobTokenRef를 덮어써서는 안 된다 — 덮이면 새 잡의 다음 편집이 남의
+  // 토큰을 들고 나가 확정적 409가 된다(자기 조작이 사라지는 증상이 잡 전환 창에서
+  // 재현되는 셈).
+  it("jobId가 언마운트 없이 바뀌면 옛 잡의 늦은 PATCH 응답이 새 잡의 토큰을 덮지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128, job_token "1000"
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 128) return { data: jobA };
+      if (id === 129) return { data: jobB };
+      throw new Error(`예상 밖 jobId: ${id}`);
+    });
+
+    const dLate = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair.mockReturnValueOnce(dLate.promise);
+
+    const { result, rerender } = renderHook(
+      ({ jobId }: { jobId: number }) => useCurationJob(jobId),
+      { initialProps: { jobId: 128 } },
+    );
+    await waitFor(() => expect(result.current.job?.job_id).toBe(128));
+
+    // 잡 128에서 PATCH 발행 — 아직 응답이 안 왔다.
+    let inFlight!: Promise<void>;
+    act(() => {
+      inFlight = result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    // 언마운트 없이 잡 129로 전환.
+    rerender({ jobId: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+
+    // 옛 잡(128)의 늦은 응답이 지금에서야 도착한다 — 튀긴 토큰은 "1001"(잡 128의 것).
+    await act(async () => {
+      dLate.resolve({ data: patchResult({ job_token: "1001" }) });
+      await inFlight;
+    });
+
+    // 다음 PATCH(잡 129)가 싣는 토큰은 여전히 잡 129의 것이어야 한다 — "1001"이 실리면
+    // 옛 잡의 늦은 응답이 jobTokenRef를 덮은 회귀다.
+    mockPatchPair.mockResolvedValueOnce({
+      data: patchResult({ id: 9101, job_id: 129, job_token: "5001" }),
+    });
+    await act(async () => {
+      await result.current.patchPair(9101, { canonical_label: "축" });
+    });
+
+    expect(mockPatchPair).toHaveBeenLastCalledWith(9101, {
+      canonical_label: "축",
+      job_token: "5000",
+    });
+  });
+
   // 리뷰 Important 2 — fetch()는 loading/error를 건드리는 화면 공용 함수다. 검수
   // 완료 때마다 이걸 그대로 부르면 페이지 전체가 스켈레톤으로 번쩍인다. 조용한
   // 재조회(silent)는 loading을 띄우면 안 된다.
