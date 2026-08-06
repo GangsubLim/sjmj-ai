@@ -54,6 +54,10 @@ def is_machine_writable(status: str, reason: str | None) -> bool:
       (excluded, blank_crop) 기계가 배제        → 가능
       (included, blank_crop) 사람이 되돌림      → 불가(영구 보호 · 오탐 관측치)
       (included, None)       정상 후보          → 가능
+    재처리 미결 쌍(excluded, relink_failed)은 fail-closed로 False가 되어 blank_crop 도구가
+    덮어쓰지 못한다 — 의도한 보호다. 부작용으로 그 쌍들이 리포트의 `protected` 카운트에
+    합류하는데, 그 이름은 원래 "사람 판정이라 안 건드림"을 뜻했다. 지금은 "기계가 갱신하지
+    않는 쌍"으로 넓게 읽어야 한다(spec §6).
     미지의 status·reason 조합은 fail-closed로 거부한다.
     """
     if reason is None:
