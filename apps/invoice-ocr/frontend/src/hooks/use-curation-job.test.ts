@@ -641,4 +641,91 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
       job_token: "2000",
     });
   });
+
+  // 리뷰 Important 1 — 같은 잡의 서로 다른 pair를 같은 턴에 고치면(1행 blur 커밋 +
+  // 2행 칩 클릭) 서버가 첫 PATCH에서 이미 토큰을 튀긴다. 직렬화 없이 두 요청이 동시에
+  // 나가면 둘 다 옛 토큰을 들고 나가 두 번째가 확정적으로 409를 받는다 — 훅이 "네트워크
+  // 발행"만 잡 단위로 직렬화해 두 번째가 첫 응답의 갱신 토큰을 기다렸다가 싣게 한다.
+  it("겹친 서로 다른 pair PATCH는 네트워크 발행이 직렬화되어 두 번째가 첫 응답의 갱신 토큰을 싣는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetailMulti() });
+    mockPatchPair
+      .mockResolvedValueOnce({ data: patchResult({ job_token: "1001" }) })
+      .mockResolvedValueOnce({
+        data: patchResult({ id: 9002, job_token: "1002" }),
+      });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    // await 없이 같은 턴에 발행 — "1행 blur 커밋 + 2행 칩 클릭" 상호작용을 그대로 재현.
+    let p1!: Promise<void>;
+    let p2!: Promise<void>;
+    await act(async () => {
+      p1 = result.current.patchPair(9001, { canonical_label: "휠" });
+      p2 = result.current.patchPair(9002, { canonical_label: "축" });
+      await Promise.all([p1, p2]);
+    });
+
+    expect(mockPatchPair).toHaveBeenNthCalledWith(1, 9001, {
+      canonical_label: "휠",
+      job_token: "1000",
+    });
+    // 직렬화가 없으면 두 번째도 "1000"을 싣고 나가 서버가 409를 낸다 — "1001"을 실어야
+    // 첫 응답이 튀긴 토큰을 따라간 것이다.
+    expect(mockPatchPair).toHaveBeenNthCalledWith(2, 9002, {
+      canonical_label: "축",
+      job_token: "1001",
+    });
+  });
+
+  // 리뷰 Important 2 — fetch()는 loading/error를 건드리는 화면 공용 함수다. 검수
+  // 완료 때마다 이걸 그대로 부르면 페이지 전체가 스켈레톤으로 번쩍인다. 조용한
+  // 재조회(silent)는 loading을 띄우면 안 된다.
+  it("검수 완료의 재조회 중에는 loading을 띄우지 않는다(전체 화면 스켈레톤 방지)", async () => {
+    mockGetJob.mockResolvedValueOnce({ data: jobDetail() });
+    const dRefetch = deferred<{ data: CurationJobDetail }>();
+    mockGetJob.mockReturnValueOnce(dRefetch.promise);
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      reviewPromise = result.current.reviewJob();
+    });
+
+    // 재조회 요청은 이미 나갔지만 응답은 아직 안 왔다 — silent가 아니면 지금 loading이
+    // true였을 것이다.
+    await waitFor(() => expect(mockGetJob).toHaveBeenCalledTimes(2));
+    expect(result.current.loading).toBe(false);
+
+    await act(async () => {
+      dRefetch.resolve({ data: { ...jobDetail(), job_token: "2000" } });
+      await reviewPromise;
+    });
+
+    expect(result.current.job?.job_token).toBe("2000");
+  });
+
+  it("검수 완료의 재조회만 실패해도 검수 완료 자체는 성공으로 보고하고 에러 화면을 띄우지 않는다", async () => {
+    mockGetJob
+      .mockResolvedValueOnce({ data: jobDetail() })
+      .mockRejectedValueOnce(new Error("재조회 실패"));
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.reviewJob();
+    });
+
+    // review POST 자체는 성공했다 — 재조회(토큰 갱신)만 실패한 것이므로 검수 완료는
+    // 그대로 성공이어야 하고, "검수 완료" 토스트와 모순되는 에러 화면이 뜨면 안 된다.
+    expect(ok).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
 });
