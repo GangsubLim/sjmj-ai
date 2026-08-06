@@ -848,3 +848,36 @@ def test_reprocess_never_touches_the_confirmed_invoice(client, db_conn):
         ).scalar()
     assert linked == invoice_id
     assert survives == 1
+
+
+# ---------------------------------------------------------------------------
+# GET /api/curation/jobs/{job_id} — 미결 쌍은 새 행과 조인되지 않는다 (spec §6-1)
+# ---------------------------------------------------------------------------
+
+
+def test_job_detail_exposes_crop_available_for_orphaned_pairs(client, db_conn):
+    """미결 쌍의 UI 계약 — crop_available=false + 빈 top5(§6-1)."""
+    with db_conn.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO ocr_jobs (status, image_path, result_json) VALUES "
+                "('done', '/x.jpg', '{\"rows\": [{\"row_index\": 0, "
+                '"item_top5": [{"label": "무", "sim": 0.9}], "item_uncertain": true}]}\')'
+            )
+        )
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+        for ref, row in ((f"job-{job_id}/row-0", 0), (f"job-{job_id}/orphan-77", 0)):
+            conn.execute(
+                text(
+                    "INSERT INTO training_pairs "
+                    "(crop_ref, job_id, row_index, final_label, canonical_label, supply, status, "
+                    "exclusion_reason) VALUES (:r, :j, :i, '품목', '품목', 1000, 'included', NULL)"
+                ),
+                {"r": ref, "j": job_id, "i": row},
+            )
+
+    pairs = client.get(f"/api/curation/jobs/{job_id}").json()["data"]["pairs"]
+
+    assert [p["crop_available"] for p in pairs] == [True, False]
+    assert pairs[1]["top5"] == []
+    assert pairs[1]["uncertain"] is False

@@ -3,6 +3,7 @@
 라우터(HTTP)와 repository(SQL) 사이의 정규화·비즈니스 로직 계층.
 """
 
+import re
 from pathlib import Path
 
 from app import db
@@ -18,6 +19,19 @@ def _normalize_label(label: str | None) -> str:
     규칙과 같다 — strip 후 빈 문자열이면 등록 대상이 아니다.
     """
     return (label or "").strip()
+
+
+# 크롭 좌표가 실제 행을 가리키는 형식인지 — ml/tools/bank_update.py의 CROP_REF_RE와 같은
+# 규칙이다(두 트리는 서로를 import하지 못한다). 승계에 실패한 미결 쌍은 이 형식을 통과하지
+# 못하는 좌표('job-42/orphan-{pair_id}')를 들고 있으므로, 그 자체가 "행과 끊어졌다"는
+# 표식이다. exclusion_reason을 마커로 쓰지 않는다 — update_pair가 사람 배제 시 사유를
+# NULL로 지우므로 안정적 표식이 아니다(spec §6-1).
+_ROW_CROP_REF_RE = re.compile(r"^job-\d+/row-\d+$")
+
+
+def _has_row_crop(crop_ref: str | None) -> bool:
+    """쌍의 좌표가 실제 검출 행을 가리키는지 판정한다."""
+    return bool(_ROW_CROP_REF_RE.fullmatch(crop_ref or ""))
 
 
 class CurationService:
@@ -66,8 +80,11 @@ class CurationService:
         rows_by_index = {r.get("row_index"): r for r in rows if isinstance(r, dict)}
         pairs = []
         for p in detail["pairs"]:
-            # 조인 실패(재처리 등으로 row_index 부재)는 빈 행으로 본다 — 배지를 잘못 띄우지 않는다.
-            row = rows_by_index.get(int(p["row_index"])) or {}
+            # 미결 쌍은 어떤 경로로도 새 행과 조인되지 않는다 — 아무 조치가 없으면 옛 row-0
+            # 미결 라벨 옆에 전혀 다른 줄의 crop과 top5가 붙어, 막으려던 오염을 화면에서
+            # 재현한다. 조인 실패(row_index 부재)도 같은 fail-safe(빈 행)로 닫는다.
+            crop_available = _has_row_crop(p["crop_ref"])
+            row = (rows_by_index.get(int(p["row_index"])) or {}) if crop_available else {}
             pairs.append(
                 {
                     "id": int(p["id"]),
@@ -83,8 +100,12 @@ class CurationService:
                     "top5": row.get("item_top5") or [],
                     # item_conf_threshold 도입 이전 잡은 플래그가 없다 → 확신(하위호환).
                     "uncertain": bool(row.get("item_uncertain", False)),
+                    # false면 프론트가 crop URL 자체를 만들지 않는다(spec 불변식 5).
+                    "crop_available": crop_available,
                 }
             )
+        # 미결은 뒤로 — row_index 순서로는 실제 행 사이에 끼어 읽는 사람을 헷갈리게 한다.
+        pairs = sorted(pairs, key=lambda x: (not x["crop_available"], x["row_index"], x["id"]))
         return {
             "job_id": int(job["id"]),
             "invoice_id": job["invoice_id"],

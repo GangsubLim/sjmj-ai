@@ -329,3 +329,106 @@ def test_request_reprocess_409_when_job_is_not_done():
 
     assert exc.value.status == 409
     repo.requeue_for_reprocess.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# get_detail — 미결 쌍은 새 행과 조인되지 않는다 (spec §6-1)
+# ---------------------------------------------------------------------------
+
+
+def _detail_repo(pairs):
+    repo = MagicMock()
+    repo.find_job_detail.return_value = {
+        "job": {
+            "id": 42,
+            "invoice_id": None,
+            "curation_reviewed": 0,
+            "curation_reviewed_at": None,
+            "created_at": "2026-08-06T00:00:00",
+            "result_json": {
+                "rows": [
+                    {
+                        "row_index": 0,
+                        "item_top5": [{"label": "무", "sim": 0.9}],
+                        "item_uncertain": True,
+                    },
+                    {
+                        "row_index": 1,
+                        "item_top5": [{"label": "파", "sim": 0.5}],
+                        "item_uncertain": True,
+                    },
+                ]
+            },
+        },
+        "pairs": pairs,
+    }
+    return repo
+
+
+def _orphan_pair(pair_id, crop_ref, row_index):
+    return {
+        "id": pair_id,
+        "crop_ref": crop_ref,
+        "row_index": row_index,
+        "draft_label": None,
+        "final_label": "무",
+        "canonical_label": "무",
+        "supply": 3000,
+        "status": "included",
+        "exclusion_reason": None,
+        "reviewed_at": None,
+    }
+
+
+def test_get_detail_marks_row_shaped_crop_refs_available():
+    repo = _detail_repo([_orphan_pair(1, "job-42/row-0", 0)])
+
+    pair = _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]
+
+    assert pair["crop_available"] is True
+    assert pair["top5"] == [{"label": "무", "sim": 0.9}]
+
+
+def test_get_detail_never_joins_orphaned_pairs_to_new_rows():
+    """옛 row-0 미결 라벨 옆에 전혀 다른 줄의 crop·top5가 붙는 것을 막는다(§6-1)."""
+    repo = _detail_repo([_orphan_pair(1, "job-42/orphan-1", 0)])
+
+    pair = _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]
+
+    assert pair["crop_available"] is False
+    assert pair["top5"] == []
+    assert pair["uncertain"] is False
+
+
+def test_get_detail_keeps_row_index_untouched_for_orphans():
+    """row_index 값 자체는 손대지 않는다 — 진실은 crop_ref가 이미 갖고 있다(§6-1)."""
+    repo = _detail_repo([_orphan_pair(1, "job-42/orphan-1", 0)])
+
+    assert _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]["row_index"] == 0
+
+
+def test_get_detail_sorts_orphans_after_real_rows():
+    """ORDER BY row_index로는 미결이 실제 행 사이에 끼어 읽는 사람을 헷갈리게 한다."""
+    repo = _detail_repo(
+        [
+            _orphan_pair(1, "job-42/orphan-1", 0),
+            _orphan_pair(2, "job-42/row-0", 0),
+            _orphan_pair(3, "job-42/row-1", 1),
+        ]
+    )
+
+    ids = [p["id"] for p in _sync_svc(repo, MagicMock()).get_detail(42)["pairs"]]
+
+    assert ids == [2, 3, 1]
+
+
+def test_get_detail_does_not_use_exclusion_reason_as_the_marker():
+    """사람 배제가 사유를 NULL로 지우므로 exclusion_reason은 안정적 표식이 아니다(§6-1)."""
+    orphan = {
+        **_orphan_pair(1, "job-42/orphan-1", 0),
+        "status": "excluded",
+        "exclusion_reason": None,
+    }
+    repo = _detail_repo([orphan])
+
+    assert _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]["crop_available"] is False
