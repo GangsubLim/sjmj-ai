@@ -401,10 +401,17 @@ def test_get_detail_never_joins_orphaned_pairs_to_new_rows():
 
 
 def test_get_detail_keeps_row_index_untouched_for_orphans():
-    """row_index 값 자체는 손대지 않는다 — 진실은 crop_ref가 이미 갖고 있다(§6-1)."""
+    """row_index 값 자체는 손대지 않는다 — 진실은 crop_ref가 이미 갖고 있다(§6-1).
+
+    row_index 단독 단언은 조인 봉쇄 게이트를 지워도 참이 되는 무기력 검증이라(row_index
+    0은 게이트 유무와 무관하게 그대로 통과한다), top5·crop_available과 함께 단언해
+    게이트가 실제로 살아 있는지를 고정한다.
+    """
     repo = _detail_repo([_orphan_pair(1, "job-42/orphan-1", 0)])
 
-    assert _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]["row_index"] == 0
+    pair = _sync_svc(repo, MagicMock()).get_detail(42)["pairs"][0]
+
+    assert (pair["row_index"], pair["top5"], pair["crop_available"]) == (0, [], False)
 
 
 def test_get_detail_sorts_orphans_after_real_rows():
