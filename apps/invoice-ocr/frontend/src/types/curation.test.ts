@@ -26,16 +26,17 @@ describe("curation 타입 계약", () => {
       exclusion_reason: "blank_crop",
       reviewed_at: null,
       uncertain: false,
+      crop_available: true,
       top5: [],
     };
     expect(pair.exclusion_reason).toBe("blank_crop");
   });
 
-  it("exclusion_reason은 필수이며 blank_crop|null만 허용한다(optional 회귀 차단)", () => {
+  it("exclusion_reason은 필수이며 blank_crop|relink_failed|null만 허용한다(optional 회귀 차단)", () => {
     // 인덱스 접근 타입은 optional 필드면 `| undefined`가 섞인다 — exclusion_reason이
     // `exclusion_reason?:`로 되돌아가면 이 단언이 tsc -b에서 깨진다.
     expectTypeOf<CurationPairBase["exclusion_reason"]>().toEqualTypeOf<
-      "blank_crop" | null
+      "blank_crop" | "relink_failed" | null
     >();
   });
 
@@ -75,10 +76,13 @@ describe("curation 타입 계약", () => {
     >();
   });
 
-  it("PATCH 본문은 status·canonical_label 모두 선택적이다", () => {
+  it("PATCH 본문은 status·canonical_label·job_token 모두 선택적이다", () => {
+    // job_token은 훅이 채운다(컴포넌트는 만들지 않는다) — 타입상 optional이어야 컴포넌트
+    // 쪽 호출부가 이 필드 없이도 컴파일된다.
     expectTypeOf<CurationPairPatch>().toEqualTypeOf<{
       status?: "included" | "excluded";
       canonical_label?: string;
+      job_token?: string;
     }>();
   });
 });

@@ -19,6 +19,7 @@ const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 // ADR 0006이 사유 추가를 예고하므로 미지의 사유는 조용히 사라지지 않고 일반 문구로 뜬다.
 const EXCLUSION_REASON_LABELS: Record<string, string | undefined> = {
   blank_crop: "빈 크롭 자동 배제",
+  relink_failed: "재처리 승계 실패",
 };
 
 interface CurationPairRowProps {
@@ -65,13 +66,21 @@ export function CurationPairRow({
       )}
       data-testid={`pair-${pair.id}`}
     >
-      <img
-        src={ocrCropUrl(jobId, pair.row_index)}
-        alt={`행 ${pair.row_index} crop`}
-        loading="lazy"
-        className="h-10 w-37 shrink-0 rounded border object-contain"
-        onError={handleImageError}
-      />
+      {pair.crop_available ? (
+        <img
+          src={ocrCropUrl(jobId, pair.row_index)}
+          alt={`행 ${pair.row_index} crop`}
+          loading="lazy"
+          className="h-10 w-37 shrink-0 rounded border object-contain"
+          onError={handleImageError}
+        />
+      ) : (
+        // 승계에 실패한 미결 쌍 — row_index는 이제 다른 줄을 가리키므로 URL 자체를 만들지
+        // 않는다. 만들면 막으려던 오염을 화면에서 재현한다(spec §6-1).
+        <div className="text-muted-foreground flex h-10 w-37 shrink-0 items-center justify-center rounded border border-dashed text-xs">
+          그림 없음
+        </div>
+      )}
       <div className="flex-1">
         <div className="text-muted-foreground mb-1 flex flex-wrap items-center gap-1 text-xs">
           <span>#{pair.row_index}</span>

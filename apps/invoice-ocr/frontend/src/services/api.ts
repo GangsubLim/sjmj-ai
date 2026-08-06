@@ -352,10 +352,13 @@ const _realCurationAPI = {
 
   reviewJob: async (
     jobId: number,
+    jobToken: string,
   ): Promise<
     SingleResponse<{ job_id: number; curation_reviewed: boolean }>
   > => {
-    const response = await api.post(`/curation/jobs/${jobId}/review`);
+    const response = await api.post(`/curation/jobs/${jobId}/review`, {
+      job_token: jobToken,
+    });
     return response.data;
   },
 };

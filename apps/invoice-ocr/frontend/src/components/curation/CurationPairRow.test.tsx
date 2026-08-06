@@ -36,6 +36,7 @@ function pairWith(
     exclusion_reason: null,
     reviewed_at: null,
     uncertain: false,
+    crop_available: true,
     top5: [
       { label: "무", sim: 0.77 },
       { label: "배추", sim: 0.42 },
@@ -250,5 +251,48 @@ describe("CurationPairRow", () => {
     expect(excludedBadge).not.toMatch(/되돌림/);
     expect(revertedBadge).toMatch(/되돌림/);
     expect(revertedBadge).not.toBe(excludedBadge);
+  });
+});
+
+describe("미결 쌍(승계 실패)", () => {
+  it("crop_available이 false면 crop 이미지를 만들지 않는다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          crop_available: false,
+          status: "excluded",
+          exclusion_reason: "relink_failed",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByText("그림 없음")).toBeInTheDocument();
+  });
+
+  it("승계 실패 배지를 사유 문구로 띄운다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          crop_available: false,
+          status: "excluded",
+          exclusion_reason: "relink_failed",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/승계 실패/)).toBeInTheDocument();
+  });
+
+  it("crop_available이 true면 crop 이미지를 그대로 그린다", () => {
+    render(
+      <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("img")).toBeInTheDocument();
   });
 });

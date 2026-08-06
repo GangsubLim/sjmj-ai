@@ -11,6 +11,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:10:00",
+    job_token: "1000",
     pairs: [
       {
         id: 9001,
@@ -24,6 +25,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [
           { label: "배추", sim: 0.91 },
           { label: "무", sim: 0.42 },
@@ -48,6 +50,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         // 서버 값은 ITEM_CONF_THRESHOLD(0.75) 기준 top1 sim 파생이므로 sim도 함께
         // 임계 아래로 낮춘다 — 안 그러면 서버가 만들 수 없는 조합이 된다.
         uncertain: true,
+        crop_available: true,
         top5: [
           { label: "무", sim: 0.62 },
           { label: "배추", sim: 0.21 },
@@ -65,6 +68,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: "2026-06-30T08:30:00",
     warp_ok: false,
     created_at: "2026-06-30T08:00:00",
+    job_token: "1000",
     pairs: [
       {
         id: 8001,
@@ -82,6 +86,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         exclusion_reason: "blank_crop",
         reviewed_at: "2026-06-30T08:30:00",
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "당근", sim: 0.88 }],
       },
       {
@@ -103,6 +108,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         // "검수완료인데 미처리 1건"이라는 유령 상태를 보여준다.
         reviewed_at: "2026-06-30T08:30:00",
         uncertain: false,
+        crop_available: true,
         top5: [],
       },
     ],
@@ -119,6 +125,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     curation_reviewed_at: "2026-06-29T17:20:00",
     warp_ok: true,
     created_at: "2026-06-29T17:00:00",
+    job_token: "1000",
     pairs: [
       {
         // 검수 후 다시 손댄 쌍 — 서버가 같은 UPDATE에서 reviewed_at을 NULL로 되돌린다.
@@ -133,6 +140,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "대파", sim: 0.86 }],
       },
       {
@@ -148,6 +156,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         exclusion_reason: null,
         reviewed_at: "2026-06-29T17:20:00",
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "양파", sim: 0.93 }],
       },
     ],

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import axios from "axios";
 import { toast } from "sonner";
 import type {
   CurationJobDetail,
@@ -19,6 +20,14 @@ interface UseCurationJobReturn {
 // 에러를 삼키지 않고 식별 가능한 메시지로 surface한다(Error면 그 메시지, 아니면 fallback).
 function errorMessage(e: unknown, fallback: string): string {
   return e instanceof Error ? e.message : fallback;
+}
+
+// 409는 "이 잡이 다른 곳에서 바뀌었다"는 뜻이라 재시도가 아니라 새로고침이 답이다(spec §12).
+const STALE_JOB_MESSAGE =
+  "다른 곳에서 이 잡이 바뀌었습니다 — 새로고침한 뒤 다시 시도하세요";
+
+function isStaleJobError(e: unknown): boolean {
+  return axios.isAxiosError(e) && e.response?.status === 409;
 }
 
 export function useCurationJob(
@@ -113,23 +122,25 @@ export function useCurationJob(
             }
           : prev,
       );
+      // 토큰은 컴포넌트가 아니라 훅이 채운다 — 화면에 열려 있는 잡의 세대가 유일한 진실원.
+      const jobToken = jobRef.current?.job_token;
       try {
-        const res = await curationAPI.patchPair(id, patch);
-        // 2) 성공: 응답을 merge. job_id·게이트는 pair에서 떼고 top5는 기존 값 보존(계약 비대칭).
+        const res = await curationAPI.patchPair(id, {
+          ...patch,
+          job_token: jobToken,
+        });
+        // 2) 성공: 응답을 merge. job_id·게이트·토큰은 pair에서 떼고 top5는 기존 값 보존(계약 비대칭).
         const {
           job_id: pairJobId,
           job_curation_reviewed: gate,
+          job_token: nextToken,
           ...base
         } = res.data;
-        // 게이트는 pair가 아니라 **잡 단위 서버 사실**이라 stale 가드보다 먼저 반영한다.
-        // 뒤에 두면 "stale 성공 + 최신 실패" 조합에서 서버는 이미 해제(0)했는데 화면은
-        // 검수됨(true)으로 남아 배너가 안 뜨고 버튼이 잠긴 채 발산한다(AC 2·4).
-        // 해제는 무조건이라(spec §3.4) gate는 항상 false다 — 되돌리는 방향이 없어
-        // 도착 순서와 무관하게 안전하다. 잡이 바뀐 뒤 도착한 응답이 남의 잡 상태를
-        // 건드리지 않도록 job_id를 대조하고, 값이 같으면 prev를 그대로 돌려 재렌더를 막는다.
+        // 게이트와 같은 이유로 토큰도 잡 단위 서버 사실이라 stale 가드보다 먼저 반영한다 —
+        // 늦게 온 성공을 버리면 다음 PATCH가 낡은 토큰으로 나가 409를 만든다.
         setJob((prev) =>
-          prev && prev.job_id === pairJobId && prev.curation_reviewed !== gate
-            ? { ...prev, curation_reviewed: gate }
+          prev && prev.job_id === pairJobId
+            ? { ...prev, curation_reviewed: gate, job_token: nextToken }
             : prev,
         );
         // 성공은 stale이어도 '서버가 저장했다'는 사실이므로 확정값에는 먼저 반영한다 —
@@ -169,7 +180,11 @@ export function useCurationJob(
               }
             : prev,
         );
-        toast.error(errorMessage(e, "저장에 실패했습니다"));
+        toast.error(
+          isStaleJobError(e)
+            ? STALE_JOB_MESSAGE
+            : errorMessage(e, "저장에 실패했습니다"),
+        );
       }
     },
     [],
@@ -178,14 +193,24 @@ export function useCurationJob(
   const reviewJob = useCallback(async (): Promise<boolean> => {
     if (!jobId) return false;
     try {
-      await curationAPI.reviewJob(jobId);
+      // 게이트를 닫는 쓰기도 세대 대조를 받는다 — 재처리로 열린 게이트를 옛 화면이
+      // 다시 닫으면 새 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라진다(spec §7·§12).
+      await curationAPI.reviewJob(jobId, jobRef.current?.job_token ?? "");
+      // review 응답에는 갱신된 토큰이 없다(계약 갭) — 재조회로 메꾸지 않으면 검수 완료
+      // 직후 같은 화면에서 라벨을 고치는 흐름(Issue #52가 게이트 해제로 만든 1급 흐름)이
+      // 사용자 자신의 검수 완료 클릭 때문에 409가 된다.
+      await fetch();
       toast.success("검수가 완료되었습니다");
       return true;
     } catch (e) {
-      toast.error(errorMessage(e, "검수 완료에 실패했습니다"));
+      toast.error(
+        isStaleJobError(e)
+          ? STALE_JOB_MESSAGE
+          : errorMessage(e, "검수 완료에 실패했습니다"),
+      );
       return false;
     }
-  }, [jobId]);
+  }, [jobId, fetch]);
 
   return { job, loading, error, patchPair, reviewJob, refetch: fetch };
 }

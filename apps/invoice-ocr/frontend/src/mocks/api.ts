@@ -503,9 +503,12 @@ export const mockCurationAPI = {
       const touched = job.pairs.some((p) => p.id === id);
       const pairs = job.pairs.map((p) => {
         if (p.id !== id) return p;
+        // job_token은 잡 단위 필드라 pair patch 본문에는 실리지만 pair 자체에는 속하지
+        // 않는다 — 떼어내지 않으면 mock의 pair 저장소에 새어 들어간다.
+        const { job_token: _jobToken, ...pairPatch } = patch;
         const updated = {
           ...p,
-          ...patch,
+          ...pairPatch,
           // 서버 파생 쓰기 미러: status='excluded'면 같은 UPDATE에서 exclusion_reason도
           // NULL로 갱신된다(curation_repository.update_pair, ADR 0006). 포함 방향은 지우지 않는다.
           ...(patch.status === "excluded" ? { exclusion_reason: null } : {}),
@@ -514,14 +517,16 @@ export const mockCurationAPI = {
           // 서버와 반대 상태를 유지한다.
           reviewed_at: null,
         };
-        // PATCH 응답 형태: job_id + job_curation_reviewed 포함, top5·uncertain 제외
-        // (계약 비대칭 — curation_service.py의 patch_pair 참조).
+        // PATCH 응답 형태: job_id + job_curation_reviewed + job_token 포함, top5·uncertain
+        // 제외(계약 비대칭 — curation_service.py의 patch_pair 참조). mock은 세대를
+        // 흉내 내지 않으므로 잡의 현재 토큰을 그대로 돌려준다.
         const { top5: _top5, uncertain: _uncertain, ...base } = updated;
         result = {
           ...base,
           job_id: job.job_id,
           // 해제는 무조건이라 서버도 상수 false를 돌려준다(spec §3.4).
           job_curation_reviewed: false,
+          job_token: job.job_token,
         };
         return updated;
       });
@@ -534,7 +539,7 @@ export const mockCurationAPI = {
     return { data: result as CurationPairPatchResult };
   },
 
-  reviewJob: async (jobId: number) => {
+  reviewJob: async (jobId: number, _jobToken?: string) => {
     await delay();
     if (!curationJobs.some((j) => j.job_id === jobId)) {
       throw new Error("잡을 찾을 수 없습니다");

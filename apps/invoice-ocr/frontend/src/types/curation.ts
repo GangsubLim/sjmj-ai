@@ -28,7 +28,8 @@ export interface CurationPairBase {
   supply: number | null;
   status: "included" | "excluded";
   // 기계 판정 배제 사유. null = 사람 판정(사유 미분류). 서버 전용 쓰기 — PATCH로 못 보낸다.
-  exclusion_reason: "blank_crop" | null;
+  // relink_failed = 재처리 승계 실패(그림 자체가 없다 — 빈 크롭과 다르다).
+  exclusion_reason: "blank_crop" | "relink_failed" | null;
   reviewed_at: string | null;
 }
 
@@ -38,13 +39,18 @@ export interface CurationJobPair extends CurationPairBase {
   // 품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true.
   // PATCH 응답에는 없다(top5와 같은 계약 비대칭) — patchPair merge가 기존 값을 보존한다.
   uncertain: boolean;
+  // false면 승계에 실패한 미결 쌍이라 crop URL 자체를 만들지 않는다(spec §6-1).
+  // 서버도 이 쌍을 새 행과 조인하지 않는다 — 둘 중 하나만 지켜도 화면이 조용히 어긋난다.
+  crop_available: boolean;
 }
 
-// PATCH /pairs/{id} 응답 — job_id + 잡 게이트 포함, top5 없음(계약 비대칭).
+// PATCH /pairs/{id} 응답 — job_id + 잡 게이트 + 갱신된 토큰 포함, top5 없음(계약 비대칭).
 export interface CurationPairPatchResult extends CurationPairBase {
   job_id: number;
   // 쌍 수정은 그 잡의 게이트를 무조건 해제하므로 서버는 항상 false를 돌려준다.
   job_curation_reviewed: boolean;
+  // 다음 PATCH에 실을 새 세대 토큰.
+  job_token: string;
 }
 
 export interface CurationJobDetail {
@@ -54,12 +60,16 @@ export interface CurationJobDetail {
   curation_reviewed_at: string | null;
   warp_ok: boolean;
   created_at: string;
+  // 잡 세대 토큰 — PATCH에 실어 보내지 않으면 400, 재처리 뒤의 값이면 409.
+  job_token: string;
   pairs: CurationJobPair[];
 }
 
 export type CurationPairPatch = {
   status?: "included" | "excluded";
   canonical_label?: string;
+  // 훅이 잡 상세의 토큰을 채워 넣는다 — 컴포넌트는 이 필드를 만들지 않는다.
+  job_token?: string;
 };
 
 export type CurationImageKind = "original" | "warped";
