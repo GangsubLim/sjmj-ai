@@ -145,44 +145,62 @@ ls -d "$SJMJ_DATA_DIR"/ocr_crops/job-*.tmp "$SJMJ_DATA_DIR"/ocr_crops/job-*.old 
   "처리 중이 아니다"의 증거가 되지 못한다. 지금 처리 중인 잡일수록 오히려 로그에 안
   보이는 게 정상이라, 로그로 판단하면 처리 중인 잡을 "아니다"로 오판해 `commit_job`이
   방금 넣은 재처리 요청을 `done`으로 조용히 덮어써 버릴 수 있다(`worker/db.py`).
-  대신 **워커를 먼저 재시작해 처리 중을 강제로 끊는다.** 재시작 순간 in-flight 추론은
-  전부 중단되고, `claim_next_pending`은 `status='pending'`인 잡만 다시 집으므로
-  `running`으로 굳은 잡은 재시작 후에도 재시도되지 않는다 — 이 시점부터 그 잡이 "처리
-  중이 아님"이 보장된다.
+  대신 **워커를 정지시킨 뒤에 상태를 판정한다.**
 
-  **이 재시작 자체가 새 피해자를 만들 수 있다.** 워커는 단일 직렬이라 재시작 순간
-  다른 잡이 in-flight였다면 그 잡도 커밋 전에 끊겨 똑같이 `running`으로 남는다. 워커는
-  신규 업로드를 먼저 집으므로(3단계) 배치 재처리 도중이면 그 피해자는 **사무실이 방금
-  올린 신규 잡**일 확률이 높다 — 사람이 지켜보지 않고, `.tmp` 점검(위 `ls`)의 대상도
-  아니라(신규 잡은 `job-N.tmp` 자체가 아직 없거나 다른 잡 id라 이 배치의 점검망 밖이다)
-  조용히 방치되기 쉽다. **가능하면 사무실 업로드가 없는 시간대에 재시작한다.** 순서를
-  지켜 진행한다:
+  **`launchctl kickstart -k`(재시작)로는 안 된다.** plist는 `RunAtLoad`·`KeepAlive`가
+  모두 `true`라(`deploy/launchd/ai.sjmj.ml-worker.plist.template`) kickstart는 정지가
+  아니라 재시작이고, 새로 뜬 워커는 모델을 적재한 뒤 곧바로 무한 폴링으로 돌아가
+  `pending` 잡을 다시 집는다(`worker/main.py`의 `load_models()` → `while True`). 배치
+  재처리 도중이면 큐에 `pending`이 가득하므로 재시작 몇십 초 뒤부터 `status='running'`에는
+  **지금 정말 처리 중인 잡**이 섞인다 — 그 잡에 아래 UPDATE를 걸면 위에서 금지한 사고가
+  그대로 일어난다.
+
+  **정지 자체가 새 피해자를 만든다.** 워커는 단일 직렬이라 정지 순간 in-flight였던 잡은
+  커밋 전에 끊겨 똑같이 `running`으로 남는다. 워커는 신규 업로드를 먼저 집으므로(3단계)
+  배치 재처리 도중이면 그 피해자는 **사무실이 방금 올린 신규 잡**일 확률이 높다 — 사람이
+  지켜보지 않고, `.tmp` 점검(위 `ls`)의 대상도 아니라(신규 잡은 `job-N.tmp` 자체가 아직
+  없거나 다른 잡 id라 이 배치의 점검망 밖이다) 조용히 방치되기 쉽다. 그래서 2)의 조회는
+  대상 잡 하나가 아니라 `running` **전량**을 본다. **정지해 둔 동안 사무실 업로드는
+  처리되지 않는다** — 잡은 `pending`으로 쌓였다가 기동 후 순서대로 처리되므로 유실은
+  없지만, 가능하면 업로드가 없는 시간대에 한다. 순서를 지켜 진행한다:
 
   ```bash
-  launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker   # 1) in-flight 추론을 강제로 끊는다
+  # 1) 워커를 gui 도메인에서 내린다(kickstart와 달리 KeepAlive가 되살리지 않는다).
+  #    bootout은 비동기라 완전히 내려갈 때까지 기다린다 —
+  #    scripts/install-launchagent-ml-worker.sh가 같은 이유로 launchctl print를 폴링한다.
+  #    이미 내려가 있으면 bootout이 비정상 종료 코드를 내지만 무해하다.
+  launchctl bootout gui/$(id -u)/ai.sjmj.ml-worker
+  until ! launchctl print gui/$(id -u)/ai.sjmj.ml-worker >/dev/null 2>&1; do sleep 1; done
   ```
 
   ```sql
-  -- 2) 재시작이 새로 만든 피해자가 있는지 먼저 확인한다(대상 잡 하나만 보지 않는다).
+  -- 2) 이제 잡을 집는 주체가 없으므로, status='running'인 잡은 전부 좌초된 것이다.
   --    is_reprocess=1(옛 result_json 보유)이면 재처리 잡, 0이면 신규 업로드다 —
   --    되돌리는 상태가 다르다(아래).
   SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
   FROM ocr_jobs WHERE status='running';
   ```
 
-  재시작 직후 위 조회에 걸리는 잡은 전부 이번 재시작이 좌초시킨 것이다(워커가 이미
-  멈췄으므로 더 진행되지 않는다) — 대상 잡을 포함해 걸린 잡마다 `is_reprocess`에 따라
-  되돌린다:
+  걸린 잡마다(대상 잡 포함) `is_reprocess`에 따라 되돌린다:
 
   ```sql
   -- 3-a) 재처리 잡(is_reprocess=1) — 옛 초안·크롭이 여전히 정합이므로 done으로.
   UPDATE ocr_jobs SET status='done' WHERE id=<job_id>;
   -- 3-b) 신규 잡(is_reprocess=0) — result_json이 없어 done은 무효 상태다.
-  --      pending으로 되돌리면 워커가 신규 경로로 다시 추론한다.
+  --      pending으로 되돌리면 워커가 기동 후 신규 경로로 다시 추론한다.
   UPDATE ocr_jobs SET status='pending' WHERE id=<job_id>;
   ```
 
-  재처리 잡은 이어서 3단계로 다시 `reprocess`를 넣는다. 신규 잡은 `pending`으로
+  ```bash
+  # 4) 워커를 다시 올린다. plist가 RunAtLoad=true라 bootstrap만으로 기동한다.
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.sjmj.ml-worker.plist
+  tail -f ~/.sjmj-ai/logs/ml-worker.err.log   # [retrieval-version] 부팅 지문=... 이 기동 완료 신호
+  ```
+
+  기동한 워커는 모델을 1회 적재한 뒤에야 폴링을 시작하므로 곧바로 잡을 집지 않는다 —
+  위 부팅 지문 한 줄(`worker/main.py`, stderr)이 적재가 끝났다는 신호다.
+
+  재처리 잡은 그 뒤 3단계로 다시 `reprocess`를 넣는다. 신규 잡은 `pending`으로
   되돌린 것만으로 워커가 다음 순번에 다시 집는다(별도 호출 불필요). 남은 `.tmp`는
   워커가 그 잡을 다시 집을 때 `process_one_job`이 "앞선 실패가 남긴 잔여"로 간주해
   먼저 지운다(`worker/poll.py`) — 따로 지울 필요는 없다.
@@ -206,24 +224,39 @@ ls -d "$SJMJ_DATA_DIR"/ocr_crops/job-*.tmp "$SJMJ_DATA_DIR"/ocr_crops/job-*.old 
 "$PYTHON_BIN" -m tools.bank_update apply --plan results/bank_update/plan.jsonl --yes
 ```
 
-## 7. 워커 재시작
+## 7. 워커 다시 띄우기 (뱅크 재적재)
 
-워커는 기동 시 1회만 뱅크를 적재한다.
+워커는 기동 시 1회만 뱅크를 적재하므로 프로세스를 다시 띄워야 새 뱅크가 반영된다.
+
+여기서도 `kickstart -k`(재시작)가 아니라 **정지 → 확인 → 기동**을 쓴다. 이 전환도 그 순간
+in-flight였던 잡을 `running`으로 좌초시키는데(5단계와 같은 이유), 재시작으로는 그 피해자를
+확인할 창이 열리지 않기 때문이다 — 워커가 곧바로 다시 잡을 집어 `running` 조회가 좌초된
+잡과 정상 처리 중인 잡을 섞어 보여준다. 정지 상태에서 보면 조회 결과가 곧 좌초 목록이다.
+정지 동안 사무실 업로드가 `pending`으로 쌓이는 것도 5단계와 같다.
 
 ```bash
-launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
+launchctl bootout gui/$(id -u)/ai.sjmj.ml-worker
+until ! launchctl print gui/$(id -u)/ai.sjmj.ml-worker >/dev/null 2>&1; do sleep 1; done
 ```
 
-이 재시작도 그 순간 in-flight였던 잡을 `running`으로 좌초시킬 수 있다(5단계의 재시작
-피해자 설명과 동일한 이유) — 재시작 직후 `SELECT id, status FROM ocr_jobs WHERE
-status='running'`으로 확인하는 습관을 들인다.
+```sql
+-- 좌초된 잡이 나오면 5단계의 3-a/3-b로 되돌린다.
+SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
+FROM ocr_jobs WHERE status='running';
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.sjmj.ml-worker.plist
+```
 
 ## 8. 오염 발견 시
 
 ```bash
 cp "$SJMJ_ML_MODELS_DIR"/bank.<stamp>.npz.bak "$SJMJ_ML_MODELS_DIR"/bank.npz
-launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
 ```
+
+뱅크는 기동 시 1회만 적재되므로, 7단계와 같은 정지 → 확인 → 기동으로 워커를 다시 띄워야
+복원한 뱅크가 반영된다.
 
 ## 9. 잡 단위 롤백은 지원하지 않는다
 
@@ -232,15 +265,15 @@ launchctl kickstart -k gui/$(id -u)/ai.sjmj.ml-worker
 
 ## 실패 시나리오 대응
 
-| 증상                                             | 원인·대응                                                                                                                          |
-| ------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
-| 재처리 후에도 잡이 `done`이고 초안이 그대로      | 재추론 실패 → done 롤백(정상 동작). 워커 로그의 `[warp-gate]` 라인 확인                                                            |
-| 그 잡의 쌍이 전부 미결                           | warp 실패로 행이 0개 검출됨. 원본 사진 품질 확인 후 재시도                                                                         |
-| 검수 화면에서 PATCH가 409                        | 그 사이 재처리가 지나갔다. 새로고침 후 다시 편집                                                                                   |
-| 검수 완료 버튼이 409                             | 재처리가 게이트를 다시 열었다. 새로고침해 새 미결 쌍을 확인한 뒤 다시 완료 처리                                                    |
-| 이미 검수 완료된 쌍이 재검수 큐에 다시 뜸        | 승계 실패로 사유가 `relink_failed`로 갈아치워졌다(0. 전제 참조) — 버그가 아니라 의도된 동작                                        |
-| 워커가 같은 잡을 반복 처리                       | 크롭 디렉터리 교체 실패(권한·디스크). 로그 `크롭 교체 실패` 확인                                                                   |
-| 배치 재처리 도중 특정 잡만 실패                  | 그 사이 사람이 같은 잡의 거래명세서를 확정했다(1단계의 TOCTOU). 해당 잡만 다시 재처리                                              |
-| 검수 화면 크롭이 전부 404이고 `.old`가 남아 있음 | 커밋 후 교체가 끝나지 않았다. 그 잡을 다시 재처리한다(5단계) — 옛 그림은 복원하지 않는다                                           |
-| `--reembed-job`이 교체 미완을 이유로 거부        | 5단계를 건너뛴 것이다. 잔여를 남긴 잡을 재처리한 뒤 다시 실행                                                                      |
-| 잡이 `running`에서 멈춘 채 진행이 없음           | 워커가 추론 도중 죽었다(워치독 없음). 워커를 재시작해 처리 중을 강제로 끊은 뒤 좌초된 잡 전부(대상 잡 포함)를 되돌린다(5단계 참조) |
+| 증상                                             | 원인·대응                                                                                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 재처리 후에도 잡이 `done`이고 초안이 그대로      | 재추론 실패 → done 롤백(정상 동작). 워커 로그의 `[warp-gate]` 라인 확인                                                                       |
+| 그 잡의 쌍이 전부 미결                           | warp 실패로 행이 0개 검출됨. 원본 사진 품질 확인 후 재시도                                                                                    |
+| 검수 화면에서 PATCH가 409                        | 그 사이 재처리가 지나갔다. 새로고침 후 다시 편집                                                                                              |
+| 검수 완료 버튼이 409                             | 재처리가 게이트를 다시 열었다. 새로고침해 새 미결 쌍을 확인한 뒤 다시 완료 처리                                                               |
+| 이미 검수 완료된 쌍이 재검수 큐에 다시 뜸        | 승계 실패로 사유가 `relink_failed`로 갈아치워졌다(0. 전제 참조) — 버그가 아니라 의도된 동작                                                   |
+| 워커가 같은 잡을 반복 처리                       | 크롭 디렉터리 교체 실패(권한·디스크). 로그 `크롭 교체 실패` 확인                                                                              |
+| 배치 재처리 도중 특정 잡만 실패                  | 그 사이 사람이 같은 잡의 거래명세서를 확정했다(1단계의 TOCTOU). 해당 잡만 다시 재처리                                                         |
+| 검수 화면 크롭이 전부 404이고 `.old`가 남아 있음 | 커밋 후 교체가 끝나지 않았다. 그 잡을 다시 재처리한다(5단계) — 옛 그림은 복원하지 않는다                                                      |
+| `--reembed-job`이 교체 미완을 이유로 거부        | 5단계를 건너뛴 것이다. 잔여를 남긴 잡을 재처리한 뒤 다시 실행                                                                                 |
+| 잡이 `running`에서 멈춘 채 진행이 없음           | 워커가 추론 도중 죽었다(워치독 없음). 워커를 `bootout`으로 정지시킨 상태에서 좌초된 잡 전부(대상 잡 포함)를 되돌린 뒤 다시 띄운다(5단계 참조) |
