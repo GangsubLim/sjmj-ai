@@ -132,7 +132,9 @@ class WorkerQueue:
             #    curation_repository.update_pair가 같은 UPDATE에서 exclusion_reason을 NULL로
             #    지운다(ADR 0006 §6) — 사유가 relink_failed로 남아 있다는 것 자체가 "아직
             #    기계 판정이며 사람이 손대지 않았다"는 뜻이라, 사람의 배제는 자동으로 빠진다.
-            #    reviewed_at은 건드리지 않는다 — NULL로 남아 사람이 검수 큐에서 확인한다.
+            #    reviewed_at은 건드리지 않는다 — 아직 재검수 전이면 NULL로 남아 검수 큐에
+            #    그대로 있고, 이미 검수 완료를 거친 쌍이면(mark_reviewed가 그때 미처리 쌍
+            #    전량에 찍는다) 그 사실이 보존돼 복원이 조용히 일어난다.
             #    런북 0단계의 결정(재처리 이전부터 blank_crop으로 배제돼 있던 쌍도 승계 실패
             #    시 relink_failed로 덮인다)과 맞물려 원래 blank_crop이던 쌍이 여기서 included로
             #    돌아올 수 있다 — 크롭이 여전히 비었다면 빈 크롭 가드가 다음 실행에서 다시

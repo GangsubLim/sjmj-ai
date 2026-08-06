@@ -790,6 +790,11 @@ def require_reviewed_jobs(reviewed_job_ids: set[int], job_ids: list[int]) -> Non
     걸리는 것은 미결이 나와 재검수가 필요한 잡을 사람이 잊고 지정했을 때이고, 그때
     알려주는 것이 이 가드의 목적이다.
 
+    다만 "그 잡의 뱅크 항목 전량 삭제를 계획한다"는 근거는 **뱅크에 항목이 있는 잡에만**
+    참이다. 학습쌍이 0개인 확정 잡처럼 애초에 검수 대상이 아닌 잡은 뱅크에도 없어 지정이
+    no-op이므로, 그런 잡은 재검수가 아니라 지정 목록에서 빼는 것이 해소다 — 검수 화면에
+    뜰 방법이 없어 재검수로는 영영 풀리지 않기 때문이다. 메시지가 두 갈래를 다 담는 이유다.
+
     Args:
         reviewed_job_ids: 검수 완료 잡 id 집합.
         job_ids: --reembed-job으로 지정한 잡 id 목록.
@@ -802,7 +807,9 @@ def require_reviewed_jobs(reviewed_job_ids: set[int], job_ids: list[int]) -> Non
         raise RuntimeError(
             f"--reembed-job에 미검수 잡이 있습니다: {unreviewed} — 게이트가 해제된 잡의 쌍은 "
             "desired에서 빠져 plan이 그 잡의 뱅크 항목 전량 삭제를 계획합니다. "
-            "재검수를 먼저 끝낸 뒤 다시 실행하세요."
+            "재검수를 먼저 끝낸 뒤 다시 실행하세요. "
+            "검수 대상이 아닌 잡(학습쌍 0건 등)은 뱅크에도 항목이 없어 재임베딩이 "
+            "무의미하므로 지정 목록에서 빼면 됩니다."
         )
 
 
