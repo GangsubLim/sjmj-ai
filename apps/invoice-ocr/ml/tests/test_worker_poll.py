@@ -5,9 +5,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from worker.poll import _swap_crop_dir, process_one_job
+from handwriting.amount_read import DegenerateOutputError
+from worker.poll import (
+    DegenerateWorkerState,
+    PollOutcome,
+    _swap_crop_dir,
+    process_one_job,
+)
 
 RESULT = {"rows": [{"row_index": 0, "supply": 3000}], "supply_sum": 3000, "warp_ok": True}
+DEMOTED = {"rows": [], "supply_sum": 0, "warp_ok": False}  # 게이트 강등 — Qwen 미호출
+SPAM = "!" * 32
 
 
 def _queue(job=None, pairs=None):
@@ -22,7 +30,7 @@ def _job(job_id=9, *, is_reprocess=False):
 
 
 def test_no_pending_returns_false():
-    assert process_one_job(_queue(None), lambda *a: RESULT, "/tmp/crops") is False
+    assert process_one_job(_queue(None), lambda *a: RESULT, "/tmp/crops", 0).worked is False
 
 
 def test_infer_writes_into_a_tmp_directory_not_the_live_one(tmp_path):
@@ -39,7 +47,7 @@ def test_infer_writes_into_a_tmp_directory_not_the_live_one(tmp_path):
     live.mkdir()
     (live / "row-0.png").write_bytes(b"old")
 
-    process_one_job(_queue(_job()), infer, tmp_path)
+    process_one_job(_queue(_job()), infer, tmp_path, 0)
 
     assert seen["dir"] == tmp_path / "job-9.tmp"
     assert (live / "row-0.png").read_bytes() == b"new", "커밋 후 디렉터리째 교체된다"
@@ -58,7 +66,7 @@ def test_stale_crops_disappear_when_fewer_rows_are_detected(tmp_path):
     for i in range(3):
         (live / f"row-{i}.png").write_bytes(b"old")
 
-    process_one_job(_queue(_job(is_reprocess=True)), infer, tmp_path)
+    process_one_job(_queue(_job(is_reprocess=True)), infer, tmp_path, 0)
 
     assert sorted(p.name for p in live.iterdir()) == ["row-0.png"]
 
@@ -68,7 +76,7 @@ def test_commit_receives_the_plan_built_from_new_rows(tmp_path):
     from handwriting.relink import OldPair
 
     q = _queue(_job(), pairs=[OldPair(pair_id=1, row_index=0, supply=3000)])
-    process_one_job(q, lambda *a: RESULT, tmp_path)
+    process_one_job(q, lambda *a: RESULT, tmp_path, 0)
 
     job_id, result, plan = q.commit_job.call_args[0]
     assert (job_id, result) == (9, RESULT)
@@ -80,7 +88,7 @@ def test_inference_failure_of_a_new_job_marks_failed(tmp_path):
         raise RuntimeError("warp explode")
 
     q = _queue(_job(3))
-    assert process_one_job(q, boom, tmp_path) is True
+    assert process_one_job(q, boom, tmp_path, 0).worked is True
     assert "warp explode" in q.mark_failed.call_args[0][1]["error"]
     q.rollback_to_done.assert_not_called()
     q.commit_job.assert_not_called()
@@ -93,7 +101,7 @@ def test_inference_failure_of_a_reprocess_rolls_back_to_done(tmp_path):
         raise RuntimeError("boom")
 
     q = _queue(_job(3, is_reprocess=True))
-    process_one_job(q, boom, tmp_path)
+    process_one_job(q, boom, tmp_path, 0)
 
     q.rollback_to_done.assert_called_once_with(3)
     q.mark_failed.assert_not_called()
@@ -111,7 +119,7 @@ def test_failed_run_removes_the_tmp_directory_and_keeps_live_crops(tmp_path):
     live.mkdir()
     (live / "row-0.png").write_bytes(b"old")
 
-    process_one_job(_queue(_job(is_reprocess=True)), half_then_boom, tmp_path)
+    process_one_job(_queue(_job(is_reprocess=True)), half_then_boom, tmp_path, 0)
 
     assert not (tmp_path / "job-9.tmp").exists()
     assert (live / "row-0.png").read_bytes() == b"old"
@@ -131,7 +139,7 @@ def test_commit_failure_removes_the_tmp_directory_before_rollback(tmp_path):
     q = _queue(_job(is_reprocess=True))
     q.commit_job.side_effect = RuntimeError("deadlock")
 
-    process_one_job(q, infer, tmp_path)
+    process_one_job(q, infer, tmp_path, 0)
 
     assert not (tmp_path / "job-9.tmp").exists()
     assert (live / "row-0.png").read_bytes() == b"old"
@@ -151,7 +159,7 @@ def test_swap_failure_after_commit_requeues_the_job(tmp_path, monkeypatch):
     )
     q = _queue(_job(is_reprocess=True))
 
-    assert process_one_job(q, infer, tmp_path) is True
+    assert process_one_job(q, infer, tmp_path, 0).worked is True
     q.requeue_for_reprocess.assert_called_once_with(9)
     q.rollback_to_done.assert_not_called()
 
@@ -175,7 +183,7 @@ def test_a_failing_rerun_keeps_the_unfinished_swap_marker_alive(tmp_path):
         raise RuntimeError("추론 실패")
 
     q = _queue(_job(is_reprocess=True))
-    process_one_job(q, failing_infer, tmp_path)
+    process_one_job(q, failing_infer, tmp_path, 0)
 
     markers = [p.name for p in tmp_path.iterdir() if p.name.startswith("job-9.")]
     assert markers, "미완 교체 마커가 남아야 재임베딩 가드가 이 잡을 거부한다"
@@ -192,7 +200,7 @@ def test_leftover_tmp_directory_from_a_previous_crash_is_cleared(tmp_path):
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
 
-    process_one_job(_queue(_job()), infer, tmp_path)
+    process_one_job(_queue(_job()), infer, tmp_path, 0)
 
     assert sorted(p.name for p in (tmp_path / "job-9").iterdir()) == ["row-0.png"]
 
@@ -241,8 +249,221 @@ def test_death_between_commit_and_swap_leaves_the_tmp_marker(tmp_path, monkeypat
     q = _queue(_job(is_reprocess=True))
 
     with pytest.raises(SystemExit):
-        process_one_job(q, infer, tmp_path)
+        process_one_job(q, infer, tmp_path, 0)
 
     assert (tmp_path / "job-9.tmp").exists(), "잔여 tmp가 미완 교체의 마커로 남는다"
     assert (live / "row-0.png").read_bytes() == b"old"
     q.requeue_for_reprocess.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# MLX degenerate 대응 (이슈 #99) — 커밋 차단 + 되돌림 + 프로세스 재기동
+# ---------------------------------------------------------------------------
+
+
+def _spam_infer(*_a):
+    raise DegenerateOutputError(f"판독기 출력이 degenerate — raw 표본: {SPAM!r}")
+
+
+class FakeQueue:
+    """상태를 들고 있는 큐 대역 — pending 복귀 후 재점유까지 한 시나리오에서 잇는다.
+
+    MagicMock은 claim_next_pending이 항상 같은 값을 돌려줘 '되돌린 잡이 다시 잡히는가'를
+    표현할 수 없다. 자가복구 경로 테스트에는 상태가 필요하다.
+    """
+
+    def __init__(self, job_id=7, *, is_reprocess=False):
+        self.job = {"id": job_id, "image_path": "/x.jpg", "is_reprocess": is_reprocess}
+        self.status = "pending"
+        self.committed = []
+
+    def claim_next_pending(self):
+        if self.status != "pending":
+            return None
+        self.status = "running"
+        return dict(self.job)
+
+    def fetch_pairs(self, job_id):
+        return []
+
+    def commit_job(self, job_id, result, plan):
+        self.status = "done"
+        self.committed.append(result)
+
+    def mark_failed(self, job_id, error_json):
+        self.status = "failed"
+
+    def rollback_to_done(self, job_id):
+        self.status = "done"
+
+    def requeue_pending(self, job_id):
+        self.status = "pending"
+
+    def requeue_for_reprocess(self, job_id):
+        self.status = "pending"
+
+
+def test_degenerate_worker_state_cannot_be_swallowed_by_job_isolation():
+    """언어 의미론으로 보장한다 — SystemExit은 except Exception에 걸리지 않는다.
+
+    미래에 광역 핸들러가 추가돼도 이 예외는 흡수될 수 없다(spec §2).
+    """
+    assert issubclass(DegenerateWorkerState, SystemExit)
+    assert not issubclass(DegenerateWorkerState, Exception)
+    assert DegenerateWorkerState(1).code == 1
+
+
+def test_degenerate_after_the_first_qwen_job_requeues_a_new_job_and_exits(tmp_path):
+    q = _queue(_job(3))
+
+    with pytest.raises(DegenerateWorkerState) as exc:
+        process_one_job(q, _spam_infer, tmp_path, 1)
+
+    assert exc.value.code == 1
+    q.requeue_pending.assert_called_once_with(3)
+    q.mark_failed.assert_not_called()
+    q.commit_job.assert_not_called()
+
+
+def test_degenerate_after_the_first_qwen_job_requeues_a_reprocess_job_too_and_exits(tmp_path):
+    """재시도 갈래는 신규·재처리를 가르지 않는다(B1-b) — 재처리 잡도 pending으로 되돌린다.
+
+    result_json이 남아 있으므로 다음 점유에서 재처리 잡으로 스스로 재분류된다.
+    """
+    q = _queue(_job(3, is_reprocess=True))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _spam_infer, tmp_path, 1)
+
+    q.requeue_pending.assert_called_once_with(3)
+    q.rollback_to_done.assert_not_called()
+    q.mark_failed.assert_not_called()
+
+
+def test_degenerate_removes_the_tmp_crops_before_exiting(tmp_path):
+    """되돌린 잡이 반쪽 크롭을 남기면 다음 실행이 새 그림과 섞는다(기존 실패 경로와 동일 처리)."""
+
+    def half_then_spam(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        (Path(crop_dir) / "row-0.png").write_bytes(b"half")
+        raise DegenerateOutputError(f"raw 표본: {SPAM!r}")
+
+    q = _queue(_job(9))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, half_then_spam, tmp_path, 1)
+
+    assert not (tmp_path / "job-9.tmp").exists()
+
+
+def test_degenerate_logs_the_job_id_and_a_raw_sample_to_stderr(tmp_path, capsys):
+    q = _queue(_job(3))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _spam_infer, tmp_path, 1)
+
+    err = capsys.readouterr().err
+    assert "[degenerate] job=3" in err
+    assert "!" in err
+
+
+def test_the_first_degenerate_job_after_boot_retires_the_job_and_exits(tmp_path):
+    """크래시루프 가드 — 부팅 직후부터 스팸이면 재기동해도 같은 일이 반복될 뿐이다(spec §3).
+
+    B2-b: 첫 Qwen 잡이어도 워커를 살려두지 않는다 — 잡을 은퇴시키고 함께 종료한다.
+    """
+    q = _queue(_job(3))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _spam_infer, tmp_path, 0)
+
+    q.mark_failed.assert_called_once()
+    assert q.mark_failed.call_args[0][0] == 3
+    q.requeue_pending.assert_not_called()
+
+
+def test_the_first_degenerate_reprocess_after_boot_retires_the_job_and_exits(tmp_path):
+    q = _queue(_job(3, is_reprocess=True))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _spam_infer, tmp_path, 0)
+
+    q.rollback_to_done.assert_called_once_with(3)
+    q.mark_failed.assert_not_called()
+
+
+def test_a_collapse_mid_job_is_still_treated_as_the_first_qwen_job(tmp_path):
+    """H2의 유효 잔여 — 카운터는 잡 단위다. 앞칸은 정상이고 뒤칸에서 뒤늦게 붕괴해도
+    process_one_job 호출 자체가 처음이면(qwen_jobs_before=0) '첫 Qwen 잡'으로 취급되어
+    은퇴 + 즉시 종료된다(감지는 셀 단위지만 크래시루프 판정은 잡 단위, B2-b로 워커도 함께
+    종료하므로 두 번째 잡에서 이어지는 시나리오 자체가 성립하지 않는다).
+    """
+
+    def _late_spam_infer(*_a):
+        raise DegenerateOutputError(f"27칸 정상 후 붕괴 — raw 표본: {SPAM!r}")
+
+    q = _queue(_job(3))
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _late_spam_infer, tmp_path, 0)
+
+    q.mark_failed.assert_called_once()
+    assert q.mark_failed.call_args[0][0] == 3
+    q.requeue_pending.assert_not_called()
+
+
+def test_a_requeued_new_job_is_reclaimed_and_completes_on_the_next_process(tmp_path):
+    """자가복구 경로 — pending 복귀 → 재점유 → 정상 결과 → done."""
+
+    def good_infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        (Path(crop_dir) / "row-0.png").write_bytes(b"new")
+        return RESULT
+
+    q = FakeQueue(7)
+
+    with pytest.raises(DegenerateWorkerState):
+        process_one_job(q, _spam_infer, tmp_path, 1)
+    assert q.status == "pending", "되돌려진 잡이 큐에 남아야 새 프로세스가 다시 집는다"
+
+    outcome = process_one_job(q, good_infer, tmp_path, 0)  # 재기동한 프로세스 모사
+
+    assert outcome == PollOutcome(worked=True, qwen_called=True)
+    assert q.status == "done"
+    assert q.committed == [RESULT]
+
+
+def test_a_normal_result_with_rows_counts_as_a_qwen_call(tmp_path):
+    q = _queue(_job())
+
+    outcome = process_one_job(q, lambda *a: RESULT, tmp_path, 0)
+
+    assert outcome == PollOutcome(worked=True, qwen_called=True)
+    q.commit_job.assert_called_once()
+
+
+def test_a_gate_demoted_result_does_not_count_as_a_qwen_call(tmp_path):
+    """게이트 강등(rows=[])은 Qwen을 부르지 않는다 — 카운터를 올리면 크래시루프 가드가 헐거워진다."""
+    q = _queue(_job())
+
+    outcome = process_one_job(q, lambda *a: DEMOTED, tmp_path, 0)
+
+    assert outcome == PollOutcome(worked=True, qwen_called=False)
+    q.commit_job.assert_called_once()  # 강등도 커밋된다(계약 불변)
+
+
+def test_an_ordinary_failure_does_not_count_as_a_qwen_call(tmp_path):
+    """오판의 결과는 재기동 대신 잡 실패 처리라는 보수적 강등이다(spec §3)."""
+
+    def boom(*a):
+        raise RuntimeError("warp explode")
+
+    outcome = process_one_job(_queue(_job(3)), boom, tmp_path, 5)
+
+    assert outcome == PollOutcome(worked=True, qwen_called=False)
+
+
+def test_an_empty_queue_returns_a_no_work_outcome():
+    assert process_one_job(_queue(None), lambda *a: RESULT, "/tmp/crops", 3) == PollOutcome(
+        worked=False, qwen_called=False
+    )

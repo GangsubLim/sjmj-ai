@@ -125,8 +125,8 @@ def main():
         return infer_job(image_path, models, crop_dir, job_id)
 
     while True:
-        worked = process_one_job(queue, infer_fn, crops_root)
-        if not worked:
+        outcome = process_one_job(queue, infer_fn, crops_root, 0)
+        if not outcome.worked:
             time.sleep(POLL_INTERVAL_SEC)
 
 

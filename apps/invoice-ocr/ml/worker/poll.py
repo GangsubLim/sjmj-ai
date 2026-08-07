@@ -9,8 +9,32 @@
 import shutil
 import sys
 from pathlib import Path
+from typing import NamedTuple
 
+from handwriting.amount_read import DegenerateOutputError
 from handwriting.relink import NewRow, plan_relink
+
+
+class PollOutcome(NamedTuple):
+    """한 번의 폴링 결과 — bool 반환을 명시 결과 타입으로 승격한 것.
+
+    worked: 잡을 하나 처리했으면 True, 큐가 비었으면 False(호출자의 sleep 판단 입력).
+    qwen_called: 이 잡이 금액 판독기(Qwen)를 실제로 불렀는가. main()의 크래시루프 카운터 입력이며
+        게이트 강등(rows=[])·quad_missing은 False다.
+    """
+
+    worked: bool
+    qwen_called: bool
+
+
+class DegenerateWorkerState(SystemExit):
+    """이 프로세스의 MLX 상태가 붕괴했으니 종료하고 재기동하라는 신호(이슈 #99).
+
+    **SystemExit 서브클래스인 것이 계약이다.** 잡 격리 `except Exception`이나 미래에 추가될
+    광역 핸들러가 실수로 흡수할 수 없다 — main 경계 테스트로 회귀를 막는 대신 언어 의미론으로
+    보장한다. 종료 자체가 launchd KeepAlive=true의 재기동 트리거다 — KeepAlive는 boolean
+    true라 종료 코드와 무관하게 재기동한다(code=1은 로그 판별용).
+    """
 
 
 def _new_rows(result_json: dict) -> list[NewRow]:
@@ -48,11 +72,30 @@ def _swap_crop_dir(tmp_dir: Path, final_dir: Path) -> None:
     shutil.rmtree(old_dir, ignore_errors=True)
 
 
-def process_one_job(queue, infer_fn, crops_root) -> bool:
-    """대기 중인 잡 1건을 처리한다. 처리했으면 True, 큐가 비었으면 False."""
+def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollOutcome:
+    """대기 중인 잡 1건을 처리한다.
+
+    Args:
+        queue: WorkerQueue(또는 같은 계약의 대역).
+        infer_fn: (image_path, crop_dir, job_id) → result_json.
+        crops_root: 크롭 루트 디렉터리.
+        qwen_jobs_before: **이 프로세스가** 지금까지 Qwen을 부른 잡 수. degenerate가 나면 이
+            값으로 그 잡을 은퇴시킬지(0 — mark_failed/rollback_to_done) 재시도 가능 상태로
+            되돌릴지(≥1 — requeue_pending, 신규·재처리 동일) 가른다. 어느 쪽이든 워커는
+            종료한다(sticky 붕괴라 살려둬도 회복되지 않는다). 카운터의 소유·갱신은 main()이
+            한다.
+
+    Returns:
+        PollOutcome. 큐가 비었으면 PollOutcome(False, False).
+
+    Raises:
+        DegenerateWorkerState: 판독기가 degenerate일 때 항상. qwen_jobs_before == 0이면 그
+            잡을 은퇴시킨 뒤, 아니면 재시도 가능 상태로 되돌린 뒤 던진다 — 프로세스 종료가
+            곧 복구 수단이다.
+    """
     job = queue.claim_next_pending()
     if job is None:
-        return False
+        return PollOutcome(worked=False, qwen_called=False)
     job_id = job["id"]
     crops_root = Path(crops_root)
     final_dir = crops_root / f"job-{job_id}"
@@ -70,6 +113,25 @@ def process_one_job(queue, infer_fn, crops_root) -> bool:
         result = infer_fn(job["image_path"], tmp_dir, job_id)
         plan = plan_relink(job_id, queue.fetch_pairs(job_id), _new_rows(result))
         queue.commit_job(job_id, result, plan)
+    except DegenerateOutputError as exc:
+        # **잡 격리 except Exception보다 반드시 앞에 온다.** 스팸 결과가 commit_job에 닿는
+        # 경로는 존재하지 않는다 — 감지가 read 시점 raise이므로 여기 도달했다는 것 자체가
+        # 커밋 이전이라는 뜻이다.
+        print(f"[degenerate] job={job_id} raw={exc}", file=sys.stderr, flush=True)
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        is_first_qwen_job = qwen_jobs_before == 0
+        if is_first_qwen_job:
+            # 재기동해도 같은 붕괴가 반복될 뿐이므로 재시도시키지 않고 은퇴시킨다(B2-b —
+            # 워커도 이 잡과 함께 종료한다. 살려둬 봐야 sticky 붕괴는 회복되지 않는다).
+            if job["is_reprocess"]:
+                queue.rollback_to_done(job_id)
+            else:
+                queue.mark_failed(job_id, {"error": str(exc)})
+        else:
+            # 재시도 갈래는 신규·재처리를 가르지 않는다(B1-b) — result_json 유무가 다음
+            # 점유에서 스스로 신규/재처리를 가른다(requeue_pending 참조).
+            queue.requeue_pending(job_id)
+        raise DegenerateWorkerState(1) from exc
     except Exception as exc:  # noqa: BLE001 — 잡 단위 격리(워커 생존)
         shutil.rmtree(tmp_dir, ignore_errors=True)
         if job["is_reprocess"]:
@@ -80,7 +142,9 @@ def process_one_job(queue, infer_fn, crops_root) -> bool:
             queue.rollback_to_done(job_id)
         else:
             queue.mark_failed(job_id, {"error": str(exc)})
-        return True
+        return PollOutcome(worked=True, qwen_called=False)
+    # 게이트 강등·quad_missing은 rows=[]로 돌아온다 — Qwen 미호출이므로 계수하지 않는다.
+    qwen_called = len(result.get("rows") or []) >= 1
     try:
         _swap_crop_dir(tmp_dir, final_dir)
     except OSError as exc:
@@ -92,4 +156,4 @@ def process_one_job(queue, infer_fn, crops_root) -> bool:
             flush=True,
         )
         queue.requeue_for_reprocess(job_id)
-    return True
+    return PollOutcome(worked=True, qwen_called=qwen_called)
