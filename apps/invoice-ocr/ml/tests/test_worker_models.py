@@ -7,7 +7,9 @@ import numpy as np
 import pytest
 
 import handwriting
+import worker.main as main_mod
 from worker.main import ModelBundle, load_models, retrieval_version_or_none
+from worker.poll import DegenerateWorkerState, PollOutcome
 
 
 def test_model_bundle_field_order_is_pinned():
@@ -195,3 +197,64 @@ def test_load_models_logs_the_boot_fingerprint_to_stderr(monkeypatch, tmp_path, 
     load_models()
 
     assert "fingerprint123" in capsys.readouterr().err
+
+
+# ---------------------------------------------------------------------------
+# main() 루프 — 크래시루프 카운터 소유 (이슈 #99, spec §3)
+# ---------------------------------------------------------------------------
+
+
+def _run_main_with(monkeypatch, tmp_path, outcomes):
+    """main()을 outcomes만큼 돌리고 각 호출이 받은 qwen_jobs_before를 기록한다.
+
+    outcomes가 소진되면 SystemExit(0)으로 무한 루프를 끊는다 — 실 워커의 종료 조건은 없다.
+    """
+    monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(main_mod, "build_engine", lambda: object())
+    monkeypatch.setattr(main_mod, "WorkerQueue", lambda engine: object())
+    monkeypatch.setattr(main_mod, "load_models", lambda: object())
+    monkeypatch.setattr(main_mod.time, "sleep", lambda *_a: None)
+    seen = []
+    it = iter(outcomes)
+
+    def fake_process(queue, infer_fn, crops_root, qwen_jobs_before):
+        seen.append(qwen_jobs_before)
+        try:
+            return next(it)
+        except StopIteration:
+            raise SystemExit(0) from None
+
+    monkeypatch.setattr(main_mod, "process_one_job", fake_process)
+    return seen
+
+
+def test_main_counts_only_the_jobs_that_actually_called_qwen(monkeypatch, tmp_path):
+    # 게이트 강등(False) → 정상(True) → 정상(True) → 큐 빔(False)
+    outcomes = [
+        PollOutcome(worked=True, qwen_called=False),
+        PollOutcome(worked=True, qwen_called=True),
+        PollOutcome(worked=True, qwen_called=True),
+        PollOutcome(worked=False, qwen_called=False),
+    ]
+    seen = _run_main_with(monkeypatch, tmp_path, outcomes)
+
+    with pytest.raises(SystemExit):
+        main_mod.main()
+
+    # outcomes 소진 뒤 루프를 끊는 5번째 호출도 seen에 남으므로 앞 4건만 본다.
+    assert seen[:4] == [0, 0, 1, 2], "qwen_called일 때만, 그리고 즉시 증가해야 한다"
+
+
+def test_main_does_not_swallow_the_degenerate_worker_state(monkeypatch, tmp_path):
+    """프로세스 비0 종료가 곧 복구 수단이다 — 루프가 이 예외를 삼키면 재기동이 없다."""
+    _run_main_with(monkeypatch, tmp_path, [])
+
+    def always_degenerate(queue, infer_fn, crops_root, qwen_jobs_before):
+        raise DegenerateWorkerState(1)
+
+    monkeypatch.setattr(main_mod, "process_one_job", always_degenerate)
+
+    with pytest.raises(DegenerateWorkerState) as exc:
+        main_mod.main()
+
+    assert exc.value.code == 1
