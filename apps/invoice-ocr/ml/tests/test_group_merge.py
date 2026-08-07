@@ -5,6 +5,7 @@ spec §5 테스트 1~7 대응: 1~4 = merge_amounts(병합 규칙), 5~7 = block_a
 
 import pytest
 
+from handwriting.amount_read import DegenerateOutputError, read_amount_with_retry
 from handwriting.group import (
     ROW_NEW,
     ROW_TOTAL,
@@ -156,3 +157,19 @@ def test_job27_pattern_merges_item_blank_rows_into_preceding_item():
     assert len(news) == 2
     assert amounts[0] == (230, "160+40+30")  # 160 단독이 아니라 병합값
     assert amounts[1] == (50, "50")
+
+
+def test_bang_spam_in_a_cont_cell_propagates_instead_of_becoming_a_question_mark():
+    """리뷰 지적 1의 회귀 가드 — 다행 블록의 스팸이 merge_amounts의 '?'에 가려지면 안 된다.
+
+    실물(잡 40 `"?+?"` · 잡 78 `"?+?+?"`)이 보여주듯 병합 뒤에는 스팸 원문이 이미 소실된다.
+    감지가 병합 이전(셀 레벨)이어야만 이 케이스가 잡힌다.
+    """
+    rows = rows_from_types(["new", "cont"])
+
+    def read_fn(row):
+        raw = "160" if row.rtype == ROW_NEW else "!" * 32
+        return read_amount_with_retry(lambda _attempt, r=raw: r)
+
+    with pytest.raises(DegenerateOutputError):
+        block_amounts(rows, read_fn)

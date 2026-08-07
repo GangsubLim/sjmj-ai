@@ -259,3 +259,20 @@ class WorkerQueue:
                 text("UPDATE ocr_jobs SET status='pending' WHERE id=:id"),
                 {"id": job_id},
             )
+
+    def requeue_pending(self, job_id: int) -> None:
+        """degenerate로 중단된 잡(신규·재처리 모두)을 pending으로 되돌린다.
+
+        SQL은 requeue_for_reprocess와 같지만 이름을 나눈다 — 그쪽의 계약은 "커밋 성공 후
+        크롭 교체가 실패한 **재처리** 잡을 다시 재처리 큐에 넣는다"이고 남아 있는 result_json이
+        그 판별자다(claim_next_pending 참조). 여기서는 result_json을 건드리지 않으므로 신규
+        잡은 NULL이 유지돼 다음 점유에서 신규로, 재처리 잡은 result_json이 남아 있어 다음
+        점유에서 재처리로 스스로 재분류된다(B1-b — 재시도 갈래는 is_reprocess를 가르지
+        않는다). 두 사건을 한 이름에 묶으면 호출부만 보고 어느 계약인지 알 수 없고, 한쪽
+        계약이 바뀔 때 다른 쪽이 조용히 끌려간다.
+        """
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET status='pending' WHERE id=:id"),
+                {"id": job_id},
+            )

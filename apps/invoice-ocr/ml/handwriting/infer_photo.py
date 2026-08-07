@@ -27,7 +27,6 @@ from torchvision.transforms import v2 as T
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from amount_read import attempt_png_name, read_amount_with_retry  # noqa: E402
 from canon import global_pitch  # noqa: E402
 from dataset_build import load_bgr_path  # noqa: E402
 from fewshot import square  # noqa: E402
@@ -37,6 +36,8 @@ from grouping import AMT_MIN, ITEM_MIN, PAD  # noqa: E402
 from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
 from rows import ITEM_X, band_features, detect_grid_rows  # noqa: E402
 from train_contrastive import EVAL_TF, build_model  # noqa: E402
+
+from handwriting.amount_read import attempt_png_name, read_amount_with_retry  # noqa: E402
 
 ML = HERE.parents[2]
 BANK = HERE / "runs/bank.npz"

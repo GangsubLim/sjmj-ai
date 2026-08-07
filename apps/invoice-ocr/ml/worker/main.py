@@ -114,7 +114,13 @@ def load_models() -> ModelBundle:
 
 
 def main():
-    """모델을 1회 적재한 뒤 ocr_jobs를 무한 폴링하며 처리한다."""
+    """모델을 1회 적재한 뒤 ocr_jobs를 무한 폴링하며 처리한다.
+
+    크래시루프 가드의 카운터를 **여기가 소유한다**(spec §3). 프로세스 수명과 함께 리셋되는 것이
+    설계의 핵심이다 — 재기동한 새 프로세스에서는 0부터 세므로, 되돌려진 잡이 또 degenerate면
+    그 프로세스의 '첫 Qwen 잡'이 되어 재기동 대신 실패 확정으로 루프가 끝난다. DB 스키마도
+    영속 상태도 필요 없다.
+    """
     from handwriting.infer_job import infer_job
 
     crops_root = Path(_require("SJMJ_DATA_DIR")) / "ocr_crops"
@@ -124,9 +130,12 @@ def main():
     def infer_fn(image_path, crop_dir, job_id):
         return infer_job(image_path, models, crop_dir, job_id)
 
+    qwen_jobs = 0
     while True:
-        worked = process_one_job(queue, infer_fn, crops_root)
-        if not worked:
+        outcome = process_one_job(queue, infer_fn, crops_root, qwen_jobs)
+        if outcome.qwen_called:
+            qwen_jobs += 1
+        if not outcome.worked:
             time.sleep(POLL_INTERVAL_SEC)
 
 
