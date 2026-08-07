@@ -69,7 +69,7 @@ def ink_frac(cell):
 
 def main():
     """전표별 고정 행그리드 정합 결과를 출력하고 몽타주를 저장한다."""
-    with open(HERE / "item_gt.json") as f:
+    with open(HERE / "item_gt.json", encoding="utf-8") as f:
         gt = json.load(f)
     ids = sorted(gt)
     per = {}

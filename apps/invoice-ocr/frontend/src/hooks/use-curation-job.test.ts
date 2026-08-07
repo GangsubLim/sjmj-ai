@@ -26,6 +26,7 @@ function jobDetail(): CurationJobDetail {
     curation_reviewed_at: null,
     warp_ok: true,
     created_at: "2026-06-30T09:00:00",
+    job_token: "1000",
     pairs: [
       {
         id: 9001,
@@ -39,6 +40,7 @@ function jobDetail(): CurationJobDetail {
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [
           { label: "무", sim: 0.77 },
           { label: "배추", sim: 0.21 },
@@ -67,6 +69,7 @@ function jobDetailMulti(): CurationJobDetail {
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "배추", sim: 0.91 }],
       },
     ],
@@ -89,6 +92,7 @@ function patchResult(
     reviewed_at: "2026-06-30T10:00:00",
     job_id: 128,
     job_curation_reviewed: false,
+    job_token: "1001",
     ...over,
   };
 }
@@ -382,7 +386,7 @@ describe("useCurationJob", () => {
       ok = await result.current.reviewJob();
     });
     expect(ok).toBe(true);
-    expect(mockReviewJob).toHaveBeenCalledWith(128);
+    expect(mockReviewJob).toHaveBeenCalledWith(128, "1000");
   });
 
   it("reviewJob 실패는 false를 반환하고 에러 토스트를 띄운다", async () => {
@@ -510,5 +514,337 @@ describe("useCurationJob", () => {
     expect(result.current.job!.curation_reviewed_at).toBe(
       "2026-06-30T08:30:00",
     );
+  });
+});
+
+describe("잡 세대 토큰(낙관적 잠금)", () => {
+  // 위 describe("useCurationJob")의 beforeEach는 그 블록 스코프에만 적용된다 —
+  // 이 블록은 형제 describe라 별도로 리셋하지 않으면 mock 호출 카운트가 테스트 간에 누적된다.
+  beforeEach(() => vi.clearAllMocks());
+
+  it("PATCH 요청에 잡 상세에서 받은 토큰을 실어 보낸다", async () => {
+    // Arrange
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockPatchPair.mockResolvedValue({ data: patchResult() });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    // Act
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    // Assert
+    expect(mockPatchPair).toHaveBeenCalledWith(9001, {
+      canonical_label: "휠",
+      job_token: "1000",
+    });
+  });
+
+  it("PATCH 응답의 새 토큰으로 갱신해 연속 편집을 이어간다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockPatchPair.mockResolvedValue({ data: patchResult() });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    expect(result.current.job?.job_token).toBe("1001");
+  });
+
+  it("409를 받으면 새로고침 안내를 띄운다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockPatchPair.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409 },
+      message: "Request failed with status code 409",
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("새로고침"),
+    );
+  });
+
+  it("검수 완료에도 토큰을 실어 보낸다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.reviewJob();
+    });
+
+    expect(mockReviewJob).toHaveBeenCalledWith(128, "1000");
+  });
+
+  it("검수 완료가 409면 새로고침 안내를 띄우고 실패로 돌려준다", async () => {
+    // 재처리로 게이트가 열린 잡을, 재처리 이전에 열어둔 화면이 다시 닫는 경로다(§7).
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    mockReviewJob.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 409 },
+      message: "Request failed with status code 409",
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let ok = true;
+    await act(async () => {
+      ok = await result.current.reviewJob();
+    });
+
+    expect(ok).toBe(false);
+    expect(mockToastError).toHaveBeenCalledWith(
+      expect.stringContaining("새로고침"),
+    );
+  });
+
+  // review 응답에는 갱신 토큰이 없다(계약 갭) — 재조회로 메꾸지 않으면, 검수 완료 직후
+  // 같은 화면에서 오탈자를 고치는 흐름(Issue #52가 게이트 해제로 만든 1급 흐름)이
+  // 사용자 자신의 검수 완료 클릭 때문에 409로 막힌다.
+  it("검수 완료 성공 후 잡을 재조회해 토큰을 갱신한다(이어지는 PATCH가 409로 막히지 않는다)", async () => {
+    mockGetJob
+      .mockResolvedValueOnce({ data: jobDetail() })
+      .mockResolvedValueOnce({ data: { ...jobDetail(), job_token: "2000" } });
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    mockPatchPair.mockResolvedValue({ data: patchResult() });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    await act(async () => {
+      await result.current.reviewJob();
+    });
+
+    expect(mockGetJob).toHaveBeenCalledTimes(2);
+    expect(result.current.job?.job_token).toBe("2000");
+
+    await act(async () => {
+      await result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    // 재조회로 얻은 새 토큰을 실어 보낸다 — 옛 토큰("1000")이면 서버가 409를 낸다.
+    expect(mockPatchPair).toHaveBeenCalledWith(9001, {
+      canonical_label: "휠",
+      job_token: "2000",
+    });
+  });
+
+  // 리뷰 Important 1 — 같은 잡의 서로 다른 pair를 같은 턴에 고치면(1행 blur 커밋 +
+  // 2행 칩 클릭) 서버가 첫 PATCH에서 이미 토큰을 튀긴다. 직렬화 없이 두 요청이 동시에
+  // 나가면 둘 다 옛 토큰을 들고 나가 두 번째가 확정적으로 409를 받는다 — 훅이 "네트워크
+  // 발행"만 잡 단위로 직렬화해 두 번째가 첫 응답의 갱신 토큰을 기다렸다가 싣게 한다.
+  it("겹친 서로 다른 pair PATCH는 네트워크 발행이 직렬화되어 두 번째가 첫 응답의 갱신 토큰을 싣는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetailMulti() });
+    mockPatchPair
+      .mockResolvedValueOnce({ data: patchResult({ job_token: "1001" }) })
+      .mockResolvedValueOnce({
+        data: patchResult({ id: 9002, job_token: "1002" }),
+      });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    // await 없이 같은 턴에 발행 — "1행 blur 커밋 + 2행 칩 클릭" 상호작용을 그대로 재현.
+    let p1!: Promise<void>;
+    let p2!: Promise<void>;
+    await act(async () => {
+      p1 = result.current.patchPair(9001, { canonical_label: "휠" });
+      p2 = result.current.patchPair(9002, { canonical_label: "축" });
+      await Promise.all([p1, p2]);
+    });
+
+    expect(mockPatchPair).toHaveBeenNthCalledWith(1, 9001, {
+      canonical_label: "휠",
+      job_token: "1000",
+    });
+    // 직렬화가 없으면 두 번째도 "1000"을 싣고 나가 서버가 409를 낸다 — "1001"을 실어야
+    // 첫 응답이 튀긴 토큰을 따라간 것이다.
+    expect(mockPatchPair).toHaveBeenNthCalledWith(2, 9002, {
+      canonical_label: "축",
+      job_token: "1001",
+    });
+  });
+
+  // 리뷰 New Important — 같은 컴포넌트 인스턴스가 언마운트 없이 jobId만 바꿔 재사용될
+  // 때(예: "다음 잡" 이동), 옛 잡의 in-flight PATCH 응답이 늦게 도착하면 그 응답이
+  // 튀긴 토큰으로 jobTokenRef를 덮어써서는 안 된다 — 덮이면 새 잡의 다음 편집이 남의
+  // 토큰을 들고 나가 확정적 409가 된다(자기 조작이 사라지는 증상이 잡 전환 창에서
+  // 재현되는 셈).
+  it("jobId가 언마운트 없이 바뀌면 옛 잡의 늦은 PATCH 응답이 새 잡의 토큰을 덮지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128, job_token "1000"
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 128) return { data: jobA };
+      if (id === 129) return { data: jobB };
+      throw new Error(`예상 밖 jobId: ${id}`);
+    });
+
+    const dLate = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair.mockReturnValueOnce(dLate.promise);
+
+    const { result, rerender } = renderHook(
+      ({ jobId }: { jobId: number }) => useCurationJob(jobId),
+      { initialProps: { jobId: 128 } },
+    );
+    await waitFor(() => expect(result.current.job?.job_id).toBe(128));
+
+    // 잡 128에서 PATCH 발행 — 아직 응답이 안 왔다.
+    let inFlight!: Promise<void>;
+    act(() => {
+      inFlight = result.current.patchPair(9001, { canonical_label: "휠" });
+    });
+
+    // 언마운트 없이 잡 129로 전환.
+    rerender({ jobId: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+
+    // 옛 잡(128)의 늦은 응답이 지금에서야 도착한다 — 튀긴 토큰은 "1001"(잡 128의 것).
+    await act(async () => {
+      dLate.resolve({ data: patchResult({ job_token: "1001" }) });
+      await inFlight;
+    });
+
+    // 다음 PATCH(잡 129)가 싣는 토큰은 여전히 잡 129의 것이어야 한다 — "1001"이 실리면
+    // 옛 잡의 늦은 응답이 jobTokenRef를 덮은 회귀다.
+    mockPatchPair.mockResolvedValueOnce({
+      data: patchResult({ id: 9101, job_id: 129, job_token: "5001" }),
+    });
+    await act(async () => {
+      await result.current.patchPair(9101, { canonical_label: "축" });
+    });
+
+    expect(mockPatchPair).toHaveBeenLastCalledWith(9101, {
+      canonical_label: "축",
+      job_token: "5000",
+    });
+  });
+
+  // 리뷰 Important 2 — fetch()는 loading/error를 건드리는 화면 공용 함수다. 검수
+  // 완료 때마다 이걸 그대로 부르면 페이지 전체가 스켈레톤으로 번쩍인다. 조용한
+  // 재조회(silent)는 loading을 띄우면 안 된다.
+  it("검수 완료의 재조회 중에는 loading을 띄우지 않는다(전체 화면 스켈레톤 방지)", async () => {
+    mockGetJob.mockResolvedValueOnce({ data: jobDetail() });
+    const dRefetch = deferred<{ data: CurationJobDetail }>();
+    mockGetJob.mockReturnValueOnce(dRefetch.promise);
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      reviewPromise = result.current.reviewJob();
+    });
+
+    // 재조회 요청은 이미 나갔지만 응답은 아직 안 왔다 — silent가 아니면 지금 loading이
+    // true였을 것이다.
+    await waitFor(() => expect(mockGetJob).toHaveBeenCalledTimes(2));
+    expect(result.current.loading).toBe(false);
+
+    await act(async () => {
+      dRefetch.resolve({ data: { ...jobDetail(), job_token: "2000" } });
+      await reviewPromise;
+    });
+
+    expect(result.current.job?.job_token).toBe("2000");
+  });
+
+  it("jobId가 언마운트 없이 바뀌면 옛 잡의 늦은 GET이 새 잡의 상태를 덮지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128, job_token "1000"
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    const dLate = deferred<{ data: CurationJobDetail }>();
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 128) return dLate.promise; // 옛 잡 — 응답을 붙잡아 둔다
+      return { data: jobB };
+    });
+
+    const { result, rerender } = renderHook(({ id }) => useCurationJob(id), {
+      initialProps: { id: 128 },
+    });
+    rerender({ id: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+
+    await act(async () => {
+      dLate.resolve({ data: jobA }); // 이제야 옛 잡의 응답이 도착
+    });
+
+    expect(result.current.job?.job_id).toBe(129);
+    expect(result.current.job?.job_token).toBe("5000");
+  });
+
+  // 가장 흔한 흐름이 "라벨 수정 → 검수 완료 클릭"이다. 버튼 mousedown이 Autocomplete를
+  // blur시켜 commitLabel의 patchPair가 먼저 나가고, 응답이 오기 전에 click 핸들러의
+  // reviewJob이 실행된다. reviewJob이 PATCH 큐에 합류하지 않으면 GET 시점의 옛 토큰을
+  // 그대로 실어 확정적으로 409가 된다(PATCH가 이미 updated_at을 튀겼으므로).
+  it("직전 PATCH가 아직 응답 전이면 검수 완료는 그 응답의 갱신 토큰을 싣는다", async () => {
+    mockGetJob.mockResolvedValue({ data: jobDetail() });
+    const dPatch = deferred<{ data: CurationPairPatchResult }>();
+    mockPatchPair.mockReturnValueOnce(dPatch.promise);
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let patchPromise!: Promise<void>;
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      patchPromise = result.current.patchPair(9001, { canonical_label: "휠" });
+      reviewPromise = result.current.reviewJob(); // 같은 턴 — blur 직후 click
+    });
+
+    expect(mockReviewJob).not.toHaveBeenCalled(); // 큐에서 대기해야 한다
+
+    await act(async () => {
+      dPatch.resolve({ data: patchResult({ job_token: "1001" }) });
+      await Promise.all([patchPromise, reviewPromise]);
+    });
+
+    // 큐에 합류하지 않으면 GET 시점의 "1000"이 나가 서버가 409를 낸다.
+    expect(mockReviewJob).toHaveBeenCalledWith(128, "1001");
+  });
+
+  it("검수 완료의 재조회만 실패해도 검수 완료 자체는 성공으로 보고하고 에러 화면을 띄우지 않는다", async () => {
+    mockGetJob
+      .mockResolvedValueOnce({ data: jobDetail() })
+      .mockRejectedValueOnce(new Error("재조회 실패"));
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.job).not.toBeNull());
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.reviewJob();
+    });
+
+    // review POST 자체는 성공했다 — 재조회(토큰 갱신)만 실패한 것이므로 검수 완료는
+    // 그대로 성공이어야 하고, "검수 완료" 토스트와 모순되는 에러 화면이 뜨면 안 된다.
+    expect(ok).toBe(true);
+    expect(result.current.error).toBeNull();
   });
 });

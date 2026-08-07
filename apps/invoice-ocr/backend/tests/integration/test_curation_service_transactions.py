@@ -120,7 +120,7 @@ def test_mark_reviewed_rolls_back_everything_when_registration_fails(db_conn):
     service = CurationService(CurationRepository(), item_repo)
 
     with pytest.raises(_RegistrationError):
-        service.mark_reviewed(job_id)
+        service.mark_reviewed(job_id, CurationRepository().get_job_token(job_id))
 
     assert item_repo.calls == 2
     assert _state(db_conn, job_id) == (0, 0, [])
@@ -146,7 +146,7 @@ def test_patch_pair_rolls_back_gate_release_when_pair_update_fails(db_conn):
     # 미러링하려는 의도일 뿐, 이 테스트가 등록 로직에 관여한다는 뜻은 아니다.
     service = CurationService(repo, ItemRepository())
     with pytest.raises(_PairUpdateError):
-        service.patch_pair(int(pair_id), {"canonical_label": "새라벨"})
+        service.patch_pair(int(pair_id), {"canonical_label": "새라벨"}, repo.get_job_token(job_id))
 
     assert repo.gate_released == 1  # 레버가 실제로 당겨졌다(호출 자체가 생략되지 않았다)
     # 게이트 해제가 되돌아간다 — 부분 반영이 남지 않는다.

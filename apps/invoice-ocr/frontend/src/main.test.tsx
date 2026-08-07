@@ -33,6 +33,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
     curation_reviewed_at: null,
     warp_ok: false,
     created_at: "2026-06-30T09:00:00",
+    job_token: "1000",
     pairs: [],
     ...over,
   };

@@ -422,7 +422,7 @@ def main():
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     corr = {}
     if CORR.exists():
-        with open(CORR) as f:
+        with open(CORR, encoding="utf-8") as f:
             corr = json.load(f)
     print(
         f"교정: drop {len(corr.get('drop', []))} · ditto {len(corr.get('ditto', []))} · "

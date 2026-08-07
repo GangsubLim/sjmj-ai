@@ -78,6 +78,19 @@ def test_parse_pairs_tsv_converts_types_and_null():
     ]
 
 
+def test_parse_pairs_tsv_skips_reprocess_namespaces_instead_of_failing():
+    # 재처리가 만드는 tmp-/orphan- 좌표는 크롭 파일이 없는 쌍이다. PAIRS_SQL이
+    # training_pairs 전수를 WHERE 없이 읽으므로, 이 값을 형식 위반으로 raise하면
+    # 미결 쌍 1건만 생겨도 빈 크롭 리포트 도구 전체가 fetch에서 죽는다.
+    text = (
+        "id\tcrop_ref\tjob_id\tstatus\texclusion_reason\tcuration_reviewed\n"
+        "7\tjob-3/row-1\t3\tincluded\tNULL\t0\n"
+        "8\tjob-3/orphan-8\t3\texcluded\trelink_failed\t0\n"
+        "9\tjob-3/tmp-9\t3\tincluded\tNULL\t0"
+    )
+    assert [r["crop_ref"] for r in parse_pairs_tsv(text)] == ["job-3/row-1"]
+
+
 @pytest.mark.parametrize(
     "bad_ref",
     [

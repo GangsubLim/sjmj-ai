@@ -294,7 +294,7 @@ def main(ids, gt):
 
 
 if __name__ == "__main__":
-    with open(HERE / "item_gt.json") as f:
+    with open(HERE / "item_gt.json", encoding="utf-8") as f:
         gt = json.load(f)
     ids = sys.argv[1:] or sorted(gt)
     main(ids, gt)

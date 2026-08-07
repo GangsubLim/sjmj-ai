@@ -16,7 +16,7 @@ import type {
 import type {
   CurationJobSummary,
   CurationJobDetail,
-  CurationPairPatch,
+  CurationPairPatchBody,
   CurationPairPatchResult,
 } from "@/types/curation";
 import { mockInvoices } from "./invoices";
@@ -449,6 +449,22 @@ let curationJobs: CurationJobDetail[] = JSON.parse(
   JSON.stringify(mockCurationJobDetails),
 );
 
+// 세대 토큰의 mock 구현 — 서버는 ocr_jobs.updated_at을 초 단위로 캐스팅해 발급하고, 쓰기가
+// 있을 때마다 값이 튄다. mock이 이걸 흉내 내지 않으면(발급도 대조도 안 하면) 훅이 토큰을
+// 안 싣거나 직렬화가 깨진 회귀가 mock 모드에서 전부 통과해 실서버에서만 드러난다.
+const bumpJobToken = (token: string): string => String(Number(token) + 1);
+
+function assertJobToken(jobId: number, sent: string | undefined): void {
+  const job = curationJobs.find((j) => j.job_id === jobId);
+  if (!job) return;
+  if (!sent) throw new Error("job_token이 필요합니다 (mock 400)");
+  if (sent !== job.job_token) {
+    throw new Error(
+      `다른 곳에서 이 잡이 변경되었습니다 (mock 409) — 보낸 토큰 ${sent}, 현재 ${job.job_token}`,
+    );
+  }
+}
+
 // 백엔드는 MySQL DATETIME(naive)을 jsonable_encoder로 "2026-06-30T08:30:00" 형태로 낸다.
 // toISOString()은 UTC "Z" + 밀리초라 서버가 만들 수 없는 값이고, 시드(mocks/curation.ts)와도
 // 형태가 갈린다 — 코드베이스의 iso.slice(5,16) 관용구가 KST 9시간 어긋난 값을 보이게 된다.
@@ -496,16 +512,23 @@ export const mockCurationAPI = {
     return { data: JSON.parse(JSON.stringify(found)) as CurationJobDetail };
   },
 
-  patchPair: async (id: number, patch: CurationPairPatch) => {
+  patchPair: async (id: number, patch: CurationPairPatchBody) => {
     await delay();
+    // 세대 대조·회전을 흉내 낸다. 없으면 훅이 토큰을 안 싣거나 직렬화가 깨진 회귀가
+    // mock 모드·e2e에서 전부 GREEN으로 통과해, 실서버에서만 409로 드러난다.
+    const owner = curationJobs.find((j) => j.pairs.some((p) => p.id === id));
+    if (owner) assertJobToken(owner.job_id, patch.job_token);
     let result: CurationPairPatchResult | null = null;
     curationJobs = curationJobs.map((job) => {
       const touched = job.pairs.some((p) => p.id === id);
       const pairs = job.pairs.map((p) => {
         if (p.id !== id) return p;
+        // job_token은 잡 단위 필드라 pair patch 본문에는 실리지만 pair 자체에는 속하지
+        // 않는다 — 떼어내지 않으면 mock의 pair 저장소에 새어 들어간다.
+        const { job_token: _jobToken, ...pairPatch } = patch;
         const updated = {
           ...p,
-          ...patch,
+          ...pairPatch,
           // 서버 파생 쓰기 미러: status='excluded'면 같은 UPDATE에서 exclusion_reason도
           // NULL로 갱신된다(curation_repository.update_pair, ADR 0006). 포함 방향은 지우지 않는다.
           ...(patch.status === "excluded" ? { exclusion_reason: null } : {}),
@@ -514,31 +537,44 @@ export const mockCurationAPI = {
           // 서버와 반대 상태를 유지한다.
           reviewed_at: null,
         };
-        // PATCH 응답 형태: job_id + job_curation_reviewed 포함, top5·uncertain 제외
-        // (계약 비대칭 — curation_service.py의 patch_pair 참조).
+        // PATCH 응답 형태: job_id + job_curation_reviewed + job_token 포함, top5·uncertain
+        // 제외(계약 비대칭 — curation_service.py의 patch_pair 참조). mock은 세대를
+        // 흉내 내지 않으므로 잡의 현재 토큰을 그대로 돌려준다.
         const { top5: _top5, uncertain: _uncertain, ...base } = updated;
         result = {
           ...base,
           job_id: job.job_id,
           // 해제는 무조건이라 서버도 상수 false를 돌려준다(spec §3.4).
           job_curation_reviewed: false,
+          // 쓰기가 있었으니 세대가 튄다 — 서버의 ON UPDATE CURRENT_TIMESTAMP 미러.
+          job_token: bumpJobToken(job.job_token),
         };
         return updated;
       });
       // 소속 잡의 게이트를 해제한다. curation_reviewed_at은 지우지 않는다(§3.2) —
       // 그래야 "재검수 필요"와 "미검수"가 갈린다. 건드리지 않은 잡은 참조를 그대로
       // 유지한다(불필요한 새 객체 생성 방지).
-      return touched ? { ...job, curation_reviewed: false, pairs } : job;
+      return touched
+        ? {
+            ...job,
+            curation_reviewed: false,
+            job_token: bumpJobToken(job.job_token),
+            pairs,
+          }
+        : job;
     });
     if (!result) throw new Error("쌍을 찾을 수 없습니다");
     return { data: result as CurationPairPatchResult };
   },
 
-  reviewJob: async (jobId: number) => {
+  reviewJob: async (jobId: number, jobToken?: string) => {
     await delay();
     if (!curationJobs.some((j) => j.job_id === jobId)) {
       throw new Error("잡을 찾을 수 없습니다");
     }
+    // 토큰을 무시하면 빈 문자열도 항상 성공해, 실서버에서 확정 409가 되는 경로가
+    // mock에서만 조용히 통과한다(PATCH와 같은 이유).
+    assertJobToken(jobId, jobToken);
     // 서버는 한 트랜잭션의 단일 CURRENT_TIMESTAMP로 잡·쌍 스탬프를 함께 찍는다
     // (mark_reviewed) — mock도 한 번만 만든 시각을 공유해 "잡과 쌍이 같은 시각"
     // 시드 불변식을 보장한다.

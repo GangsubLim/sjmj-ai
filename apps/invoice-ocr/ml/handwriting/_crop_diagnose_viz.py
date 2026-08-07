@@ -270,7 +270,8 @@ def main(args):
             f"<div class=lead><b>품목 0개 검출 이미지</b>: {', '.join(tot['no_new_imgs'])}</div>"
         )
     OUT.write_text(
-        f"<!doctype html><meta charset=utf-8><title>crop 진단</title>{head}{lead}{''.join(sections)}"
+        f"<!doctype html><meta charset=utf-8><title>crop 진단</title>{head}{lead}{''.join(sections)}",
+        encoding="utf-8",
     )
     print(f"wrote {OUT}")
     print(

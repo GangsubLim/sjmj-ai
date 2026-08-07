@@ -15,7 +15,7 @@ import type { OcrJobStatus } from "@/types/ocr";
 import type {
   CurationJobSummary,
   CurationJobDetail,
-  CurationPairPatch,
+  CurationPairPatchBody,
   CurationPairPatchResult,
   CurationImageKind,
 } from "@/types/curation";
@@ -344,7 +344,7 @@ const _realCurationAPI = {
 
   patchPair: async (
     id: number,
-    patch: CurationPairPatch,
+    patch: CurationPairPatchBody,
   ): Promise<SingleResponse<CurationPairPatchResult>> => {
     const response = await api.patch(`/curation/pairs/${id}`, patch);
     return response.data;
@@ -352,10 +352,13 @@ const _realCurationAPI = {
 
   reviewJob: async (
     jobId: number,
+    jobToken: string,
   ): Promise<
     SingleResponse<{ job_id: number; curation_reviewed: boolean }>
   > => {
-    const response = await api.post(`/curation/jobs/${jobId}/review`);
+    const response = await api.post(`/curation/jobs/${jobId}/review`, {
+      job_token: jobToken,
+    });
     return response.data;
   },
 };

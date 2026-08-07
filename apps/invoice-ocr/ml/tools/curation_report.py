@@ -512,7 +512,7 @@ def _write_images_index(cache: Path, enriched: list[dict], job_ids: list[int]) -
             f"supply={r['supply']} raw={r['amount_raw']!r}"
         )
     path = cache / "images_index.md"
-    path.write_text("\n".join(lines) + "\n")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     return path
 
 

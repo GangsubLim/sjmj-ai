@@ -52,7 +52,7 @@ def all_warps_and_pitch():
     """74장 워프 + 전역 피치를 계산한다(cname -> warp, P, manifest)."""
     from rows import stroke_profile_col  # noqa
 
-    with open(ORG / "manifest.json") as f:
+    with open(ORG / "manifest.json", encoding="utf-8") as f:
         manifest = json.load(f)
     cnames = sorted(manifest)
     warps, ys_all = {}, {}

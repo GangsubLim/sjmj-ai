@@ -8,6 +8,10 @@
 병합은 append가 아니라 desired 상태로 수렴하는 **멱등 sync**다. 같은 입력으로 재실행하면
 diff가 공집합이 되어 아무것도 바뀌지 않는다.
 
+> 재처리(엔진 개선분을 과거 잡에 반영)로 크롭이 바뀐 뒤의 절차는
+> [ocr-job-reprocessing.md](ocr-job-reprocessing.md)를 먼저 따른다 — 재검수와 크롭 교체
+> 완료 확인이 재임베딩보다 앞이다.
+
 ## 0. 선행 조건 — 큐레이션 검수 완료
 
 ADR 0004 게이트에 따라 **`ocr_jobs.curation_reviewed=TRUE`인 잡의 `status='included'` 쌍만**

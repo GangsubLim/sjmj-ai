@@ -54,7 +54,7 @@ def faint_set():
     격자 복구). 비어 있으면 빈 집합.
     """
     fp = HERE / "review_flags.json"
-    return set(json.load(open(fp)).get("faint", [])) if fp.exists() else set()
+    return set(json.load(open(fp, encoding="utf-8")).get("faint", [])) if fp.exists() else set()
 
 
 def load_bgr_path(path):
@@ -77,11 +77,11 @@ def new_sources():
     from photomatch import IMGDIR  # noqa: E402  (지연 import — T9-A)
 
     if "--auto-only" in sys.argv:
-        with open(HERE / "photo_match_default.json") as f:
+        with open(HERE / "photo_match_default.json", encoding="utf-8") as f:
             dflt = json.load(f)
         m = {fn: v["pick"] for fn, v in dflt.items() if v["auto"]}
     else:
-        with open(HERE / "confirmed_matches.json") as f:
+        with open(HERE / "confirmed_matches.json", encoding="utf-8") as f:
             m = json.load(f)
     return [(IMGDIR / fn, int(i), "new") for fn, i in m.items()]
 
@@ -93,7 +93,7 @@ def old_sources(inv):
         idx.setdefault((v["date"], v["total_supply"]), []).append(v["id"])
     out = []
     csv_path = ML / "results/reviewed_dates.csv"
-    with open(csv_path) as f:
+    with open(csv_path, encoding="utf-8") as f:
         for r in csv.DictReader(f):
             if r["status"] != "unique":
                 continue
@@ -188,7 +188,7 @@ def main():
     twoup_path = HERE / "twoup_split.json"
     TWOUP = set()
     if twoup_path.exists():
-        with open(twoup_path) as f:
+        with open(twoup_path, encoding="utf-8") as f:
             TWOUP = set(json.load(f))
 
     cards = []
@@ -267,12 +267,12 @@ def build_labelset_grouped():
     cpath = HERE / "grouping_corrections.json"
     corr = {}
     if cpath.exists():
-        with open(cpath) as f:
+        with open(cpath, encoding="utf-8") as f:
             corr = json.load(f)
     fpath = HERE / "review_flags.json"
     flags = {}
     if fpath.exists():
-        with open(fpath) as f:
+        with open(fpath, encoding="utf-8") as f:
             flags = json.load(f)
     setaside = set(flags.get("rewarp", [])) | set(flags.get("exclude", []))
     faint = faint_set()

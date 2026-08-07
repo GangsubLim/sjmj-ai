@@ -1,0 +1,367 @@
+# 런북 — OCR 잡 재처리 (엔진 개선분을 과거 데이터에 반영)
+
+엔진(warp·크롭·행검출)이 개선된 뒤, 확정된 과거 잡을 현재 엔진으로 다시 판정하고 개선된
+크롭을 뱅크에 반영하는 절차. `ocr-bank-update.md`로 이어진다.
+
+**순서가 절차의 핵심이다 — 재검수와 크롭 교체 완료 확인이 재임베딩보다 먼저다.**
+
+## 0. 전제
+
+- 재처리는 되돌릴 수 없다. 초안·크롭·좌표가 모두 덮인다(ADR 0010).
+  복구는 옛 산출물 복원이 아니라 **엔진을 되돌려 다시 재처리하는 방향**이며, 실제로 복원해야
+  하는 것은 오염이 학습에 닿는 유일한 통로인 뱅크뿐이다.
+- 확정된 거래명세서(invoice)는 재처리가 건드리지 않는다.
+- **재처리 이전부터 그 쌍이 이미 `blank_crop` 등 기계 사유로 배제·검수 완료돼 있었더라도**,
+  승계에 실패하면 `exclusion_reason`이 `relink_failed`로 갈아치워지고 `reviewed_at`이 NULL이
+  되어 검수 큐에 다시 뜬다. **이것은 의도된 동작이다** — 재처리가 크롭을 통째 교체하므로 옛
+  사유가 가리키던 그림은 이미 없다. 버그로 오인하지 않는다.
+  **사람이 배제한 쌍(사유 NULL)만은 예외로 사유가 그대로 NULL로 남는다** — 아래 항목의
+  판별자가 성립하려면 이 표식이 미결 전환에서도 보존돼야 하기 때문이다.
+- 반대 방향도 자동이다. **사유가 `relink_failed`로 남아 있는 쌍이 다음 재처리에서 승계에
+  성공하면 `included`로 되돌아간다**(`ml/worker/db.py`의 `commit_job` ②단계) — 엔진을 고쳐
+  다시 돌리는 것이 곧 데이터 회수가 되도록 한 것이다. 판별자는 사유다: 사람이 배제하면
+  사유가 NULL로 지워지므로(ADR 0006 §6) **사람이 배제한 쌍은 승계돼도 배제로 남는다**.
+  위 항목과 맞물려 원래 `blank_crop`이던 쌍이 `included`로 돌아올 수 있는데, 크롭이 여전히
+  비었으면 빈 크롭 가드가 다음 실행에서 다시 배제한다. `reviewed_at`은 건드리지 않는다 —
+  아직 재검수 전인 쌍은 NULL인 채 검수 큐에 남고, 4단계에서 이미 검수 완료를 누른 잡의 쌍은
+  (`mark_reviewed`가 그때 미처리 쌍 전량에 `reviewed_at`을 찍으므로) **검수 완료 상태 그대로
+  복원된다** — 그 복원은 사람 눈을 다시 거치지 않는다.
+- 백엔드는 PATCH·검수완료 양쪽에서 `job_token`을 **필수**로 요구한다(spec §12). 배포 순서는
+  신경 쓸 필요가 없다 — CD(`deploy.yml`)는 태그 하나를 체크아웃해 프론트 빌드와 백엔드
+  재시작을 한 런에서 하므로 "백엔드만 나간 상태"가 성립하지 않는다(롤백도 양쪽을 함께
+  되돌린다). **주의할 것은 배포 시점에 이미 열려 있던 검수 탭이다** — 옛 번들은 토큰을 아예
+  보내지 않아 그 탭의 모든 쓰기가 400이 되므로, 배포 후 검수 화면은 새로고침해야 한다.
+  macmini에서 백엔드만 손으로 재시작하면 같은 증상이 전면적으로 나타난다.
+- macmini에서 `uv run`/`uv sync`를 **절대 실행하지 않는다** — worker venv가 파괴된다.
+  `"$PYTHON_BIN" -m tools.bank_update` 관용구를 쓴다(`~/.sjmj-ai/ml-worker.env`).
+- **실행 위치는 macmini** — 대상 DB·크롭 원본·뱅크가 전부 거기 있다(ADR 0001). 아래 모든
+  단계(SQL 조회 포함)는 다음 세션 안에서 실행한다.
+
+```bash
+ssh macmini
+cd ~/sjmj-ai/apps/invoice-ocr/ml
+set -a; source ~/.sjmj-ai/ml-worker.env; set +a   # SJMJ_ML_MODELS_DIR·SJMJ_DATA_DIR·PYTHON_BIN·DB_*
+```
+
+**이 기능 배포 후 최초 1회만** 아래를 확인한다. 검수 화면의 크롭·top5 노출은 `crop_ref`가
+`job-N/row-M` 형식인지의 정규식 판정에 걸려 있어(`backend/app/services/curation_service.py`의
+`_ROW_CROP_REF_RE`), 비표준 형식을 가진 레거시 쌍이 운영 DB에 있으면 그 쌍이 미결로
+오분류돼 그림과 후보가 조용히 사라진다. 현재 생성 경로는 항상 표준 형식이므로 **0이 나오는
+것이 정상**이고, 확인 비용도 쿼리 한 줄이다. 0이 아니면 그 쌍부터 조사한 뒤 배치를 시작한다.
+
+```sql
+SELECT COUNT(*) FROM training_pairs WHERE crop_ref NOT REGEXP '^job-[0-9]+/row-[0-9]+$';
+```
+
+## 1. 배치 전 백업
+
+```bash
+~/sjmj-ai/scripts/backup-db.sh               # 0단계에서 cd한 ml/ 밑에 scripts/는 없다 — 레포 루트를 홈 기준으로 명시
+ls -l "$SJMJ_ML_MODELS_DIR"/bank*.npz*       # 현재 뱅크와 백업 존재 확인(백업은 bank.<stamp>.npz.bak)
+```
+
+검수자가 화면을 열어두지 않은 시간대를 고른다. 낙관적 잠금이 오염은 막지만(spec §12),
+사람이 409를 만나면 편집이 버려진다.
+
+또한 **워커가 승계 계획을 세운 뒤 커밋하기 전에** 사람이 같은 잡의 **거래명세서를
+확정**(`POST /api/ocr/jobs/{id}/confirm`)하면 위험이 갈린다 — **갈림길은 그 잡에 학습쌍이
+이미 있는가**다.
+
+- **쌍이 있는 잡**: confirm은 `invoice_id`가 비어 있어야 통과하므로
+  (`backend/app/services/ocr_service.py`의 `confirm`), 이 갈래는 과거 확정 뒤 명세서 삭제로
+  FK가 풀린 잡에서 성립한다. confirm이 넣는 새 쌍의 `crop_ref`가 재처리가 기입하는 최종
+  좌표와 겹쳐 UNIQUE 충돌이 나고 **그 잡의 재처리가 실패한다**(데이터 오염은 없고 잡만
+  실패). 실패 시나리오 표의 "배치 재처리 도중 특정 잡만 실패"가 이것이다.
+- **쌍이 없는 잡**(한 번도 확정된 적 없는 `done` 잡, 그리고 확정됐어도 `crop_ref` 있는 행이
+  0개여서 쌍이 안 만들어진 잡 — 6단계의 "쌍 0건" 잡): 재처리가 쓸 `crop_ref`가 없어 충돌이
+  성립하지 않는다. 옛 초안을 띄워 둔 확정 화면이 그대로 confirm하면 **새 크롭에 옛 라벨이
+  붙은 학습쌍이 조용히 만들어진다** — 이 기능이 막으려는 행 오프셋 그 자체이고, 실패도 뜨지
+  않는다. 한 번도 확정된 적 없는 잡은 2단계 술어가 빼지만, **확정 뒤 명세서가 삭제된 쌍 0건
+  잡은 `ocr_corrections`가 남아 2단계 대상에 들어온다** — 이 갈래를 막는 것은 아래의 확정
+  화면 잠금뿐이다. **대상 목록을 2단계 SQL로만 뽑고 임의로 잡 id를 더하지 않는 이유가
+  이것이다.**
+
+검수 완료(`POST /api/curation/jobs/{id}/review`)는 `reviewed_at`만 갱신하고 `crop_ref`를
+쓰지 않으므로 이 충돌을 일으키지 않는다 — 배치 재처리 중 잠가야 할 화면은 **검수 화면이
+아니라 전표 확정(confirm) 화면**이다.
+
+## 2. 대상 선정
+
+**확정된 잡 전량.** 선별 기준을 만들면 그 기준 자체가 판단이고, 부분 집합으로 재면
+before/after 분모가 갈린다.
+
+확정 증거는 셋이다 — `invoice_id`는 명세서 삭제로 FK가 `ON DELETE SET NULL` 되면 풀리므로
+그것만 보면 과거 확정 잡이 조용히 빠진다. 아래 WHERE는 백엔드
+`app/repositories/ocr_repository.py`의 `_UNCONFIRMED_WHERE`(미확정 판정)의 **부정**이며,
+`ml/tools/curation_enrich.py`의 확정 잡 모집단과 같은 술어다. 세 곳이 갈라지면 재처리
+대상과 리포트 분모가 어긋난다 — 한 곳을 고치면 나머지도 함께 고친다.
+
+```sql
+SELECT id FROM ocr_jobs j
+WHERE j.status = 'done'
+  AND (
+    j.invoice_id IS NOT NULL
+    OR EXISTS (SELECT 1 FROM ocr_corrections c WHERE c.job_id = j.id)
+    OR EXISTS (SELECT 1 FROM training_pairs tp WHERE tp.job_id = j.id)
+  )
+ORDER BY id;
+```
+
+## 3. 재처리 실행
+
+잡 id 목록으로 엔드포인트를 반복 호출한다(배치 전용 엔드포인트는 없다 — 부분 실패 시
+어디까지 걸렸는지가 오히려 명확하다).
+
+```bash
+for id in 12 13 14; do
+  curl -s -X POST "http://127.0.0.1:8400/api/curation/jobs/$id/reprocess" | jq -c .
+done
+```
+
+- `409 CONFLICT` = 그 잡이 `done` 상태가 아니다(이미 재처리 큐에 있거나 실패 상태). 건너뛴다.
+- 워커는 신규 업로드를 먼저 집는다(spec §2) — 사무실 업로드가 밀리지 않는다.
+- 워커 로그는 진행 상황판이 아니라 **예외 신호**다. `[warp-gate]`는 warp 게이트가
+  구제(`rescued-by-enh`)되거나 강등(`demoted`)되거나 격자를 못 찾았을 때만(`quad_missing`)
+  찍힌다 — 게이트를 정상 통과한 잡은 어떤 줄도 남기지 않는다. **정상 배치는 조용한 것이
+  맞다.** 빈 화면을 "멈췄다"로 오독하지 않는다. `[warp-gate]`는 stdout(`ml-worker.out.log`)
+  으로, 부팅 지문과 크롭 교체 실패는 `file=sys.stderr`로 명시돼 stderr(`ml-worker.err.log`)
+  로 간다 — 창구가 하나가 아니므로 둘 다 본다:
+
+  ```bash
+  tail -f ~/.sjmj-ai/logs/ml-worker.out.log ~/.sjmj-ai/logs/ml-worker.err.log
+  ```
+
+  (`SJMJ_LOG_DIR`로 재정의하면 경로가 달라진다.) 잡이 **끝났는지**는 로그가 아니라
+  `SELECT status FROM ocr_jobs WHERE id=...`로 확인한다.
+
+## 4. 미결 확인 (재임베딩의 선행 조건)
+
+승계에 실패한 미결 쌍이 나온 잡만 게이트가 해제돼 검수 큐에 뜬다(ADR 0011).
+미결 쌍은 `relink_failed` 배지와 "그림 없음"으로 표시되고 목록 뒤에 모인다.
+
+```sql
+SELECT job_id, COUNT(*) FROM training_pairs
+WHERE exclusion_reason = 'relink_failed' GROUP BY job_id ORDER BY job_id;
+```
+
+**이 잡들의 재검수를 끝내기 전에는 다음 단계로 넘어가지 않는다** — `--reembed-job`이 거부한다.
+
+## 5. 크롭 교체 완료 확인 (재임베딩의 두 번째 선행 조건)
+
+워커는 크롭을 `job-N.tmp/`에 쓰고 DB 커밋이 성공한 뒤에만 `job-N/`으로 교체한다. 그 사이에
+프로세스가 죽으면 **DB는 새 좌표인데 파일은 옛 그림**인 상태가 `done`인 채 남고 재큐잉조차
+없다 — 옛 PNG가 제자리에 있어 크롭 존재 검사를 통과하므로, 그대로 재임베딩하면 옛 그림이
+새 라벨로 뱅크에 정식 등록된다. 잔여 디렉터리(`job-N.tmp` / `job-N.old`, 크롭 루트의 형제
+디렉터리)가 그 상태의 유일한 신호다.
+
+```bash
+ls -d "$SJMJ_DATA_DIR"/ocr_crops/job-*.tmp "$SJMJ_DATA_DIR"/ocr_crops/job-*.old 2>/dev/null
+```
+
+- 아무것도 안 나오면 정상이다.
+- 나오면 **그 잡을 다시 재처리해서**(3단계) 교체를 끝낸다. 재처리는 멱등이라 같은 사진·같은
+  엔진이면 좌표가 제자리에 남는다. 워커가 처리 중일 때도 `.tmp`가 보이므로, 먼저 잡 상태를
+  확인한다(`SELECT status FROM ocr_jobs WHERE id=...`). `done`이면 아래 잔여 판정으로
+  넘어간다. **`running`이면 두 가지 중 하나다** — 지금 정말 처리 중이거나, 워치독 없이
+  죽어서 굳은 것이다(아래 마지막 항목 참고). 이 둘을 로그나 상태 조회만으로 구분할 방법은
+  없으므로(정상 처리 중인 잡은 로그를 남기지 않는다, 3단계 참고) 판단하려 들지 말고 아래
+  마지막 항목의 절차로 간다.
+- **잔여는 "교체 절차가 완주했다고 보장할 수 없다"는 신호일 뿐이다.** `job-N`의 내용이 DB와
+  정합한지는 잔여 마커만으로 판정할 수 없다 — `.old` 삭제 단계만 실패한 경우 `job-N`이 이미
+  새 그림이고 DB와 완전히 정합한데도 `.old`가 남는다. 그래서 이 확인은 **거부(재임베딩
+  보류)만 하고, `.old`를 `job-N`으로 되돌리는 등의 파일 복구를 절대 시도하지 않는다** —
+  복구는 `job-N`이 정직하게 비어 있는(404) 상태를 "새 좌표 + 그럴싸한 옛 그림"이라는 금지된
+  오염 상태로 되돌린다.
+- 잔여를 남긴 잡의 검수 화면은 크롭이 404로 뜬다(옛 그림을 새 좌표에 되돌리지 않는다 —
+  그럴싸한 옛 그림이 사람 눈을 통과하는 것보다 그림 없음이 정직하다).
+- 이 확인을 건너뛰어도 `--reembed-job`이 같은 검사를 하고 거부한다. 여기서 먼저 보는 이유는
+  배치 도중이 아니라 시작 전에 알기 위해서다.
+- **같은 잡이 반복 처리되면(재처리 → 또 `.old` 잔여 → 재처리) 위 처방이 수렴하지 않는다 —
+  루프를 먼저 끊는다.** `.old`가 권한·점유 등으로 지워지지 않으면 `_swap_crop_dir`의
+  `rmtree(..., ignore_errors=True)`가 조용히 실패하고 뒤이은 `rename`이 `ENOTEMPTY`로 죽어
+  잡이 다시 재처리 큐로 돌아간다(`worker/poll.py`). 재시도 상한이 없어 그 잡이 워커를 영구
+  점유하고, 재처리 잡 중 id가 가장 작으면 나머지 **재처리 잡**을 무기한 굶긴다(신규 업로드는
+  우선순위 덕에 무사하다 — 3단계). 아래 마지막 항목의 1)~4) 절차를 그대로 쓰되 `.old`
+  제거를 3-a/3-b 뒤에 끼운다: **정지(bootout) → 좌초 잡 되돌림(3-a/3-b) → `.old` 제거 →
+  기동(bootstrap) → 3단계 재처리.** 정지의 부작용(in-flight 잡 좌초·사무실 업로드 대기)도
+  그 항목의 설명이 그대로 적용된다.
+
+  ```bash
+  # 워커를 내린 상태에서만 만진다 — 돌고 있으면 지우는 사이 그 잡이 다시 만든다.
+  rm -rf "$SJMJ_DATA_DIR"/ocr_crops/job-<job_id>.old
+  # 그래도 안 지워지면 크롭 루트 밖으로 옮겨 원인 조사용으로 남긴다(루트 안은 안 된다).
+  mv "$SJMJ_DATA_DIR"/ocr_crops/job-<job_id>.old ~/job-<job_id>.old.stuck
+  ```
+
+  **이것은 위에서 금지한 "파일 복구"가 아니다** — 금지된 것은 `.old`(옛 그림)를 `job-N`으로
+  **되돌리는** 방향이고, 여기서는 옛 그림을 치우기만 한다. 옮길 때 **크롭 루트 밖으로**
+  보내는 것이 중요하다. 루트 안에 다른 이름으로 두면 잔여 점검(위 `ls`)과 `--reembed-job`
+  가드(`require_settled_crops`)의 시야에서 사라져 마커만 조용히 없어진다. 제거해도 `job-N`이
+  DB와 정합하다는 보장은 여전히 없으므로, 반드시 3단계로 그 잡을 **다시 재처리해** 교체를
+  완주시킨다.
+
+- **추론 도중(커밋 전)에 프로세스가 죽으면 잡은 `running`에서 멈춘다** — `pending → running`
+  전이만 있고(`worker/db.py`의 `claim_next_pending`), 죽은 `running` 잡을 되돌리는 워치독은
+  없다. `.tmp`도 함께 남는다. 이 잡은 `done`이 아니므로 3단계의 `reprocess` 호출이 409로
+  거부돼 그대로는 3단계로 돌아갈 수 없다.
+  **"처리 중이 아님"을 로그로 확인하지 않는다** — 정상 처리 중인 잡은 `[warp-gate]` 같은
+  예외 신호가 없는 한 어떤 줄도 남기지 않으므로(3단계 참고), 로그가 비어 있다는 것이
+  "처리 중이 아니다"의 증거가 되지 못한다. 지금 처리 중인 잡일수록 오히려 로그에 안
+  보이는 게 정상이라, 로그로 판단하면 처리 중인 잡을 "아니다"로 오판해 `commit_job`이
+  방금 넣은 재처리 요청을 `done`으로 조용히 덮어써 버릴 수 있다(`worker/db.py`).
+  대신 **워커를 정지시킨 뒤에 상태를 판정한다.**
+
+  **`launchctl kickstart -k`(재시작)로는 안 된다.** plist는 `RunAtLoad`·`KeepAlive`가
+  모두 `true`라(`deploy/launchd/ai.sjmj.ml-worker.plist.template`) kickstart는 정지가
+  아니라 재시작이고, 새로 뜬 워커는 모델을 적재한 뒤 곧바로 무한 폴링으로 돌아가
+  `pending` 잡을 다시 집는다(`worker/main.py`의 `load_models()` → `while True`). 배치
+  재처리 도중이면 큐에 `pending`이 가득하므로 재시작 몇십 초 뒤부터 `status='running'`에는
+  **지금 정말 처리 중인 잡**이 섞인다 — 그 잡에 아래 UPDATE를 걸면 위에서 금지한 사고가
+  그대로 일어난다.
+
+  **정지 자체가 새 피해자를 만든다.** 워커는 단일 직렬이라 정지 순간 in-flight였던 잡은
+  커밋 전에 끊겨 똑같이 `running`으로 남는다. 워커는 신규 업로드를 먼저 집으므로(3단계)
+  배치 재처리 도중이면 그 피해자는 **사무실이 방금 올린 신규 잡**일 확률이 높다 — 사람이
+  지켜보지 않고, `.tmp` 점검(위 `ls`)의 대상도 아니라(신규 잡은 `job-N.tmp` 자체가 아직
+  없거나 다른 잡 id라 이 배치의 점검망 밖이다) 조용히 방치되기 쉽다. 그래서 2)의 조회는
+  대상 잡 하나가 아니라 `running` **전량**을 본다. **정지해 둔 동안 사무실 업로드는
+  처리되지 않는다** — 잡은 `pending`으로 쌓였다가 기동 후 순서대로 처리되므로 유실은
+  없지만, 가능하면 업로드가 없는 시간대에 한다. 순서를 지켜 진행한다:
+
+  ```bash
+  # 1) 워커를 gui 도메인에서 내린다(kickstart와 달리 KeepAlive가 되살리지 않는다).
+  #    bootout은 비동기라 완전히 내려갈 때까지 기다린다 —
+  #    scripts/install-launchagent-ml-worker.sh가 같은 이유로 launchctl print를 폴링한다.
+  #    이미 내려가 있으면 bootout이 비정상 종료 코드를 내지만 무해하다.
+  launchctl bootout gui/$(id -u)/ai.sjmj.ml-worker
+  until ! launchctl print gui/$(id -u)/ai.sjmj.ml-worker >/dev/null 2>&1; do sleep 1; done
+  ```
+
+  ```sql
+  -- 2) 이제 잡을 집는 주체가 없으므로, status='running'인 잡은 전부 좌초된 것이다.
+  --    is_reprocess=1(옛 result_json 보유)이면 재처리 잡, 0이면 신규 업로드다 —
+  --    되돌리는 상태가 다르다(아래).
+  SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
+  FROM ocr_jobs WHERE status='running';
+  ```
+
+  걸린 잡마다(대상 잡 포함) `is_reprocess`에 따라 되돌린다:
+
+  ```sql
+  -- 3-a) 재처리 잡(is_reprocess=1) — 옛 초안·크롭이 여전히 정합이므로 done으로.
+  UPDATE ocr_jobs SET status='done' WHERE id=<job_id>;
+  -- 3-b) 신규 잡(is_reprocess=0) — result_json이 없어 done은 무효 상태다.
+  --      pending으로 되돌리면 워커가 기동 후 신규 경로로 다시 추론한다.
+  UPDATE ocr_jobs SET status='pending' WHERE id=<job_id>;
+  ```
+
+  ```bash
+  # 4) 워커를 다시 올린다. plist가 RunAtLoad=true라 bootstrap만으로 기동한다.
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.sjmj.ml-worker.plist
+  tail -f ~/.sjmj-ai/logs/ml-worker.err.log   # [retrieval-version] 부팅 지문=... 이 기동 완료 신호
+  ```
+
+  기동한 워커는 모델을 1회 적재한 뒤에야 폴링을 시작하므로 곧바로 잡을 집지 않는다 —
+  위 부팅 지문 한 줄(`worker/main.py`, stderr)이 적재가 끝났다는 신호다.
+
+  재처리 잡은 그 뒤 3단계로 다시 `reprocess`를 넣는다. 신규 잡은 `pending`으로
+  되돌린 것만으로 워커가 다음 순번에 다시 집는다(별도 호출 불필요). 남은 `.tmp`는
+  워커가 그 잡을 다시 집을 때 `process_one_job`이 "앞선 실패가 남긴 잔여"로 간주해
+  먼저 지운다(`worker/poll.py`) — 따로 지울 필요는 없다.
+
+## 6. 뱅크 재임베딩
+
+`--reembed-job`에는 **3단계에서 재처리한 잡 중 `curation_reviewed = 1`인 것**을 넣는다
+(아래 예시의 `12 13 14`는 지면상 축약이다). 목록은 손으로 고르지 말고 아래로 뽑는다:
+
+```sql
+SELECT id FROM ocr_jobs WHERE curation_reviewed = 1 AND id IN (<3단계에서 재처리한 잡>);
+```
+
+**"재처리한 잡 전량"이 아니라 교집합인 이유.** 2단계 대상에는 확정됐지만 **학습쌍이 0개인
+잡**(강등·전량 수기 입력)이 섞인다. 큐레이션 목록은 `ocr_jobs JOIN training_pairs`라
+(`backend/app/repositories/curation_repository.py`의 `list_jobs`) 그런 잡은 검수 화면에 아예
+뜨지 않아 사람이 검수 완료를 누를 수단이 없다 — 전량을 넣으면 아래 미검수 가드가 **반드시**
+걸리고, 4단계로 돌아가도 해소되지 않는다(그 잡엔 미결도, 검수할 화면도 없다).
+
+**교집합에서 빠지는 잡이 누락 위험을 만들지 않는 근거.** 재임베딩 대상은 정의상 뱅크에
+항목이 있는 잡뿐이고, 뱅크에는 `curation_reviewed = 1`인 잡의 쌍만 들어간다(ADR 0004,
+`select_desired`). 그러므로 빠지는 잡은 ① 쌍이 0개라 뱅크에 항목이 없거나, ② 애초에
+미검수라 뱅크에 들어간 적이 없거나 — 어느 쪽이든 제외가 no-op이다. ③ 미결이 나와 게이트가
+해제된 잡은 4단계에서 재검수를 끝내면 다시 `1`이 되어 이 교집합에 들어온다. **그래서 4단계를
+먼저 끝내는 것이 이 절의 전제다.** 그 상태에서 이 교집합은 "뱅크에 항목이 있는 재처리 잡
+전량"과 같아진다.
+
+거꾸로 **이 교집합에 드는 잡을 빠뜨리면** 안 된다. 누락된 잡은 좌표가 그대로라 diff에서
+`unchanged`로 분류되고, `force_replace`는 지정한 잡만 승격하므로 — 크롭 PNG는 새 그림인데
+뱅크 임베딩은 옛 그림인 채로 조용히 남는다.
+
+```bash
+"$PYTHON_BIN" -m tools.bank_update plan --reembed-job 12 13 14
+```
+
+- `remove 건수 = 좌표 이동 수 + 미결 수`를 대조한다. 재처리 이후엔 정상 상태에서도 remove가
+  뜨므로 `--yes`에 무뎌지지 않게 하는 절차다.
+- 미검수 잡을 지정하면 CLI가 잡 id를 담아 즉시 실패한다(§11-1). 그 잡에 미결이 있으면
+  4단계로 돌아가고, 애초에 검수 대상이 아닌 잡(쌍 0건 등)이면 위 교집합 SQL대로 목록에서
+  빼면 된다.
+- 크롭 교체가 끝나지 않은 잡을 지정하면 잔여 디렉터리 이름을 담아 실패한다. 5단계로 돌아간다.
+
+```bash
+"$PYTHON_BIN" -m tools.bank_update apply --plan results/bank_update/plan.jsonl --yes
+```
+
+## 7. 워커 다시 띄우기 (뱅크 재적재)
+
+워커는 기동 시 1회만 뱅크를 적재하므로 프로세스를 다시 띄워야 새 뱅크가 반영된다.
+
+여기서도 `kickstart -k`(재시작)가 아니라 **정지 → 확인 → 기동**을 쓴다. 이 전환도 그 순간
+in-flight였던 잡을 `running`으로 좌초시키는데(5단계와 같은 이유), 재시작으로는 그 피해자를
+확인할 창이 열리지 않기 때문이다 — 워커가 곧바로 다시 잡을 집어 `running` 조회가 좌초된
+잡과 정상 처리 중인 잡을 섞어 보여준다. 정지 상태에서 보면 조회 결과가 곧 좌초 목록이다.
+정지 동안 사무실 업로드가 `pending`으로 쌓이는 것도 5단계와 같다.
+
+```bash
+launchctl bootout gui/$(id -u)/ai.sjmj.ml-worker
+until ! launchctl print gui/$(id -u)/ai.sjmj.ml-worker >/dev/null 2>&1; do sleep 1; done
+```
+
+```sql
+-- 좌초된 잡이 나오면 5단계의 3-a/3-b로 되돌린다.
+SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
+FROM ocr_jobs WHERE status='running';
+```
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.sjmj.ml-worker.plist
+```
+
+## 8. 오염 발견 시
+
+```bash
+cp "$SJMJ_ML_MODELS_DIR"/bank.<stamp>.npz.bak "$SJMJ_ML_MODELS_DIR"/bank.npz
+```
+
+뱅크는 기동 시 1회만 적재되므로, 7단계와 같은 정지 → 확인 → 기동으로 워커를 다시 띄워야
+복원한 뱅크가 반영된다.
+
+## 9. 잡 단위 롤백은 지원하지 않는다
+
+원본 사진은 보존되므로 복구는 엔진을 되돌려 다시 재처리하는 방향이다. 재처리는 멱등이라
+같은 사진·같은 엔진이면 매칭이 항등이 되어 좌표가 제자리에 남는다.
+
+## 실패 시나리오 대응
+
+| 증상                                             | 원인·대응                                                                                                                                     |
+| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| 재처리 후에도 잡이 `done`이고 초안이 그대로      | 재추론 실패 → done 롤백(정상 동작). 워커 로그의 `[warp-gate]` 라인 확인                                                                       |
+| 그 잡의 쌍이 전부 미결                           | warp 실패로 행이 0개 검출됨. 원본 사진 품질 확인 후 재시도                                                                                    |
+| 검수 화면에서 PATCH가 409                        | 그 사이 재처리가 지나갔다. 새로고침 후 다시 편집                                                                                              |
+| 검수 완료 버튼이 409                             | 재처리가 게이트를 다시 열었다. 새로고침해 새 미결 쌍을 확인한 뒤 다시 완료 처리                                                               |
+| 이미 검수 완료된 쌍이 재검수 큐에 다시 뜸        | 승계 실패로 사유가 `relink_failed`로 갈아치워졌다(0. 전제 참조) — 버그가 아니라 의도된 동작                                                   |
+| 배제돼 있던 쌍이 사유 없이 `included`로 돌아옴   | 그 쌍이 이번 재처리에서 승계에 성공했다(기계 소유 배제의 자동 복원, 0. 전제 참조) — 의도된 동작                                               |
+| 워커가 같은 잡을 반복 처리                       | `.old`가 안 지워져 교체가 계속 실패한다(권한·디스크). 로그 `크롭 교체 실패` 확인 후 5단계의 "같은 잡이 반복 처리되면" 절차로 루프를 끊는다    |
+| 배치 재처리 도중 특정 잡만 실패                  | 그 사이 사람이 같은 잡의 거래명세서를 확정했다(1단계의 TOCTOU). 해당 잡만 다시 재처리                                                         |
+| 검수 화면 크롭이 전부 404이고 `.old`가 남아 있음 | 커밋 후 교체가 끝나지 않았다. 그 잡을 다시 재처리한다(5단계) — 옛 그림은 복원하지 않는다                                                      |
+| `--reembed-job`이 교체 미완을 이유로 거부        | 5단계를 건너뛴 것이다. 잔여를 남긴 잡을 재처리한 뒤 다시 실행                                                                                 |
+| 잡이 `running`에서 멈춘 채 진행이 없음           | 워커가 추론 도중 죽었다(워치독 없음). 워커를 `bootout`으로 정지시킨 상태에서 좌초된 잡 전부(대상 잡 포함)를 되돌린 뒤 다시 띄운다(5단계 참조) |

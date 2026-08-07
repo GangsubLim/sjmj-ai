@@ -130,7 +130,8 @@ def main(args):
         f"최대 확장폭 {max_delta}px. (모델·뱅크 불필요 — 경계 로직만.)</div>"
     )
     OUT.write_text(
-        f"<!doctype html><meta charset=utf-8><title>crop 확장 검수</title>{head}{lead}{''.join(sections)}"
+        f"<!doctype html><meta charset=utf-8><title>crop 확장 검수</title>{head}{lead}{''.join(sections)}",
+        encoding="utf-8",
     )
     print(f"wrote {OUT}")
     print(
