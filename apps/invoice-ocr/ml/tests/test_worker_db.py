@@ -455,6 +455,23 @@ def test_requeue_for_reprocess_sets_pending_without_touching_result_json():
     assert "result_json" not in sql
 
 
+def test_requeue_pending_returns_new_and_reprocess_jobs_alike_without_touching_result_json():
+    """degenerate로 중단된 잡(신규·재처리 공용, B1-b)의 복구 경로.
+
+    result_json을 건드리지 않아야 신규 잡은 NULL로 남아 다음 점유에서 신규로,
+    재처리 잡은 값이 남아 재처리로 스스로 재분류된다(claim_next_pending 판별자).
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+
+    WorkerQueue(engine).requeue_pending(11)
+
+    sql = str(conn.execute.call_args[0][0])
+    assert "status='pending'" in sql
+    assert "result_json" not in sql, "result_json을 건드리면 신규/재처리 판별자가 깨진다"
+    assert conn.execute.call_args[0][1]["id"] == 11
+
+
 # ---------------------------------------------------------------------------
 # claim_next_pending — 행 없음
 # ---------------------------------------------------------------------------
