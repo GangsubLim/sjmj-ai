@@ -5,6 +5,20 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.10.1] — 2026-08-07
+
+인식 모델이 무너진 채로 뱉은 헛소리가 "정상 처리된 빈칸"으로 굳어 학습쌍을 대량으로 날리던 경로를 막는다. 이제 그런 잡은 커밋되지 않고 되돌려지며, 워커가 스스로 다시 살아나 같은 잡을 정상 처리한다 ([#102](https://github.com/GangsubLim/sjmj-ai/pull/102)).
+
+### Fixed
+
+- 금액 인식 모델이 붕괴해 의미 없는 문자만 반복해 뱉으면, 그 결과를 저장하지 않고 잡을 처리 대기로 되돌린다 — 확정된 학습쌍이 짝을 잃고 사라지던 회귀를 막는다 ([#102](https://github.com/GangsubLim/sjmj-ai/pull/102))
+- 붕괴를 감지한 워커가 스스로 종료해 자동 재기동되므로, 재처리 배치 중 사람이 주기적으로 워커를 껐다 켜지 않아도 된다 ([#102](https://github.com/GangsubLim/sjmj-ai/pull/102))
+- 재기동 직후 첫 잡이 또 붕괴하면 그 잡만 되돌려 놓고 은퇴시켜, 한 잡이 워커를 무한히 껐다 켜는 crash loop를 만들지 않는다 ([#102](https://github.com/GangsubLim/sjmj-ai/pull/102))
+
+### Changed
+
+- 재처리 런북에 붕괴 로그 시그니처와 상태 전이·복구 절차, 종결 조건을 추가 ([#102](https://github.com/GangsubLim/sjmj-ai/pull/102))
+
 ## [v0.10.0] — 2026-08-07
 
 이미 검수를 끝낸 잡도 지금의 인식 엔진으로 다시 돌릴 수 있다 — 사람이 확정한 라벨은 그대로 이어받으므로, 엔진이 좋아진 만큼이 과거 데이터에도 반영된다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96)).
