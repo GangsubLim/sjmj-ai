@@ -401,7 +401,7 @@
       {
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}",
-        "summary": "잡 상세(행별 top5)",
+        "summary": "잡 상세(행별 top5; 승계 실패 미결 쌍은 crop_available=false로 행과 끊기고 목록 뒤로 정렬)",
         "auth": "public",
         "req": null,
         "res": "CurationJobDetail",
@@ -411,7 +411,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐)",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 시 409 CONFLICT. 응답에 갱신된 job_token 포함",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
@@ -421,10 +421,20 @@
       {
         "method": "POST",
         "path": "/api/curation/jobs/{job_id}/review",
-        "summary": "잡 검수 완료(멱등; included 정식 라벨을 자동완성 사전에 등록)",
+        "summary": "잡 검수 완료(멱등; included 정식 라벨을 자동완성 사전에 등록) job_token 필수 — 불일치 또는 done 아님이면 409 CONFLICT",
+        "auth": "public",
+        "req": "CurationReviewRequest",
+        "res": "{job_id, curation_reviewed}",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
+        "method": "POST",
+        "path": "/api/curation/jobs/{job_id}/reprocess",
+        "summary": "잡 재처리 큐잉(done → pending 전이; result_json은 보존 — 워커가 재처리로 판별하는 근거이자 실패 시 롤백 대상. 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 수행. done이 아니면 409)",
         "auth": "public",
         "req": null,
-        "res": "{job_id, curation_reviewed}",
+        "res": "{job_id, status}",
         "router": "curation",
         "source": "app/routers/curation.py"
       },
@@ -512,7 +522,8 @@
         "GET /api/curation/jobs/{job_id}",
         "PATCH /api/curation/pairs/{id}"
       ],
-      "CurationPairPatch": ["PATCH /api/curation/pairs/{id}"]
+      "CurationPairPatch": ["PATCH /api/curation/pairs/{id}"],
+      "CurationReviewRequest": ["POST /api/curation/jobs/{job_id}/review"]
     },
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
@@ -2491,13 +2502,24 @@
                 }
               }
             }
+          },
+          "409": {
+            "description": "job_token 불일치 — 재처리 등으로 잡 세대가 바뀌었다(CONFLICT, spec §12)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
           }
         }
       }
     },
     "/api/curation/jobs/{job_id}/review": {
       "post": {
-        "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 멱등; included 정식 라벨을 item_suggestions에 등록 — ADR 0008)",
+        "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 같은 세대·done 상태에서만 멱등; included 정식 라벨을 item_suggestions에 등록 — ADR 0008)",
+        "description": "요청 body의 job_token을 현재 잡 세대와 대조한다(spec §12). 이 경로는 게이트를 닫고 미검수 쌍 전량에 reviewed_at을 찍으므로, 재처리 이전에 열어둔 화면이 그대로 보내면 새로 생긴 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라지고 --reembed-job 가드까지 통과한다 — 세대가 다르면 409 CONFLICT로 거부한다. 상태가 done이 아니어도 409다(워커가 곧 덮어쓸 잡의 검수 완료는 의미가 없다 — reprocess와 같은 규칙).",
         "tags": ["curation"],
         "parameters": [
           {
@@ -2509,6 +2531,16 @@
             }
           }
         ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CurationReviewRequest"
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "ack",
@@ -2539,8 +2571,96 @@
               }
             }
           },
+          "400": {
+            "description": "검증 실패 — job_token 누락 등",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
           "404": {
             "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "job_token 불일치 또는 잡이 done 상태가 아님(CONFLICT, spec §12)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/curation/jobs/{job_id}/reprocess": {
+      "post": {
+        "summary": "잡 재처리 큐잉(done → pending 전이; result_json 보존)",
+        "tags": ["curation"],
+        "parameters": [
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "큐잉 성공",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    {
+                      "$ref": "#/components/schemas/SuccessSingle"
+                    },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "object",
+                          "properties": {
+                            "job_id": {
+                              "type": "integer"
+                            },
+                            "status": {
+                              "type": "string",
+                              "enum": ["pending"]
+                            }
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "잡 없음",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "done이 아닌 잡(이미 큐에 있거나 실패한 잡)",
             "content": {
               "application/json": {
                 "schema": {
@@ -3664,9 +3784,9 @@
           },
           "exclusion_reason": {
             "type": "string",
-            "enum": ["blank_crop", null],
+            "enum": ["blank_crop", "relink_failed", null],
             "nullable": true,
-            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 at-least-one 검증(model_validator)에 걸려 400."
+            "description": "기계 판정 배제 사유. 자동 배제만 값을 채운다. NULL은 status와 함께 읽어야 한다 — status='excluded'일 때의 NULL이 '사람 판정, 사유 미분류'를 뜻하고, status='included'의 NULL은 아무도 손대지 않은 기본값일 뿐이다(migration_009의 NULL DEFAULT NULL, ADR 0006). 읽기 전용 — PATCH 요청 body에 보내도 무시된다(200, 값 미반영; 화이트리스트 status/canonical_label 밖). 단, 이 필드만 단독으로 보내면 400이다 — 원인은 at-least-one 검증이 아니라 필수 필드 job_token 누락이며(필드 검증이 model_validator보다 먼저 돈다) details 키도 job_token으로 잡힌다. job_token까지 실은 채 이 필드만 보내면 그때 at-least-one 검증에 걸린다. relink_failed는 재처리 승계에 실패한 미결 쌍(그림 자체가 없다 — 빈 크롭과 다르다)."
           },
           "reviewed_at": {
             "type": "string",
@@ -3693,9 +3813,17 @@
             "type": "boolean",
             "description": "품목 top1이 result_json의 item_conf_threshold 미만이거나 후보가 없을 때 true. 플래그 도입 이전 잡은 false. GET /jobs/{id} 전용 — PATCH /pairs/{id} 응답에는 없다(top5와 같은 계약 비대칭)."
           },
+          "crop_available": {
+            "type": "boolean",
+            "description": "이 쌍의 crop_ref가 실제 검출 행(job-N/row-M)을 가리키는지. false면 재처리 승계에 실패한 미결 쌍이라 서버가 새 행과 조인하지 않으며(top5 빈 배열·uncertain false), 프론트는 crop URL 자체를 만들지 않는다(spec §6-1). GET /jobs/{id} 전용 — PATCH 응답에는 없다."
+          },
           "job_curation_reviewed": {
             "type": "boolean",
             "description": "PATCH /api/curation/pairs/{id} 응답에만 포함(잡 상세 pairs에는 없음 — job_id와 같은 계약 비대칭). 쌍 수정은 그 잡의 게이트를 무조건 해제하므로 항상 false다. 프론트가 서버 규칙을 재현하지 않고 응답만 보고 '검수 완료' 버튼을 재활성화한다."
+          },
+          "job_token": {
+            "type": "string",
+            "description": "PATCH /api/curation/pairs/{id} 응답에만 포함 — 갱신된 잡 세대 토큰(연속 편집용)."
           }
         }
       },
@@ -3721,6 +3849,10 @@
           "warp_ok": {
             "type": "boolean"
           },
+          "job_token": {
+            "type": "string",
+            "description": "잡 세대 토큰(ocr_jobs.updated_at 초 단위). PATCH /pairs/{id}와 POST /jobs/{job_id}/review에 실어 보내야 한다."
+          },
           "created_at": {
             "type": "string",
             "format": "date-time"
@@ -3735,8 +3867,13 @@
       },
       "CurationPairPatch": {
         "type": "object",
-        "description": "status 또는 canonical_label 중 하나 이상 필수(model_validator). 검증 실패는 400 VALIDATION_ERROR.",
+        "description": "status 또는 canonical_label 중 하나 이상 필수(model_validator). 검증 실패는 400 VALIDATION_ERROR. job_token은 항상 필수.",
+        "required": ["job_token"],
         "properties": {
+          "job_token": {
+            "type": "string",
+            "description": "잡 상세(GET /jobs/{id})에서 받은 세대 토큰. 필수 — 현재 값과 다르면 409 CONFLICT로 거부한다(재처리로 크롭이 바뀐 뒤 옛 화면에서 오는 stale write 차단, spec §12)."
+          },
           "status": {
             "type": "string",
             "enum": ["included", "excluded"]
@@ -3745,6 +3882,16 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200
+          }
+        }
+      },
+      "CurationReviewRequest": {
+        "type": "object",
+        "required": ["job_token"],
+        "properties": {
+          "job_token": {
+            "type": "string",
+            "description": "잡 상세에서 받은 세대 토큰. 필수 — 재처리로 게이트가 열린 잡을 옛 화면이 다시 닫는 것을 409로 막는다(spec §12)."
           }
         }
       }

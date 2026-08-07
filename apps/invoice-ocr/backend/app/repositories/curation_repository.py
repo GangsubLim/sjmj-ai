@@ -52,7 +52,8 @@ class CurationRepository:
                 conn.execute(
                     text(
                         "SELECT id, invoice_id, curation_reviewed, curation_reviewed_at, "
-                        "result_json, created_at "
+                        "result_json, created_at, "
+                        "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) AS job_token "
                         "FROM ocr_jobs WHERE id = :id"
                     ),
                     {"id": job_id},
@@ -145,11 +146,76 @@ class CurationRepository:
                 is not None
             )
 
+    def find_job_for_update(self, job_id: int) -> dict | None:
+        """상태 전이 대상 잡의 현재 상태를 행잠금으로 읽는다(재처리 요청·검수 완료 공용).
+
+        FOR UPDATE로 잡히므로, 확인과 전이 사이에 워커의 claim_next_pending이 끼어들어
+        같은 잡을 두 번 집는 경합이 성립하지 않는다. 부모(ocr_jobs)를 먼저 잡는 자리라
+        락 순서 불변식(잡 → 쌍)의 시작점이기도 하다 — Task 7의 mark_reviewed가 이 호출을
+        재사용해 "done이 아니면 409"를 reprocess와 같은 규칙으로 적용한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            {"id", "status"} 또는 잡이 없으면 None.
+        """
+        with connection() as conn:
+            row = (
+                conn.execute(
+                    text("SELECT id, status FROM ocr_jobs WHERE id = :id FOR UPDATE"),
+                    {"id": job_id},
+                )
+                .mappings()
+                .first()
+            )
+            return {"id": int(row["id"]), "status": row["status"]} if row else None
+
+    def requeue_for_reprocess(self, job_id: int) -> None:
+        """잡을 다시 추론 큐에 넣는다 — result_json은 건드리지 않는다.
+
+        초안이 남아 있어야 워커가 이 잡을 재처리로 판별하고(spec §1), 재추론이 실패해도
+        옛 초안으로 되돌아갈 수 있다. 지우면 두 성질이 함께 사라진다.
+        """
+        with connection() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET status = 'pending' WHERE id = :id"), {"id": job_id}
+            )
+
     def get_image_path(self, job_id: int) -> str | None:
         """잡의 원본 업로드 이미지 경로를 반환한다."""
         with connection() as conn:
             return conn.execute(
                 text("SELECT image_path FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            ).scalar()
+
+    def get_job_token(self, job_id: int) -> str | None:
+        """잡의 세대 토큰을 행잠금으로 읽는다 — 낙관적 잠금 대조·갱신용(spec §12).
+
+        토큰은 migration_007이 이미 정의한 ocr_jobs.updated_at(ON UPDATE
+        CURRENT_TIMESTAMP)이다. 재처리는 status를 done → pending으로 전이하므로 이 값이
+        반드시 튄다 — 새 컬럼이 필요 없어 마이그레이션 0이 유지된다.
+
+        DATE_FORMAT 대신 UNIX_TIMESTAMP를 쓰는 이유는 문자열 왕복의 안정성이다 — 포맷
+        문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, 정수 초는 타임존·표기 흔들림이 없다.
+        정밀도가 초 단위라는 한계는 spec §12가 수용한 것이다(필요해지면 TIMESTAMP(3)).
+
+        FOR UPDATE로 부모(ocr_jobs)를 먼저 잡으므로 뒤따르는 release_gate·update_pair가
+        락 순서 불변식(잡 → 쌍)을 그대로 지킨다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            불투명 토큰 문자열. 잡이 없으면 None.
+        """
+        with connection() as conn:
+            return conn.execute(
+                text(
+                    "SELECT CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) FROM ocr_jobs "
+                    "WHERE id = :id FOR UPDATE"
+                ),
+                {"id": job_id},
             ).scalar()
 
     def release_gate(self, job_id: int) -> None:

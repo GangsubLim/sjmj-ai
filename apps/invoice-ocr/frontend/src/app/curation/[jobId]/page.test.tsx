@@ -18,6 +18,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
     curation_reviewed_at: null,
     warp_ok: false,
     created_at: "2026-06-30T09:00:00",
+    job_token: "1000",
     pairs: [
       {
         id: 9001,
@@ -31,6 +32,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "무", sim: 0.77 }],
       },
     ],
@@ -58,6 +60,7 @@ function needsRecheckJob(): CurationJobDetail {
         exclusion_reason: null,
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "무", sim: 0.77 }],
       },
       {
@@ -72,6 +75,7 @@ function needsRecheckJob(): CurationJobDetail {
         exclusion_reason: "blank_crop",
         reviewed_at: null,
         uncertain: false,
+        crop_available: true,
         top5: [{ label: "당근", sim: 0.9 }],
       },
     ],

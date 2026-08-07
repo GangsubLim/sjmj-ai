@@ -36,6 +36,7 @@ function pairWith(
     exclusion_reason: null,
     reviewed_at: null,
     uncertain: false,
+    crop_available: true,
     top5: [
       { label: "무", sim: 0.77 },
       { label: "배추", sim: 0.42 },
@@ -250,5 +251,81 @@ describe("CurationPairRow", () => {
     expect(excludedBadge).not.toMatch(/되돌림/);
     expect(revertedBadge).toMatch(/되돌림/);
     expect(revertedBadge).not.toBe(excludedBadge);
+  });
+});
+
+describe("미결 쌍(승계 실패)", () => {
+  it("crop_available이 false면 crop 이미지를 만들지 않는다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          crop_available: false,
+          status: "excluded",
+          exclusion_reason: "relink_failed",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole("img")).toBeNull();
+    expect(screen.getByText("그림 없음")).toBeInTheDocument();
+  });
+
+  it("승계 실패 배지를 사유 문구로 띄운다", () => {
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          crop_available: false,
+          status: "excluded",
+          exclusion_reason: "relink_failed",
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/승계 실패/)).toBeInTheDocument();
+  });
+
+  it("사람이 배제를 토글해 사유가 지워져도 승계 실패 표식이 남는다", () => {
+    // 백엔드는 사람 배제 시 exclusion_reason을 NULL로 지운다(ADR 0006 §6) — 배지를
+    // 사유에 걸면 검수자가 한 번만 토글해도 문구가 영구 소실된다. 영속 표식은
+    // crop_available === false다(curation_service._has_row_crop과 같은 축).
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", {
+          crop_available: false,
+          status: "excluded",
+          exclusion_reason: null,
+        })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText(/승계 실패/)).toBeInTheDocument();
+  });
+
+  it("미결 쌍은 옛 세대의 행 번호를 그대로 노출하지 않는다", () => {
+    // row_index는 이제 다른 줄을 가리킨다 — 그대로 보이면 검수자가 그 번호로 다른 줄의
+    // 그림과 대조하게 된다(crop URL만 막아서는 부족하다).
+    render(
+      <CurationPairRow
+        jobId={1}
+        pair={pairWith("무", { crop_available: false, row_index: 3 })}
+        onPatch={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText("#3")).toBeNull();
+  });
+
+  it("crop_available이 true면 crop 이미지를 그대로 그린다", () => {
+    render(
+      <CurationPairRow jobId={1} pair={pairWith("무")} onPatch={vi.fn()} />,
+    );
+
+    expect(screen.getByRole("img")).toBeInTheDocument();
   });
 });

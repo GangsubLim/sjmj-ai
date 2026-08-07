@@ -76,6 +76,12 @@ ALLOWED_EXCLUSION_REASON = (None, BLANK_CROP)
 # crop_ref는 경로 조립과 마크다운 셀로 동시에 나간다 — 두 문을 이 한 줄로 닫는다(M6).
 CROP_REF_RE = re.compile(r"job-\d+/row-\d+")
 
+# 재처리가 만드는 비-크롭 좌표(handwriting/relink.py의 tmp_ref·orphan_ref). 이 쌍들은
+# 가리키는 PNG가 없어 잉크율 판정 자체가 성립하지 않으므로 리포트 모수에서 뺀다.
+# PAIRS_SQL이 training_pairs 전수를 읽는 이상 여기서 걸러야 한다 — 형식 위반으로
+# raise하면 미결 쌍 1건에 도구 전체가 fetch에서 죽는다.
+NON_CROP_REF_RE = re.compile(r"job-\d+/(?:tmp|orphan)-\d+")
+
 # 조립된 스크립트는 통째로 `mysql ... -e <one arg>`에 실려 ssh argv로 나간다. macOS
 # ARG_MAX는 1MiB이고 거기엔 환경변수와 나머지 argv도 함께 들어가므로 1/4을 상한으로 둔다
 # (쌍당 약 210B → 대략 1,200쌍). 청크 분할은 트랜잭션 원자성을 깨므로 하지 않는다(M5).
@@ -104,6 +110,9 @@ def _crop_ref(value: str) -> str:
 def parse_pairs_tsv(text: str) -> list[dict]:
     """mysql --batch TSV(training_pairs + 잡 검수 표식)를 dict 리스트로 파싱한다.
 
+    재처리 미결·임시 좌표(`orphan-`·`tmp-`)를 가진 쌍은 건너뛴다 — 크롭 파일이 없어
+    이 도구가 판정할 대상이 아니다. 그 밖의 형식 위반은 그대로 거부한다.
+
     Raises:
         ValueError: id 축이 정수가 아니거나 crop_ref가 `job-<n>/row-<m>` 형태가 아닐 때.
     """
@@ -114,6 +123,8 @@ def parse_pairs_tsv(text: str) -> list[dict]:
         if not ln.strip():
             continue
         d = dict(zip(header, ln.split("\t"), strict=True))
+        if NON_CROP_REF_RE.fullmatch(d["crop_ref"]):
+            continue
         out.append(
             {
                 "id": int(d["id"]),

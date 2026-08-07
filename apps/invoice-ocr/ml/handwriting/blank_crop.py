@@ -54,7 +54,10 @@ def is_machine_writable(status: str, reason: str | None) -> bool:
       (excluded, blank_crop) 기계가 배제        → 가능
       (included, blank_crop) 사람이 되돌림      → 불가(영구 보호 · 오탐 관측치)
       (included, None)       정상 후보          → 가능
-    미지의 status·reason 조합은 fail-closed로 거부한다.
+    미지의 status·reason 조합은 fail-closed로 거부한다 — 재처리 미결 쌍
+    (excluded, relink_failed)도 여기 걸리지만 실제로는 도달하지 않는다. 미결 쌍은 좌표가
+    `orphan-`이라 가리키는 크롭이 없고, blank_crop_report.parse_pairs_tsv가 그 네임스페이스를
+    모수에서 걸러낸다. `protected` 카운트의 뜻("사람 판정이라 안 건드림")은 그대로다.
     """
     if reason is None:
         return status == STATUS_INCLUDED

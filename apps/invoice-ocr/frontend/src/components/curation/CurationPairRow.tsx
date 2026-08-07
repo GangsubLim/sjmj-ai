@@ -17,6 +17,10 @@ const handleImageError = fallbackToPlaceholder(PLACEHOLDER);
 
 // 배지 표시 여부의 축은 "사유 != null"(= 기계 소유)이고, 문구만 사유별로 갈린다.
 // ADR 0006이 사유 추가를 예고하므로 미지의 사유는 조용히 사라지지 않고 일반 문구로 뜬다.
+//
+// relink_failed는 **여기 없다.** 승계 실패의 영속 표식은 crop_available === false이고
+// (curation_service._has_row_crop과 같은 축), 사유 컬럼은 사람이 배제를 한 번 토글하면
+// 백엔드가 NULL로 지운다(ADR 0006 §6) — 사유에 걸면 문구가 영구 소실된다.
 const EXCLUSION_REASON_LABELS: Record<string, string | undefined> = {
   blank_crop: "빈 크롭 자동 배제",
 };
@@ -65,16 +69,33 @@ export function CurationPairRow({
       )}
       data-testid={`pair-${pair.id}`}
     >
-      <img
-        src={ocrCropUrl(jobId, pair.row_index)}
-        alt={`행 ${pair.row_index} crop`}
-        loading="lazy"
-        className="h-10 w-37 shrink-0 rounded border object-contain"
-        onError={handleImageError}
-      />
+      {pair.crop_available ? (
+        <img
+          src={ocrCropUrl(jobId, pair.row_index)}
+          alt={`행 ${pair.row_index} crop`}
+          loading="lazy"
+          className="h-10 w-37 shrink-0 rounded border object-contain"
+          onError={handleImageError}
+        />
+      ) : (
+        // 승계에 실패한 미결 쌍 — row_index는 이제 다른 줄을 가리키므로 URL 자체를 만들지
+        // 않는다. 만들면 막으려던 오염을 화면에서 재현한다(spec §6-1).
+        <div className="text-muted-foreground flex h-10 w-37 shrink-0 items-center justify-center rounded border border-dashed text-xs">
+          그림 없음
+        </div>
+      )}
       <div className="flex-1">
         <div className="text-muted-foreground mb-1 flex flex-wrap items-center gap-1 text-xs">
-          <span>#{pair.row_index}</span>
+          {/* 미결 쌍의 row_index는 이제 다른 줄을 가리킨다 — 번호를 그대로 보이면
+              검수자가 그 번호로 엉뚱한 줄의 그림과 대조하게 된다(crop URL만 막아서는
+              부족하다). 사유가 아니라 이 축이 승계 실패의 영속 표식이다. */}
+          {pair.crop_available ? (
+            <span>#{pair.row_index}</span>
+          ) : (
+            <span className="rounded bg-slate-200 px-1.5 py-0.5 text-slate-700">
+              <span aria-hidden="true">◻</span> 재처리 승계 실패 — 행 미확인
+            </span>
+          )}
           {pair.uncertain && (
             <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-700">
               <span aria-hidden="true">⚠</span> 미확신
