@@ -125,6 +125,10 @@ def main():
         return infer_job(image_path, models, crop_dir, job_id)
 
     while True:
+        # TODO(Task 5): 0은 임시 — main()이 소유하는 qwen 잡 카운터로 교체할 것. 이 상태로
+        # 방치되면 매 잡이 '첫 Qwen 잡'으로 판정되어, degenerate가 날 때마다 신규 잡이
+        # requeue_pending 대신 mark_failed로 은퇴한다(재시도 갈래가 죽은 코드가 되는 조용한
+        # 데이터 손실, 이슈 #99).
         outcome = process_one_job(queue, infer_fn, crops_root, 0)
         if not outcome.worked:
             time.sleep(POLL_INTERVAL_SEC)
