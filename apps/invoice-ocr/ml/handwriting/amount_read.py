@@ -4,8 +4,10 @@ infer_photo는 모듈 레벨 cv2/torch import라 paddle-free 코어 venv에서 i
 파싱·재시도 판단만 경량 모듈로 분리해 가짜 판독기로 단위테스트한다
 (infer_job.assemble_result_json과 동일한 경량 순수 모듈 패턴).
 
-이 모듈은 두 경로(`amount_read` / `handwriting.amount_read`)로 각각 로드돼 모듈 객체가
-둘이 될 수 있다 — 모듈 전역 가변 상태를 두지 말 것(현재는 순수함수 + 상수뿐).
+이 모듈은 반드시 `handwriting.amount_read` 패키지 경로로만 로드한다 — flat `import amount_read`는
+모듈 객체(따라서 `DegenerateOutputError` 클래스)를 이중화해 worker의 `except`를 빗나가게 한다
+(이슈 #99). `tests/test_infer_photo_wiring.py`의 정적 가드가 이를 강제한다. 모듈 전역 가변
+상태를 두지 말 것(현재는 순수함수 + 상수뿐) — 이 지침은 여전히 유효하다.
 """
 
 import re

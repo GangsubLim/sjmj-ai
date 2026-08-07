@@ -250,10 +250,11 @@ def test_main_does_not_swallow_the_degenerate_worker_state(monkeypatch, tmp_path
 
     `DegenerateWorkerState`는 `SystemExit`(= `BaseException`) 서브클래스라, 미래에 루프에
     `except Exception:`이 추가돼도 그 시나리오는 파이썬 예외 계층이 이미 구조적으로 막는다 —
-    이 테스트가 그것까지 검증하는 것은 아니다. 이 테스트가 실제로 고정하는 것은 더 넓은(그리고
-    ruff `except:`/`except BaseException:` 린트가 이미 잡는) 위험 — bare `except:` 또는
-    `except BaseException:`이 루프에 추가돼 이 예외까지 삼키는 회귀 — 와, 예외가 `main()` 밖으로
-    실제로 전파된다는 행위 자체다.
+    이 테스트가 그것까지 검증하는 것은 아니다. 이 테스트가 실제로 고정하는 것은 더 넓은 위험
+    (bare `except:`는 ruff `E722`가 잡지만 `except BaseException:`은 이 프로젝트 select에
+    `BLE`가 없어 미검출이다 — 이 테스트가 그 회귀를 잡는 유일한 방어선이다) — bare `except:`
+    또는 `except BaseException:`이 루프에 추가돼 이 예외까지 삼키는 회귀 — 와, 예외가
+    `main()` 밖으로 실제로 전파된다는 행위 자체다.
     """
     _run_main_with(monkeypatch, tmp_path, [])
 

@@ -19,8 +19,10 @@ class PollOutcome(NamedTuple):
     """한 번의 폴링 결과 — bool 반환을 명시 결과 타입으로 승격한 것.
 
     worked: 잡을 하나 처리했으면 True, 큐가 비었으면 False(호출자의 sleep 판단 입력).
-    qwen_called: 이 잡이 금액 판독기(Qwen)를 실제로 불렀는가. main()의 크래시루프 카운터 입력이며
-        게이트 강등(rows=[])·quad_missing은 False다.
+    qwen_called: `result_json`에 행이 남아 있는가 — Qwen을 실제로 불렀는가의 프록시다.
+        main()의 크래시루프 카운터 입력이며 게이트 강등(rows=[])·quad_missing은 False다.
+        검출된 행이 전부 cont/total로 분류돼 신규 행이 0건인 드문 경우 Qwen을 불렀어도
+        False가 된다 — 과소 계수는 은퇴 쪽으로 기울어 크래시루프 안전성은 유지된다.
     """
 
     worked: bool
@@ -111,7 +113,8 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             shutil.rmtree(old_dir, ignore_errors=True)
             tmp_dir.rename(old_dir)
         result = infer_fn(job["image_path"], tmp_dir, job_id)
-        plan = plan_relink(job_id, queue.fetch_pairs(job_id), _new_rows(result))
+        new_rows = _new_rows(result)
+        plan = plan_relink(job_id, queue.fetch_pairs(job_id), new_rows)
         queue.commit_job(job_id, result, plan)
     except DegenerateOutputError as exc:
         # **잡 격리 except Exception보다 반드시 앞에 온다.** 스팸 결과가 commit_job에 닿는
@@ -144,7 +147,8 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             queue.mark_failed(job_id, {"error": str(exc)})
         return PollOutcome(worked=True, qwen_called=False)
     # 게이트 강등·quad_missing은 rows=[]로 돌아온다 — Qwen 미호출이므로 계수하지 않는다.
-    qwen_called = len(result.get("rows") or []) >= 1
+    # try 안에서 이미 뽑은 new_rows를 재사용한다 — "rows가 있다"의 정의를 파일 안에서 하나로 통일.
+    qwen_called = bool(new_rows)
     try:
         _swap_crop_dir(tmp_dir, final_dir)
     except OSError as exc:
