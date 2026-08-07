@@ -16,6 +16,35 @@ from collections.abc import Callable
 # 진단용 추정이다(하류는 amount_raw를 표시·전달만 하고 재파싱하지 않는다).
 ATTEMPT_SEP = "→"
 
+# degenerate 감지 임계 — 연속 '!'가 이 길이 이상이면 판독기 붕괴로 본다(이슈 #99).
+# '!' 한정이 핵심이다. 실측 스팸은 '!'×32(max_tokens)이고, 대시 채움('——————')·빈 원문 같은
+# 정상 미판독은 반복 문자여도 걸리면 안 되므로 '반복 문자 일반'으로 일반화하지 않는다.
+DEGENERATE_BANG_RUN = 10
+# 예외 메시지에 담을 raw 표본 길이 — 워커가 이 메시지를 stderr 로그에 그대로 싣는다.
+DEGENERATE_RAW_SAMPLE = 40
+_DEGENERATE_RE = re.compile(f"!{{{DEGENERATE_BANG_RUN},}}")
+
+
+class DegenerateOutputError(RuntimeError):
+    """판독기 출력이 degenerate(연속 '!' 스팸)라는 신호.
+
+    추론(handwriting)과 대응(worker) 양쪽이 import하므로 worker가 아니라 이 경량 모듈에 둔다
+    (worker→handwriting 단방향 의존 유지).
+    """
+
+
+def is_degenerate_raw(raw: str) -> bool:
+    """raw에 연속 '!' DEGENERATE_BANG_RUN자 이상 run이 있으면 True.
+
+    Args:
+        raw: 판독기 원문(strip 여부 무관).
+
+    Returns:
+        붕괴 출력이면 True. 미판독(빈 원문·대시 채움)은 False — 미판독과 degenerate는
+        다른 사건이며 전자는 기존대로 재시도 후 (None, raw)로 남는다.
+    """
+    return _DEGENERATE_RE.search(raw) is not None
+
 
 def parse_amount(txt: str) -> tuple[int | None, str]:
     """VLM 원문에서 숫자를 연결해 (정수|None, strip된 원문)을 반환한다.
@@ -48,10 +77,22 @@ def read_amount_with_retry(
         보고 재시도하지 않는다(AMT_PROMPT가 빈칸에 "0"을 지시하므로 0은 흔한 정상값).
         최종 실패 시 정수 자리는 None — 0으로 기록하지 않는다(미판독≠빈칸).
         raw는 시도별 strip 원문을 ATTEMPT_SEP으로 join한 값.
+
+    Raises:
+        DegenerateOutputError: 어느 시도든 raw가 '!' 스팸이면 재시도 없이 즉시. 데모 CLI
+            (infer_photo.process_one)도 같은 read 경로라 이 예외로 죽는다 — 개발 도구에서
+            조용한 null보다 가시적 실패가 낫다(의도된 부수효과).
     """
     raws: list[str] = []
     for attempt in range(attempts):
         value, raw = parse_amount(read_once(attempt))
+        if is_degenerate_raw(raw):
+            # 병합(group.merge_amounts의 '?' 치환) 이전이라 다행 블록 우회가 없다. sticky
+            # 붕괴라 재시도는 낭비 호출일 뿐이므로 여기서 멈춘다(spec §1).
+            raise DegenerateOutputError(
+                f"판독기 출력이 degenerate — 연속 '!' {DEGENERATE_BANG_RUN}자 이상, "
+                f"raw 표본: {raw[:DEGENERATE_RAW_SAMPLE]!r}"
+            )
         raws.append(raw)  # 빈 원문도 버리지 않는다 — 시도 횟수가 raw에서 복원돼야 한다
         if value is not None:
             return value, ATTEMPT_SEP.join(raws)

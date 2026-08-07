@@ -1,10 +1,15 @@
 import pytest
 
 from handwriting.amount_read import (
+    DEGENERATE_BANG_RUN,
+    DegenerateOutputError,
     attempt_png_name,
+    is_degenerate_raw,
     parse_amount,
     read_amount_with_retry,
 )
+
+SPAM = "!" * 32  # 실측 붕괴 출력 — max_tokens=32가 전부 '!'
 
 
 def test_parse_amount_pure_digits():
@@ -119,3 +124,80 @@ def test_attempt_png_name_differs_per_attempt_and_idx():
     names = {attempt_png_name(i, a) for i in range(3) for a in range(2)}
     assert len(names) == 6  # idx×attempt 조합이 전부 서로 다름
     assert attempt_png_name(3, 0).endswith(".png")
+
+
+# ---------------------------------------------------------------------------
+# degenerate 감지 (이슈 #99) — '!' 스팸 한정, 미판독과는 다른 사건이다
+# ---------------------------------------------------------------------------
+
+
+def test_bang_spam_is_degenerate():
+    # 실측 붕괴 출력: mlx-vlm generate가 max_tokens까지 '!'만 낸다
+    assert is_degenerate_raw(SPAM) is True
+
+
+def test_bang_run_at_the_threshold_is_degenerate():
+    # 경계값을 못 박는다 — 임계 이상이면 True
+    assert is_degenerate_raw("!" * DEGENERATE_BANG_RUN) is True
+
+
+def test_bang_run_below_the_threshold_is_not_degenerate():
+    # 기존 테스트가 쓰는 "!!!"(3자) 같은 짧은 느낌표는 degenerate가 아니다 — 무회귀 근거
+    assert is_degenerate_raw("!" * (DEGENERATE_BANG_RUN - 1)) is False
+    assert is_degenerate_raw("!!!") is False
+
+
+def test_normal_digits_are_not_degenerate():
+    assert is_degenerate_raw("1500") is False
+    assert is_degenerate_raw("0") is False
+
+
+@pytest.mark.parametrize("raw", ["—" * 32, "-" * 32, "", "   "])
+def test_dash_fill_and_blank_output_are_not_degenerate(raw):
+    # '반복 문자 일반'으로 일반화하면 대시 채움·빈칸 같은 정상 미판독이 전부 붕괴로 오판된다.
+    # 감지는 '!' 한정이어야 한다(spec §1).
+    assert is_degenerate_raw(raw) is False
+
+
+def test_digits_mixed_with_spam_are_degenerate():
+    # 스팸 앞뒤에 숫자가 섞여도 붕괴다 — 값이 파싱된다고 정상으로 접으면 안 된다
+    assert is_degenerate_raw("1500" + SPAM) is True
+    assert is_degenerate_raw(SPAM + "1500") is True
+
+
+def test_spam_raises_immediately_without_retrying():
+    # sticky 붕괴라 재시도는 죽은 프로세스에 던지는 낭비 호출일 뿐이다(spec §1).
+    read_once, calls = _fake_reader([SPAM, "1500"])
+
+    with pytest.raises(DegenerateOutputError):
+        read_amount_with_retry(read_once)
+
+    assert calls == [0], "스팸을 보면 그 자리에서 멈춘다"
+
+
+def test_spam_on_the_second_attempt_also_raises():
+    read_once, calls = _fake_reader(["—", SPAM])
+
+    with pytest.raises(DegenerateOutputError):
+        read_amount_with_retry(read_once)
+
+    assert calls == [0, 1]
+
+
+def test_degenerate_error_carries_a_raw_sample():
+    # 워커 로그가 이 메시지를 그대로 찍는다 — 표본이 없으면 사후 판별이 불가능하다
+    read_once, _ = _fake_reader(["!" * 200])
+
+    with pytest.raises(DegenerateOutputError) as exc:
+        read_amount_with_retry(read_once)
+
+    assert "!" in str(exc.value)
+    assert len(str(exc.value)) < 200, "raw 표본은 DEGENERATE_RAW_SAMPLE 근처로 잘린다"
+
+
+def test_non_spam_unreadable_output_still_retries_and_returns_none():
+    # 계약 불변식: 미판독과 degenerate는 다른 사건이다. 대시·빈칸은 지금처럼 재시도 후 (None, raw).
+    read_once, calls = _fake_reader(["—", "—"])
+
+    assert read_amount_with_retry(read_once) == (None, "—→—")
+    assert calls == [0, 1]
