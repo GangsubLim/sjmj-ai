@@ -90,3 +90,26 @@ def test_item_crops_iterate_block_amounts_news():
     }
 
     assert iters == {"news"}
+
+
+def test_amount_read_is_imported_through_the_package_path():
+    """flat `import amount_read`는 예외 클래스를 이중화해 worker의 except를 빗나가게 한다.
+
+    infer_photo는 sys.path에 자기 디렉터리를 넣으므로 flat import가 `amount_read`라는 별개
+    모듈 객체를 만든다 — 그 안의 DegenerateOutputError는 worker/poll.py가 잡는
+    handwriting.amount_read.DegenerateOutputError와 다른 클래스다. 단위테스트는 양쪽 다
+    패키지 경로를 써서 통과하므로, 이 정적 가드만이 운영 전용 실패를 막는다.
+    """
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in {"read_amount_with_retry", "attempt_png_name"}
+    }
+
+    assert not [
+        n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "amount_read"
+    ], "flat import는 예외 클래스를 이중화한다"
+    assert modules == {"handwriting.amount_read"}
