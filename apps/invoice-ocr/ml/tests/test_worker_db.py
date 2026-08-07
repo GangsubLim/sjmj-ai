@@ -491,11 +491,17 @@ def _fetch_engine(pairs, result_json):
 
 
 def test_fetch_pairs_returns_anchor_inputs_in_row_order():
-    """승계 입력은 (pair_id, row_index, supply) 셋뿐 — 라벨은 승계가 건드리지 않는다."""
+    """승계 입력은 (pair_id, row_index, supply) 셋뿐 — 라벨은 승계가 건드리지 않는다.
+
+    crop_ref도 함께 읽지만 앵커가 아니라 row_index 신선도 판별에만 쓴다(fetch_pairs 참조).
+    """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
     conn.execute.return_value.fetchone.return_value = None
-    conn.execute.return_value.fetchall.return_value = [(1, 0, 3000), (2, 1, None)]
+    conn.execute.return_value.fetchall.return_value = [
+        (1, 0, 3000, "job-9/row-0"),
+        (2, 1, None, "job-9/row-1"),
+    ]
 
     pairs = WorkerQueue(engine).fetch_pairs(9)
 
@@ -541,6 +547,43 @@ def test_fetch_pairs_joins_the_old_draft_supply_by_row_index():
         (1, 5000, 5100),
         (2, 7000, None),  # 옛 초안에 없는 행(지난 재처리의 미결 쌍)은 draft가 없다
     ]
+
+
+def test_fetch_pairs_drops_the_draft_of_a_pair_whose_row_index_is_stale():
+    """미결 쌍의 낡은 row_index가 새 초안의 행 범위 안이면 **다른 행의 값**이 잡힌다.
+
+    미결 전환(commit_job ①)은 crop_ref만 orphan-으로 옮기고 row_index는 그대로 둔다.
+    그 사이 result_json은 매 재처리마다 갱신되므로, 2회차부터 낡은 인덱스가 가리키는 것은
+    그 쌍의 행이 아니다. 이 가짜 앵커가 ②단계 빈칸 안에서 우연히 맞으면 확정 라벨이 전혀
+    다른 줄의 그림에 붙는다 — row- 좌표를 유지한 쌍만 row_index를 믿을 수 있다.
+    """
+    engine = _fetch_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 5000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/orphan-2",  # 지난 재처리의 미결 — row_index 0은 이미 남의 것
+                "ri": 0,
+                "sup": 7000,
+                "st": "excluded",
+                "reason": RELINK_FAILED,
+                "rev": None,
+            },
+        ],
+        {"rows": [{"row_index": 0, "supply": 5100}]},
+    )
+
+    pairs = WorkerQueue(engine).fetch_pairs(5)
+
+    assert [(p.pair_id, p.draft_supply) for p in pairs] == [(1, 5100), (2, None)]
 
 
 def test_fetch_pairs_tolerates_an_unusable_old_draft():

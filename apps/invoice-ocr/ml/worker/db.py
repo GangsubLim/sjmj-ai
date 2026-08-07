@@ -5,7 +5,7 @@ import os
 
 from sqlalchemy import create_engine, text
 
-from handwriting.relink import RELINK_FAILED, OldPair, RelinkPlan
+from handwriting.relink import RELINK_FAILED, OldPair, RelinkPlan, row_ref
 
 
 def build_engine():
@@ -89,6 +89,15 @@ class WorkerQueue:
         전자는 엔진이 금액을 새로 맞힌 경우를 잡는다(handwriting/relink.plan_relink 참조).
         이 조회가 commit_job보다 먼저 일어나는 것이 draft를 읽을 수 있는 유일한 창이다.
 
+        **draft 조인은 row- 좌표를 유지한 쌍에만 건다.** commit_job의 미결 전환은 crop_ref만
+        orphan-으로 옮기고 row_index는 그대로 두는데(정렬 축이라 지우면 LCS의 물리 순서가
+        무너진다), result_json은 매 재처리마다 갱신되므로 2회차부터 그 낡은 인덱스가 가리키는
+        것은 **다른 행**이다. 그 가짜 앵커가 ②단계 빈칸 안에서 우연히 맞으면 확정 라벨이 전혀
+        다른 줄의 그림에 붙는다. crop_ref == job-N/row-{row_index}가 곧 "이 row_index는 직전
+        커밋이 쓴 값"의 표식이라(생성은 ocr_correction이 crop_ref에서 row_index를 뽑고, 승계는
+        commit_job ②가 둘을 한 문장에서 함께 쓴다) 판별을 여기 걸면 낡은 쌍은 draft가 None이
+        되어 회수에서 자연히 빠진다.
+
         신규 잡은 여기서 빈 리스트가 나와 승계가 자연히 no-op이 된다(spec §1).
         """
         with self.engine.begin() as conn:
@@ -97,14 +106,19 @@ class WorkerQueue:
             ).fetchone()
             rows = conn.execute(
                 text(
-                    "SELECT id, row_index, supply FROM training_pairs "
+                    "SELECT id, row_index, supply, crop_ref FROM training_pairs "
                     "WHERE job_id=:id ORDER BY row_index, id"
                 ),
                 {"id": job_id},
             ).fetchall()
         drafts = _draft_supplies(draft[0] if draft else None)
         return [
-            OldPair(pair_id=r[0], row_index=r[1], supply=r[2], draft_supply=drafts.get(r[1]))
+            OldPair(
+                pair_id=r[0],
+                row_index=r[1],
+                supply=r[2],
+                draft_supply=drafts.get(r[1]) if r[3] == row_ref(job_id, r[1]) else None,
+            )
             for r in rows
         ]
 
@@ -151,6 +165,10 @@ class WorkerQueue:
             for item in plan.orphaned:
                 # reviewed_at을 되돌리는 것은 미결 쌍뿐이다 — 그 잡의 unreviewed_count가
                 # 정확히 미결 수가 되어 사람이 볼 것만 큐에 뜬다(§7).
+                #
+                # row_index는 일부러 그대로 둔다(정렬 축이라 비우면 LCS의 물리 순서가
+                # 무너진다). 그 대신 낡아진다 — 다음 회차의 draft 앵커가 이 낡은 값을
+                # 쓰지 않도록 fetch_pairs가 crop_ref로 걸러낸다(그 docstring 참조).
                 #
                 # **두 문으로 가르는 이유.** 사람이 배제하면 사유가 NULL로 남는 것이 "사람
                 # 소유" 표식이다(ADR 0006 §6). 여기서 무조건 relink_failed로 덮으면 그
