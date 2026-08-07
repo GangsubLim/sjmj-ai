@@ -21,8 +21,8 @@ class PollOutcome(NamedTuple):
     worked: 잡을 하나 처리했으면 True, 큐가 비었으면 False(호출자의 sleep 판단 입력).
     qwen_called: `result_json`에 행이 남아 있는가 — Qwen을 실제로 불렀는가의 프록시다.
         main()의 크래시루프 카운터 입력이며 게이트 강등(rows=[])·quad_missing은 False다.
-        검출된 행이 전부 cont/total로 분류돼 신규 행이 0건인 드문 경우 Qwen을 불렀어도
-        False가 된다 — 과소 계수는 은퇴 쪽으로 기울어 크래시루프 안전성은 유지된다.
+        신규 행이 0건이면 group.block_amounts가 애초에 Qwen(read_fn)을 호출하지 않으므로
+        qwen_called=False는 '미호출'과 정확히 일치한다.
     """
 
     worked: bool

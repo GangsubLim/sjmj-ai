@@ -321,6 +321,7 @@ def test_degenerate_after_the_first_qwen_job_requeues_a_new_job_and_exits(tmp_pa
 
     assert exc.value.code == 1
     q.requeue_pending.assert_called_once_with(3)
+    q.rollback_to_done.assert_not_called()
     q.mark_failed.assert_not_called()
     q.commit_job.assert_not_called()
 
@@ -379,6 +380,7 @@ def test_the_first_degenerate_job_after_boot_retires_the_job_and_exits(tmp_path)
 
     q.mark_failed.assert_called_once()
     assert q.mark_failed.call_args[0][0] == 3
+    assert SPAM in q.mark_failed.call_args[0][1]["error"]
     q.requeue_pending.assert_not_called()
 
 

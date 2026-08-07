@@ -2,6 +2,7 @@ import pytest
 
 from handwriting.amount_read import (
     DEGENERATE_BANG_RUN,
+    DEGENERATE_RAW_SAMPLE,
     DegenerateOutputError,
     attempt_png_name,
     is_degenerate_raw,
@@ -191,8 +192,8 @@ def test_degenerate_error_carries_a_raw_sample():
     with pytest.raises(DegenerateOutputError) as exc:
         read_amount_with_retry(read_once)
 
-    assert "!" in str(exc.value)
-    assert len(str(exc.value)) < 200, "raw 표본은 DEGENERATE_RAW_SAMPLE 근처로 잘린다"
+    sample = ("!" * 200)[:DEGENERATE_RAW_SAMPLE]
+    assert repr(sample) in str(exc.value)
 
 
 def test_non_spam_unreadable_output_still_retries_and_returns_none():
