@@ -5,6 +5,22 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.10.0] — 2026-08-07
+
+이미 검수를 끝낸 잡도 지금의 인식 엔진으로 다시 돌릴 수 있다 — 사람이 확정한 라벨은 그대로 이어받으므로, 엔진이 좋아진 만큼이 과거 데이터에도 반영된다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96)).
+
+### Added
+
+- 확정된 OCR 잡을 현재 엔진으로 다시 인식하고, 사람이 확정한 금액 라벨을 새로 잘린 그림에 이어붙인다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96))
+- 잘린 위치가 그대로인 잡도 강제로 다시 학습 뱅크에 넣어, 뱅크만 갱신된 개선분을 받을 수 있다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96))
+- 재처리로 짝을 잃은 쌍이 생긴 잡만 검수 상태를 풀어 재확인을 요구한다 — 짝이 온전한 잡은 검수 완료로 남는다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96))
+- 재처리 전에 열어둔 검수 화면이 옛 그림을 근거로 새 쌍을 덮어쓰지 못하도록 막는다 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96))
+- 재처리 운영 절차와 파일럿 배치 권고를 담은 런북 추가 ([#96](https://github.com/GangsubLim/sjmj-ai/pull/96))
+
+### Fixed
+
+- 한국어를 쓰는 ml 도구가 비UTF-8 로케일에서 죽거나 깨진 글자로 굳은 캐시를 남기던 문제 ([#82](https://github.com/GangsubLim/sjmj-ai/pull/82))
+
 ## [v0.9.0] — 2026-08-05
 
 검수를 끝낸 잡이라도 학습쌍을 다시 건드리면 확인을 한 번 더 받는다. 인식 정확도 리포트는 "모델이 사람을 얼마나 도왔는지"를 처음으로 수치로 보여준다 ([#79](https://github.com/GangsubLim/sjmj-ai/pull/79), [#77](https://github.com/GangsubLim/sjmj-ai/pull/77), [#75](https://github.com/GangsubLim/sjmj-ai/pull/75)).
