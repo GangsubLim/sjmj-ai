@@ -5,7 +5,7 @@ import os
 
 from sqlalchemy import create_engine, text
 
-from handwriting.relink import RELINK_FAILED, OldPair, RelinkPlan, row_ref
+from handwriting.relink import RELINK_FAILED, OldPair, RelinkPlan
 
 
 def build_engine():
@@ -17,27 +17,6 @@ def build_engine():
     pw = os.environ.get("DB_PASS", "")
     url = f"mysql+pymysql://{user}:{pw}@{host}:{port}/{name}?charset=utf8mb4"
     return create_engine(url, pool_pre_ping=True, future=True)
-
-
-def _draft_supplies(result_json) -> dict[int, int | None]:
-    """옛 초안에서 {row_index: 모델이 읽은 supply}를 뽑는다(못 읽으면 빈 dict).
-
-    result_json은 워커가 쓴 외부 데이터다 — 형식이 깨져 있어도 승계 자체는 계속돼야 하므로
-    (draft 앵커만 비워지고 확정 앵커는 그대로 산다) 파싱 실패를 예외로 올리지 않는다.
-    """
-    if isinstance(result_json, str | bytes):
-        try:
-            result_json = json.loads(result_json)
-        except (ValueError, TypeError):
-            return {}
-    rows = (result_json or {}).get("rows") if isinstance(result_json, dict) else None
-    if not isinstance(rows, list):
-        return {}
-    return {
-        r["row_index"]: r.get("supply")
-        for r in rows
-        if isinstance(r, dict) and isinstance(r.get("row_index"), int)
-    }
 
 
 class WorkerQueue:
@@ -83,44 +62,42 @@ class WorkerQueue:
     def fetch_pairs(self, job_id: int) -> list[OldPair]:
         """그 잡의 확정 학습쌍에서 행 앵커 입력만 뽑는다(승계는 라벨을 건드리지 않는다).
 
-        앵커를 둘 싣는다. `supply`는 사람이 확정한 값(ocr_correction이 final_supply로
-        적재)이고, `draft_supply`는 **아직 덮이지 않은 옛 result_json**에서 같은 row_index를
-        찾아 온 그때의 모델 인식값이다. 새 쪽은 언제나 모델값이라 축이 맞는 것은 후자이고,
-        전자는 엔진이 금액을 새로 맞힌 경우를 잡는다(handwriting/relink.plan_relink 참조).
-        이 조회가 commit_job보다 먼저 일어나는 것이 draft를 읽을 수 있는 유일한 창이다.
+        앵커를 둘 싣는다. `supply`는 사람이 확정한 값이고(ocr_correction이 final_supply로
+        적재), `draft_supply`는 **확정 시점에 그 행을 모델이 읽은 값**이다(같은 확정
+        트랜잭션이 컬럼에 함께 적재한다 — backend ocr_correction.build_training_pairs).
+        새 쪽은 언제나 모델값이라 축이 맞는 것은 후자이고, 전자는 엔진이 금액을 새로 맞힌
+        경우를 잡는다(handwriting/relink.plan_relink 참조).
 
-        **draft 조인은 row- 좌표를 유지한 쌍에만 건다.** commit_job의 미결 전환은 crop_ref만
-        orphan-으로 옮기고 row_index는 그대로 두는데(정렬 축이라 지우면 LCS의 물리 순서가
-        무너진다), result_json은 매 재처리마다 갱신되므로 2회차부터 그 낡은 인덱스가 가리키는
-        것은 **다른 행**이다. 그 가짜 앵커가 ②단계 빈칸 안에서 우연히 맞으면 확정 라벨이 전혀
-        다른 줄의 그림에 붙는다. crop_ref == job-N/row-{row_index}가 곧 "이 row_index는 직전
-        커밋이 쓴 값"의 표식이라(생성은 ocr_correction이 crop_ref에서 row_index를 뽑고, 승계는
-        commit_job ②가 둘을 한 문장에서 함께 쓴다) 판별을 여기 걸면 낡은 쌍은 draft가 None이
-        되어 회수에서 자연히 빠진다.
+        **두 앵커 모두 이 쌍의 컬럼에서 온다 — 좌표(row_index)로 옛 초안을 조인하지 않는다.**
+        조인하던 시절에는 미결 전환(commit_job ①)이 crop_ref만 orphan-으로 옮기고 row_index를
+        정렬 축으로 남겨 두는 사이 result_json이 매 재처리마다 갱신돼, 2회차부터 그 낡은
+        인덱스가 다른 행을 가리켰다. 그것을 막으려 미결 쌍의 draft를 통째로 버리자 한 번
+        미결이 된 쌍은 ①(사람 확정 금액 == 이번 인식)로만 회수 가능해졌고, 미결 쌍은 정의상
+        사람이 금액을 교정한 행이라 ①이 구조적으로 실패해 영구 봉인이 됐다(Issue #106).
+        컬럼은 확정 시점에 고정되고 재처리가 갱신하지 않으므로(draft_label과 같은 규칙)
+        오결합과 봉인이 함께 사라진다.
+
+        NULL은 사유를 구분하지 않는다 — "믿을 수 있는 ② 앵커가 없다" 하나뿐이고,
+        plan_relink의 _anchor_seq가 None을 서로 절대 같지 않은 유일값으로 치환해 회수에서
+        자연히 뺀다.
 
         신규 잡은 여기서 빈 리스트가 나와 승계가 자연히 no-op이 된다(spec §1).
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            row_index 오름차순 OldPair 목록. 확정 쌍이 없으면 빈 리스트.
         """
         with self.engine.begin() as conn:
-            draft = conn.execute(
-                text("SELECT result_json FROM ocr_jobs WHERE id=:id"), {"id": job_id}
-            ).fetchone()
             rows = conn.execute(
                 text(
-                    "SELECT id, row_index, supply, crop_ref FROM training_pairs "
+                    "SELECT id, row_index, supply, draft_supply FROM training_pairs "
                     "WHERE job_id=:id ORDER BY row_index, id"
                 ),
                 {"id": job_id},
             ).fetchall()
-        drafts = _draft_supplies(draft[0] if draft else None)
-        return [
-            OldPair(
-                pair_id=r[0],
-                row_index=r[1],
-                supply=r[2],
-                draft_supply=drafts.get(r[1]) if r[3] == row_ref(job_id, r[1]) else None,
-            )
-            for r in rows
-        ]
+        return [OldPair(pair_id=r[0], row_index=r[1], supply=r[2], draft_supply=r[3]) for r in rows]
 
     def commit_job(self, job_id: int, result_json: dict, plan: RelinkPlan) -> None:
         """초안 갱신과 라벨 승계를 한 트랜잭션으로 커밋한다(ADR 0010).
@@ -167,8 +144,8 @@ class WorkerQueue:
                 # 정확히 미결 수가 되어 사람이 볼 것만 큐에 뜬다(§7).
                 #
                 # row_index는 일부러 그대로 둔다(정렬 축이라 비우면 LCS의 물리 순서가
-                # 무너진다). 그 대신 낡아진다 — 다음 회차의 draft 앵커가 이 낡은 값을
-                # 쓰지 않도록 fetch_pairs가 crop_ref로 걸러낸다(그 docstring 참조).
+                # 무너진다). 낡은 값이 되지만 더 이상 앵커 출처가 아니다 — draft 앵커는
+                # training_pairs.draft_supply 컬럼에서 온다(fetch_pairs docstring · #106).
                 #
                 # **두 문으로 가르는 이유.** 사람이 배제하면 사유가 NULL로 남는 것이 "사람
                 # 소유" 표식이다(ADR 0006 §6). 여기서 무조건 relink_failed로 덮으면 그
