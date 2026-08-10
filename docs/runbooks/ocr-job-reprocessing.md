@@ -39,8 +39,25 @@
 
 ```bash
 ssh macmini
+export PATH=/opt/homebrew/bin:$PATH              # ssh 비대화형 셸에는 homebrew가 없다 — 아래 참조
 cd ~/sjmj-ai/apps/invoice-ocr/ml
 set -a; source ~/.sjmj-ai/ml-worker.env; set +a   # SJMJ_ML_MODELS_DIR·SJMJ_DATA_DIR·PYTHON_BIN·DB_*
+```
+
+**PATH 보정을 빠뜨리면 1단계 백업이 `mysqldump: command not found`로 실패하고, 이후 모든
+SQL 조회 단계도 `mysql`을 찾지 못한다.** `ssh macmini <명령>` 형태의 비대화형 셸은 로그인
+셸의 PATH를 상속하지 않아 `/opt/homebrew/bin`이 빠진다 — **되돌릴 수 없는 작업의 유일한
+안전망이 첫 명령에서 실패하는 경로이므로 세션을 열 때 가장 먼저 넣는다.**
+
+이 런북의 SQL은 모두 아래 관용구로 실행한다. 비밀번호는 `MYSQL_PWD`로 넘긴다 —
+`-p"$DB_PASS"`는 프로세스 목록에 노출되는 데다, 출력을 파일로 리다이렉트하면 프롬프트가
+보이지 않는 채 멈춘다(`scripts/backup-db.sh`도 같은 방식이다). 접속값과 대상 DB명은 env에서만
+읽는다(하드코딩 금지 — 런타임/백업 DB 발산 방지).
+
+```bash
+mysql_q() { MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" -e "$1"; }
+
+mysql_q "SELECT COUNT(*) FROM ocr_jobs;"        # 접속 확인
 ```
 
 **이 기능 배포 후 최초 1회만** 아래를 확인한다. 검수 화면의 크롭·top5 노출은 `crop_ref`가
@@ -53,12 +70,39 @@ set -a; source ~/.sjmj-ai/ml-worker.env; set +a   # SJMJ_ML_MODELS_DIR·SJMJ_DAT
 SELECT COUNT(*) FROM training_pairs WHERE crop_ref NOT REGEXP '^job-[0-9]+/row-[0-9]+$';
 ```
 
+### 창 B 재백필 (`draft_supply` 도입 배포 직후 1회 — Issue #106)
+
+`migration_012`가 CD에서 컬럼과 백필을 함께 적용하지만, **마이그레이션과 백엔드 재시작 사이
+수 분 동안 구 백엔드가 계속 확정을 받는다.** 그 사이 만들어진 쌍은 `draft_supply`가 NULL로
+남아 다음 재처리에서 ② 앵커를 잃는다. health check 통과(= 신버전 서빙) 확인 후 아래를 1회
+실행해 닫는다. 재처리 배치보다 **먼저** 한다.
+
+```bash
+mysql_q "SELECT COUNT(*) FROM training_pairs WHERE draft_supply IS NOT NULL;"   # 전
+MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" \
+  < ~/sjmj-ai/db/migration_012_training_pairs_draft_supply.sql
+mysql_q "SELECT COUNT(*) FROM training_pairs WHERE draft_supply IS NOT NULL;"   # 후
+```
+
+증가분은 창 B에서 확정된 쌍 중 정합·타입·범위 가드를 통과한 것의 상한 근사다 — "전" 측정
+시점과 재실행 사이에 신버전 백엔드가 확정한 쌍도 INSERT 시점에 이미 값이 있어 증가분에 섞인다.
+파일 전체를 다시 먹여도 안전하다 — 컬럼 추가는
+`information_schema` 가드로 `DO 0`이 되고, 백필은 `WHERE draft_supply IS NULL`이라 이미 채워진
+값(특히 신버전 백엔드가 직접 쓴 값)을 덮지 않는다. `scripts/migrate-db.sh`는 `schema_migrations`
+원장에 012가 있으면 파일을 아예 실행하지 않으므로 **러너로는 이 재실행이 되지 않는다.**
+
 ## 1. 배치 전 백업
 
 ```bash
 ~/sjmj-ai/scripts/backup-db.sh               # 0단계에서 cd한 ml/ 밑에 scripts/는 없다 — 레포 루트를 홈 기준으로 명시
 ls -l "$SJMJ_ML_MODELS_DIR"/bank*.npz*       # 현재 뱅크와 백업 존재 확인(백업은 bank.<stamp>.npz.bak)
 ```
+
+**마지막 줄에 `backup ok: <경로> (kept<=10)`이 찍혔는지 눈으로 확인하고 다음 단계로 간다.**
+이 출력이 없으면 백업이 없는 것이다 — 재처리는 되돌릴 수 없으므로(0단계) 원인을 해결하기
+전에는 2단계로 넘어가지 않는다. `mysqldump: command not found`면 0단계의 PATH 보정을
+빠뜨린 것이고, `missing env file`이면 `~/.sjmj-ai/backend.env`가 없는 것이다
+(`backup-db.sh`는 ml-worker.env가 아니라 backend.env를 읽는다).
 
 검수자가 화면을 열어두지 않은 시간대를 고른다. 낙관적 잠금이 오염은 막지만(spec §12),
 사람이 409를 만나면 편집이 버려진다.
