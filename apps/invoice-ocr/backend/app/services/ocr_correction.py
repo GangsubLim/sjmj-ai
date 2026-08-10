@@ -1,5 +1,30 @@
 """초안(result_json) vs 확정 payload diff → correction_json. 순수함수."""
 
+# signed INT 상한 — training_pairs.draft_supply 의 컬럼 타입과 함께 움직인다(db/migration_012).
+DRAFT_SUPPLY_MAX = 2_147_483_647
+
+
+def _anchorable_supply(value: object) -> int | None:
+    """저장 가능한 초안 금액만 통과시킨다. 범위 밖·비정수는 앵커 없음(None)으로 격리한다.
+
+    handwriting/amount_read.parse_amount 는 원문의 모든 숫자 run 을 길이 제한 없이 이어붙여
+    int 로 만들고 infer_job.assemble_result_json 이 거기에 1000 을 곱한다 — draft_supply 는
+    신뢰할 수 없는 OCR 출력이 처음으로 정수 컬럼에 들어가는 경로다(supply 는 사람이 확정한
+    값이다). 운영 sql_mode 에 STRICT_TRANS_TABLES 가 있어 범위 초과는 잘림이 아니라 에러(1264),
+    즉 확정 트랜잭션 전체 롤백이 되어 사용자가 거래명세서를 저장할 수 없게 된다.
+    BIGINT 로 넓혀도 30자리는 넘기므로 타입이 아니라 경계 가드가 해법이다(spec 결정 6).
+
+    Args:
+        value: correction_json lines[].draft_supply 원값(신뢰하지 않는다).
+
+    Returns:
+        0..DRAFT_SUPPLY_MAX 의 int, 그 밖이면 None. bool 은 int 의 하위형이지만 금액이 아니므로
+        제외한다.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        return None
+    return value if 0 <= value <= DRAFT_SUPPLY_MAX else None
+
 
 def build_correction(result_json: dict, final_items: list[dict]) -> dict:
     """crop_ref로 초안 행과 최종 item을 매칭해 라벨·공급가 변경을 기록한다.
@@ -56,6 +81,9 @@ def build_training_pairs(job_id: int, invoice_id: int, correction: dict) -> list
     crop_ref 있는 행(매칭된 초안 행)만 학습 후보다. canonical_label 초기값은
     final_label, status는 included.
 
+    draft_supply 는 확정 시점 스냅샷이라 재처리가 갱신하지 않는다(draft_label 과 같은 규칙) —
+    ml/worker/db.fetch_pairs 가 재처리 승계 ②단계의 앵커로 이 컬럼만 읽는다(Issue #106).
+
     Args:
         job_id: 확정된 OCR 잡 id.
         invoice_id: confirm으로 생성된 invoice id.
@@ -77,6 +105,7 @@ def build_training_pairs(job_id: int, invoice_id: int, correction: dict) -> list
                 "invoice_id": invoice_id,
                 "row_index": int(ref.rsplit("/row-", 1)[-1]),
                 "draft_label": line.get("draft_label"),
+                "draft_supply": _anchorable_supply(line.get("draft_supply")),
                 "final_label": final_label,
                 "canonical_label": final_label,
                 "supply": line.get("final_supply"),

@@ -1,6 +1,5 @@
 """WorkerQueue 단위 테스트 — MagicMock engine, 라이브 MySQL 불필요."""
 
-import json
 from unittest.mock import MagicMock
 
 from sqlalchemy import create_engine, text
@@ -23,14 +22,18 @@ _SCHEMA = (
     "curation_reviewed INTEGER DEFAULT 1)",
     # crop_ref UNIQUE는 운영 스키마 그대로다(migration_008) — 2-pass 순서 제약의 근거라
     # 여기서도 걸어야 순서를 뒤집었을 때 테스트가 실제로 깨진다.
+    # draft_supply는 migration_012가 만든 ② 앵커 컬럼 — fetch_pairs가 이 컬럼만 읽는다.
     "CREATE TABLE training_pairs (id INTEGER PRIMARY KEY, job_id INTEGER, "
-    "crop_ref TEXT UNIQUE, row_index INTEGER, supply INTEGER, status TEXT, "
-    "exclusion_reason TEXT, reviewed_at TEXT)",
+    "crop_ref TEXT UNIQUE, row_index INTEGER, supply INTEGER, draft_supply INTEGER, "
+    "status TEXT, exclusion_reason TEXT, reviewed_at TEXT)",
 )
 
 
 def _live_engine(pairs):
-    """ocr_jobs 1건 + 주어진 training_pairs로 채운 인메모리 엔진을 만든다."""
+    """ocr_jobs 1건 + 주어진 training_pairs로 채운 인메모리 엔진을 만든다.
+
+    pairs 항목의 "dsup"(draft_supply)는 선택이다 — 생략하면 NULL(앵커 없음)이다.
+    """
     engine = create_engine("sqlite://", future=True)
     with engine.begin() as conn:
         for ddl in _SCHEMA:
@@ -42,10 +45,10 @@ def _live_engine(pairs):
             conn.execute(
                 text(
                     "INSERT INTO training_pairs (id, job_id, crop_ref, row_index, supply, "
-                    "status, exclusion_reason, reviewed_at) VALUES (:id, 5, :ref, :ri, :sup, "
-                    ":st, :reason, :rev)"
+                    "draft_supply, status, exclusion_reason, reviewed_at) VALUES "
+                    "(:id, 5, :ref, :ri, :sup, :dsup, :st, :reason, :rev)"
                 ),
-                p,
+                {"dsup": None, **p},
             )
     return engine
 
@@ -341,6 +344,26 @@ def test_commit_job_does_not_touch_draft_label():
     assert all("draft_label" not in sql for sql, _ in _executed(conn))
 
 
+def test_commit_job_does_not_touch_draft_supply():
+    """확정 시점 앵커는 재처리가 갱신하지 않는다(spec 결정 3 — #99 재오염 경로 차단).
+
+    draft_supply는 build_training_pairs가 확정 트랜잭션에서 한 번만 적재한다(#106).
+    승계가 이 컬럼을 건드리게 되면 붕괴 런(#99)이 다음 재처리에서 앵커를 재오염시키는
+    경로가 되살아난다 — draft_label과 같은 규칙을 여기서도 고정한다.
+
+    계획은 승계와 미결을 **함께** 내야 한다 — commit_job의 네 문장 중 둘이 미결 갈래라,
+    승계만 있는 계획으로는 그 두 문장이 실행되지 않아 단언이 통째로 비껴간다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000), OldPair(2, 1, 5000)], [NewRow(0, 3000)])
+    assert plan.relinked and plan.orphaned, "네 문장 전부를 태우려면 승계·미결이 둘 다 필요하다"
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert all("draft_supply" not in sql for sql, _ in _executed(conn))
+
+
 # ---------------------------------------------------------------------------
 # mark_failed
 # ---------------------------------------------------------------------------
@@ -496,128 +519,195 @@ def test_claim_next_pending_returns_none_when_empty():
 # ---------------------------------------------------------------------------
 
 
-def _fetch_engine(pairs, result_json):
-    """fetch_pairs 경로용 실행형 엔진 — 옛 초안이 실제로 조인되는지 본다."""
-    engine = _live_engine(pairs)
-    with engine.begin() as conn:
-        conn.execute(
-            text("UPDATE ocr_jobs SET result_json=:r WHERE id=5"),
-            {"r": json.dumps(result_json)},
-        )
-    return engine
-
-
 def test_fetch_pairs_returns_anchor_inputs_in_row_order():
-    """승계 입력은 (pair_id, row_index, supply) 셋뿐 — 라벨은 승계가 건드리지 않는다.
+    """승계 입력은 (pair_id, row_index, supply, draft_supply) 넷 — 라벨은 승계가 건드리지 않는다.
 
-    crop_ref도 함께 읽지만 앵커가 아니라 row_index 신선도 판별에만 쓴다(fetch_pairs 참조).
+    두 앵커 모두 이 쌍의 컬럼에서 온다 — 옛 초안(ocr_jobs.result_json)을 조회하지 않는다.
     """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
-    conn.execute.return_value.fetchone.return_value = None
-    conn.execute.return_value.fetchall.return_value = [
-        (1, 0, 3000, "job-9/row-0"),
-        (2, 1, None, "job-9/row-1"),
-    ]
+    conn.execute.return_value.fetchall.return_value = [(1, 0, 3000, 3100), (2, 1, None, None)]
 
     pairs = WorkerQueue(engine).fetch_pairs(9)
 
-    assert [(p.pair_id, p.row_index, p.supply) for p in pairs] == [(1, 0, 3000), (2, 1, None)]
+    assert [(p.pair_id, p.row_index, p.supply, p.draft_supply) for p in pairs] == [
+        (1, 0, 3000, 3100),
+        (2, 1, None, None),
+    ]
+    assert conn.execute.call_count == 1, "앵커 출처는 training_pairs 한 테이블뿐이다"
     sql = str(conn.execute.call_args[0][0])
     assert "ORDER BY row_index" in sql
+    assert "result_json" not in sql, "옛 초안을 다시 조인하면 봉인 경로가 되살아난다"
     assert conn.execute.call_args[0][1]["id"] == 9
 
 
-def test_fetch_pairs_joins_the_old_draft_supply_by_row_index():
-    """옛 초안의 모델 인식값을 함께 싣는다 — 2단계 회수 앵커의 유일한 출처다.
+def test_fetch_pairs_carries_the_draft_supply_column():
+    """확정 시점 초안이 ② 회수 앵커로 그대로 실린다.
 
-    training_pairs.supply는 사람이 확정한 값이라(ocr_correction) 새 쪽 모델값과 축이
-    다르다. 이 조인이 없으면 draft 앵커가 전부 None이 되어 ②단계가 항상 no-op이다.
+    training_pairs.supply는 사람이 확정한 값이라(ocr_correction) 새 쪽 모델값과 축이 다르다.
+    이 컬럼이 실리지 않으면 draft 앵커가 전부 None이 되어 ②단계가 항상 no-op이다.
+
+    실엔진에서 네 필드를 통째로 단언한다 — MagicMock 단언은 SELECT가 무엇을 뽑든 고정
+    튜플을 돌려주므로 컬럼 순서·선택이 어긋나도 초록이다. sup과 dsup을 다른 값으로 심어
+    한쪽이 다른 쪽으로 중복 선택되는 어긋남까지 잡는다.
     """
-    engine = _fetch_engine(
+    engine = _live_engine(
         [
             {
                 "id": 1,
                 "ref": "job-5/row-0",
                 "ri": 0,
                 "sup": 5000,
-                "st": "included",
-                "reason": None,
-                "rev": None,
-            },
-            {
-                "id": 2,
-                "ref": "job-5/row-9",
-                "ri": 9,
-                "sup": 7000,
-                "st": "included",
-                "reason": None,
-                "rev": None,
-            },
-        ],
-        {"rows": [{"row_index": 0, "supply": 5100}]},
-    )
-
-    pairs = WorkerQueue(engine).fetch_pairs(5)
-
-    assert [(p.pair_id, p.supply, p.draft_supply) for p in pairs] == [
-        (1, 5000, 5100),
-        (2, 7000, None),  # 옛 초안에 없는 행(지난 재처리의 미결 쌍)은 draft가 없다
-    ]
-
-
-def test_fetch_pairs_drops_the_draft_of_a_pair_whose_row_index_is_stale():
-    """미결 쌍의 낡은 row_index가 새 초안의 행 범위 안이면 **다른 행의 값**이 잡힌다.
-
-    미결 전환(commit_job ①)은 crop_ref만 orphan-으로 옮기고 row_index는 그대로 둔다.
-    그 사이 result_json은 매 재처리마다 갱신되므로, 2회차부터 낡은 인덱스가 가리키는 것은
-    그 쌍의 행이 아니다. 이 가짜 앵커가 ②단계 빈칸 안에서 우연히 맞으면 확정 라벨이 전혀
-    다른 줄의 그림에 붙는다 — row- 좌표를 유지한 쌍만 row_index를 믿을 수 있다.
-    """
-    engine = _fetch_engine(
-        [
-            {
-                "id": 1,
-                "ref": "job-5/row-0",
-                "ri": 0,
-                "sup": 5000,
-                "st": "included",
-                "reason": None,
-                "rev": None,
-            },
-            {
-                "id": 2,
-                "ref": "job-5/orphan-2",  # 지난 재처리의 미결 — row_index 0은 이미 남의 것
-                "ri": 0,
-                "sup": 7000,
-                "st": "excluded",
-                "reason": RELINK_FAILED,
-                "rev": None,
-            },
-        ],
-        {"rows": [{"row_index": 0, "supply": 5100}]},
-    )
-
-    pairs = WorkerQueue(engine).fetch_pairs(5)
-
-    assert [(p.pair_id, p.draft_supply) for p in pairs] == [(1, 5100), (2, None)]
-
-
-def test_fetch_pairs_tolerates_an_unusable_old_draft():
-    """옛 result_json이 깨졌거나 rows가 없어도 승계 자체는 계속된다(draft만 비워진다)."""
-    engine = _fetch_engine(
-        [
-            {
-                "id": 1,
-                "ref": "job-5/row-0",
-                "ri": 0,
-                "sup": 5000,
+                "dsup": 5100,
                 "st": "included",
                 "reason": None,
                 "rev": None,
             }
-        ],
-        {"rows": "깨진값"},
+        ]
     )
 
-    assert WorkerQueue(engine).fetch_pairs(5)[0].draft_supply is None
+    pair = WorkerQueue(engine).fetch_pairs(5)[0]
+
+    assert (pair.pair_id, pair.row_index, pair.supply, pair.draft_supply) == (1, 0, 5000, 5100)
+
+
+def test_fetch_pairs_carries_the_draft_supply_of_an_orphaned_pair():
+    """미결(orphan-) 쌍도 draft 앵커를 싣고 나온다 — 이 이슈의 핵심 고정(AC 4).
+
+    옛 구현은 crop_ref가 row- 형식인 쌍에만 draft를 실었다. 미결이 되는 순간 ② 앵커가
+    영구 봉인되고, 유일한 탈출구로 ①(사람 확정 금액 == 이번 인식)만 남는데 미결 쌍은
+    정의상 사람이 금액을 교정한 행이라 ①은 구조적으로 실패한다.
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 5000,
+                "dsup": 5100,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/orphan-2",
+                "ri": 0,
+                "sup": 7000,
+                "dsup": 7300,
+                "st": "excluded",
+                "reason": RELINK_FAILED,
+                "rev": None,
+            },
+        ]
+    )
+
+    assert [(p.pair_id, p.draft_supply) for p in WorkerQueue(engine).fetch_pairs(5)] == [
+        (1, 5100),
+        (2, 7300),
+    ]
+
+
+def test_fetch_pairs_reads_its_own_column_even_when_the_old_draft_disagrees():
+    """낡은 row_index로 인한 오결합 회귀 가드(AC 5).
+
+    ocr_jobs.result_json에 같은 row_index로 전혀 다른 금액을 심어 둔다 — 옛 구현은 그 값을
+    앵커로 실었고, 미결 쌍의 낡은 row_index에서는 그것이 **다른 행**의 금액이었다.
+    컬럼 전환으로 구조적 보장이지만, 앵커 출처가 다시 좌표 조인으로 돌아가는 것을 막는다.
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 5000,
+                "dsup": 5100,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/orphan-2",
+                "ri": 0,
+                "sup": 7000,
+                "dsup": 7300,
+                "st": "excluded",
+                "reason": RELINK_FAILED,
+                "rev": None,
+            },
+        ]
+    )
+    with engine.begin() as conn:
+        conn.execute(
+            text("UPDATE ocr_jobs SET result_json=:r WHERE id=5"),
+            {"r": '{"rows": [{"row_index": 0, "supply": 999000}]}'},
+        )
+
+    assert [(p.pair_id, p.draft_supply) for p in WorkerQueue(engine).fetch_pairs(5)] == [
+        (1, 5100),
+        (2, 7300),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# fetch_pairs → plan_relink — 컬럼 앵커가 실제 ②단계 회수로 이어지는지(AC 4 후반)
+# ---------------------------------------------------------------------------
+
+
+def test_an_orphaned_pair_is_relinked_by_its_stored_draft_anchor():
+    """미결 쌍이 컬럼 앵커로 실제 회수(relinked)된다 — 이슈 #106의 본체.
+
+    이슈 본문 잡 69의 실측을 그대로 옮긴 값이다: 모델은 그때도 지금도 1720000으로 읽고
+    사람은 720000으로 교정했다. ①(확정 금액 == 새 인식)은 구조적으로 실패하므로 회수는
+    오직 draft 앵커로만 성립한다.
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/orphan-1",
+                "ri": 0,
+                "sup": 720000,
+                "dsup": 1720000,
+                "st": "excluded",
+                "reason": RELINK_FAILED,
+                "rev": None,
+            }
+        ]
+    )
+
+    olds = WorkerQueue(engine).fetch_pairs(5)
+    plan = plan_relink(5, olds, [NewRow(row_index=0, supply=1720000)])
+
+    assert [r.pair_id for r in plan.relinked] == [1]
+    assert plan.relinked[0].final_ref == "job-5/row-0"
+    assert plan.orphaned == ()
+
+
+def test_a_pair_without_a_stored_draft_stays_orphaned():
+    """NULL 앵커는 회수에서 빠진다 — 사유(정합 가드 탈락·미판독·범위 밖)를 구분하지 않는다.
+
+    _anchor_seq가 None을 서로 절대 같지 않은 유일값으로 치환하므로 셋이 동일하게 동작한다.
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/orphan-1",
+                "ri": 0,
+                "sup": 720000,
+                "st": "excluded",
+                "reason": RELINK_FAILED,
+                "rev": None,
+            }
+        ]
+    )
+
+    olds = WorkerQueue(engine).fetch_pairs(5)
+    plan = plan_relink(5, olds, [NewRow(row_index=0, supply=1720000)])
+
+    assert plan.relinked == ()
+    assert [o.pair_id for o in plan.orphaned] == [1]

@@ -88,17 +88,17 @@ def test_confirm_materializes_training_pairs():
                 {
                     "crop_ref": f"job-{job_id}/row-0",
                     "item_top5": [{"label": "삼겹살", "sim": 0.8}],
-                    "supply": 100000,
+                    "supply": 120000,
                 }
             ],
-            "supply_sum": 100000,
+            "supply_sum": 120000,
             "warp_ok": True,
         },
     )
     payload = td.invoice_with_items()
     payload["items"][0]["crop_ref"] = f"job-{job_id}/row-0"
     payload["items"][0]["name"] = "목살"
-    payload["items"][0]["supply"] = 100000
+    payload["items"][0]["supply"] = 100000  # 사람이 초안 120000을 100000으로 교정
 
     out = OcrService().confirm(job_id, payload)
 
@@ -110,8 +110,8 @@ def test_confirm_materializes_training_pairs():
         row = (
             conn.execute(
                 text(
-                    "SELECT crop_ref, draft_label, final_label, canonical_label, supply, status, invoice_id "
-                    "FROM training_pairs WHERE job_id = :j"
+                    "SELECT crop_ref, draft_label, draft_supply, final_label, canonical_label, "
+                    "supply, status, invoice_id FROM training_pairs WHERE job_id = :j"
                 ),
                 {"j": job_id},
             )
@@ -120,10 +120,73 @@ def test_confirm_materializes_training_pairs():
         )
     assert row["crop_ref"] == f"job-{job_id}/row-0"
     assert row["draft_label"] == "삼겹살"
+    # 초안(result_json.rows[0].supply)이지 사람이 확정한 값이 아니다 — 둘을 다른 값으로
+    # 심어야 이 단언이 두 출처를 실제로 가른다.
+    assert row["draft_supply"] == 120000
+    assert row["supply"] == 100000
     assert row["final_label"] == "목살"
     assert row["canonical_label"] == "목살"
     assert row["status"] == "included"
     assert row["invoice_id"] == out["invoice_id"]
+
+
+def test_confirm_isolates_an_out_of_range_draft_supply():
+    """범위 초과 초안이 있어도 확정은 성공하고 그 쌍의 draft_supply만 NULL이다.
+
+    실 MySQL(STRICT_TRANS_TABLES)에서 1264 롤백이 나지 않음을 고정한다(spec §2.3) —
+    가드가 없으면 사용자가 그 거래명세서를 아예 저장하지 못한다.
+    correction_json의 원값은 건드리지 않는다: 관측 원천은 그대로 보존하고 격리는
+    학습쌍 컬럼에만 적용한다(spec §5.1).
+
+    쌍 자체가 만들어졌는지를 행으로 확인한다 — scalar()는 행이 0개일 때도 None이라
+    "앵커만 NULL"과 "사람이 확정한 학습쌍이 통째로 유실"을 구분하지 못한다.
+    """
+    import json
+
+    repo = OcrRepository()
+    job_id = repo.insert_job("/x.jpg")
+    repo.update_result(
+        job_id,
+        "done",
+        {
+            "rows": [
+                {
+                    "crop_ref": f"job-{job_id}/row-0",
+                    "item_top5": [{"label": "삼겹살", "sim": 0.8}],
+                    "supply": 2147483648,
+                }
+            ],
+            "supply_sum": 2147483648,
+            "warp_ok": True,
+        },
+    )
+    payload = td.invoice_with_items()
+    payload["items"][0]["crop_ref"] = f"job-{job_id}/row-0"
+    payload["items"][0]["name"] = "목살"
+    payload["items"][0]["supply"] = 100000
+
+    OcrService().confirm(job_id, payload)
+
+    from sqlalchemy import text
+
+    from app.db import connection
+
+    with connection() as conn:
+        pairs = (
+            conn.execute(
+                text("SELECT crop_ref, draft_supply FROM training_pairs WHERE job_id = :j"),
+                {"j": job_id},
+            )
+            .mappings()
+            .all()
+        )
+        raw = conn.execute(
+            text("SELECT correction_json FROM ocr_corrections WHERE job_id = :j"),
+            {"j": job_id},
+        ).scalar()
+    assert [dict(p) for p in pairs] == [{"crop_ref": f"job-{job_id}/row-0", "draft_supply": None}]
+    correction = json.loads(raw) if isinstance(raw, str) else raw
+    assert correction["lines"][0]["draft_supply"] == 2147483648
 
 
 def test_confirm_twice_raises_conflict():

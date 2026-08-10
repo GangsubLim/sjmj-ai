@@ -9,9 +9,10 @@ from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
-    "(crop_ref, job_id, invoice_id, row_index, draft_label, final_label, canonical_label, supply, status) "
-    "VALUES (:crop_ref, :job_id, :invoice_id, :row_index, :draft_label, :final_label, "
-    ":canonical_label, :supply, :status)"
+    "(crop_ref, job_id, invoice_id, row_index, draft_label, draft_supply, final_label, "
+    "canonical_label, supply, status) "
+    "VALUES (:crop_ref, :job_id, :invoice_id, :row_index, :draft_label, :draft_supply, "
+    ":final_label, :canonical_label, :supply, :status)"
 )
 
 

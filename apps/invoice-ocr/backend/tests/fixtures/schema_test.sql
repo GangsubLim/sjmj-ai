@@ -188,6 +188,7 @@ CREATE TABLE training_pairs (
     invoice_id INT,
     row_index INT NOT NULL,
     draft_label VARCHAR(200),
+    draft_supply INT,                                -- migration_012: 확정 시점 초안 금액(② 앵커)
     final_label VARCHAR(200),
     canonical_label VARCHAR(200),
     supply INT,
