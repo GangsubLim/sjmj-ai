@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import text
 
+from app.services.ocr_correction import DRAFT_SUPPLY_MAX
 from tests.integration import _migration_sql
 
 # tests/integration/x.py → tests → backend → invoice-ocr → apps → repo root
@@ -273,6 +274,59 @@ def test_does_not_backfill_an_out_of_range_draft(db_conn):
 
     assert _draft(db_conn, over) is None
     assert _draft(db_conn, under) is None
+
+
+def test_backfill_range_guard_mirrors_the_backend_constant():
+    """SQL 리터럴의 상한이 백엔드 DRAFT_SUPPLY_MAX와 같은 숫자를 쓴다는 것을 코드로 못박는다.
+
+    두 곳(migration_012의 BETWEEN 리터럴, ocr_correction.DRAFT_SUPPLY_MAX)이 주석으로만
+    동기되어 있어, 컬럼을 넓히는 날 한쪽만 고치면 백필과 신규 적재의 값 집합이 조용히 갈린다.
+    """
+    assert f"BETWEEN 0 AND {DRAFT_SUPPLY_MAX}" in _MIGRATION.read_text(encoding="utf-8")
+
+
+def test_backfills_the_range_boundary_values_inclusive(db_conn):
+    """경계값 0과 DRAFT_SUPPLY_MAX는 범위 밖이 아니라 포함이다(BETWEEN의 양끝 포함).
+
+    test_does_not_backfill_an_out_of_range_draft가 범위 밖(-1, MAX+1) 2건만 검증해 왔다 —
+    포함성 자체는 SQL 표준이 정의하지만, 위 상수 일치 테스트와 함께 있어야 "SQL 리터럴이
+    Python 상수와 같고, 그 경계가 실제로 포함이다"가 함께 닫힌다.
+    """
+    job_id = _migration_sql.seed_job(db_conn, reviewed=0)
+    _seed_correction(
+        db_conn,
+        job_id,
+        [
+            _line(f"job-{job_id}/row-0", final_label="목살", final_supply=720000, draft_supply=0),
+            _line(
+                f"job-{job_id}/row-1",
+                final_label="갈비",
+                final_supply=300000,
+                draft_supply=DRAFT_SUPPLY_MAX,
+            ),
+        ],
+    )
+    lower = _seed_pair(
+        db_conn,
+        job_id,
+        crop_ref=f"job-{job_id}/row-0",
+        row_index=0,
+        final_label="목살",
+        supply=720000,
+    )
+    upper = _seed_pair(
+        db_conn,
+        job_id,
+        crop_ref=f"job-{job_id}/row-1",
+        row_index=1,
+        final_label="갈비",
+        supply=300000,
+    )
+
+    _apply(db_conn)
+
+    assert _draft(db_conn, lower) == 0
+    assert _draft(db_conn, upper) == DRAFT_SUPPLY_MAX
 
 
 def test_does_not_backfill_a_non_integer_draft(db_conn):

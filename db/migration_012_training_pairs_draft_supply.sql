@@ -61,7 +61,8 @@ DEALLOCATE PREPARE stmt;
 --   UNSIGNED INTEGER(>2^63) 는 타입 가드가 없어도 BETWEEN 이 거른다(실측: DECIMAL 추출이 음수).
 -- 추출 타입이 DECIMAL(65,0) 인 이유: 초안 금액은 상한이 없어(handwriting/amount_read.parse_amount)
 --   BIGINT PATH 로 뽑으면 추출 단계에서 범위를 넘길 수 있다. 넉넉히 뽑은 뒤 거르는 순서여야
---   가드가 실제로 동작한다(70 자리 값은 JSON 파서가 DOUBLE 로 읽어 타입 가드에서 먼저 걸린다).
+--   가드가 실제로 동작한다(70 자리 값은 DECIMAL(65,0) 추출이 NULL ON ERROR 로 먼저 NULL 이
+--   되고, JSON_TYPE 도 DOUBLE 이라 타입 가드가 다음으로 중복 차단한다 — 실측, 순서는 추출이 먼저다).
 UPDATE training_pairs tp
 JOIN (
     SELECT c.job_id AS job_id,

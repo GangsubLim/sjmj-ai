@@ -344,6 +344,22 @@ def test_commit_job_does_not_touch_draft_label():
     assert all("draft_label" not in sql for sql, _ in _executed(conn))
 
 
+def test_commit_job_does_not_touch_draft_supply():
+    """확정 시점 앵커는 재처리가 갱신하지 않는다(spec 결정 3 — #99 재오염 경로 차단).
+
+    draft_supply는 build_training_pairs가 확정 트랜잭션에서 한 번만 적재한다(#106).
+    승계가 이 컬럼을 건드리게 되면 붕괴 런(#99)이 다음 재처리에서 앵커를 재오염시키는
+    경로가 되살아난다 — draft_label과 같은 규칙을 여기서도 고정한다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+
+    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+
+    assert all("draft_supply" not in sql for sql, _ in _executed(conn))
+
+
 # ---------------------------------------------------------------------------
 # mark_failed
 # ---------------------------------------------------------------------------
