@@ -84,7 +84,9 @@ MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" \
 mysql_q "SELECT COUNT(*) FROM training_pairs WHERE draft_supply IS NOT NULL;"   # 후
 ```
 
-증가분이 곧 창 B에서 확정된 쌍이다. 파일 전체를 다시 먹여도 안전하다 — 컬럼 추가는
+증가분은 창 B에서 확정된 쌍 중 정합·타입·범위 가드를 통과한 것의 상한 근사다 — "전" 측정
+시점과 재실행 사이에 신버전 백엔드가 확정한 쌍도 INSERT 시점에 이미 값이 있어 증가분에 섞인다.
+파일 전체를 다시 먹여도 안전하다 — 컬럼 추가는
 `information_schema` 가드로 `DO 0`이 되고, 백필은 `WHERE draft_supply IS NULL`이라 이미 채워진
 값(특히 신버전 백엔드가 직접 쓴 값)을 덮지 않는다. `scripts/migrate-db.sh`는 `schema_migrations`
 원장에 012가 있으면 파일을 아예 실행하지 않으므로 **러너로는 이 재실행이 되지 않는다.**
