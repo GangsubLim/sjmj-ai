@@ -1,5 +1,7 @@
 import { renderHook, waitFor, act } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { MemoryRouter } from "react-router-dom";
+import type { ReactNode } from "react";
 import { useUnconfirmedJobs } from "./use-unconfirmed-jobs";
 import { ocrAPI } from "@/services/api";
 import type { UnconfirmedJobSummary } from "@/types/observation";
@@ -31,6 +33,14 @@ function listResponse(data: UnconfirmedJobSummary[], total = data.length) {
   };
 }
 
+function renderJobs(limit?: number, entry = "/curation/pending") {
+  return renderHook(() => useUnconfirmedJobs(limit), {
+    wrapper: ({ children }: { children: ReactNode }) => (
+      <MemoryRouter initialEntries={[entry]}>{children}</MemoryRouter>
+    ),
+  });
+}
+
 describe("useUnconfirmedJobs", () => {
   beforeEach(() => vi.clearAllMocks());
 
@@ -41,16 +51,24 @@ describe("useUnconfirmedJobs", () => {
         42,
       ),
     );
-    const { result } = renderHook(() => useUnconfirmedJobs());
+    const { result } = renderJobs();
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toHaveLength(1);
     expect(result.current.data[0].observation_status).toBe("demoted");
     expect(result.current.total).toBe(42);
   });
 
-  it("setPage가 page 파라미터로 재조회한다", async () => {
+  it("URL의 page로 초기 조회한다", async () => {
     mockGetJobs.mockResolvedValue(listResponse([]));
-    const { result } = renderHook(() => useUnconfirmedJobs(20));
+    renderJobs(20, "/curation/pending?page=3");
+    await waitFor(() =>
+      expect(mockGetJobs).toHaveBeenCalledWith({ page: 3, limit: 20 }),
+    );
+  });
+
+  it("setPage가 URL을 바꿔 재조회를 일으킨다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([]));
+    const { result } = renderJobs(20);
     await waitFor(() =>
       expect(mockGetJobs).toHaveBeenCalledWith({ page: 1, limit: 20 }),
     );
@@ -58,18 +76,19 @@ describe("useUnconfirmedJobs", () => {
     await waitFor(() =>
       expect(mockGetJobs).toHaveBeenCalledWith({ page: 2, limit: 20 }),
     );
+    expect(result.current.page).toBe(2);
   });
 
   it("에러 메시지를 노출한다", async () => {
     mockGetJobs.mockRejectedValue(new Error("조회 실패"));
-    const { result } = renderHook(() => useUnconfirmedJobs());
+    const { result } = renderJobs();
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe("조회 실패");
   });
 
   it("에러가 Error 인스턴스가 아니면 기본 문구로 닫는다", async () => {
     mockGetJobs.mockRejectedValue("boom");
-    const { result } = renderHook(() => useUnconfirmedJobs());
+    const { result } = renderJobs();
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe("확정 전 잡을 불러올 수 없습니다");
   });
@@ -79,7 +98,7 @@ describe("useUnconfirmedJobs", () => {
       success: true,
       data: null,
     } as unknown as Awaited<ReturnType<typeof ocrAPI.getUnconfirmedJobs>>);
-    const { result } = renderHook(() => useUnconfirmedJobs());
+    const { result } = renderJobs();
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.data).toEqual([]);
     expect(result.current.total).toBe(0);

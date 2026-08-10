@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnconfirmedJobSummary } from "@/types/observation";
 import { ocrAPI } from "@/services/api";
+import { usePageParam } from "@/hooks/use-page-param";
 
 interface UseUnconfirmedJobsReturn {
   data: UnconfirmedJobSummary[];
@@ -17,7 +18,8 @@ export function useUnconfirmedJobs(limit = 20): UseUnconfirmedJobsReturn {
   const [data, setData] = useState<UnconfirmedJobSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
-  const [page, setPage] = useState(1);
+  // page는 URL이 소유한다 — 뒤로가기·새로고침이 보던 페이지를 복원한다(useState(1)이면 1로 리셋).
+  const { page, setPage } = usePageParam();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const reqId = useRef(0);
