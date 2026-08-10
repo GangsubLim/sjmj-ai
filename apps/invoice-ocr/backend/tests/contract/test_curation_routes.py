@@ -3,6 +3,8 @@
 import pytest
 from sqlalchemy import text
 
+from app.routers.curation import _PAGE_MAX
+
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
@@ -1145,3 +1147,22 @@ def test_review_rejects_a_blank_job_token_as_a_validation_error(client, db_conn)
 
     assert res.status_code == 400
     assert "job_token" in res.json()["error"]["details"]
+
+
+def test_list_jobs_clamps_absurdly_large_page_without_500(client, db_conn):
+    """page 상한 부재로 offset=(page-1)*limit이 MySQL BIGINT 범위를 넘겨 500 + SQL 전문
+    노출이 나던 경로를 닫는다(ocr 라우터 test_list_unconfirmed_jobs_clamps_absurdly_large_page_without_500의 미러).
+
+    상한을 넘는 page는 400이 아니라 clamp된다 — 무음 clamp 의미론을 그대로 유지한다.
+    """
+    _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs?page=99999999999999999999999")
+
+    assert res.status_code == 200
+    body = res.json()
+    # 상한(<=)만 보면 page가 1로 무너지는 회귀도 통과한다 — 그러면 offset이 0이 되어
+    # 아래 잡이 딸려 나온다. 등치 + 빈 data 두 단언이 함께 그 회귀를 막는다.
+    assert body["pagination"]["page"] == _PAGE_MAX
+    assert body["data"] == []
+    assert body["pagination"]["total"] >= 1
