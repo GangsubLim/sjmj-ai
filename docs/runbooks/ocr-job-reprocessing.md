@@ -70,6 +70,25 @@ mysql_q "SELECT COUNT(*) FROM ocr_jobs;"        # 접속 확인
 SELECT COUNT(*) FROM training_pairs WHERE crop_ref NOT REGEXP '^job-[0-9]+/row-[0-9]+$';
 ```
 
+### 창 B 재백필 (`draft_supply` 도입 배포 직후 1회 — Issue #106)
+
+`migration_012`가 CD에서 컬럼과 백필을 함께 적용하지만, **마이그레이션과 백엔드 재시작 사이
+수 분 동안 구 백엔드가 계속 확정을 받는다.** 그 사이 만들어진 쌍은 `draft_supply`가 NULL로
+남아 다음 재처리에서 ② 앵커를 잃는다. health check 통과(= 신버전 서빙) 확인 후 아래를 1회
+실행해 닫는다. 재처리 배치보다 **먼저** 한다.
+
+```bash
+mysql_q "SELECT COUNT(*) FROM training_pairs WHERE draft_supply IS NOT NULL;"   # 전
+MYSQL_PWD="$DB_PASS" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_NAME" \
+  < ~/sjmj-ai/db/migration_012_training_pairs_draft_supply.sql
+mysql_q "SELECT COUNT(*) FROM training_pairs WHERE draft_supply IS NOT NULL;"   # 후
+```
+
+증가분이 곧 창 B에서 확정된 쌍이다. 파일 전체를 다시 먹여도 안전하다 — 컬럼 추가는
+`information_schema` 가드로 `DO 0`이 되고, 백필은 `WHERE draft_supply IS NULL`이라 이미 채워진
+값(특히 신버전 백엔드가 직접 쓴 값)을 덮지 않는다. `scripts/migrate-db.sh`는 `schema_migrations`
+원장에 012가 있으면 파일을 아예 실행하지 않으므로 **러너로는 이 재실행이 되지 않는다.**
+
 ## 1. 배치 전 백업
 
 ```bash

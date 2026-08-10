@@ -109,3 +109,25 @@ def test_ocr_jobs_curation_reviewed_at_column_type_matches_production_ddl(db_con
         )
     assert col is not None
     assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("datetime", "YES")
+
+
+def test_training_pairs_draft_supply_column_type_matches_production_ddl(db_conn):
+    """하니스의 컬럼 정의가 운영 DDL(db/migration_012)과 같은 타입·nullable이어야 한다.
+
+    값만 단언하면 fixtures/schema_test.sql이 운영과 갈려도 아무 데서도 안 걸린다 —
+    이 컬럼이 BIGINT로 갈리면 범위 가드(DRAFT_SUPPLY_MAX)가 의미를 잃는다.
+    """
+    with db_conn.begin() as conn:
+        col = (
+            conn.execute(
+                text(
+                    "SELECT DATA_TYPE, IS_NULLABLE FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = 'training_pairs' "
+                    "AND column_name = 'draft_supply'"
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert col is not None
+    assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("int", "YES")
