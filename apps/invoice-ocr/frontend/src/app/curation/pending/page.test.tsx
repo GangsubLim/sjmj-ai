@@ -1,4 +1,10 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  render,
+  screen,
+  waitFor,
+  fireEvent,
+  within,
+} from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import UnconfirmedJobsPage from "./page";
@@ -32,15 +38,17 @@ function listResponse(data: UnconfirmedJobSummary[], total = data.length) {
   };
 }
 
-function renderPage() {
+function renderPage(entry = "/curation/pending") {
   const router = createMemoryRouter(
     [
       { path: "/curation/pending", element: <UnconfirmedJobsPage /> },
+      { path: "/curation/pending/:jobId", element: <div>확정 전 상세</div> },
       { path: "/curation/:jobId", element: <div>확정 후 상세</div> },
     ],
-    { initialEntries: ["/curation/pending"] },
+    { initialEntries: [entry] },
   );
-  return render(<RouterProvider router={router} />);
+  render(<RouterProvider router={router} />);
+  return router;
 }
 
 describe("UnconfirmedJobsPage", () => {
@@ -167,5 +175,51 @@ describe("UnconfirmedJobsPage", () => {
       expect(screen.queryByText("확정 후 상세")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("확정 전 잡 관측")).toBeInTheDocument();
+  });
+
+  it("URL의 page로 초기 조회한다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([]));
+
+    renderPage("/curation/pending?page=3");
+
+    await waitFor(() =>
+      expect(mockGetJobs).toHaveBeenCalledWith({ page: 3, limit: 20 }),
+    );
+  });
+
+  it("행 클릭이 ?page=를 달고 상세로 이동한다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([summary({ job_id: 11 })]));
+
+    const router = renderPage("/curation/pending?page=3");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "잡 #11 관측 상세" }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "잡 #11 관측 상세" }));
+
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/curation/pending/11"),
+    );
+    expect(router.state.location.search).toBe("?page=3");
+  });
+
+  it("페이지네이션 클릭이 URL의 page를 바꿔 재조회를 일으킨다", async () => {
+    // PaginationLink는 href 없는 <a>라 role="link"가 아니다 — 페이지 탐색 nav 안에서
+    // 텍스트로 찾는다. 페이지네이션 블록은 totalPages > 1일 때만 렌더된다.
+    mockGetJobs.mockResolvedValue({
+      success: true,
+      data: [summary({ job_id: 11 })],
+      pagination: { page: 1, limit: 20, total: 40, totalPages: 2 },
+    });
+
+    const router = renderPage("/curation/pending");
+
+    const nav = await screen.findByRole("navigation", { name: "페이지 탐색" });
+    fireEvent.click(within(nav).getByText("2"));
+
+    await waitFor(() => expect(router.state.location.search).toBe("?page=2"));
+    expect(mockGetJobs).toHaveBeenCalledWith({ page: 2, limit: 20 });
   });
 });
