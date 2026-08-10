@@ -1,7 +1,7 @@
 import pytest
 
 from app.schemas.ocr import LABEL_SOURCES
-from app.services.ocr_correction import build_correction, build_training_pairs
+from app.services.ocr_correction import DRAFT_SUPPLY_MAX, build_correction, build_training_pairs
 
 
 def _result(rows):
@@ -98,6 +98,7 @@ def test_build_training_pairs_maps_line_to_pair():
             "invoice_id": 7,
             "row_index": 0,
             "draft_label": "삼겹살",
+            "draft_supply": 120000,
             "final_label": "목살",
             "canonical_label": "목살",
             "supply": 120000,
@@ -126,6 +127,72 @@ def test_build_training_pairs_parses_multidigit_row_index():
     assert pair["row_index"] == 12
     assert pair["canonical_label"] == "X"
     assert pair["supply"] is None
+
+
+def test_build_training_pairs_carries_a_missing_draft_supply_as_none():
+    """모델이 금액을 못 읽은 행은 앵커 없음(None)이 정상 표현이다(spec §3)."""
+    correction = _correction(
+        [
+            {
+                "crop_ref": "job-9/row-0",
+                "draft_label": None,
+                "draft_supply": None,
+                "final_label": "X",
+                "final_supply": 5000,
+            }
+        ]
+    )
+    assert build_training_pairs(9, 3, correction)[0]["draft_supply"] is None
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        DRAFT_SUPPLY_MAX + 1,  # 2147483648 — INT 범위 밖(STRICT_TRANS_TABLES에서 1264 롤백)
+        -1,
+        "120000",
+        True,
+        1.5,
+    ],
+)
+def test_build_training_pairs_isolates_an_unstorable_draft_supply(value):
+    """신뢰할 수 없는 OCR 값이 정수 컬럼에 들어가는 유일한 지점이라 여기서 거른다(spec §2.3).
+
+    parse_amount는 원문의 모든 숫자 run을 길이 제한 없이 이어붙이므로 30자리도 만들 수 있다.
+    운영 sql_mode에 STRICT_TRANS_TABLES가 있어 범위 초과는 잘림이 아니라 에러(1264)이며,
+    실패 모양은 "잘린 거짓 앵커"가 아니라 **확정 트랜잭션 전체 롤백** — 사용자가 그
+    거래명세서를 저장할 수 없게 된다. 격리해도 손해가 없다: 30자리 값은 어떤 새 인식값과도
+    같아질 수 없어 ② 앵커로서 가치가 0이고, NULL은 이미 "앵커 없음"의 정상 표현이다.
+    """
+    correction = _correction(
+        [
+            {
+                "crop_ref": "job-9/row-0",
+                "draft_label": None,
+                "draft_supply": value,
+                "final_label": "X",
+                "final_supply": 5000,
+            }
+        ]
+    )
+    assert build_training_pairs(9, 3, correction)[0]["draft_supply"] is None
+
+
+@pytest.mark.parametrize("value", [0, DRAFT_SUPPLY_MAX])
+def test_build_training_pairs_keeps_boundary_draft_supplies(value):
+    """경계값은 통과해야 한다 — 0은 정상 판독(빈칸)이지 미판독이 아니다."""
+    correction = _correction(
+        [
+            {
+                "crop_ref": "job-9/row-0",
+                "draft_label": None,
+                "draft_supply": value,
+                "final_label": "X",
+                "final_supply": 5000,
+            }
+        ]
+    )
+    assert build_training_pairs(9, 3, correction)[0]["draft_supply"] == value
 
 
 _DRAFT = {
