@@ -350,10 +350,14 @@ def test_commit_job_does_not_touch_draft_supply():
     draft_supply는 build_training_pairs가 확정 트랜잭션에서 한 번만 적재한다(#106).
     승계가 이 컬럼을 건드리게 되면 붕괴 런(#99)이 다음 재처리에서 앵커를 재오염시키는
     경로가 되살아난다 — draft_label과 같은 규칙을 여기서도 고정한다.
+
+    계획은 승계와 미결을 **함께** 내야 한다 — commit_job의 네 문장 중 둘이 미결 갈래라,
+    승계만 있는 계획으로는 그 두 문장이 실행되지 않아 단언이 통째로 비껴간다.
     """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
-    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+    plan = plan_relink(5, [OldPair(1, 0, 3000), OldPair(2, 1, 5000)], [NewRow(0, 3000)])
+    assert plan.relinked and plan.orphaned, "네 문장 전부를 태우려면 승계·미결이 둘 다 필요하다"
 
     WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
 
@@ -542,6 +546,10 @@ def test_fetch_pairs_carries_the_draft_supply_column():
 
     training_pairs.supply는 사람이 확정한 값이라(ocr_correction) 새 쪽 모델값과 축이 다르다.
     이 컬럼이 실리지 않으면 draft 앵커가 전부 None이 되어 ②단계가 항상 no-op이다.
+
+    실엔진에서 네 필드를 통째로 단언한다 — MagicMock 단언은 SELECT가 무엇을 뽑든 고정
+    튜플을 돌려주므로 컬럼 순서·선택이 어긋나도 초록이다. sup과 dsup을 다른 값으로 심어
+    한쪽이 다른 쪽으로 중복 선택되는 어긋남까지 잡는다.
     """
     engine = _live_engine(
         [
@@ -558,7 +566,9 @@ def test_fetch_pairs_carries_the_draft_supply_column():
         ]
     )
 
-    assert WorkerQueue(engine).fetch_pairs(5)[0].draft_supply == 5100
+    pair = WorkerQueue(engine).fetch_pairs(5)[0]
+
+    assert (pair.pair_id, pair.row_index, pair.supply, pair.draft_supply) == (1, 0, 5000, 5100)
 
 
 def test_fetch_pairs_carries_the_draft_supply_of_an_orphaned_pair():

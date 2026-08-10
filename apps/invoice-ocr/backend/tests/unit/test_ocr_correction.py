@@ -129,14 +129,25 @@ def test_build_training_pairs_parses_multidigit_row_index():
     assert pair["supply"] is None
 
 
-def test_build_training_pairs_carries_a_missing_draft_supply_as_none():
-    """모델이 금액을 못 읽은 행은 앵커 없음(None)이 정상 표현이다(spec §3)."""
+@pytest.mark.parametrize(
+    "draft_field",
+    [
+        pytest.param({"draft_supply": None}, id="explicit-null"),
+        pytest.param({}, id="key-absent"),
+    ],
+)
+def test_build_training_pairs_carries_a_missing_draft_supply_as_none(draft_field):
+    """모델이 금액을 못 읽은 행은 앵커 없음(None)이 정상 표현이다(spec §3).
+
+    키가 아예 없는 line(옛 확정분의 correction_json)도 같은 자리로 떨어져야 한다 —
+    명시적 null만 덮으면 line.get이 line[...]으로 좁아져도 이 단언이 비껴간다.
+    """
     correction = _correction(
         [
             {
                 "crop_ref": "job-9/row-0",
                 "draft_label": None,
-                "draft_supply": None,
+                **draft_field,
                 "final_label": "X",
                 "final_supply": 5000,
             }

@@ -116,12 +116,17 @@ def test_training_pairs_draft_supply_column_type_matches_production_ddl(db_conn)
 
     값만 단언하면 fixtures/schema_test.sql이 운영과 갈려도 아무 데서도 안 걸린다 —
     이 컬럼이 BIGINT로 갈리면 범위 가드(DRAFT_SUPPLY_MAX)가 의미를 잃는다.
+
+    DATA_TYPE만으로는 부호를 못 본다 — INT와 INT UNSIGNED가 똑같이 'int'다. DRAFT_SUPPLY_MAX는
+    signed 상한이라, unsigned로 갈리면 2147483648..4294967295가 조용히 버려지는데 단언은
+    초록으로 남는다. COLUMN_TYPE은 8.0.19 미만에서 표시폭(int(11))이 붙으므로 등가 비교
+    대신 'unsigned' 포함 여부만 본다(CI는 mysql:8, 로컬은 9.x).
     """
     with db_conn.begin() as conn:
         col = (
             conn.execute(
                 text(
-                    "SELECT DATA_TYPE, IS_NULLABLE FROM information_schema.columns "
+                    "SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE FROM information_schema.columns "
                     "WHERE table_schema = DATABASE() AND table_name = 'training_pairs' "
                     "AND column_name = 'draft_supply'"
                 )
@@ -131,3 +136,4 @@ def test_training_pairs_draft_supply_column_type_matches_production_ddl(db_conn)
         )
     assert col is not None
     assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("int", "YES")
+    assert "unsigned" not in col["COLUMN_TYPE"].lower()

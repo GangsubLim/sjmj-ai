@@ -233,6 +233,35 @@ def test_leaves_null_when_the_source_draft_is_null(db_conn):
     assert _draft(db_conn, pair_id) is None
 
 
+def test_backfills_a_pair_whose_supply_is_null(db_conn):
+    """공급가가 NULL인 쌍도 백필된다 — 정합 가드가 NULL-safe(`<=>`)여야 하는 이유다.
+
+    supply NULL은 도달 가능한 상태다: build_training_pairs가 line의 final_supply를 그대로
+    싣고(tests/unit/test_ocr_correction.py가 final_supply None → pair["supply"] None을 고정),
+    확정 시점 correction_json에도 같은 null이 남는다. `<=>`가 `=`로 내려가면 이 조인이
+    NULL을 내 조건이 참이 되지 않아 그 쌍들이 백필에서 통째로 빠지고, 멱등 조건
+    WHERE draft_supply IS NULL 때문에 재실행으로도 영영 회수되지 않는다.
+    """
+    job_id = _migration_sql.seed_job(db_conn, reviewed=0)
+    _seed_correction(
+        db_conn,
+        job_id,
+        [_line(f"job-{job_id}/row-0", final_label="목살", final_supply=None, draft_supply=1720000)],
+    )
+    pair_id = _seed_pair(
+        db_conn,
+        job_id,
+        crop_ref=f"job-{job_id}/row-0",
+        row_index=0,
+        final_label="목살",
+        supply=None,
+    )
+
+    _apply(db_conn)
+
+    assert _draft(db_conn, pair_id) == 1720000
+
+
 def test_does_not_backfill_an_out_of_range_draft(db_conn):
     """초안 금액에는 상한이 없다(spec §2.3) — 범위 밖은 백필하지 않는다(결정 6).
 
@@ -281,8 +310,12 @@ def test_backfill_range_guard_mirrors_the_backend_constant():
 
     두 곳(migration_012의 BETWEEN 리터럴, ocr_correction.DRAFT_SUPPLY_MAX)이 주석으로만
     동기되어 있어, 컬럼을 넓히는 날 한쪽만 고치면 백필과 신규 적재의 값 집합이 조용히 갈린다.
+
+    원문이 아니라 실행 문장에서 찾는다 — 파일 전문에는 같은 숫자를 적은 주석이 있어,
+    실행 리터럴이 바뀌어도 주석이 단언을 대신 만족시킬 수 있다.
     """
-    assert f"BETWEEN 0 AND {DRAFT_SUPPLY_MAX}" in _MIGRATION.read_text(encoding="utf-8")
+    executable = "\n".join(_migration_sql.statements(_MIGRATION.read_text(encoding="utf-8")))
+    assert f"BETWEEN 0 AND {DRAFT_SUPPLY_MAX}" in executable
 
 
 def test_backfills_the_range_boundary_values_inclusive(db_conn):
@@ -529,7 +562,7 @@ def test_add_column_guard_actually_creates_the_column(db_conn):
         col = (
             conn.execute(
                 text(
-                    "SELECT DATA_TYPE, IS_NULLABLE FROM information_schema.columns "
+                    "SELECT DATA_TYPE, COLUMN_TYPE, IS_NULLABLE FROM information_schema.columns "
                     "WHERE table_schema = DATABASE() AND table_name = 'training_pairs' "
                     "AND column_name = 'draft_supply'"
                 )
@@ -539,5 +572,9 @@ def test_add_column_guard_actually_creates_the_column(db_conn):
         )
     assert col is not None
     assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("int", "YES")
+    # DATA_TYPE은 부호를 지운다 — INT와 INT UNSIGNED가 똑같이 'int'다. unsigned로 갈리면
+    # signed 상한인 BETWEEN 리터럴이 유효값을 버리게 되므로 부호를 따로 본다. COLUMN_TYPE의
+    # 표시폭(int(11), 8.0.19 미만)은 버전마다 달라 등가 비교 대신 'unsigned' 포함만 본다.
+    assert "unsigned" not in col["COLUMN_TYPE"].lower()
     # 새로 만든 컬럼에 기존 행의 초안이 실제로 채워졌는지 — ALTER와 백필의 결합.
     assert _draft(db_conn, pair_id) == 1720000
