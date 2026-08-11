@@ -3,8 +3,14 @@ import { useParams } from "react-router-dom";
 import axios from "axios";
 
 import { JobImagePanel } from "@/components/curation/JobImagePanel";
+import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Skeleton } from "@/components/ui/skeleton";
+import { usePageParam } from "@/hooks/use-page-param";
+import {
+  useJobNeighbors,
+  fetchUnconfirmedPage,
+} from "@/hooks/use-job-neighbors";
 import { ocrAPI, ocrCropUrl } from "@/services/api";
 import type { OcrJobStatus, OcrResultRow, OcrItemPred } from "@/types/ocr";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
@@ -37,6 +43,17 @@ export default function UnconfirmedJobDetailPage() {
   // 형제 훅 use-unconfirmed-jobs.ts와 같은 idiom — 언마운트·jobId 교체 후 도착하는
   // in-flight 응답을 stale로 버린다(effect 본문 동기 setState도 함께 피한다).
   const reqId = useRef(0);
+  const { page } = usePageParam();
+  // numericId는 잘못된 jobId에서 NaN이 될 수 있는데, 훅이 그것도 흡수해 조회하지 않는다.
+  const {
+    prev,
+    next,
+    loading: neighborsLoading,
+  } = useJobNeighbors({
+    jobId: numericId,
+    page,
+    fetchPage: fetchUnconfirmedPage,
+  });
 
   const fetchJob = useCallback(async () => {
     if (!hasValidId) return;
@@ -64,9 +81,24 @@ export default function UnconfirmedJobDetailPage() {
     };
   }, [fetchJob]);
 
+  // 확정 후 상세와 같은 형태 — 잡 데이터에 의존하지 않으므로 세 분기 모두에 건다.
+  // (1) 조회 실패 시 목록으로 돌아갈 UI가 하나도 없고, (2) "다음 →" 이동은 loading
+  // 분기로 되돌아가는데 라우트에 key가 없어 element가 재사용되므로 성공 분기에만 두면
+  // 방금 누른 버튼이 언마운트돼 포커스가 body로 유실된다.
+  const nav = (
+    <JobNavButtons
+      basePath="/curation/pending"
+      page={page}
+      prev={prev}
+      next={next}
+      loading={neighborsLoading}
+    />
+  );
+
   if (loading) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <Skeleton className="h-8 w-48" />
         <Skeleton className="mt-4 h-64 w-full" />
       </PageContainer>
@@ -76,6 +108,7 @@ export default function UnconfirmedJobDetailPage() {
   if (error !== null || job === null) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <p className="text-destructive text-center text-sm">
           {error ?? "잡을 찾을 수 없습니다"}
         </p>
@@ -97,6 +130,7 @@ export default function UnconfirmedJobDetailPage() {
 
   return (
     <PageContainer className="py-4">
+      {nav}
       {/* 이 라우트는 미확정 여부를 검사하지 않는다 — GET /ocr/jobs/{id}가 invoice_id·correction
           존재를 주지 않고(OcrService.get_job), 상세용 엔드포인트 추가는 spec.md:93이 금지한다.
           그래서 확정 여부를 주장하지 않는 중립 표현을 쓴다(읽기 전용은 이 페이지의 구조적 사실이라 유지). */}

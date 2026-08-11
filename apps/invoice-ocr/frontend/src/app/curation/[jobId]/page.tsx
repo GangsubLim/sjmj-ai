@@ -1,8 +1,11 @@
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { useCurationJob } from "@/hooks/use-curation-job";
+import { usePageParam } from "@/hooks/use-page-param";
+import { useJobNeighbors, fetchCurationPage } from "@/hooks/use-job-neighbors";
 import { CurationPairRow } from "@/components/curation/CurationPairRow";
 import { JobImagePanel } from "@/components/curation/JobImagePanel";
+import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,18 +14,46 @@ import { curationJobState, CURATION_STATE_LABELS } from "@/utils/curation";
 export default function CurationJobPage() {
   const { jobId } = useParams();
   const numericId = jobId ? Number(jobId) : undefined;
-  const navigate = useNavigate();
+  const { page } = usePageParam();
   const { job, loading, error, patchPair, reviewJob } =
     useCurationJob(numericId);
+  // numericId가 undefined면 훅이 조회 자체를 하지 않는다.
+  const {
+    prev,
+    next,
+    loading: neighborsLoading,
+  } = useJobNeighbors({
+    jobId: numericId,
+    page,
+    fetchPage: fetchCurationPage,
+  });
 
+  // 검수 완료 후 목록으로 튕기지 않는다 — reviewJob이 POST 성공 시 curation_reviewed를
+  // 로컬에 반영하므로(silent 재조회 실패와 무관하게) 버튼이 스스로 비활성되고,
+  // 사용자는 이전/다음으로 계속 검수할 수 있다.
   const handleReview = async () => {
-    const ok = await reviewJob();
-    if (ok) navigate("/curation");
+    await reviewJob();
   };
+
+  // 잡 데이터에 의존하지 않으므로 세 분기 모두에 같은 요소를 건다. (1) 상세 조회가
+  // 실패하면 이 화면에는 목록으로 돌아갈 UI가 하나도 없고(CurationTabs도 전역 내비의
+  // 큐레이션 링크도 없다), (2) "다음 →"으로 이동하면 loading 분기로 되돌아가는데
+  // 라우트에 key가 없어 element가 재사용되므로, 성공 분기에만 두면 방금 누른 버튼이
+  // 언마운트돼 포커스가 body로 유실된다 — 연속 검수 이동과 정면 충돌한다.
+  const nav = (
+    <JobNavButtons
+      basePath="/curation"
+      page={page}
+      prev={prev}
+      next={next}
+      loading={neighborsLoading}
+    />
+  );
 
   if (loading) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <Skeleton className="h-8 w-48" />
         <Skeleton className="mt-4 h-64 w-full" />
       </PageContainer>
@@ -32,6 +63,7 @@ export default function CurationJobPage() {
   if (error || !job || numericId === undefined) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <p className="text-destructive text-center text-sm">
           {error ?? "잡을 찾을 수 없습니다"}
         </p>
@@ -41,6 +73,7 @@ export default function CurationJobPage() {
 
   return (
     <PageContainer className="py-4">
+      {nav}
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">
           잡 #{job.job_id}

@@ -15,7 +15,8 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { getVisiblePages } from "@/lib/pagination";
+import { CURATION_PAGE_SIZE, getVisiblePages } from "@/lib/pagination";
+import { jobDetailUrl } from "@/lib/curation-url";
 import {
   curationJobState,
   CURATION_STATE_LABELS,
@@ -30,10 +31,11 @@ function formatDate(iso: string): string {
 export default function CurationQueuePage() {
   const navigate = useNavigate();
   const { data, total, page, totalPages, loading, error, setPage } =
-    useCurationJobs(20);
+    useCurationJobs(CURATION_PAGE_SIZE);
   const visiblePages = getVisiblePages(page, totalPages);
 
-  const goToJob = (jobId: number) => navigate(`/curation/${jobId}`);
+  const goToJob = (jobId: number) =>
+    navigate(jobDetailUrl("/curation", jobId, page));
 
   return (
     <PageContainer className="py-4">

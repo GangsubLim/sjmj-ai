@@ -795,6 +795,115 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
     expect(result.current.job?.job_token).toBe("5000");
   });
 
+  // 리뷰 Important(Task 7 재리뷰) — reviewJob의 낙관 반영(POST 성공 후 로컬
+  // curation_reviewed를 true로 접는 코드)은 jobIdRef 소유권 가드로 지켜진다. 검수
+  // 완료 클릭 후 응답이 오기 전에 "다음 →"으로 잡을 바꾸면(옛 잡의 in-flight POST),
+  // 가드 없이 그 응답이 도착하면 setJob이 **지금 화면에 있는 새 잡**에
+  // curation_reviewed=true를 칠한다 — 검수한 적 없는 잡의 버튼이 비활성되고
+  // 배지가 오표시되는 오염이다(3단계에서 재현 확인). 이 테스트는 그 가드가 실제로
+  // 막고 있는지를 검증한다.
+  it("검수 완료 POST가 in-flight인 동안 다음 잡으로 이동해도 응답이 새 잡을 오염시키지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128, job_token "1000"
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 128) return { data: jobA };
+      if (id === 129) return { data: jobB };
+      throw new Error(`예상 밖 jobId: ${id}`);
+    });
+
+    const dReview = deferred<{
+      data: { job_id: number; curation_reviewed: boolean };
+    }>();
+    mockReviewJob.mockReturnValueOnce(dReview.promise);
+
+    const { result, rerender } = renderHook(
+      ({ jobId }: { jobId: number }) => useCurationJob(jobId),
+      { initialProps: { jobId: 128 } },
+    );
+    await waitFor(() => expect(result.current.job?.job_id).toBe(128));
+
+    // 잡 128에서 검수 완료 클릭 — POST가 아직 응답 전이다.
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      reviewPromise = result.current.reviewJob();
+    });
+
+    // 언마운트 없이 잡 129로 전환("다음 →" 이동과 동일한 상황).
+    rerender({ jobId: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+
+    // 옛 잡(128)의 검수 완료 POST 응답이 지금에서야 도착한다.
+    await act(async () => {
+      dReview.resolve({ data: { job_id: 128, curation_reviewed: true } });
+      await reviewPromise;
+    });
+
+    // 화면은 지금 잡 129를 보고 있다 — curation_reviewed가 true로 오염되면 안 된다.
+    expect(result.current.job?.job_id).toBe(129);
+    expect(result.current.job?.curation_reviewed).toBe(false);
+  });
+
+  // ref 가드(jobIdRef)만으로는 부족하다. job state는 jobId가 바뀌어도 null로 리셋되지
+  // 않으므로(fetch가 성공해야 setJob), A→B→A 왕복 중 jobIdRef는 A로 돌아왔는데 state에는
+  // 아직 B의 detail이 남아 있는 창이 존재한다. 그 창에 A의 늦은 review 응답이 도착하면
+  // B의 detail에 curation_reviewed=true를 칠한다 — PATCH 성공 경로가 이미 쓰고 있는
+  // state 정체성 가드(prev.job_id === pairJobId)를 review 경로에도 두어야 막힌다.
+  it("A→B→A 왕복 중 A의 늦은 review 응답이 화면의 B를 오염시키지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    let aCalls = 0;
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 129) return { data: jobB };
+      aCalls += 1;
+      if (aCalls === 1) return { data: jobA };
+      // A로 되돌아온 뒤의 조회는 실패시킨다 — jobIdRef만 A가 되고 job state에는 B의
+      // detail이 남는, 가드가 필요한 바로 그 창을 만든다.
+      throw new Error("일시 실패");
+    });
+
+    const dReview = deferred<{
+      data: { job_id: number; curation_reviewed: boolean };
+    }>();
+    mockReviewJob.mockReturnValueOnce(dReview.promise);
+
+    const { result, rerender } = renderHook(
+      ({ jobId }: { jobId: number }) => useCurationJob(jobId),
+      { initialProps: { jobId: 128 } },
+    );
+    await waitFor(() => expect(result.current.job?.job_id).toBe(128));
+
+    // A에서 검수 완료 클릭 — POST는 아직 응답 전.
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      reviewPromise = result.current.reviewJob();
+    });
+
+    // 다음 → B, 이전 ← A 로 되돌아온다(언마운트 없이 jobId만 교체).
+    rerender({ jobId: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+    rerender({ jobId: 128 });
+    await waitFor(() => expect(result.current.error).not.toBeNull());
+    expect(result.current.job?.job_id).toBe(129); // state는 아직 B
+
+    await act(async () => {
+      dReview.resolve({ data: { job_id: 128, curation_reviewed: true } });
+      await reviewPromise;
+    });
+
+    expect(result.current.job?.job_id).toBe(129);
+    expect(result.current.job?.curation_reviewed).toBe(false);
+  });
+
   // 가장 흔한 흐름이 "라벨 수정 → 검수 완료 클릭"이다. 버튼 mousedown이 Autocomplete를
   // blur시켜 commitLabel의 patchPair가 먼저 나가고, 응답이 오기 전에 click 핸들러의
   // reviewJob이 실행된다. reviewJob이 PATCH 큐에 합류하지 않으면 GET 시점의 옛 토큰을
@@ -845,6 +954,30 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
     // review POST 자체는 성공했다 — 재조회(토큰 갱신)만 실패한 것이므로 검수 완료는
     // 그대로 성공이어야 하고, "검수 완료" 토스트와 모순되는 에러 화면이 뜨면 안 된다.
     expect(ok).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
+
+  it("silent 재조회가 실패해도 검수 완료가 로컬 상태에 반영된다", async () => {
+    // POST는 성공했는데 재조회만 실패하면, 낙관 반영이 없을 때 "검수가 완료되었습니다"
+    // 토스트와 함께 검수 완료 버튼이 계속 활성으로 남는다(page.tsx의 disabled 근거가
+    // job.curation_reviewed다). 재조회 실패는 fetch가 silent로 삼키므로 여기서 닫는다.
+    mockGetJob.mockResolvedValueOnce({ data: jobDetail() });
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    mockGetJob.mockRejectedValueOnce(new Error("네트워크 단절"));
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.job!.curation_reviewed).toBe(false);
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.reviewJob();
+    });
+
+    expect(ok).toBe(true);
+    expect(result.current.job!.curation_reviewed).toBe(true);
     expect(result.current.error).toBeNull();
   });
 });
