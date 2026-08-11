@@ -5,6 +5,24 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.12.0] — 2026-08-11
+
+큐레이션 검수에서 "잡 하나 보고 목록 1페이지로 튕겨 나오는" 왕복을 없앤다 — 목록으로 돌아오면 보던 페이지 그대로이고, 상세에서 목록을 거치지 않고 앞뒤 잡으로 곧장 넘어간다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112)).
+
+### Added
+
+- 큐레이션 잡 상세에 이전·다음 잡 이동 버튼 추가 — 목록을 거치지 않고 연속으로 검수한다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112))
+- 큐레이션 목록의 현재 페이지가 주소에 남는다 — 뒤로가기·새로고침·북마크가 같은 페이지를 복원한다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112))
+
+### Changed
+
+- 검수 완료 후 목록으로 튕겨 나가지 않고 상세에 머무른다 — 완료 표시는 즉시 반영된다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112))
+- 잡을 여러 번 넘긴 뒤에도 뒤로가기 한 번이면 보던 목록 페이지로 돌아온다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112))
+
+### Fixed
+
+- 주소창의 페이지 번호가 비정상적으로 크거나 잘못된 값일 때 목록 조회가 서버 오류로 끝나며 내부 정보를 노출하던 경로를 막는다 ([#112](https://github.com/GangsubLim/sjmj-ai/pull/112))
+
 ## [v0.11.0] — 2026-08-11
 
 한 번 짝을 잃은 학습쌍이 재처리를 아무리 돌려도 되살아나지 못하던 막다른 길을 없앤다 — 확정 시점의 금액 초안을 따로 보관해 두므로, 다음 재처리에서 새로 잘린 그림과 다시 이어붙는다 ([#107](https://github.com/GangsubLim/sjmj-ai/pull/107)).
