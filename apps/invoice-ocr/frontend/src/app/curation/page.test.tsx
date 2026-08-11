@@ -128,4 +128,24 @@ describe("CurationQueuePage", () => {
       screen.getByRole("button", { name: "잡 #128 상세" }),
     ).toBeInTheDocument();
   });
+
+  it("3페이지에서 행을 클릭하면 ?page=3을 달고 상세로 이동한다", () => {
+    setup({
+      page: 3,
+      total: 1,
+      data: [
+        {
+          job_id: 128,
+          invoice_id: 341,
+          curation_reviewed: false,
+          curation_reviewed_at: null,
+          pair_count: 7,
+          unreviewed_count: 7,
+          created_at: "2026-06-30T09:00:00",
+        },
+      ],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "잡 #128 상세" }));
+    expect(mockNavigate).toHaveBeenCalledWith("/curation/128?page=3");
+  });
 });

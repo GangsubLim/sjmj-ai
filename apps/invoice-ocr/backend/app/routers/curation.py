@@ -26,6 +26,11 @@ class ImageKind(StrEnum):
 
 _LIMIT_MAX = 100
 
+# 목록 페이지 번호 상한. ocr 라우터의 _PAGE_MAX와 같은 값·같은 이유 — 상한 없이
+# offset=(page-1)*limit을 계산하면 거대 page가 MySQL BIGINT 범위를 넘겨 1064 SQL
+# 문법 오류 + SQL 전문 노출로 500이 샌다. 400이 아니라 기존 무음 clamp 의미론을 따른다.
+_PAGE_MAX = 1_000_000_000
+
 
 def _service() -> CurationService:
     # 검수완료 시 included 정식 라벨을 자동완성 사전에 등록(부수효과 — ADR 0008)
@@ -35,7 +40,7 @@ def _service() -> CurationService:
 @router.get("/curation/jobs")
 def list_jobs(page: int = 1, limit: int = 20):
     """검수 큐(confirmed 잡) 목록을 페이지 조회한다."""
-    page = max(1, page)
+    page = max(1, min(_PAGE_MAX, page))
     limit = max(1, min(_LIMIT_MAX, limit))
     jobs, total = _service().list_jobs(page, limit)
     total_pages = (total + limit - 1) // limit if total else 1

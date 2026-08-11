@@ -15,7 +15,8 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { getVisiblePages } from "@/lib/pagination";
+import { CURATION_PAGE_SIZE, getVisiblePages } from "@/lib/pagination";
+import { jobDetailUrl } from "@/lib/curation-url";
 import type { ObservationStatus } from "@/types/observation";
 
 // 배지 라벨은 관측된 사실까지만 말한다 — "워프 없음"을 "전표 미검출"이라 부르지 않는 이유는
@@ -51,10 +52,11 @@ function formatDate(iso: string): string {
 export default function UnconfirmedJobsPage() {
   const navigate = useNavigate();
   const { data, total, page, totalPages, loading, error, setPage } =
-    useUnconfirmedJobs(20);
+    useUnconfirmedJobs(CURATION_PAGE_SIZE);
   const visiblePages = getVisiblePages(page, totalPages);
 
-  const goToJob = (jobId: number) => navigate(`/curation/pending/${jobId}`);
+  const goToJob = (jobId: number) =>
+    navigate(jobDetailUrl("/curation/pending", jobId, page));
 
   return (
     <PageContainer className="py-4">
