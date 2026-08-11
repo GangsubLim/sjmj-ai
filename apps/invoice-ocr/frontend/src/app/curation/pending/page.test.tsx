@@ -188,8 +188,8 @@ describe("UnconfirmedJobsPage", () => {
   });
 
   it("행 클릭이 ?page=를 달고 상세로 이동한다", async () => {
-    // 3페이지짜리 목록이어야 page=3이 유지된다 — 범위를 넘는 page는 마지막 페이지로
-    // 되접히는 것이 훅의 정상 동작이다(use-unconfirmed-jobs의 보정).
+    // usePageParam은 [1, PAGE_MAX]로만 clamp하고 totalPages 보정은 하지 않는다.
+    // totalPages: 3은 응답을 ?page=3과 자연스럽게 맞추기 위한 픽스처값일 뿐이다.
     mockGetJobs.mockResolvedValue({
       success: true,
       data: [summary({ job_id: 11 })],
