@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy import text
 
-from app.routers.curation import _PAGE_MAX
+from app.routers.curation import _LIMIT_MAX, _PAGE_MAX
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
@@ -1157,12 +1157,18 @@ def test_list_jobs_clamps_absurdly_large_page_without_500(client, db_conn):
     """
     _seed_job_with_pairs(db_conn, reviewed=0, pairs=1, unreviewed=1)
 
-    res = client.get("/api/curation/jobs?page=99999999999999999999999")
+    # 진짜 불변식은 offset=(page-1)*limit이 BIGINT 범위 안이라는 것이므로 최악 조합
+    # (page 상한 × limit 상한)으로 찌른다 — page만 키우면 offset이 상한에 못 미친다.
+    res = client.get(f"/api/curation/jobs?page=99999999999999999999999&limit={_LIMIT_MAX}")
 
     assert res.status_code == 200
     body = res.json()
     # 상한(<=)만 보면 page가 1로 무너지는 회귀도 통과한다 — 그러면 offset이 0이 되어
     # 아래 잡이 딸려 나온다. 등치 + 빈 data 두 단언이 함께 그 회귀를 막는다.
     assert body["pagination"]["page"] == _PAGE_MAX
+    assert body["pagination"]["limit"] == _LIMIT_MAX
     assert body["data"] == []
-    assert body["pagination"]["total"] >= 1
+    # conftest가 테스트마다 전체 TRUNCATE로 격리하고 위에서 잡 1건만 시드했으므로
+    # total은 결정적으로 1이다 — `>= 1`이면 total이 잡 수가 아닌 학습쌍 수로 바뀌는
+    # 회귀를 통과시킨다.
+    assert body["pagination"]["total"] == 1

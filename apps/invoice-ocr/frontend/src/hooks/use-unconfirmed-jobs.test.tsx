@@ -67,7 +67,13 @@ describe("useUnconfirmedJobs", () => {
   });
 
   it("setPage가 URL을 바꿔 재조회를 일으킨다", async () => {
-    mockGetJobs.mockResolvedValue(listResponse([]));
+    // totalPages는 2여야 한다 — 2페이지가 없는 목록에서 page=2는 마지막 페이지로
+    // 되접히는 것이 정상이다(아래 보정 테스트).
+    mockGetJobs.mockResolvedValue({
+      success: true,
+      data: [],
+      pagination: { page: 1, limit: 20, total: 21, totalPages: 2 },
+    });
     const { result } = renderJobs(20);
     await waitFor(() =>
       expect(mockGetJobs).toHaveBeenCalledWith({ page: 1, limit: 20 }),
@@ -77,6 +83,20 @@ describe("useUnconfirmedJobs", () => {
       expect(mockGetJobs).toHaveBeenCalledWith({ page: 2, limit: 20 }),
     );
     expect(result.current.page).toBe(2);
+  });
+
+  it("URL page가 totalPages를 넘으면 마지막 페이지로 보정해 재조회한다", async () => {
+    // 확정 전 큐는 잡이 확정될수록 줄어든다 — 북마크·뒤로가기·상세 복귀(?page=N)로
+    // 범위를 넘으면 헤더는 "총 N건"인데 본문은 비고 Pagination도 사라진다.
+    mockGetJobs.mockResolvedValue({
+      success: true,
+      data: [],
+      pagination: { page: 5, limit: 20, total: 25, totalPages: 2 },
+    });
+    const { result } = renderJobs(20, "/curation/pending?page=5");
+
+    await waitFor(() => expect(result.current.page).toBe(2));
+    expect(mockGetJobs).toHaveBeenCalledWith({ page: 2, limit: 20 });
   });
 
   it("에러 메시지를 노출한다", async () => {

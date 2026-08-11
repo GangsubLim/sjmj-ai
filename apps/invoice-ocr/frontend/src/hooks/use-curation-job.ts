@@ -279,9 +279,13 @@ export function useCurationJob(
         // 이 setJob이 **새 잡**의 detail에 curation_reviewed=true를 칠해, 검수한 적
         // 없는 잡의 버튼이 비활성되고 배지가 오표시된다(재현 확인). fetch 내부의
         // `if (jobId !== jobIdRef.current) return;`(같은 파일)과 같은 소유권 규칙이다.
+        // ref 가드만으로는 부족해 state 정체성까지 대조한다(PATCH 성공 경로의 두 겹
+        // 가드와 같은 형태) — job state는 jobId가 바뀌어도 null로 리셋되지 않으므로,
+        // A→B→A 왕복 중 jobIdRef가 A로 돌아왔는데 state에는 아직 B의 detail이 남아
+        // 있는 창이 존재하고, 그때 A의 늦은 응답이 B에 curation_reviewed를 칠한다.
         if (jobId === jobIdRef.current) {
           setJob((prev) =>
-            prev && !prev.curation_reviewed
+            prev && prev.job_id === jobId && !prev.curation_reviewed
               ? { ...prev, curation_reviewed: true }
               : prev,
           );

@@ -320,6 +320,26 @@ describe("UnconfirmedJobDetailPage", () => {
     });
   });
 
+  it("상세 조회 중에도 잡 이동 버튼이 남아 있다", () => {
+    // "다음 →"으로 jobId가 바뀌면 loading 분기로 되돌아가는데 라우트에 key가 없어
+    // element가 재사용된다 — 성공 분기에만 두면 방금 누른 버튼이 언마운트돼 포커스가
+    // 유실된다(확정 후 상세와 같은 이유).
+    mockGetJob.mockReturnValue(new Promise(() => {})); // 영원히 pending — 로딩 분기 고정
+    renderDetail();
+    expect(screen.getByRole("button", { name: "← 목록" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다음 →" })).toBeInTheDocument();
+  });
+
+  it("상세 조회에 실패해도 목록 버튼으로 탈출할 수 있다", async () => {
+    // 이 화면에는 목록으로 돌아갈 다른 UI가 없다 — 에러 분기에도 nav가 있어야 한다.
+    mockGetJob.mockRejectedValue(new Error("Network Error"));
+    renderDetail();
+    await waitFor(() =>
+      expect(screen.getByText("Network Error")).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "← 목록" })).toBeInTheDocument();
+  });
+
   it("목록 버튼이 page를 유지한 확정 전 목록으로 간다", async () => {
     mockGetJob.mockResolvedValue({
       success: true,

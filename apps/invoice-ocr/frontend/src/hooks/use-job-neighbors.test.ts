@@ -226,6 +226,23 @@ describe("useJobNeighbors", () => {
     expect(calls).toEqual([]);
   });
 
+  it.each([
+    ["소수", 1.5],
+    ["음수", -3],
+    ["Infinity", Number.POSITIVE_INFINITY],
+  ])("jobId가 %s면 조회하지 않는다", async (_label, jobId) => {
+    // URL에서 온 비정수는 NaN이 아니라 통과하지만 스냅샷에서 절대 매칭되지 않는다 —
+    // 무의미한 조회를 부르고, 스냅샷이 이미 있으면 "못 찾음 → 재초기화"로 누적된
+    // 목록 순서를 단일 페이지로 덮어 버린다.
+    const { fetchPage, calls } = makeFetchPage({ 1: [1, 2] }, 1);
+    const { result } = renderNeighbors(fetchPage, jobId, 1);
+
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.prev).toBeNull();
+    expect(result.current.next).toBeNull();
+    expect(calls).toEqual([]);
+  });
+
   it("유효 jobId에서 undefined로 바뀌면 옛 이웃이 남지 않는다", async () => {
     // 반환값을 렌더 시 파생하므로 effect의 setState 없이도 즉시 접힌다
     // (react-hooks/set-state-in-effect 회피 + 진행 중 요청은 reqId로 무효화).

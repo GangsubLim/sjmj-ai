@@ -81,9 +81,24 @@ export default function UnconfirmedJobDetailPage() {
     };
   }, [fetchJob]);
 
+  // 확정 후 상세와 같은 형태 — 잡 데이터에 의존하지 않으므로 세 분기 모두에 건다.
+  // (1) 조회 실패 시 목록으로 돌아갈 UI가 하나도 없고, (2) "다음 →" 이동은 loading
+  // 분기로 되돌아가는데 라우트에 key가 없어 element가 재사용되므로 성공 분기에만 두면
+  // 방금 누른 버튼이 언마운트돼 포커스가 body로 유실된다.
+  const nav = (
+    <JobNavButtons
+      basePath="/curation/pending"
+      page={page}
+      prev={prev}
+      next={next}
+      loading={neighborsLoading}
+    />
+  );
+
   if (loading) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <Skeleton className="h-8 w-48" />
         <Skeleton className="mt-4 h-64 w-full" />
       </PageContainer>
@@ -93,6 +108,7 @@ export default function UnconfirmedJobDetailPage() {
   if (error !== null || job === null) {
     return (
       <PageContainer className="py-4">
+        {nav}
         <p className="text-destructive text-center text-sm">
           {error ?? "잡을 찾을 수 없습니다"}
         </p>
@@ -114,13 +130,7 @@ export default function UnconfirmedJobDetailPage() {
 
   return (
     <PageContainer className="py-4">
-      <JobNavButtons
-        basePath="/curation/pending"
-        page={page}
-        prev={prev}
-        next={next}
-        loading={neighborsLoading}
-      />
+      {nav}
       {/* 이 라우트는 미확정 여부를 검사하지 않는다 — GET /ocr/jobs/{id}가 invoice_id·correction
           존재를 주지 않고(OcrService.get_job), 상세용 엔드포인트 추가는 spec.md:93이 금지한다.
           그래서 확정 여부를 주장하지 않는 중립 표현을 쓴다(읽기 전용은 이 페이지의 구조적 사실이라 유지). */}

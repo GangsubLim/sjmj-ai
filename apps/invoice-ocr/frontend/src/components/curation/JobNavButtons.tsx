@@ -33,8 +33,11 @@ export function JobNavButtons({
     });
 
   return (
+    // 이 nav는 로딩·에러 분기에서도 마운트된 채 남는다 — 이전/다음이 비활성인 이유가
+    // "조회 중"인지 "이웃 없음"인지를 보조기술에 전달한다.
     <nav
       aria-label="잡 이동"
+      aria-busy={loading}
       className="mb-3 flex items-center justify-between"
     >
       <Button

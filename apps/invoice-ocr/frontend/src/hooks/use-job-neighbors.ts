@@ -15,6 +15,13 @@ export interface UseJobNeighborsReturn {
   loading: boolean;
 }
 
+/**
+ * 목록 한 페이지의 잡 id를 주는 어댑터.
+ *
+ * **안정 참조여야 한다** — 모듈 스코프 상수나 `useCallback`으로 넘길 것.
+ * 이 함수는 훅 내부 effect의 deps에 그대로 들어가므로, 렌더마다 새로 만든 인라인
+ * 화살표 함수를 넘기면 조회→setState→렌더→재조회 무한 루프가 된다.
+ */
 export type FetchPage = (
   page: number,
 ) => Promise<{ ids: number[]; totalPages: number }>;
@@ -48,8 +55,11 @@ export const fetchUnconfirmedPage: FetchPage = async (page) => {
   };
 };
 
+// jobId는 양의 정수만 유효하다 — URL에서 온 1.5·-3·Infinity는 NaN이 아니라 통과하지만
+// 스냅샷에서 절대 매칭되지 않아, 무의미한 조회를 부르고 "못 찾음 → 재초기화" 경로로
+// 누적된 목록 순서를 단일 페이지로 덮어 버린다.
 function isNavigableJobId(jobId: number | undefined): jobId is number {
-  return jobId !== undefined && !Number.isNaN(jobId);
+  return jobId !== undefined && Number.isInteger(jobId) && jobId > 0;
 }
 
 /** 조회하지 않는 상태의 고정 반환값. 모듈 상수라 소비자 쪽 identity도 안정적이다. */

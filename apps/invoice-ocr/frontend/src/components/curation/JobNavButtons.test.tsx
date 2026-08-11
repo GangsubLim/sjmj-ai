@@ -45,6 +45,32 @@ describe("JobNavButtons", () => {
     expect(screen.getByRole("button", { name: "다음 →" })).toBeDisabled();
   });
 
+  it("조회 중이면 nav에 aria-busy를 세워 비활성 이유를 알린다", () => {
+    // nav는 상세의 로딩·에러 분기에서도 마운트된 채 남는다 — "조회 중"과 "이웃 없음"을
+    // 보조기술이 구분할 수 있어야 한다.
+    const { rerender } = setup({ loading: true });
+    expect(screen.getByRole("navigation", { name: "잡 이동" })).toHaveAttribute(
+      "aria-busy",
+      "true",
+    );
+
+    rerender(
+      <MemoryRouter>
+        <JobNavButtons
+          basePath="/curation"
+          page={3}
+          prev={null}
+          next={null}
+          loading={false}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByRole("navigation", { name: "잡 이동" })).toHaveAttribute(
+      "aria-busy",
+      "false",
+    );
+  });
+
   it("목록 버튼은 현재 page를 유지한 목록 URL로 push 이동한다", () => {
     setup();
     fireEvent.click(screen.getByRole("button", { name: "← 목록" }));

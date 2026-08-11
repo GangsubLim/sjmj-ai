@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { UnconfirmedJobSummary } from "@/types/observation";
 import { ocrAPI } from "@/services/api";
 import { usePageParam } from "@/hooks/use-page-param";
+import { CURATION_PAGE_SIZE } from "@/lib/pagination";
 
 interface UseUnconfirmedJobsReturn {
   data: UnconfirmedJobSummary[];
@@ -14,7 +15,9 @@ interface UseUnconfirmedJobsReturn {
   refetch: () => void;
 }
 
-export function useUnconfirmedJobs(limit = 20): UseUnconfirmedJobsReturn {
+export function useUnconfirmedJobs(
+  limit = CURATION_PAGE_SIZE,
+): UseUnconfirmedJobsReturn {
   const [data, setData] = useState<UnconfirmedJobSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [totalPages, setTotalPages] = useState(0);
@@ -52,6 +55,14 @@ export function useUnconfirmedJobs(limit = 20): UseUnconfirmedJobsReturn {
       reqId.current++;
     };
   }, [fetch]);
+
+  // usePageParam은 [1, PAGE_MAX]로만 clamp할 뿐 목록 길이를 모른다 — 확정 전 큐는 잡이
+  // 확정될수록 줄어들어, 북마크·뒤로가기·상세 복귀(?page=N)로 범위를 넘으면 헤더는
+  // "총 N건"인데 본문은 비고 Pagination도 사라진다(형제 훅 use-curation-jobs와 같은 보정).
+  useEffect(() => {
+    if (loading || totalPages <= 0 || page <= totalPages) return;
+    setPage(totalPages);
+  }, [loading, page, totalPages, setPage]);
 
   return {
     data,

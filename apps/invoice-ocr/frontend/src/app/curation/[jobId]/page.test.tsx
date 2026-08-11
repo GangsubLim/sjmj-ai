@@ -95,12 +95,14 @@ function setup(
     entry?: string;
     reviewJob?: () => Promise<boolean>;
     neighbors?: ReturnType<typeof useJobNeighbors>;
+    loading?: boolean;
+    error?: string | null;
   } = {},
 ) {
   mockHook.mockReturnValue({
     job: jobData,
-    loading: false,
-    error: null,
+    loading: options.loading ?? false,
+    error: options.error ?? null,
     patchPair: vi.fn(),
     reviewJob: options.reviewJob ?? vi.fn().mockResolvedValue(true),
     refetch: vi.fn(),
@@ -198,6 +200,23 @@ describe("CurationJobPage", () => {
       page: 3,
       fetchPage: fetchCurationPage,
     });
+  });
+
+  it("상세 조회 중에도 잡 이동 버튼이 남아 있다", () => {
+    // "다음 →"을 누르면 jobId가 바뀌어 loading 분기로 되돌아가는데, 라우트에 key가 없어
+    // element가 재사용된다 — 성공 분기에만 두면 방금 누른 버튼이 언마운트돼 포커스가
+    // body로 유실되고 연속 검수 이동이 끊긴다.
+    setup(null, { loading: true });
+    expect(screen.getByRole("button", { name: "← 목록" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다음 →" })).toBeInTheDocument();
+  });
+
+  it("상세 조회에 실패해도 목록 버튼으로 탈출할 수 있다", () => {
+    // 이 화면에는 CurationTabs도 전역 내비의 큐레이션 링크도 없다 — nav가 없으면
+    // 에러 텍스트만 남고 목록으로 돌아갈 UI가 하나도 없다.
+    setup(null, { error: "조회 실패" });
+    expect(screen.getByText("조회 실패")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "← 목록" })).toBeInTheDocument();
   });
 
   it("목록 버튼이 page를 유지한 목록 URL로 간다", async () => {
