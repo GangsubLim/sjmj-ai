@@ -795,6 +795,59 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
     expect(result.current.job?.job_token).toBe("5000");
   });
 
+  // 리뷰 Important(Task 7 재리뷰) — reviewJob의 낙관 반영(POST 성공 후 로컬
+  // curation_reviewed를 true로 접는 코드)은 jobIdRef 소유권 가드로 지켜진다. 검수
+  // 완료 클릭 후 응답이 오기 전에 "다음 →"으로 잡을 바꾸면(옛 잡의 in-flight POST),
+  // 가드 없이 그 응답이 도착하면 setJob이 **지금 화면에 있는 새 잡**에
+  // curation_reviewed=true를 칠한다 — 검수한 적 없는 잡의 버튼이 비활성되고
+  // 배지가 오표시되는 오염이다(3단계에서 재현 확인). 이 테스트는 그 가드가 실제로
+  // 막고 있는지를 검증한다.
+  it("검수 완료 POST가 in-flight인 동안 다음 잡으로 이동해도 응답이 새 잡을 오염시키지 않는다", async () => {
+    const jobA = jobDetail(); // job_id 128, job_token "1000"
+    const jobB: CurationJobDetail = {
+      ...jobDetail(),
+      job_id: 129,
+      job_token: "5000",
+      pairs: [{ ...jobDetail().pairs[0], id: 9101 }],
+    };
+    mockGetJob.mockImplementation(async (id: number) => {
+      if (id === 128) return { data: jobA };
+      if (id === 129) return { data: jobB };
+      throw new Error(`예상 밖 jobId: ${id}`);
+    });
+
+    const dReview = deferred<{
+      data: { job_id: number; curation_reviewed: boolean };
+    }>();
+    mockReviewJob.mockReturnValueOnce(dReview.promise);
+
+    const { result, rerender } = renderHook(
+      ({ jobId }: { jobId: number }) => useCurationJob(jobId),
+      { initialProps: { jobId: 128 } },
+    );
+    await waitFor(() => expect(result.current.job?.job_id).toBe(128));
+
+    // 잡 128에서 검수 완료 클릭 — POST가 아직 응답 전이다.
+    let reviewPromise!: Promise<boolean>;
+    act(() => {
+      reviewPromise = result.current.reviewJob();
+    });
+
+    // 언마운트 없이 잡 129로 전환("다음 →" 이동과 동일한 상황).
+    rerender({ jobId: 129 });
+    await waitFor(() => expect(result.current.job?.job_id).toBe(129));
+
+    // 옛 잡(128)의 검수 완료 POST 응답이 지금에서야 도착한다.
+    await act(async () => {
+      dReview.resolve({ data: { job_id: 128, curation_reviewed: true } });
+      await reviewPromise;
+    });
+
+    // 화면은 지금 잡 129를 보고 있다 — curation_reviewed가 true로 오염되면 안 된다.
+    expect(result.current.job?.job_id).toBe(129);
+    expect(result.current.job?.curation_reviewed).toBe(false);
+  });
+
   // 가장 흔한 흐름이 "라벨 수정 → 검수 완료 클릭"이다. 버튼 mousedown이 Autocomplete를
   // blur시켜 commitLabel의 patchPair가 먼저 나가고, 응답이 오기 전에 click 핸들러의
   // reviewJob이 실행된다. reviewJob이 PATCH 큐에 합류하지 않으면 GET 시점의 옛 토큰을
