@@ -1,9 +1,13 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import UnconfirmedJobDetailPage from "./page";
 import { ocrAPI } from "@/services/api";
+import {
+  useJobNeighbors,
+  fetchUnconfirmedPage,
+} from "@/hooks/use-job-neighbors";
 
 vi.mock("@/services/api", () => ({
   ocrAPI: { getJob: vi.fn() },
@@ -12,20 +16,29 @@ vi.mock("@/services/api", () => ({
   ocrCropUrl: (jobId: number, row: number) =>
     `/api/ocr/jobs/${jobId}/crop/${row}`,
 }));
+// 이웃 조회는 이 화면의 부가 기능이라 여기서는 결과만 주입한다(실 API 호출 차단).
+vi.mock("@/hooks/use-job-neighbors", () => ({
+  useJobNeighbors: vi.fn(),
+  fetchUnconfirmedPage: vi.fn(),
+}));
 
 const mockGetJob = vi.mocked(ocrAPI.getJob);
+const mockNeighbors = vi.mocked(useJobNeighbors);
 
-function renderDetail(jobId = "42") {
+function renderDetail(jobId = "42", entry?: string) {
+  // beforeEach의 vi.clearAllMocks()가 반환값도 지우므로 렌더 직전에 매번 세팅한다.
+  mockNeighbors.mockReturnValue({ prev: null, next: null, loading: false });
   const router = createMemoryRouter(
     [
       {
         path: "/curation/pending/:jobId",
         element: <UnconfirmedJobDetailPage />,
       },
+      { path: "/curation/pending", element: <div>확정 전 목록</div> },
     ],
-    { initialEntries: [`/curation/pending/${jobId}`] },
+    { initialEntries: [entry ?? `/curation/pending/${jobId}`] },
   );
-  return render(<RouterProvider router={router} />);
+  return { ...render(<RouterProvider router={router} />), router };
 }
 
 describe("UnconfirmedJobDetailPage", () => {
@@ -65,8 +78,13 @@ describe("UnconfirmedJobDetailPage", () => {
     expect(screen.getByAltText("워프 전표")).toBeInTheDocument();
     expect(screen.getByText("삼겹살")).toBeInTheDocument();
     expect(screen.getByText("미확신")).toBeInTheDocument();
-    // 읽기 전용 — 어떤 조작 요소도 없다(ADR 0009).
-    expect(screen.queryAllByRole("button")).toHaveLength(0);
+    // 읽기 전용 — 도메인 조작 요소는 없다(ADR 0009). 잡 이동(JobNavButtons)은
+    // 도메인 데이터를 건드리지 않는 순수 네비게이션이라 예외로 허용한다.
+    expect(screen.queryAllByRole("button").map((b) => b.textContent)).toEqual([
+      "← 목록",
+      "← 이전",
+      "다음 →",
+    ]);
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
   });
 
@@ -272,5 +290,58 @@ describe("UnconfirmedJobDetailPage", () => {
       expect(screen.getByText("Network Error")).toBeInTheDocument(),
     );
     expect(screen.queryByText("잡을 찾을 수 없습니다")).not.toBeInTheDocument();
+  });
+
+  it("이전/다음 버튼이 렌더되고 이웃이 없으면 비활성이다", async () => {
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: { rows: [], supply_sum: 0, warp_ok: true },
+      },
+    });
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "← 이전" }),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByRole("button", { name: "← 이전" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 →" })).toBeDisabled();
+    // 확정 전 화면은 반드시 fetchUnconfirmedPage를 넘겨야 한다 — 어댑터가 바뀌어도
+    // 반환값 주입만으로는 GREEN이 되므로 호출 인자를 계약으로 고정한다.
+    expect(mockNeighbors).toHaveBeenCalledWith({
+      jobId: 42,
+      page: 1,
+      fetchPage: fetchUnconfirmedPage,
+    });
+  });
+
+  it("목록 버튼이 page를 유지한 확정 전 목록으로 간다", async () => {
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: { rows: [], supply_sum: 0, warp_ok: true },
+      },
+    });
+
+    const { router } = renderDetail("42", "/curation/pending/42?page=2");
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "← 목록" }),
+      ).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "← 목록" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("확정 전 목록")).toBeInTheDocument(),
+    );
+    expect(router.state.location.search).toBe("?page=2");
   });
 });
