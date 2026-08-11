@@ -56,14 +56,6 @@ export function useUnconfirmedJobs(
     };
   }, [fetch]);
 
-  // usePageParam은 [1, PAGE_MAX]로만 clamp할 뿐 목록 길이를 모른다 — 확정 전 큐는 잡이
-  // 확정될수록 줄어들어, 북마크·뒤로가기·상세 복귀(?page=N)로 범위를 넘으면 헤더는
-  // "총 N건"인데 본문은 비고 Pagination도 사라진다(형제 훅 use-curation-jobs와 같은 보정).
-  useEffect(() => {
-    if (loading || totalPages <= 0 || page <= totalPages) return;
-    setPage(totalPages);
-  }, [loading, page, totalPages, setPage]);
-
   return {
     data,
     total,

@@ -55,16 +55,6 @@ export function useCurationJobs(
     };
   }, [fetch]);
 
-  // usePageParam은 [1, PAGE_MAX]로만 clamp할 뿐 목록 길이를 모른다 — 북마크·뒤로가기·상세
-  // 복귀(?page=N)로 들어왔는데 그 사이 목록이 줄었으면 헤더는 "총 N건"인데 본문은 비고,
-  // 호출부가 totalPages>1일 때만 Pagination을 그리므로 되돌아갈 UI마저 없다.
-  // 조회가 끝난 뒤(loading=false) totalPages를 알 때만 마지막 페이지로 접는다 —
-  // 조회 중 보정은 재조회를 부르는 루프가 된다.
-  useEffect(() => {
-    if (loading || totalPages <= 0 || page <= totalPages) return;
-    setPage(totalPages);
-  }, [loading, page, totalPages, setPage]);
-
   return {
     data,
     total,
