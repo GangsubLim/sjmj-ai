@@ -168,9 +168,10 @@ export function useJobNeighbors({
             ? snapshot.entries[i + 1]
             : null,
         );
-      } catch {
+      } catch (e) {
         // 이웃 조회 실패는 부가 기능의 실패다 — 전체 화면 에러로 승격시키지 않고
-        // 이전/다음만 비활성으로 둔다(목록 버튼으로 탈출 가능).
+        // 이전/다음만 비활성으로 둔다(목록 버튼으로 탈출 가능). 다만 흔적은 남긴다.
+        console.warn("useJobNeighbors: 이웃 조회 실패", e);
         commit(null, null);
       }
     };
