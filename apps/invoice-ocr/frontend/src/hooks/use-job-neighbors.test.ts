@@ -8,6 +8,7 @@ import {
   type FetchPage,
 } from "./use-job-neighbors";
 import { curationAPI, ocrAPI } from "@/services/api";
+import { CURATION_PAGE_SIZE } from "@/lib/pagination";
 
 vi.mock("@/services/api", () => ({
   curationAPI: { getJobs: vi.fn() },
@@ -21,6 +22,23 @@ function makeFetchPage(pages: Record<number, number[]>, totalPages: number) {
     return { ids: pages[p] ?? [], totalPages };
   };
   return { fetchPage, calls };
+}
+
+/** 응답을 즉시 resolve하지 않고 나중에 임의 순서로 resolve할 수 있는 fetchPage.
+ * 요청 역순 도착(늦게 시작한 요청이 먼저 끝나고, 먼저 시작한 요청이 나중에 끝나는 경우)을
+ * 재현하기 위한 헬퍼 — owned() 소유권 가드가 옛 요청의 결과를 버리는지 검증한다. */
+function makeDeferredFetchPage() {
+  const calls: number[] = [];
+  const deferreds: Array<{
+    resolve: (v: { ids: number[]; totalPages: number }) => void;
+  }> = [];
+  const fetchPage: FetchPage = (p) => {
+    calls.push(p);
+    return new Promise((resolve) => {
+      deferreds.push({ resolve });
+    });
+  };
+  return { fetchPage, calls, deferreds };
 }
 
 function renderNeighbors(
@@ -225,6 +243,44 @@ describe("useJobNeighbors", () => {
     expect(result.current.loading).toBe(false);
   });
 
+  it("역순 도착한 옛 요청이 최신 스냅샷을 덮지 않는다", async () => {
+    // 먼저 시작한 요청(page 1)이 나중에 끝나고, 나중에 시작한 요청(page 2)이 먼저
+    // 끝나는 역전 상황을 재현한다. owned() 가드가 없으면 옛 요청의 스냅샷이
+    // snapshotRef를 덮어써 화면 상태뿐 아니라 이어지는 탐색 순서까지 오염된다.
+    const { fetchPage, calls, deferreds } = makeDeferredFetchPage();
+    const { result, rerender } = renderNeighbors(fetchPage, 2, 1);
+
+    await waitFor(() => expect(calls).toEqual([1]));
+
+    // page 변경으로 두 번째 요청을 띄운다 — 첫 요청은 아직 pending.
+    rerender({ jobId: 2, page: 2 });
+    await waitFor(() => expect(calls).toEqual([1, 2]));
+
+    // 두 번째(늦게 시작한) 요청을 먼저 resolve한다.
+    deferreds[1].resolve({ ids: [21, 2, 23], totalPages: 1 });
+    await waitFor(() =>
+      expect(result.current.prev).toEqual({ jobId: 21, page: 2 }),
+    );
+    expect(result.current.next).toEqual({ jobId: 23, page: 2 });
+
+    // 첫 번째(먼저 시작한) 요청을 뒤늦게 resolve한다 — 다른 이웃 데이터를 들고 있다.
+    deferreds[0].resolve({ ids: [1, 2, 3], totalPages: 1 });
+
+    // (a) 화면 상태는 여전히 두 번째 결과를 유지해야 한다 — 옛 요청에 덮이지 않는다.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(result.current.prev).toEqual({ jobId: 21, page: 2 });
+    expect(result.current.next).toEqual({ jobId: 23, page: 2 });
+
+    // (b) 이어지는 탐색도 두 번째 스냅샷을 따른다 — snapshotRef가 옛 요청으로
+    // 오염됐다면 23의 이웃을 못 찾거나(추가 조회 발생) 잘못된 이웃을 준다.
+    rerender({ jobId: 23, page: 2 });
+    await waitFor(() =>
+      expect(result.current.prev).toEqual({ jobId: 2, page: 2 }),
+    );
+    expect(result.current.next).toBeNull();
+    expect(calls).toEqual([1, 2]); // 추가 네트워크 호출 없음 — 오염되지 않았다는 증거
+  });
+
   it("조회가 실패하면 앞뒤 모두 없고 로딩이 끝난다", async () => {
     const fetchPage: FetchPage = () => Promise.reject(new Error("조회 실패"));
     const { result } = renderNeighbors(fetchPage, 1, 1);
@@ -247,7 +303,10 @@ describe("fetchPage 어댑터", () => {
 
     const res = await fetchCurationPage(2);
 
-    expect(curationAPI.getJobs).toHaveBeenCalledWith({ page: 2, limit: 20 });
+    expect(curationAPI.getJobs).toHaveBeenCalledWith({
+      page: 2,
+      limit: CURATION_PAGE_SIZE,
+    });
     expect(res).toEqual({ ids: [7, 8], totalPages: 2 });
   });
 
@@ -261,7 +320,7 @@ describe("fetchPage 어댑터", () => {
 
     expect(ocrAPI.getUnconfirmedJobs).toHaveBeenCalledWith({
       page: 1,
-      limit: 20,
+      limit: CURATION_PAGE_SIZE,
     });
     expect(res).toEqual({ ids: [11], totalPages: 1 });
   });
