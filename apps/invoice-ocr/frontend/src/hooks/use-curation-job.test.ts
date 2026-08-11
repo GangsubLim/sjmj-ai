@@ -847,4 +847,28 @@ describe("잡 세대 토큰(낙관적 잠금)", () => {
     expect(ok).toBe(true);
     expect(result.current.error).toBeNull();
   });
+
+  it("silent 재조회가 실패해도 검수 완료가 로컬 상태에 반영된다", async () => {
+    // POST는 성공했는데 재조회만 실패하면, 낙관 반영이 없을 때 "검수가 완료되었습니다"
+    // 토스트와 함께 검수 완료 버튼이 계속 활성으로 남는다(page.tsx의 disabled 근거가
+    // job.curation_reviewed다). 재조회 실패는 fetch가 silent로 삼키므로 여기서 닫는다.
+    mockGetJob.mockResolvedValueOnce({ data: jobDetail() });
+    mockReviewJob.mockResolvedValue({
+      data: { job_id: 128, curation_reviewed: true },
+    });
+    mockGetJob.mockRejectedValueOnce(new Error("네트워크 단절"));
+
+    const { result } = renderHook(() => useCurationJob(128));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.job!.curation_reviewed).toBe(false);
+
+    let ok = false;
+    await act(async () => {
+      ok = await result.current.reviewJob();
+    });
+
+    expect(ok).toBe(true);
+    expect(result.current.job!.curation_reviewed).toBe(true);
+    expect(result.current.error).toBeNull();
+  });
 });

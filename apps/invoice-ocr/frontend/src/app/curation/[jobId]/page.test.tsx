@@ -1,14 +1,21 @@
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { MemoryRouter, Routes, Route } from "react-router-dom";
+import { createMemoryRouter, RouterProvider } from "react-router-dom";
 
 import CurationJobPage from "./page";
 import { useCurationJob } from "@/hooks/use-curation-job";
+import { useJobNeighbors, fetchCurationPage } from "@/hooks/use-job-neighbors";
 import type { CurationJobDetail } from "@/types/curation";
 
 vi.mock("@/hooks/use-curation-job", () => ({ useCurationJob: vi.fn() }));
 vi.mock("@/hooks/use-items", () => ({ useItems: () => ({ data: [] }) }));
+// 이웃 조회는 이 화면의 부가 기능이라 여기서는 결과만 주입한다(실 API 호출 차단).
+vi.mock("@/hooks/use-job-neighbors", () => ({
+  useJobNeighbors: vi.fn(),
+  fetchCurationPage: vi.fn(),
+}));
 const mockHook = vi.mocked(useCurationJob);
+const mockNeighbors = vi.mocked(useJobNeighbors);
 
 function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
   return {
@@ -82,22 +89,33 @@ function needsRecheckJob(): CurationJobDetail {
   });
 }
 
-function setup(jobData: CurationJobDetail | null) {
+function setup(
+  jobData: CurationJobDetail | null,
+  options: {
+    entry?: string;
+    reviewJob?: () => Promise<boolean>;
+    neighbors?: ReturnType<typeof useJobNeighbors>;
+  } = {},
+) {
   mockHook.mockReturnValue({
     job: jobData,
     loading: false,
     error: null,
     patchPair: vi.fn(),
-    reviewJob: vi.fn().mockResolvedValue(true),
+    reviewJob: options.reviewJob ?? vi.fn().mockResolvedValue(true),
     refetch: vi.fn(),
   });
-  return render(
-    <MemoryRouter initialEntries={["/curation/128"]}>
-      <Routes>
-        <Route path="/curation/:jobId" element={<CurationJobPage />} />
-      </Routes>
-    </MemoryRouter>,
+  mockNeighbors.mockReturnValue(
+    options.neighbors ?? { prev: null, next: null, loading: false },
   );
+  const router = createMemoryRouter(
+    [
+      { path: "/curation/:jobId", element: <CurationJobPage /> },
+      { path: "/curation", element: <div>목록</div> },
+    ],
+    { initialEntries: [options.entry ?? "/curation/128?page=3"] },
+  );
+  return { ...render(<RouterProvider router={router} />), router };
 }
 
 describe("CurationJobPage", () => {
@@ -169,29 +187,38 @@ describe("CurationJobPage", () => {
     expect(screen.getByRole("button", { name: "검수 완료" })).toBeDisabled();
   });
 
-  it("재확인 후 검수 완료를 누르면 reviewJob을 호출하고 목록으로 복귀한다", async () => {
-    // AC 7 — "수정 → 버튼 재활성화 → 재확정" 경로를 단위 테스트로 고정한다.
-    const reviewJob = vi.fn().mockResolvedValue(true);
-    mockHook.mockReturnValue({
-      job: needsRecheckJob(),
-      loading: false,
-      error: null,
-      patchPair: vi.fn(),
-      reviewJob,
-      refetch: vi.fn(),
+  it("이전/다음 버튼이 렌더되고 이웃이 없으면 비활성이다", () => {
+    setup(job());
+    expect(screen.getByRole("button", { name: "← 이전" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 →" })).toBeDisabled();
+    // 어댑터·jobId·page 배선까지 고정한다 — 반환값만 주입하면 확정 전 어댑터를
+    // 넘기거나 page 대신 상수를 넘겨도 이 스위트가 전부 GREEN이 된다.
+    expect(mockNeighbors).toHaveBeenCalledWith({
+      jobId: 128,
+      page: 3,
+      fetchPage: fetchCurationPage,
     });
-    render(
-      <MemoryRouter initialEntries={["/curation/128"]}>
-        <Routes>
-          <Route path="/curation/:jobId" element={<CurationJobPage />} />
-          <Route path="/curation" element={<div>목록</div>} />
-        </Routes>
-      </MemoryRouter>,
-    );
+  });
+
+  it("목록 버튼이 page를 유지한 목록 URL로 간다", async () => {
+    const { router } = setup(job(), { entry: "/curation/128?page=3" });
+
+    fireEvent.click(screen.getByRole("button", { name: "← 목록" }));
+
+    await waitFor(() => expect(screen.getByText("목록")).toBeInTheDocument());
+    expect(router.state.location.search).toBe("?page=3");
+  });
+
+  it("검수 완료 성공 후 목록으로 이동하지 않는다", async () => {
+    // 상세에 머무는 쪽을 택했다 — reviewJob의 silent 재조회가 curation_reviewed를
+    // 갱신하므로 버튼이 스스로 비활성되고 상태 배지가 따라 바뀐다.
+    const reviewJob = vi.fn().mockResolvedValue(true);
+    const { router } = setup(needsRecheckJob(), { reviewJob });
 
     fireEvent.click(screen.getByRole("button", { name: "검수 완료" }));
 
     await waitFor(() => expect(reviewJob).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByText("목록")).toBeInTheDocument());
+    expect(router.state.location.pathname).toBe("/curation/128");
+    expect(screen.queryByText("목록")).not.toBeInTheDocument();
   });
 });

@@ -1,8 +1,11 @@
-import { useNavigate, useParams } from "react-router-dom";
+import { useParams } from "react-router-dom";
 
 import { useCurationJob } from "@/hooks/use-curation-job";
+import { usePageParam } from "@/hooks/use-page-param";
+import { useJobNeighbors, fetchCurationPage } from "@/hooks/use-job-neighbors";
 import { CurationPairRow } from "@/components/curation/CurationPairRow";
 import { JobImagePanel } from "@/components/curation/JobImagePanel";
+import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,13 +14,25 @@ import { curationJobState, CURATION_STATE_LABELS } from "@/utils/curation";
 export default function CurationJobPage() {
   const { jobId } = useParams();
   const numericId = jobId ? Number(jobId) : undefined;
-  const navigate = useNavigate();
+  const { page } = usePageParam();
   const { job, loading, error, patchPair, reviewJob } =
     useCurationJob(numericId);
+  // numericId가 undefined면 훅이 조회 자체를 하지 않는다.
+  const {
+    prev,
+    next,
+    loading: neighborsLoading,
+  } = useJobNeighbors({
+    jobId: numericId,
+    page,
+    fetchPage: fetchCurationPage,
+  });
 
+  // 검수 완료 후 목록으로 튕기지 않는다 — reviewJob이 POST 성공 시 curation_reviewed를
+  // 로컬에 반영하므로(silent 재조회 실패와 무관하게) 버튼이 스스로 비활성되고,
+  // 사용자는 이전/다음으로 계속 검수할 수 있다.
   const handleReview = async () => {
-    const ok = await reviewJob();
-    if (ok) navigate("/curation");
+    await reviewJob();
   };
 
   if (loading) {
@@ -41,6 +56,13 @@ export default function CurationJobPage() {
 
   return (
     <PageContainer className="py-4">
+      <JobNavButtons
+        basePath="/curation"
+        page={page}
+        prev={prev}
+        next={next}
+        loading={neighborsLoading}
+      />
       <div className="mb-4 flex items-center justify-between">
         <h1 className="text-xl font-semibold">
           잡 #{job.job_id}

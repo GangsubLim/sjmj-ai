@@ -274,6 +274,18 @@ export function useCurationJob(
         // 스켈레톤/에러로 갈아치우지 않는다(§리뷰 Important 2) — 그건 review POST 성공과
         // 무관한 화면 상태다.
         await fetch({ silent: true });
+        // 재조회가 실패해도 POST는 성공했다 — 서버 진실에 맞춰 로컬을 접는다.
+        // jobIdRef 가드는 필수다: 검수 완료 클릭 후 응답 전에 "다음 →"으로 이동하면
+        // 이 setJob이 **새 잡**의 detail에 curation_reviewed=true를 칠해, 검수한 적
+        // 없는 잡의 버튼이 비활성되고 배지가 오표시된다(재현 확인). fetch 내부의
+        // `if (jobId !== jobIdRef.current) return;`(같은 파일)과 같은 소유권 규칙이다.
+        if (jobId === jobIdRef.current) {
+          setJob((prev) =>
+            prev && !prev.curation_reviewed
+              ? { ...prev, curation_reviewed: true }
+              : prev,
+          );
+        }
         toast.success("검수가 완료되었습니다");
         return true;
       } catch (e) {
