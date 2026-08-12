@@ -152,10 +152,48 @@ def _warp_gate_passes(w, job_id: int) -> bool:
     return False
 
 
+def _gated_warp(bgr, aligner, job_id: int):
+    """Quad 후보를 우선순위대로 워프·deskew해 게이트를 통과하는 첫 결과를 고른다.
+
+    "쿼드를 찾았다"와 "맞게 찾았다"를 가르는 판정(_warp_gate_passes)을 공급자 **선택**의
+    채점 기준으로도 그대로 쓴다 — DL quad가 강등되면 색 quad로 1회 재시도한다. 게이트의
+    임계·분기·2단 폴백 구조는 건드리지 않는다(신호 교체는 #64 후속).
+
+    색 후보가 항상 뒤에 남으므로 warp_ok는 구성상 현행 이상이다(회귀 불가). 통과한 후보의
+    워프 결과를 그대로 돌려줘 하류가 재워프하지 않는다. 전부 강등되면 마지막 후보의 워프를
+    passed=False와 함께 돌려준다 — warped.png(큐레이션 시각화)를 현행처럼 남기기 위해서다.
+
+    aligner가 None이면 후보가 색 경로 하나뿐이라 현행 동작과 100% 동일하다(추가 로그 0).
+
+    Args:
+        bgr: EXIF 정위치 BGR 원본.
+        aligner: DL 코너검출기(models.aligner) 또는 None.
+        job_id: 로그 태그.
+
+    Returns:
+        (warped, passed). 후보가 하나도 없으면 (None, False) — 호출부가 quad_missing 처리.
+    """
+    from handwriting import infer_photo as ip
+    from handwriting.corner_dl import log_fallback, quad_candidates
+    from handwriting.grid_v4 import warp
+
+    w = None
+    for src, quad in quad_candidates(bgr, aligner, job_id=job_id):
+        w = ip.rotate(warp(bgr, quad), ip.deskew_angle(warp(bgr, quad)))
+        if _warp_gate_passes(w, job_id):
+            return w, True
+        if src == "dl":
+            log_fallback(job_id, "gate-demoted")
+    return w, False
+
+
 def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
     """사진 1장 → result_json. crop PNG를 crop_out_dir/row-{i}.png로 저장.
 
     models: worker.main.ModelBundle(worker가 1회 적재). 위치 언패킹이 아니라 속성으로 읽는다.
+    quad는 corner_dl.quad_candidates를 통해 _gated_warp가 게이트 인지형으로 선택한다 — DL
+    워프가 게이트에서 강등되면 색 quad로 1회 재시도. models.aligner가 None이면 현행 색
+    경로와 동일하다.
     extract_rows_for_job(process_one과 공유하는 단일 추론 경로)를 재사용해 HTML 조립을 제거하고
     rows 리스트를 만들어 assemble_result_json으로 직렬화한다. runtime은 Task 17(macmini,
     worker venv + 실모델)에서 검증한다 — 여기서는 실행하지 않는다.
@@ -168,7 +206,6 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
     import numpy as np
 
     from handwriting import infer_photo as ip
-    from handwriting.grid_v4 import warp
 
     item_model, E, lab = models.item_model, models.emb, models.labs
     qwen, device = models.qwen, models.device
@@ -176,14 +213,13 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
     crop_out_dir = Path(crop_out_dir)
     crop_out_dir.mkdir(parents=True, exist_ok=True)
     bgr = ip.load_bgr_path(image_path)
-    quad = ip.form_quad_robust(bgr)
-    if quad is None:
+    w, gate_ok = _gated_warp(bgr, models.aligner, job_id)
+    if w is None:
         print(f"[warp-gate] job={job_id} quad_missing", flush=True)  # 격자 부정합과 구분 가능하게
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
-    w = ip.rotate(warp(bgr, quad), ip.deskew_angle(warp(bgr, quad)))
     cv2.imwrite(str(crop_out_dir / "warped.png"), w)  # 큐레이션 단계 시각화용 전표 1장
 
-    if not _warp_gate_passes(w, job_id):
+    if not gate_ok:
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
 
     # process_one과 동일한 행검출·crop·retrieval·금액 OCR(단일 경로).
