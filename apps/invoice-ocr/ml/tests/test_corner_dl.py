@@ -174,13 +174,20 @@ def test_load_or_none_survives_a_venv_without_onnxruntime(monkeypatch, tmp_path,
     )  # 예외 타입명(ModuleNotFoundError)은 로그 포맷 세부사항이라 고정하지 않는다
 
 
-def test_load_or_none_returns_the_model_when_the_hash_matches(monkeypatch, tmp_path):
+def test_load_or_none_returns_the_model_when_the_hash_matches(monkeypatch, tmp_path, capsys):
     _install_model_file(monkeypatch, tmp_path)
     monkeypatch.setattr(
         corner_dl, "_make_session", lambda p: _FakeSession(np.zeros((1, 8), np.float32), 0.9)
     )
 
-    assert isinstance(corner_dl.load_or_none(tmp_path), corner_dl.CornerModel)
+    model = corner_dl.load_or_none(tmp_path)
+
+    assert isinstance(model, corner_dl.CornerModel)
+    # 적재 성공도 실패와 대칭으로 stderr 1줄을 남긴다 — 그렇지 않으면 "적재 성공"과
+    # "aligner=None(모델 미배포)"이 로그상 구분 불가능해진다(배포 검증이 이중 부정으로만 가능).
+    err = capsys.readouterr().err
+    assert "[corner-dl]" in err
+    assert str(tmp_path / corner_dl.MODEL_FILENAME) in err
 
 
 def test_quad_feeds_the_preprocessed_tensor_and_scales_back_to_the_original(monkeypatch, tmp_path):

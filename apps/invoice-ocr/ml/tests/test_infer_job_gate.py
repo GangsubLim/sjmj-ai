@@ -24,9 +24,10 @@ FULL_QUAD = np.array([[0, 0], [WARP_W, 0], [WARP_W, WARP_H], [0, WARP_H]], np.fl
 def _install_fake_infer_photo(monkeypatch, warped, calls):
     """handwriting.infer_photo를 가짜로 교체한다(deskew=0 → warp는 항등).
 
-    quad 공급은 corner_dl.form_quad_best가 소유하므로, 색 경로(form_quad_robust)만
-    전체 캔버스 quad로 고정한다 — rectify 실검출을 태우면 합성 이미지에 의존한 취약한
-    기대값이 되고 검증 대상(분기)이 흐려진다.
+    운영 경로의 quad 공급은 corner_dl.quad_candidates가 소유한다(_gated_warp가 그걸 순회하며
+    게이트 인지형으로 고른다) — form_quad_best는 게이트 없는 데모 CLI 전용 래퍼일 뿐 여기선
+    쓰이지 않는다. 색 경로(form_quad_robust)만 전체 캔버스 quad로 고정한다 — rectify 실검출을
+    태우면 합성 이미지에 의존한 취약한 기대값이 되고 검증 대상(분기)이 흐려진다.
     """
     m = types.ModuleType("handwriting.infer_photo")
     m.TOPK = 5
@@ -402,6 +403,33 @@ def test_infer_job_demotes_when_both_quads_fail_the_gate(monkeypatch, tmp_path, 
     assert out["warp_ok"] is False
     assert calls == []
     assert (tmp_path / "warped.png").exists()
+
+
+def test_infer_job_keeps_the_demoted_dl_warp_when_the_color_path_finds_nothing(
+    monkeypatch, tmp_path, make_warped, capsys
+):
+    """혼합 케이스 — DL quad는 나왔지만 게이트에 강등되고, 색 경로는 아예 검출되지 않는다.
+
+    후보가 DL 하나뿐이라 강등된 DL 워프가 마지막(유일한) 후보로 warped.png에 남는다 —
+    quad_missing 마커(w=None)는 후보가 하나도 없을 때만 찍히므로 여기선 찍히지 않는다.
+    warp_ok=False는 quad_missing 경로와 동일해 result_json 계약 회귀는 아니지만, 마커의
+    의미가 이 경로에서는 좁아진다(_gated_warp docstring 참조).
+    """
+    from handwriting.infer_job import infer_job
+
+    top_strip = np.array([[0, 0], [WARP_W, 0], [WARP_W, 300], [0, 300]], np.float32)
+    calls = []
+    _install_fake_infer_photo(monkeypatch, make_warped(), calls)
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
+
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 71)
+
+    assert out["warp_ok"] is False
+    assert calls == []
+    assert (tmp_path / "warped.png").exists()  # 강등된 DL 워프가 진단용으로 남는다
+    logged = capsys.readouterr().out
+    assert "[corner-dl] job=71 fallback reason=gate-demoted" in logged
+    assert "quad_missing" not in logged  # 후보가 있었으므로(강등일 뿐) 미검출 마커는 아니다
 
 
 def test_infer_job_without_an_aligner_keeps_the_current_color_path(

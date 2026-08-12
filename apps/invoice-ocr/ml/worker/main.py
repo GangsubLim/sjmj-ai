@@ -22,7 +22,7 @@ BANK_FILENAME = "bank.npz"
 class ModelBundle(NamedTuple):
     """load_models 산출 — infer_job이 **속성으로** 읽는다(위치 언패킹 금지).
 
-    5-튜플에 6번째 원소를 위치로 더하면 순서 실수가 조용히 통과한다. 소비자는
+    필드를 위치 인자로 추가하면 순서 실수가 조용히 통과한다. 소비자는
     worker.main.main과 handwriting.infer_job.infer_job 둘뿐이라 승격 비용이 낮다.
     """
 

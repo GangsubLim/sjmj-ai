@@ -162,7 +162,10 @@ def load_or_none(models_dir):
 
     worker(load_models)와 demo CLI(infer_photo.main)가 공유하는 단일 로더다. 모델 부재·해시
     불일치·onnxruntime 부재·기타 예외 전부 None + stderr 경고 1줄로 닫고, 호출부는 현행 색
-    경로로 계속 돈다. 잡마다 로그를 남기지 않는 이유가 이것이다 — 부재 경고는 여기 1줄이다.
+    경로로 계속 돈다. 적재 성공도 대칭으로 stderr 1줄을 남긴다 — 그렇지 않으면 "DL 적재
+    성공"과 "aligner=None(모델 미배포)"이 로그상(둘 다 [corner-dl] 0줄) 구분 불가능해져
+    배포 검증이 "없어야 할 라인이 없다"는 이중 부정으로만 가능해진다. 잡마다 로그를 남기지
+    않는 이유가 이것이다 — 부팅 신호(부재 경고·적재 성공)는 여기 1줄뿐이다.
 
     Args:
         models_dir: 모델이 사는 디렉터리(SJMJ_ML_MODELS_DIR). None·빈 값이면 None을 반환한다.
@@ -175,7 +178,7 @@ def load_or_none(models_dir):
         return None
     path = Path(models_dir) / MODEL_FILENAME
     try:
-        return CornerModel(path)
+        model = CornerModel(path)
     except Exception as e:
         print(
             f"[corner-dl] 적재 실패({path}, {type(e).__name__}: {e}) — 색 경로로만 동작",
@@ -183,6 +186,8 @@ def load_or_none(models_dir):
             flush=True,
         )
         return None
+    print(f"[corner-dl] 적재 성공({path})", file=sys.stderr, flush=True)
+    return model
 
 
 def log_fallback(job_id, reason):
