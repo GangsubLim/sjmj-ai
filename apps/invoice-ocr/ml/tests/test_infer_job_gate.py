@@ -4,12 +4,13 @@ infer_photo는 모듈 최상단에서 torch를 import해 CI에 없다. 그래서
 cv2·numpy·grid_v4·warp_gate는 진짜를 쓴다 — 게이트 배선 자체를 실제로 실행해 검증한다.
 """
 
-import ast
 import sys
 import types
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import import_scopes
 
 pytest.importorskip("cv2")
 np = pytest.importorskip("numpy")
@@ -325,13 +326,15 @@ def test_rescued_faint_sheet_reaches_row_extraction_through_infer_job(
 
 
 class _Aligner:
-    """CornerModel 대역 — 고정 quad를 돌려주고 받은 이미지 형상을 기록한다."""
+    """CornerModel 대역 — 고정 quad를 돌려주고 받은 이미지 배열 객체를 기록한다."""
 
     def __init__(self, quad):
         self._quad, self.seen = quad, []
 
     def quad(self, bgr):
-        self.seen.append(bgr.shape)
+        # 형상(WARP_H, WARP_W, 3)은 워프 결과와도 같아 '원본을 받았다'를 가르지 못한다 —
+        # 객체 자체를 기록해 identity로 못 박는다.
+        self.seen.append(bgr)
         return self._quad
 
 
@@ -339,7 +342,8 @@ def test_infer_job_prefers_the_dl_quad_over_the_color_path(monkeypatch, tmp_path
     from handwriting.infer_job import infer_job
 
     calls = []
-    _install_fake_infer_photo(monkeypatch, make_warped(), calls)
+    bgr = make_warped()
+    _install_fake_infer_photo(monkeypatch, bgr, calls)
     monkeypatch.setattr(
         corner_dl, "form_quad_robust", lambda bgr: pytest.fail("DL 성공 시 색 경로 금지")
     )
@@ -347,7 +351,8 @@ def test_infer_job_prefers_the_dl_quad_over_the_color_path(monkeypatch, tmp_path
 
     out = infer_job("ignored.jpg", _models(aligner=aligner), tmp_path, 34)
 
-    assert aligner.seen == [(WARP_H, WARP_W, 3)]  # 원본 BGR을 그대로 받는다
+    assert len(aligner.seen) == 1
+    assert aligner.seen[0] is bgr  # 워프 결과가 아니라 EXIF 정위치 원본을 그대로 받는다
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
 
@@ -390,19 +395,34 @@ def test_infer_job_retries_with_the_color_quad_when_the_dl_warp_is_gate_demoted(
 
 
 def test_infer_job_demotes_when_both_quads_fail_the_gate(monkeypatch, tmp_path, make_warped):
-    # DL·색 후보 둘 다 top_strip → 둘 다 강등, warp_ok=False, 큐레이션 시각화용 warped.png는 존재.
+    """전량 강등 — warp_ok=False, 그리고 warped.png는 **마지막(색)** 후보의 워프여야 한다.
+
+    두 후보에 같은 quad를 주면 워프 결과가 같아 "마지막 후보로 닫는다"(_gated_warp 반환 규칙)가
+    고정되지 않는다 — 첫 후보를 남기도록 회귀해도 통과한다. 그래서 구분 가능한 실패 quad를
+    준다: DL은 격자 위 백지 띠(하라인 0), 색은 격자를 4선만 담는 띠(MIN_HLINES=14 미달).
+    둘 다 표준·enh 양쪽에서 강등되지만 픽셀 내용은 확실히 다르다.
+    """
+    import cv2
+
+    from handwriting.grid_v4 import warp
     from handwriting.infer_job import infer_job
 
-    top_strip = np.array([[0, 0], [WARP_W, 0], [WARP_W, 300], [0, 300]], np.float32)
+    dl_strip = np.array([[0, 0], [WARP_W, 0], [WARP_W, 300], [0, 300]], np.float32)  # 백지
+    color_band = np.array(
+        [[0, 500], [WARP_W, 500], [WARP_W, 1000], [0, 1000]], np.float32
+    )  # 격자 일부 포함
     calls = []
-    _install_fake_infer_photo(monkeypatch, make_warped(), calls)
-    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: top_strip)
+    bgr = make_warped()
+    _install_fake_infer_photo(monkeypatch, bgr, calls)
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda b: color_band)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(dl_strip)), tmp_path, 99)
 
     assert out["warp_ok"] is False
     assert calls == []
-    assert (tmp_path / "warped.png").exists()
+    saved = cv2.imread(str(tmp_path / "warped.png"))
+    assert np.array_equal(saved, warp(bgr, color_band))
+    assert not np.array_equal(saved, warp(bgr, dl_strip))  # 첫 후보를 남기는 회귀를 배제
 
 
 def test_infer_job_keeps_the_demoted_dl_warp_when_the_color_path_finds_nothing(
@@ -451,21 +471,62 @@ def test_infer_job_without_an_aligner_keeps_the_current_color_path(
 def test_infer_job_imports_corner_dl_lazily():
     """infer_job.py 상단 규약 — corner_dl은 cv2를 끌어오므로 모듈 레벨 import가 금지다.
 
-    그 규약이 깨져도 CI(cv2 있음)는 초록이라, 소스 구조를 직접 고정한다. M3 반영 —
-    `ast.Import`까지 검사하고, `_gated_warp`를 포함한 모든 함수 정의를 훑는다.
+    그 규약이 깨져도 CI(cv2 있음)는 초록이라, 소스 구조를 직접 고정한다. 술어는
+    import_scopes가 정규화한다 — 모듈 레벨 `try:`/`if:` 안의 import 누락, `from handwriting
+    import corner_dl` 표기 누락, 함수 안 `import handwriting.corner_dl`의 거짓 RED를
+    한꺼번에 닫는다.
     """
     src = Path(__file__).resolve().parents[1] / "handwriting" / "infer_job.py"
-    tree = ast.parse(src.read_text(encoding="utf-8"))
-    top_level = {
-        alias.name for n in tree.body if isinstance(n, ast.Import) for alias in n.names
-    } | {n.module for n in tree.body if isinstance(n, ast.ImportFrom)}
-    inside_functions = {
-        n.module
-        for fn in tree.body
-        if isinstance(fn, ast.FunctionDef)
-        for n in ast.walk(fn)
-        if isinstance(n, ast.ImportFrom)
-    }
+    module_level, in_functions = import_scopes(src)
 
-    assert "handwriting.corner_dl" not in top_level
-    assert "handwriting.corner_dl" in inside_functions
+    assert "handwriting.corner_dl" not in module_level
+    assert "handwriting.corner_dl" in in_functions
+
+
+def _warp_spy(monkeypatch):
+    """grid_v4.warp 호출을 세는 spy를 건다(원 계산은 그대로 수행)."""
+    import handwriting.grid_v4 as g4
+
+    original = g4.warp
+    seen = []
+
+    def spy(bgr, quad):
+        seen.append(quad)
+        return original(bgr, quad)
+
+    monkeypatch.setattr(g4, "warp", spy)
+    return seen
+
+
+def test_infer_job_warps_each_candidate_exactly_once(monkeypatch, tmp_path, make_warped):
+    """채택된 워프를 하류가 그대로 재사용한다 — 후보당 warpPerspective는 정확히 1회다.
+
+    deskew 인자와 회전 대상이 각자 `warp(bgr, quad)`를 부르면 후보당 2회가 되어 전량 강등
+    잡은 4회를 돈다(warpPerspective는 잡당 가장 비싼 단일 연산이다). 산출물은 동일해
+    행위 테스트로는 드러나지 않으므로 호출 횟수를 직접 센다.
+    """
+    from handwriting.infer_job import infer_job
+
+    seen = _warp_spy(monkeypatch)
+    _install_fake_infer_photo(monkeypatch, make_warped(), [])
+
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(FULL_QUAD)), tmp_path, 34)
+
+    assert out["warp_ok"] is True
+    assert len(seen) == 1  # DL 후보 채택 — 재워프 0회
+
+
+def test_infer_job_warps_once_per_candidate_when_all_are_demoted(
+    monkeypatch, tmp_path, make_warped
+):
+    from handwriting.infer_job import infer_job
+
+    top_strip = np.array([[0, 0], [WARP_W, 0], [WARP_W, 300], [0, 300]], np.float32)
+    seen = _warp_spy(monkeypatch)
+    _install_fake_infer_photo(monkeypatch, make_warped(), [])
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: top_strip)
+
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99)
+
+    assert out["warp_ok"] is False
+    assert len(seen) == 2  # 후보 2개 × 1회

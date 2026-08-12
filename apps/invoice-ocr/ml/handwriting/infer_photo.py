@@ -200,7 +200,7 @@ def process_one(src, model, E, lab, qwen, tmp_dir, counter, device, aligner=None
     """
     # 1) 워프 + deskew (quad 공급 = DL 1순위 → 색 폴백, infer_job과 동일 함수)
     bgr = load_bgr_path(src)
-    q = form_quad_best(bgr, aligner)
+    q = form_quad_best(bgr, aligner, job_id=Path(src).name)
     w = rotate(warp(bgr, q), deskew_angle(warp(bgr, q)))
 
     # 2) 추론(행검출~crop~retrieval임베딩~금액 OCR) — infer_job와 공유하는 단일 경로

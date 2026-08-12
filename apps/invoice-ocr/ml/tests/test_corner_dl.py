@@ -5,13 +5,14 @@
 worker+cv 조합이라, 이 파일이 실행된다는 사실 자체가 "onnxruntime 없이 import 가능"의 증거다.
 """
 
-import ast
 import hashlib
 import sys
 import types
 from pathlib import Path
 
 import pytest
+
+from tests.conftest import import_scopes
 
 pytest.importorskip("cv2")
 np = pytest.importorskip("numpy")
@@ -116,18 +117,30 @@ def _model(monkeypatch, tmp_path, points, has_obj):
     return corner_dl.CornerModel(path), session
 
 
+def test_sha256_streams_content_longer_than_one_chunk(monkeypatch, tmp_path):
+    """청크 루프가 실제로 여러 번 돌아야 한다 — 모든 픽스처가 한 청크에 들어가면 미검증이다.
+
+    단발 `f.read(_SHA_CHUNK)`로 퇴행하면 첫 청크만 해시해 모델 뒷부분 변조를 통과시킨다.
+    """
+    monkeypatch.setattr(corner_dl, "_SHA_CHUNK", 8)
+    content = bytes(range(256)) * 5  # 청크(8B)의 160배 — 다청크 경로 확정
+    path = tmp_path / "multi-chunk.bin"
+    path.write_bytes(content)
+
+    assert corner_dl._sha256(path) == hashlib.sha256(content).hexdigest()
+
+
 def test_onnxruntime_is_never_imported_at_module_level():
     """dl extra 없는 조합(CI worker+cv, 미동기화 worker venv)에서 import 가능해야 한다.
 
     로컬에 dl extra가 깔린 개발자 환경에서는 모듈 레벨 import가 조용히 통과하므로,
-    소스 구조 자체를 고정한다.
+    소스 구조 자체를 고정한다. 모듈 레벨 판정은 import_scopes가 정규화한다 —
+    `tree.body` 직계만 보면 `try: import onnxruntime / except ImportError:` 같은
+    모듈 레벨 블록 안의 import가 그대로 새어나간다.
     """
-    tree = ast.parse(SRC.read_text(encoding="utf-8"))
-    top_level = {
-        alias.name for node in tree.body if isinstance(node, ast.Import) for alias in node.names
-    } | {node.module for node in tree.body if isinstance(node, ast.ImportFrom)}
+    module_level, _ = import_scopes(SRC)
 
-    assert "onnxruntime" not in top_level
+    assert "onnxruntime" not in module_level
 
 
 def test_corner_model_rejects_a_hash_mismatch_before_opening_a_session(monkeypatch, tmp_path):
@@ -140,22 +153,31 @@ def test_corner_model_rejects_a_hash_mismatch_before_opening_a_session(monkeypat
         corner_dl.CornerModel(path)
 
 
+# 세 실패 사유는 배포 진단에서 서로 다른 조치로 이어진다(env 미설정 / 모델 미배포 / 파일 변조).
+# `[corner-dl]` 하나만 단언하면 셋이 한 메시지로 붕괴해도 전부 통과하므로 판별 토큰을 건다.
+
+
 def test_load_or_none_swallows_a_missing_model_file(tmp_path, capsys):
     assert corner_dl.load_or_none(tmp_path) is None
-    assert "[corner-dl]" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "[corner-dl] 적재 실패" in err
+    assert "FileNotFoundError" in err  # 미배포 — 해시 불일치(ValueError)와 구분된다
 
 
 def test_load_or_none_swallows_a_hash_mismatch(tmp_path, capsys):
     (tmp_path / corner_dl.MODEL_FILENAME).write_bytes(b"tampered")
 
     assert corner_dl.load_or_none(tmp_path) is None
-    assert "[corner-dl]" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "[corner-dl] 적재 실패" in err
+    assert "모델 SHA-256 불일치" in err  # 변조·모델 교체 — 파일 부재와 구분된다
 
 
 def test_load_or_none_returns_none_without_a_models_dir(capsys):
     # env 미설정(SJMJ_ML_MODELS_DIR 없음) — 데모 CLI가 그대로 넘긴다.
     assert corner_dl.load_or_none(None) is None
-    assert "[corner-dl]" in capsys.readouterr().err
+    # 적재를 시도조차 하지 않은 경로다 — "적재 실패"로 뭉개지면 조치가 갈린다(env 주입 vs 배포).
+    assert "[corner-dl] 모델 디렉터리 미지정" in capsys.readouterr().err
 
 
 def test_load_or_none_survives_a_venv_without_onnxruntime(monkeypatch, tmp_path, capsys):
@@ -240,16 +262,19 @@ def test_corner_model_rejects_a_model_with_unexpected_output_names(monkeypatch, 
 
 DL_QUAD = np.array([[1, 1], [11, 1], [11, 21], [1, 21]], np.float32)
 COLOR_QUAD = np.array([[0, 0], [10, 0], [10, 20], [0, 20]], np.float32)
+# 위 둘은 이미 TL→TR→BR→BL이라 _order 적용 여부가 값으로 드러나지 않는다 — 코너를 섞은
+# 이 quad만이 "DL은 재정렬한다 / 색은 재정렬하지 않는다"를 양방향으로 고정할 수 있다.
+SCRAMBLED_QUAD = np.array([[11, 21], [1, 1], [1, 21], [11, 1]], np.float32)  # BR, TL, BL, TR
 
 
 class _FakeAligner:
-    """CornerModel 대역 — 고정 quad(또는 None)를 돌려주고 호출을 기록한다."""
+    """CornerModel 대역 — 고정 quad(또는 None)를 돌려주고 받은 배열 객체를 기록한다."""
 
     def __init__(self, quad):
         self._quad, self.calls = quad, []
 
     def quad(self, bgr):
-        self.calls.append(bgr.shape)
+        self.calls.append(bgr)  # 형상이 아니라 객체 자체 — 색공간 변환·복사를 identity로 잡는다
         return self._quad
 
 
@@ -278,6 +303,46 @@ def test_quad_candidates_yields_the_dl_quad_first_and_never_computes_the_color_p
 
     assert source == "dl"
     assert np.allclose(quad, DL_QUAD)
+
+
+def test_quad_candidates_feeds_the_untouched_original_bgr_to_the_aligner(monkeypatch):
+    """어댑터는 EXIF 정위치 BGR 원본을 그대로 받는다 — 채널 순서·복사 개입이 없어야 한다.
+
+    형상만 기록하면 BGR→RGB 뒤집기처럼 형상이 보존되는 변환이 그대로 통과한다(모델은
+    BGR을 전제로 preprocess한다 — corner_dl.preprocess). 객체 identity로 못 박는다.
+    """
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    aligner = _FakeAligner(DL_QUAD)
+    bgr = _bgr()
+
+    list(corner_dl.quad_candidates(bgr, aligner, job_id=1))
+
+    assert len(aligner.calls) == 1
+    assert aligner.calls[0] is bgr
+
+
+def test_quad_candidates_normalizes_the_dl_quad_to_the_warp_corner_order(monkeypatch):
+    # DL 출력 순서는 warp 계약(TL→TR→BR→BL)과 무관하다 — 공급자가 _order로 정규화한다.
+    monkeypatch.setattr(
+        corner_dl, "form_quad_robust", lambda bgr: pytest.fail("색 경로가 계산되면 안 된다")
+    )
+    aligner = _FakeAligner(SCRAMBLED_QUAD)
+
+    _source, quad = next(corner_dl.quad_candidates(_bgr(), aligner, job_id=1))
+
+    assert np.array_equal(quad, DL_QUAD)
+
+
+def test_quad_candidates_does_not_reorder_the_color_quad(monkeypatch):
+    # 색 후보는 _candidate_quads가 이미 정렬해 돌려주므로 재적용하지 않는다(docstring 계약) —
+    # 퇴화 quad에서 현행 동작과 갈리는 것을 막는 규칙이라 방향까지 고정한다.
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: SCRAMBLED_QUAD)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), None, job_id=1))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert np.array_equal(candidates[0][1], SCRAMBLED_QUAD)
 
 
 def test_quad_candidates_falls_back_to_the_color_path_after_the_dl_quad_is_consumed(

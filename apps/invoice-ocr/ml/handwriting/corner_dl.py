@@ -135,11 +135,13 @@ class CornerModel:
             raise ValueError(f"모델 출력 이름 계약 위반: {sorted(missing)} 없음 ({path})")
 
     def quad(self, bgr):
-        """BGR 원본 → 원본 좌표계 (4, 2) float32 코너. 검출 실패·예외는 전부 None.
+        """BGR 원본 → 원본 좌표계 (4, 2) float32 코너. 검출 실패·추론 예외는 전부 None.
 
-        추론 경로 다운 금지 불변식 — 어떤 예외도 밖으로 내지 않는다(호출부가 색 경로로
-        폴백한다). 실패 모드가 안전하다는 것이 이 모델 채택의 근거이기도 하다: 틀린 quad
-        대신 빈 결과를 낸다(analysis.md 「실측 5」).
+        추론 경로 다운 금지 불변식 — **추론(DL 호출) 실패**를 밖으로 내지 않는다(호출부가
+        색 경로로 폴백한다). 실패 모드가 안전하다는 것이 이 모델 채택의 근거이기도 하다:
+        틀린 quad 대신 빈 결과를 낸다(analysis.md 「실측 5」). 입력 계약 위반(bgr가 ndarray가
+        아님 등)은 여기서 삼키지 않는다 — 공급자 quad_candidates의 except가 `error:{타입}`
+        폴백 사유로 닫으므로 '추론 실패'로 오귀속되지 않는다.
 
         Args:
             bgr: EXIF 정위치 BGR 원본.
@@ -147,8 +149,8 @@ class CornerModel:
         Returns:
             (4, 2) float32 코너 또는 None.
         """
+        h, w = bgr.shape[:2]
         try:
-            h, w = bgr.shape[:2]
             outs = self._session.run(self._output_names, {self._input_name: preprocess(bgr)})
             named = dict(zip(self._output_names, outs, strict=True))
             return postprocess(named["points"], named["has_obj"], h=h, w=w)
@@ -243,6 +245,9 @@ def quad_candidates(bgr, aligner, job_id=None):
         재적용하면 퇴화 quad에서 현행 동작과 갈릴 수 있다.
     """
     if aligner is not None:
+        # CornerModel.quad는 추론 예외를 내부에서 삼켜 None으로 닫으므로(추론 경로 다운 금지
+        # 불변식) 이 라벨은 순수 미검출뿐 아니라 삼켜진 추론 예외도 포함한다 — 상세는 stderr의
+        # `[corner-dl] 추론 실패(...)`에 있다.
         reason = "no-detection"
         try:
             raw = aligner.quad(bgr)

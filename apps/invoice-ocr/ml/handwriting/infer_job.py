@@ -183,7 +183,8 @@ def _gated_warp(bgr, aligner, job_id: int):
 
     w = None
     for src, quad in quad_candidates(bgr, aligner, job_id=job_id):
-        w = ip.rotate(warp(bgr, quad), ip.deskew_angle(warp(bgr, quad)))
+        raw = warp(bgr, quad)
+        w = ip.rotate(raw, ip.deskew_angle(raw))
         if _warp_gate_passes(w, job_id):
             return w, True
         if src == "dl":

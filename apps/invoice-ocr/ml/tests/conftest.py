@@ -1,11 +1,58 @@
 """공용 픽스처. 실데이터에 의존하지 않는 합성 데이터만 둔다."""
 
+import ast
 import math
+from pathlib import Path
 
 import pytest
 
 from handwriting.warp_gate import MIN_BLUE_RATIO  # stdlib만 쓰는 모듈이라 코어 venv에서도 안전
 from tools.curation_enrich import enrich_pairs  # 동일 — stdlib 전용 순수 계층
+
+
+def _import_names(node) -> set[str]:
+    """import 노드 하나가 끌어오는 모듈 경로 후보를 모은다(`module`과 `module.alias` 양쪽).
+
+    `from handwriting import corner_dl`과 `from handwriting.corner_dl import x`는 표기만
+    다를 뿐 같은 모듈을 끌어온다 — 한쪽만 모으면 지연 import 가드가 표기 하나로 새어나간다.
+    """
+    if isinstance(node, ast.Import):
+        return {alias.name for alias in node.names}
+    mod = node.module or ""
+    return {mod} | {f"{mod}.{alias.name}" for alias in node.names}
+
+
+def import_scopes(src_path) -> tuple[set[str], set[str]]:
+    """소스의 import를 (모듈 레벨, 함수 스코프) 두 집합으로 가른다.
+
+    지연 import 규약(무거운 의존은 함수 안에서만) 가드가 공유하는 정규화다. `tree.body`
+    직계만 보면 모듈 레벨 `try:`/`if:` 블록 안의 import를 놓치므로, "함수 스코프에 속하지
+    않는 모든 import = 모듈 레벨"로 정의한다. `Import`·`ImportFrom` 양쪽을 모두 본다 —
+    한쪽만 모으면 규약을 지킨 표기가 거짓 RED가 되거나 어긴 표기가 조용히 통과한다.
+
+    Args:
+        src_path: 검사할 파이썬 소스 경로.
+
+    Returns:
+        (모듈 레벨 이름 집합, 함수 스코프 이름 집합).
+    """
+    tree = ast.parse(Path(src_path).read_text(encoding="utf-8"))
+    in_fn_nodes = {
+        node
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Import | ast.ImportFrom)
+    }
+    module_level: set[str] = set()
+    in_functions: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Import | ast.ImportFrom):
+            continue
+        target = in_functions if node in in_fn_nodes else module_level
+        target |= _import_names(node)
+    return module_level, in_functions
+
 
 # 정상 합성의 파랑 비율을 임계의 몇 배로 둘지. 3배면 임계가 흔들려도 정상 케이스가 여유를 갖는다.
 HEALTHY_RATIO_FACTOR = 3
