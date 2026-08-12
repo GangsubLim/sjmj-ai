@@ -22,6 +22,7 @@ def test_model_bundle_field_order_is_pinned():
         "qwen",
         "device",
         "retrieval_version",
+        "aligner",
     )
 
 
@@ -133,6 +134,29 @@ def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version, npz=
     monkeypatch.setattr("numpy.load", fake_load)
     monkeypatch.setattr("handwriting.bank_id.compute_retrieval_version", compute_retrieval_version)
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(tmp_path))
+    _install_fake_corner_dl(monkeypatch)  # 기본은 모델 부재(현행 색 경로)
+    return seen
+
+
+def _install_fake_corner_dl(monkeypatch, aligner=None) -> dict:
+    """handwriting.corner_dl을 가짜로 교체한다 — 배선만 검증한다.
+
+    실제 corner_dl은 모듈 레벨 cv2 의존이라 코어 venv에서 import가 불가하다(이 파일은
+    numpy만 요구한다). 실 로더의 fail-safe는 tests/test_corner_dl.py가 실행으로 덮는다.
+
+    Returns:
+        가짜 로더가 받은 인자를 `models_dir`로 담는 dict.
+    """
+    seen: dict = {}
+    m = types.ModuleType("handwriting.corner_dl")
+
+    def load_or_none(models_dir):
+        seen["models_dir"] = models_dir
+        return aligner
+
+    m.load_or_none = load_or_none
+    monkeypatch.setattr(handwriting, "corner_dl", m, raising=False)
+    monkeypatch.setitem(sys.modules, "handwriting.corner_dl", m)
     return seen
 
 
@@ -197,6 +221,36 @@ def test_load_models_logs_the_boot_fingerprint_to_stderr(monkeypatch, tmp_path, 
     load_models()
 
     assert "fingerprint123" in capsys.readouterr().err
+
+
+def test_model_bundle_defaults_the_aligner_to_none():
+    # 모델 배포 전(부재) 상태가 기본값이다 — 그때 quad 공급은 현행 색 경로 그대로다.
+    b = ModelBundle("m", np.zeros((1, 2), dtype="float32"), ["a"], "q", "cpu")
+
+    assert b.aligner is None
+
+
+def test_load_models_wires_the_aligner_from_the_shared_loader(monkeypatch, tmp_path):
+    """DL 검출기도 '모델 1회 적재 + 속성 읽기' 관례를 따른다(잡마다 재적재 금지)."""
+    _install_fake_bank(
+        monkeypatch, tmp_path, compute_retrieval_version=lambda *a, **kw: "fingerprint123"
+    )
+    seen = _install_fake_corner_dl(monkeypatch, aligner="aligner-stub")
+
+    bundle = load_models()
+
+    assert bundle.aligner == "aligner-stub"
+    assert seen["models_dir"] == tmp_path  # 뱅크·인코더와 같은 디렉터리(SJMJ_ML_MODELS_DIR)
+
+
+def test_load_models_keeps_booting_without_a_corner_model(monkeypatch, tmp_path):
+    """모델 부재는 진단 손실이 아니라 '현행 동작 유지'다 — 기동을 실패시키지 않는다."""
+    _install_fake_bank(
+        monkeypatch, tmp_path, compute_retrieval_version=lambda *a, **kw: "fingerprint123"
+    )
+    _install_fake_corner_dl(monkeypatch, aligner=None)
+
+    assert load_models().aligner is None
 
 
 # ---------------------------------------------------------------------------
