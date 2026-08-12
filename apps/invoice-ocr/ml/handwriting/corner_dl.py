@@ -201,7 +201,8 @@ def log_fallback(job_id, reason):
     stderr인 것과 축이 다르다(잡별 진단 = stdout).
 
     Args:
-        job_id: 잡 id. None이면 태그를 생략한다(데모 CLI 경로).
+        job_id: 잡 id — 운영(infer_job)은 int, 데모 CLI(infer_photo)는 파일명 str을 넘긴다.
+            None이면 태그를 생략한다(현재는 테스트만 이 값을 쓴다).
         reason: no-detection | invalid-quad | error:{예외타입} | gate-demoted.
     """
     tag = f"job={job_id} " if job_id is not None else ""
@@ -236,7 +237,8 @@ def quad_candidates(bgr, aligner, job_id=None):
     Args:
         bgr: EXIF 정위치 BGR 원본.
         aligner: CornerModel 또는 None.
-        job_id: 로그 태그용 잡 id. None이면 태그를 생략한다(데모 CLI 경로).
+        job_id: 로그 태그용 잡 id — 운영(infer_job)은 int, 데모 CLI(infer_photo)는 파일명 str을
+            넘긴다. None이면 태그를 생략한다(현재는 테스트만 이 값을 쓴다).
 
     Yields:
         (source, quad) — source는 "dl" | "color". quad는 (4, 2) float32.
@@ -275,7 +277,7 @@ def form_quad_best(bgr, aligner, job_id=None):
     Args:
         bgr: EXIF 정위치 BGR 원본.
         aligner: CornerModel 또는 None.
-        job_id: 로그 태그용 잡 id.
+        job_id: 로그 태그용 잡 id. 유일한 호출부(infer_photo 데모 CLI)는 파일명 str을 넘긴다.
 
     Returns:
         (4, 2) float32 quad. 후보가 하나도 없으면 None(현행 색 경로 None 계약과 동일).

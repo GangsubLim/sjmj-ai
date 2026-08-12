@@ -37,13 +37,13 @@ def import_scopes(src_path) -> tuple[set[str], set[str]]:
         (모듈 레벨 이름 집합, 함수 스코프 이름 집합).
     """
     tree = ast.parse(Path(src_path).read_text(encoding="utf-8"))
-    in_fn_nodes = {
-        node
-        for fn in ast.walk(tree)
-        if isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef)
-        for node in ast.walk(fn)
-        if isinstance(node, ast.Import | ast.ImportFrom)
-    }
+    in_fn_nodes: set = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, ast.FunctionDef | ast.AsyncFunctionDef):
+            continue
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Import | ast.ImportFrom):
+                in_fn_nodes.add(node)
     module_level: set[str] = set()
     in_functions: set[str] = set()
     for node in ast.walk(tree):
