@@ -30,6 +30,15 @@ cv = [
     "opencv-python-headless>=4.10,<5",
     "numpy>=1.26,<3",
 ]
+# 로컬 검증·워커 런타임 전용 — DL 코너검출(DocAligner point/lcnet050) ONNX 추론.
+# CI는 이 extra 없이 돈다(worker+cv): corner_dl의 onnxruntime import가 _make_session 안으로
+# 지연돼 있고 단위테스트는 Fake 세션을 쓴다.
+# ==1.22.0 핀: 2026-08-12 스파이크가 검증한 버전이며, 배포 단계의 worker venv 수동 설치도
+# 같은 버전을 쓴다. ml(paddle)과 conflicts는 추가하지 않는다 — CPU ONNX 추론이라 cv2
+# 네임스페이스가 겹치지 않는다.
+dl = [
+    "onnxruntime==1.22.0",
+]
 
 [dependency-groups]
 dev = [
