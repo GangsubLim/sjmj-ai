@@ -22,6 +22,7 @@ def test_model_bundle_field_order_is_pinned():
         "qwen",
         "device",
         "retrieval_version",
+        "aligner",
     )
 
 
@@ -106,16 +107,28 @@ def _fake_npz() -> dict:
     }
 
 
-def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version, npz=None) -> dict:
+def _install_fake_bank(
+    monkeypatch, tmp_path, *, compute_retrieval_version, npz=None, aligner=None
+) -> dict:
     """load_models가 실제로 실행되도록 torch 의존 handwriting.infer_photo와 np.load를 가짜로 교체.
 
     handwriting.infer_photo는 모듈 최상단에서 torch를 import해 이 venv(worker+cv)에는 없다
     (tests/test_infer_job_gate.py와 동일 사유·동일 패턴). 그래서 그 모듈만 가짜로 갈아끼우고
     np.load만 합성 뱅크로 바꿔, load_models 본문(속성 읽기·인자 순서)은 실제로 실행한다.
 
+    가짜 handwriting.corner_dl도 **여기서 함께** 설치한다(aligner 기본값 None = 모델 부재 =
+    현행 색 경로). 호출부가 뒤에 다시 설치하는 형태였다면 설치 순서에 따라 aligner가 조용히
+    None으로 덮어써져 false GREEN이 난다 — aligner를 인자로 승격해 순서 의존을 없앤다.
+
+    Args:
+        compute_retrieval_version: handwriting.bank_id.compute_retrieval_version 대역.
+        npz: 합성 뱅크 dict. None이면 _fake_npz().
+        aligner: 가짜 corner_dl.load_or_none이 돌려줄 값(None = 모델 부재).
+
     Returns:
-        가짜 np.load가 받은 경로를 `bank_path`로 담는 dict — "어느 뱅크 파일을 여는가"를
-        호출부가 단언할 수 있게 한다(가짜가 인자를 무시하면 파일명 회귀가 통과한다).
+        가짜 np.load가 받은 경로를 `bank_path`로, 가짜 corner_dl 로더가 받은 인자를 호출
+        1건당 1원소로 쌓은 리스트를 `aligner_loads`로 담는 dict — "어느 뱅크 파일을 여는가"와
+        "몇 번 적재하는가"를 호출부가 단언할 수 있게 한다.
     """
     fake_infer_photo = types.ModuleType("handwriting.infer_photo")
     fake_infer_photo.load_model_from = lambda path, device: f"model:{path.name}:{device}"
@@ -133,7 +146,31 @@ def _install_fake_bank(monkeypatch, tmp_path, *, compute_retrieval_version, npz=
     monkeypatch.setattr("numpy.load", fake_load)
     monkeypatch.setattr("handwriting.bank_id.compute_retrieval_version", compute_retrieval_version)
     monkeypatch.setenv("SJMJ_ML_MODELS_DIR", str(tmp_path))
+    seen["aligner_loads"] = _install_fake_corner_dl(monkeypatch, aligner=aligner)
     return seen
+
+
+def _install_fake_corner_dl(monkeypatch, aligner=None) -> list:
+    """handwriting.corner_dl을 가짜로 교체한다 — 배선만 검증한다.
+
+    실제 corner_dl은 모듈 레벨 cv2 의존이라 코어 venv에서 import가 불가하다(이 파일은
+    numpy만 요구한다). 실 로더의 fail-safe는 tests/test_corner_dl.py가 실행으로 덮는다.
+
+    Returns:
+        가짜 로더가 받은 인자를 호출 1건당 1원소로 쌓는 리스트 — dict 덮어쓰기 기록이었다면
+        2회 적재해도 마지막 값만 남아 '1회 적재' 계약이 고정되지 않는다.
+    """
+    calls: list = []
+    m = types.ModuleType("handwriting.corner_dl")
+
+    def load_or_none(models_dir):
+        calls.append(models_dir)
+        return aligner
+
+    m.load_or_none = load_or_none
+    monkeypatch.setattr(handwriting, "corner_dl", m, raising=False)
+    monkeypatch.setitem(sys.modules, "handwriting.corner_dl", m)
+    return calls
 
 
 def test_load_models_wires_the_fingerprint_through(monkeypatch, tmp_path):
@@ -197,6 +234,42 @@ def test_load_models_logs_the_boot_fingerprint_to_stderr(monkeypatch, tmp_path, 
     load_models()
 
     assert "fingerprint123" in capsys.readouterr().err
+
+
+def test_model_bundle_defaults_the_aligner_to_none():
+    # 모델 배포 전(부재) 상태가 기본값이다 — 그때 quad 공급은 현행 색 경로 그대로다.
+    b = ModelBundle("m", np.zeros((1, 2), dtype="float32"), ["a"], "q", "cpu")
+
+    assert b.aligner is None
+
+
+def test_load_models_wires_the_aligner_from_the_shared_loader(monkeypatch, tmp_path):
+    """DL 검출기도 '모델 1회 적재 + 속성 읽기' 관례를 따른다(잡마다 재적재 금지)."""
+    seen = _install_fake_bank(
+        monkeypatch,
+        tmp_path,
+        compute_retrieval_version=lambda *a, **kw: "fingerprint123",
+        aligner="aligner-stub",
+    )
+
+    bundle = load_models()
+
+    assert bundle.aligner == "aligner-stub"
+    # 뱅크·인코더와 같은 디렉터리(SJMJ_ML_MODELS_DIR)에서 **정확히 1회** 적재한다 —
+    # 횟수를 세지 않으면 부팅 때마다 ONNX 세션을 두 번 여는 회귀가 통과한다.
+    assert seen["aligner_loads"] == [tmp_path]
+
+
+def test_load_models_keeps_booting_without_a_corner_model(monkeypatch, tmp_path):
+    """모델 부재는 진단 손실이 아니라 '현행 동작 유지'다 — 기동을 실패시키지 않는다."""
+    _install_fake_bank(
+        monkeypatch,
+        tmp_path,
+        compute_retrieval_version=lambda *a, **kw: "fingerprint123",
+        aligner=None,
+    )
+
+    assert load_models().aligner is None
 
 
 # ---------------------------------------------------------------------------

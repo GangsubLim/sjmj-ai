@@ -22,7 +22,7 @@ BANK_FILENAME = "bank.npz"
 class ModelBundle(NamedTuple):
     """load_models 산출 — infer_job이 **속성으로** 읽는다(위치 언패킹 금지).
 
-    5-튜플에 6번째 원소를 위치로 더하면 순서 실수가 조용히 통과한다. 소비자는
+    필드를 위치 인자로 추가하면 순서 실수가 조용히 통과한다. 소비자는
     worker.main.main과 handwriting.infer_job.infer_job 둘뿐이라 승격 비용이 낮다.
     """
 
@@ -32,6 +32,11 @@ class ModelBundle(NamedTuple):
     qwen: object
     device: str
     retrieval_version: str | None = None
+    # DL 4-코너 검출기(handwriting.corner_dl.CornerModel) 또는 None. None이면 quad 공급이
+    # 현행 색 경로(rectify.form_quad_robust)로 100% 동일하게 떨어진다 — 모델 배포 전·부재 상태.
+    # `CornerModel | None`로 적으려면 worker/main.py 모듈 레벨에 corner_dl import가 필요해
+    # 워커 부팅 경로에 cv2가 걸린다 — 그래서 object다.
+    aligner: object = None
 
 
 def _require(name: str) -> str:
@@ -85,9 +90,13 @@ def load_models() -> ModelBundle:
     지문 입력(`keys`)은 `retrieval_version_or_none`이 fail-safe 안에서 읽는다 — 추론 필수
     입력(`emb`·`lab`)만 여기서 직접 읽는다. 뱅크는 여기서 1회만 적재되므로(재시작 전까지 파일
     변경이 추론에 반영되지 않는다) 이 지문이 곧 '이 워커 세션이 쓴 retrieval 상태'다.
+
+    DL 코너검출기(aligner)도 여기서 1회 적재한다 — 적재 실패는 기동을 깨지 않고 None이 되어
+    quad 공급이 현행 색 경로로 떨어진다(corner_dl.load_or_none).
     """
     import numpy as np
 
+    from handwriting import corner_dl
     from handwriting import infer_photo as ip
 
     models_dir = Path(_require("SJMJ_ML_MODELS_DIR"))
@@ -103,6 +112,9 @@ def load_models() -> ModelBundle:
     print(
         f"[retrieval-version] 부팅 지문={retrieval_version or '없음'}", file=sys.stderr, flush=True
     )
+    # DL 코너검출기 — 부재·검증 실패·onnxruntime 부재·적재 예외 전부 None으로 흡수한다
+    # (load_or_none 계약). None이면 현행 색 경로로 계속 돈다.
+    aligner = corner_dl.load_or_none(models_dir)
     return ModelBundle(
         item_model=item_model,
         emb=emb,
@@ -110,6 +122,7 @@ def load_models() -> ModelBundle:
         qwen=qwen,
         device=device,
         retrieval_version=retrieval_version,
+        aligner=aligner,
     )
 
 

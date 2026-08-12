@@ -11,14 +11,15 @@ from pathlib import Path
 SRC = Path(__file__).resolve().parents[1] / "handwriting" / "infer_photo.py"
 
 
-def _extract_rows_fn():
+def _fn(name):
     tree = ast.parse(SRC.read_text(encoding="utf-8"))
-    fn = next(
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.FunctionDef) and n.name == "extract_rows_for_job"
+    return tree, next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name
     )
-    return tree, fn
+
+
+def _extract_rows_fn():
+    return _fn("extract_rows_for_job")
 
 
 def test_amount_consumption_is_delegated_to_block_amounts():
@@ -113,3 +114,106 @@ def test_amount_read_is_imported_through_the_package_path():
         n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "amount_read"
     ], "flat import는 예외 클래스를 이중화한다"
     assert modules == {"handwriting.amount_read"}
+
+
+def test_process_one_delegates_quad_supply_to_form_quad_best():
+    """데모 CLI도 production과 같은 quad 경로를 타야 QA 도구로 유효하다."""
+    _, fn = _fn("process_one")
+    args = [a.arg for a in fn.args.args]
+    calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "form_quad_best"
+    ]
+    names = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
+
+    assert "aligner" in args
+    assert len(calls) == 1
+    # aligner가 공급되는지만 본다 — positional 2번째든 `aligner=` 키워드든 의미가 같다.
+    # `calls[0].args[1]`만 보면 키워드 표기로 바꿨을 때 IndexError로 거짓 RED가 난다.
+    supplied = list(calls[0].args[1:2]) + [
+        kw.value for kw in calls[0].keywords if kw.arg == "aligner"
+    ]
+    assert len(supplied) == 1
+    # 이름으로 못 박는다 — 개수만 세면 None 하드코딩(form_quad_best(bgr, None))을 놓친다.
+    assert isinstance(supplied[0], ast.Name) and supplied[0].id == "aligner"
+    assert "form_quad_robust" not in names, "quad 공급 이중화 금지 — 조합 함수 하나만 부른다"
+
+
+def test_process_one_does_not_reload_the_aligner_per_photo():
+    """모델 적재는 main()의 1회다 — 사진마다 재적재하면 CLI가 사진 수만큼 느려진다.
+
+    main() 쪽 `len(loads) == 1`은 main 본문만 훑으므로 소비자(process_one)의 재적재를
+    보지 못한다(실측: process_one 안에서 load_or_none을 불러도 통과).
+    """
+    _, fn = _fn("process_one")
+    names = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
+
+    assert "load_or_none" not in names
+
+
+def test_corner_dl_is_imported_through_the_package_path():
+    """flat `import corner_dl`은 모듈 객체를 이중화한다(amount_read와 같은 함정).
+
+    infer_photo는 sys.path에 자기 디렉터리를 넣으므로 flat import가 별개 모듈을 만들고,
+    그러면 monkeypatch·상수 갱신이 한쪽에만 걸린다.
+    """
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in {"form_quad_best", "load_or_none"}
+    }
+
+    assert modules == {"handwriting.corner_dl"}
+    assert not [
+        n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "corner_dl"
+    ], "flat import는 모듈을 이중화한다"
+
+
+def test_main_loads_the_aligner_once_from_the_env_and_passes_it_down():
+    """모델은 CLI 실행당 1회 적재하고(사진마다 재적재 금지), 경로는 env로만 받는다."""
+    _, fn = _fn("main")
+    loads = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_or_none"
+    ]
+    handoff = [
+        kw.value.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "process_one"
+        for kw in node.keywords
+        if kw.arg == "aligner" and isinstance(kw.value, ast.Name)
+    ]
+    assigned = {
+        t.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "load_or_none"
+        for t in node.targets
+        if isinstance(t, ast.Name)
+    }
+
+    assert len(loads) == 1
+    assert handoff == ["aligner"]
+    assert assigned == {"aligner"}  # 적재 결과가 실제로 넘겨지는 이름에 묶이는지까지 본다
+
+    # 경로는 env로만 주입한다(프로젝트 불변식 — 하드코딩 금지). env 키가 어딘가에 등장하는지만
+    # 보면 `os.environ.get("SJMJ_ML_MODELS_DIR", "/Users/x/models")`처럼 기본값에 절대경로를
+    # 박아도 통과한다(실측). load_or_none의 인자가 **기본값 없는** env 조회임을 못 박는다.
+    src = loads[0].args[0]
+    assert isinstance(src, ast.Call) and isinstance(src.func, ast.Attribute)
+    assert src.func.attr == "get"
+    assert [a.value for a in src.args if isinstance(a, ast.Constant)] == ["SJMJ_ML_MODELS_DIR"]
+    assert len(src.args) == 1 and not src.keywords, "env 조회에 기본값 금지"
