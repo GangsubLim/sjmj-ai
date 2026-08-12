@@ -16,6 +16,7 @@ usage:
 """
 
 import base64
+import os
 import sys
 from pathlib import Path
 
@@ -33,11 +34,12 @@ from fewshot import square  # noqa: E402
 from grid_v4 import AMOUNT_X, DATA_Y, hline_ys, warp  # noqa: E402
 from group import block_amounts, build_proposal  # noqa: E402
 from grouping import AMT_MIN, ITEM_MIN, PAD  # noqa: E402
-from rectify import deskew_angle, form_quad_robust, rotate  # noqa: E402
+from rectify import deskew_angle, rotate  # noqa: E402
 from rows import ITEM_X, band_features, detect_grid_rows  # noqa: E402
 from train_contrastive import EVAL_TF, build_model  # noqa: E402
 
 from handwriting.amount_read import attempt_png_name, read_amount_with_retry  # noqa: E402
+from handwriting.corner_dl import form_quad_best, load_or_none  # noqa: E402
 
 ML = HERE.parents[2]
 BANK = HERE / "runs/bank.npz"
@@ -189,11 +191,16 @@ def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     return news, crops, queries, amounts, prop, ys, P, bands
 
 
-def process_one(src, model, E, lab, qwen, tmp_dir, counter, device):
-    """사진 1장 → section_html. 품목 retrieval + 금액칸 OCR. 운영 경로 그대로."""
-    # 1) 워프 + deskew
+def process_one(src, model, E, lab, qwen, tmp_dir, counter, device, aligner=None):
+    """사진 1장 → section_html. 품목 retrieval + 금액칸 OCR. 운영 경로 그대로.
+
+    aligner는 DL 코너검출기(corner_dl.CornerModel) 또는 None이다 — None이면 quad 공급이
+    기존 색 경로와 100% 동일하다. main()이 1회 적재해 넘긴다(사진마다 재적재 금지).
+    운영 경로와 달리 게이트 재시도는 없다(데모에는 warp_ok 계약이 없다) — 첫 후보를 그대로 쓴다.
+    """
+    # 1) 워프 + deskew (quad 공급 = DL 1순위 → 색 폴백, infer_job과 동일 함수)
     bgr = load_bgr_path(src)
-    q = form_quad_robust(bgr)
+    q = form_quad_best(bgr, aligner)
     w = rotate(warp(bgr, q), deskew_angle(warp(bgr, q)))
 
     # 2) 추론(행검출~crop~retrieval임베딩~금액 OCR) — infer_job와 공유하는 단일 경로
@@ -278,7 +285,11 @@ def main():
 
     tmp_dir = Path(tempfile.mkdtemp())
     counter = itertools.count()
-    sections = [process_one(s, model, E, lab, qwen, tmp_dir, counter, device) for s in srcs]
+    # 경로는 env로만 주입한다(하드코딩 금지). 미설정·모델 부재면 None = 현행 색 경로.
+    aligner = load_or_none(os.environ.get("SJMJ_ML_MODELS_DIR"))
+    sections = [
+        process_one(s, model, E, lab, qwen, tmp_dir, counter, device, aligner=aligner) for s in srcs
+    ]
 
     OUT.write_text(
         f"""<!doctype html><meta charset=utf-8><title>신규 사진 추론</title>

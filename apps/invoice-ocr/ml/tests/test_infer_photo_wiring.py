@@ -113,3 +113,96 @@ def test_amount_read_is_imported_through_the_package_path():
         n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "amount_read"
     ], "flat import는 예외 클래스를 이중화한다"
     assert modules == {"handwriting.amount_read"}
+
+
+def _fn(name):
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    return tree, next(
+        n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name
+    )
+
+
+def test_process_one_delegates_quad_supply_to_form_quad_best():
+    """데모 CLI도 production과 같은 quad 경로를 타야 QA 도구로 유효하다."""
+    _, fn = _fn("process_one")
+    args = [a.arg for a in fn.args.args]
+    calls = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "form_quad_best"
+    ]
+    names = {node.id for node in ast.walk(fn) if isinstance(node, ast.Name)}
+
+    assert "aligner" in args
+    assert len(calls) == 1
+    # 2번째 인자가 aligner여야 한다 — 인자 개수만 세면 None 하드코딩을 놓친다.
+    assert isinstance(calls[0].args[1], ast.Name) and calls[0].args[1].id == "aligner"
+    assert "form_quad_robust" not in names, "quad 공급 이중화 금지 — 조합 함수 하나만 부른다"
+
+
+def test_corner_dl_is_imported_through_the_package_path():
+    """flat `import corner_dl`은 모듈 객체를 이중화한다(amount_read와 같은 함정).
+
+    infer_photo는 sys.path에 자기 디렉터리를 넣으므로 flat import가 별개 모듈을 만들고,
+    그러면 monkeypatch·상수 갱신이 한쪽에만 걸린다.
+    """
+    tree = ast.parse(SRC.read_text(encoding="utf-8"))
+    modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+        for alias in node.names
+        if alias.name in {"form_quad_best", "load_or_none"}
+    }
+
+    assert modules == {"handwriting.corner_dl"}
+    assert not [
+        n for n in ast.walk(tree) if isinstance(n, ast.ImportFrom) and n.module == "corner_dl"
+    ], "flat import는 모듈을 이중화한다"
+
+
+def test_main_loads_the_aligner_once_from_the_env_and_passes_it_down():
+    """모델은 CLI 실행당 1회 적재하고(사진마다 재적재 금지), 경로는 env로만 받는다."""
+    _, fn = _fn("main")
+    loads = [
+        node
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "load_or_none"
+    ]
+    env_keys = {
+        arg.value
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "get"
+        for arg in node.args
+        if isinstance(arg, ast.Constant)
+    }
+    handoff = [
+        kw.value.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "process_one"
+        for kw in node.keywords
+        if kw.arg == "aligner" and isinstance(kw.value, ast.Name)
+    ]
+    assigned = {
+        t.id
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "load_or_none"
+        for t in node.targets
+        if isinstance(t, ast.Name)
+    }
+
+    assert len(loads) == 1
+    assert "SJMJ_ML_MODELS_DIR" in env_keys
+    assert handoff == ["aligner"]
+    assert assigned == {"aligner"}  # 적재 결과가 실제로 넘겨지는 이름에 묶이는지까지 본다
