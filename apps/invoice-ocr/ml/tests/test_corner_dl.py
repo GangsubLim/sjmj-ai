@@ -225,3 +225,158 @@ def test_corner_model_rejects_a_model_with_unexpected_output_names(monkeypatch, 
 
     with pytest.raises(ValueError):
         corner_dl.CornerModel(path)
+
+
+# ── quad_candidates 후보 제너레이터 + 폴백 로그 계약 ────────────────────
+# 색 경로(rectify.form_quad_robust)는 전부 monkeypatch로 고정한다 — 실검출을 태우면
+# 합성 이미지에 의존한 취약한 기대값이 되고, 검증 대상(분기)이 흐려진다.
+
+DL_QUAD = np.array([[1, 1], [11, 1], [11, 21], [1, 21]], np.float32)
+COLOR_QUAD = np.array([[0, 0], [10, 0], [10, 20], [0, 20]], np.float32)
+
+
+class _FakeAligner:
+    """CornerModel 대역 — 고정 quad(또는 None)를 돌려주고 호출을 기록한다."""
+
+    def __init__(self, quad):
+        self._quad, self.calls = quad, []
+
+    def quad(self, bgr):
+        self.calls.append(bgr.shape)
+        return self._quad
+
+
+class _RaisingAligner:
+    """CornerModel 대역 — 어댑터 계약 위반(예외)을 재현한다."""
+
+    def quad(self, bgr):
+        raise RuntimeError("어댑터 계약 위반")
+
+
+def _bgr():
+    return np.zeros((30, 20, 3), np.uint8)
+
+
+def test_quad_candidates_yields_the_dl_quad_first_and_never_computes_the_color_path(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        corner_dl,
+        "form_quad_robust",
+        lambda bgr: pytest.fail("색 경로가 계산되면 안 된다"),
+    )
+    aligner = _FakeAligner(DL_QUAD)
+
+    source, quad = next(corner_dl.quad_candidates(_bgr(), aligner, job_id=1))
+
+    assert source == "dl"
+    assert np.allclose(quad, DL_QUAD)
+
+
+def test_quad_candidates_falls_back_to_the_color_path_after_the_dl_quad_is_consumed(
+    monkeypatch,
+):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    aligner = _FakeAligner(DL_QUAD)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=1))
+
+    assert len(candidates) == 2
+    assert candidates[0][0] == "dl"
+    assert np.allclose(candidates[0][1], DL_QUAD)
+    assert candidates[1][0] == "color"
+    assert np.allclose(candidates[1][1], COLOR_QUAD)
+
+
+def test_quad_candidates_logs_no_detection_and_yields_only_the_color_quad(monkeypatch, capsys):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    aligner = _FakeAligner(None)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=7))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert np.allclose(candidates[0][1], COLOR_QUAD)
+    assert "[corner-dl] job=7 fallback reason=no-detection" in capsys.readouterr().out
+
+
+def test_quad_candidates_logs_error_when_the_aligner_raises(monkeypatch, capsys):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    aligner = _RaisingAligner()
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=3))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert "[corner-dl] job=3 fallback reason=error:RuntimeError" in capsys.readouterr().out
+
+
+def test_quad_candidates_rejects_a_non_finite_dl_quad(monkeypatch, capsys):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    nan_quad = np.array([[np.nan, 0], [10, 0], [10, 20], [0, 20]], np.float32)
+    aligner = _FakeAligner(nan_quad)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=2))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert "[corner-dl] job=2 fallback reason=invalid-quad" in capsys.readouterr().out
+
+
+def test_quad_candidates_rejects_a_malformed_dl_quad(monkeypatch, capsys):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+    malformed_quad = np.array([[0, 0], [10, 0], [10, 20]], np.float32)
+    aligner = _FakeAligner(malformed_quad)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=4))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert "[corner-dl] job=4 fallback reason=invalid-quad" in capsys.readouterr().out
+
+
+def test_quad_candidates_without_an_aligner_is_the_untouched_color_path(monkeypatch, capsys):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), None, job_id=9))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert np.allclose(candidates[0][1], COLOR_QUAD)
+    assert capsys.readouterr().out == ""
+
+
+def test_quad_candidates_yields_nothing_when_both_paths_fail(monkeypatch):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
+    aligner = _FakeAligner(None)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), aligner, job_id=5))
+
+    assert candidates == []
+
+
+def test_form_quad_best_returns_the_first_candidate(monkeypatch):
+    monkeypatch.setattr(
+        corner_dl,
+        "form_quad_robust",
+        lambda bgr: pytest.fail("색 경로가 계산되면 안 된다"),
+    )
+    aligner = _FakeAligner(DL_QUAD)
+
+    quad = corner_dl.form_quad_best(_bgr(), aligner, job_id=6)
+
+    assert np.allclose(quad, DL_QUAD)
+
+
+def test_form_quad_best_returns_none_when_there_is_no_candidate(monkeypatch):
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
+    aligner = _FakeAligner(None)
+
+    assert corner_dl.form_quad_best(_bgr(), aligner, job_id=8) is None
+
+
+def test_log_fallback_omits_the_job_tag_in_the_demo_path(capsys):
+    corner_dl.log_fallback(None, "no-detection")
+
+    out = capsys.readouterr().out
+    assert out == "[corner-dl] fallback reason=no-detection\n"

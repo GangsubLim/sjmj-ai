@@ -22,6 +22,9 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from handwriting.grid_v4 import _order
+from handwriting.rectify import form_quad_robust
+
 MODEL_FILENAME = "lcnet050_p_multi_decoder_l3_d64_256_fp32.onnx"
 # 스파이크 시점 다운로드 사본(PyPI docaligner-docsaid 1.1.1의 point_reg ckpt, Apache 2.0)의
 # 다이제스트. 불일치는 적재 거부다 — 모델 교체는 이 상수 변경(코드 리뷰 게이트)을 요구한다.
@@ -180,3 +183,93 @@ def load_or_none(models_dir):
             flush=True,
         )
         return None
+
+
+def log_fallback(job_id, reason):
+    """색 경로 폴백 사유를 stdout 1줄로 남긴다(로그 계약의 단일 소유자).
+
+    stdout·flush=True는 launchd 상시 폴링 워커 규약이다 — 한 잡의 게이트 로그
+    (`[warp-gate]`, infer_job._warp_gate_passes)와 같은 창구에 시간순으로 쌓여야
+    "DL이 왜 안 쓰였나"를 로그만으로 재구성할 수 있다. 부팅 진단(load_or_none)이
+    stderr인 것과 축이 다르다(잡별 진단 = stdout).
+
+    Args:
+        job_id: 잡 id. None이면 태그를 생략한다(데모 CLI 경로).
+        reason: no-detection | invalid-quad | error:{예외타입} | gate-demoted.
+    """
+    tag = f"job={job_id} " if job_id is not None else ""
+    print(f"[corner-dl] {tag}fallback reason={reason}", flush=True)
+
+
+def _ordered_or_none(quad):
+    """DL quad를 warp 계약(TL→TR→BR→BL) 순서로 정규화한다. 형상 불량·비유한값이면 None.
+
+    NaN/Inf quad는 예외를 내지 않고 cv2가 전-0 워프를 만든다(실측) — 운영 경로는 게이트가
+    강등해 흡수하지만 데모 CLI에는 게이트가 없다. 공급자 단에서 닫는 이유다. `_order`는
+    (3, 2) 입력에도 예외 없이 퇴화 사각형을 돌려주므로 형상도 여기서 본다.
+    """
+    if quad is None:
+        return None
+    pts = np.asarray(quad, dtype=np.float32)
+    if pts.shape != (4, 2) or not np.isfinite(pts).all():
+        return None
+    return _order(pts)
+
+
+def quad_candidates(bgr, aligner, job_id=None):
+    """Quad 공급자 후보를 우선순위대로 지연 산출한다 — DL 1순위, 색 2순위.
+
+    지연 산출이 설계의 핵심이다. 색 경로(form_quad_robust)는 실측 ~0.96s/장이라 DL이
+    채택되면 아예 계산하지 않는다. 후보 '거부' 판정(게이트 강등)은 소비자가 소유한다 —
+    게이트는 운영 경로(result_json.warp_ok) 전용 계약이라 공급자가 알 필요가 없고,
+    알면 corner_dl → infer_job 순환 의존이 생긴다.
+
+    aligner가 None이면 색 후보 하나만 낸다 — 로그도 남기지 않는다(현행 100% 동일).
+
+    Args:
+        bgr: EXIF 정위치 BGR 원본.
+        aligner: CornerModel 또는 None.
+        job_id: 로그 태그용 잡 id. None이면 태그를 생략한다(데모 CLI 경로).
+
+    Yields:
+        (source, quad) — source는 "dl" | "color". quad는 (4, 2) float32.
+        색 후보는 재정렬하지 않는다 — _candidate_quads가 이미 _order로 정렬해 돌려주고
+        (rectify.py:113·135·154, _quad_extreme은 극점 구성 자체가 TL→TR→BR→BL),
+        재적용하면 퇴화 quad에서 현행 동작과 갈릴 수 있다.
+    """
+    if aligner is not None:
+        reason = "no-detection"
+        try:
+            raw = aligner.quad(bgr)
+            dl_quad = _ordered_or_none(raw)
+            if raw is not None and dl_quad is None:
+                reason = "invalid-quad"
+        except Exception as e:  # 어댑터 계약 위반도 추론 경로를 죽이지 않는다
+            dl_quad, reason = None, f"error:{type(e).__name__}"
+        if dl_quad is not None:
+            yield "dl", dl_quad
+        else:
+            log_fallback(job_id, reason)
+    color_quad = form_quad_robust(bgr)
+    if color_quad is not None:
+        yield "color", color_quad
+
+
+def form_quad_best(bgr, aligner, job_id=None):
+    """게이트가 없는 호출부(데모 CLI)용 quad 공급 — 첫 후보를 그대로 고른다.
+
+    운영 경로(infer_job._gated_warp)는 게이트 인지형 선택을 쓴다. 데모는 warp_ok 계약이
+    없어(모든 행을 그려 눈으로 본다) 게이트를 소비할 자리가 없고, 넣으면 강등 잡이 빈
+    리포트가 되어 QA 도구의 목적이 깨진다 — 비대칭은 의도다.
+
+    Args:
+        bgr: EXIF 정위치 BGR 원본.
+        aligner: CornerModel 또는 None.
+        job_id: 로그 태그용 잡 id.
+
+    Returns:
+        (4, 2) float32 quad. 후보가 하나도 없으면 None(현행 색 경로 None 계약과 동일).
+    """
+    for _src, quad in quad_candidates(bgr, aligner, job_id=job_id):
+        return quad
+    return None
