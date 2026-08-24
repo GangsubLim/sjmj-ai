@@ -11,13 +11,16 @@ tools가 worker를 끄는 첫 사례다(방향은 tools → worker 단방향) �
 않기 위한 의존이며, 반대 방향(worker → tools) 의존은 만들지 않는다.
 """
 
+import argparse
 import json
+import sys
 import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from handwriting.amount_read import DegenerateOutputError
+from handwriting.bank_id import code_version
 from worker.plan import build_plan, new_rows
 
 # 산출 기본 경로 — ml/.gitignore의 results/ 아래라 커밋 대상이 아니다.
@@ -231,3 +234,146 @@ def forecast_job(queue, infer_fn, job_id: int) -> JobForecast:
         relinked=len(plan.relinked),
         orphaned=len(plan.orphaned),
     )
+
+
+def build_queue():
+    """운영 DB 큐를 만든다 — 테스트가 monkeypatch로 갈아끼우는 이음매.
+
+    지연 import로 두는 이유는 worker.db가 sqlalchemy를 끌기 때문이다(코어 venv 보호).
+    """
+    from worker.db import WorkerQueue, build_engine
+
+    return WorkerQueue(build_engine())
+
+
+def build_infer_fn():
+    """운영과 같은 모델로 도는 추론 함수를 만든다 — 배선은 worker/main.py와 동일하다.
+
+    load_models·infer_job을 함수 안에서 import하는 것이 모듈 상단 규약이다(torch/mlx/cv2).
+    """
+    from handwriting.infer_job import infer_job
+    from worker.main import load_models
+
+    models = load_models()
+
+    def infer_fn(image_path, crop_dir, job_id):
+        return infer_job(image_path, models, crop_dir, job_id)
+
+    return infer_fn
+
+
+def _parse_jobs_file(path: Path) -> list[int]:
+    """잡 id 목록 파일을 읽는다 — 한 줄에 하나, 빈 줄과 '#' 주석은 건너뛴다."""
+    ids: list[int] = []
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        if not line.lstrip("-").isdigit():
+            print(
+                f"--jobs-file에 정수가 아닌 줄이 있다({path}): {line!r} — "
+                "mysql은 헤더 없이 뽑는다(-N -B)",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(EXIT_USAGE)
+        ids.append(int(line))
+    return ids
+
+
+def _load_resume(out: Path, meta: RunMeta) -> dict[int, JobForecast]:
+    """재개 파일을 읽고 이번 실행에 귀속되는지 확인한다.
+
+    기본 경로가 고정이라 다른 잡 목록·다른 코드로 같은 파일을 재사용하는 것이 실재하는
+    경로이고, 그대로 두면 과거 예측이 이번 합계에 섞인다(spec §3.4).
+
+    Args:
+        out: --out 경로.
+        meta: 이번 실행의 메타.
+
+    Returns:
+        이미 예측된 잡. 파일이 없으면 메타 줄만 쓰고 빈 dict.
+
+    Raises:
+        SystemExit: 기존 파일의 메타가 이번 실행과 다를 때(EXIT_USAGE).
+    """
+    if not out.exists():
+        out.write_text(meta_line(meta) + "\n", encoding="utf-8")
+        return {}
+    lines = out.read_text(encoding="utf-8").splitlines()
+    prior = parse_meta(lines[0]) if lines else None
+    if prior != meta:
+        print(
+            f"--out의 실행 메타가 이번 실행과 다르다({out}) — 기존 {prior}, 이번 {meta}. "
+            "--out에 새 경로를 주거나 기존 파일을 치울 것",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(EXIT_USAGE)
+    return parse_done(lines)
+
+
+def _append(out: Path, forecast: JobForecast) -> None:
+    """예측 1건을 재개 파일에 덧붙인다 — 잡을 끝낼 때마다 즉시 쓴다."""
+    with out.open("a", encoding="utf-8") as fh:
+        fh.write(record_line(forecast) + "\n")
+
+
+def main(argv: list[str] | None = None) -> None:
+    """대상 잡을 예측 전용으로 재추론하고 배치 합계를 낸다.
+
+    붕괴(#99)를 만나면 비0으로 종료하고 셸 루프가 새 프로세스로 재개한다 — launchd
+    KeepAlive와 동형이다(spec §5). 자동 중단 게이트는 두지 않는다: 도구는 수치만 낸다.
+
+    Raises:
+        SystemExit: 붕괴 중단(EXIT_DEGENERATE) · 잡 목록 형식 오류나 재개 귀속 거부(EXIT_USAGE).
+    """
+    ap = argparse.ArgumentParser(prog="reprocess_dryrun", description=__doc__)
+    src = ap.add_mutually_exclusive_group(required=True)
+    src.add_argument("--jobs-file", type=Path, help="잡 id 목록 파일(한 줄에 하나)")
+    src.add_argument("--job", type=int, nargs="+", help="잡 id 직접 지정")
+    ap.add_argument("--out", type=Path, default=DEFAULT_OUT, help="예측 jsonl(재개 파일)")
+    args = ap.parse_args(argv)
+
+    ids = _parse_jobs_file(args.jobs_file) if args.jobs_file else args.job
+    version = code_version()
+    if version is None:
+        print(
+            "code_version(git rev-parse HEAD)을 얻지 못했다 — 재개를 이번 코드에 귀속시킬 수 "
+            "없어 중단한다. PATH에 git이 있는지, ml 체크아웃이 git 저장소인지 확인할 것",
+            file=sys.stderr,
+            flush=True,
+        )
+        raise SystemExit(EXIT_USAGE)
+    meta = RunMeta(job_ids=tuple(sorted(set(ids))), code_version=version)
+    args.out.parent.mkdir(parents=True, exist_ok=True)
+    done = _load_resume(args.out, meta)
+
+    pending = [job_id for job_id in meta.job_ids if job_id not in done]
+    if pending:
+        queue = build_queue()
+        infer_fn = build_infer_fn()
+        # 이 프로세스가 Qwen을 부른 잡 수 — 붕괴 시 은퇴/재시도를 가르는 판별자다
+        # (worker/poll.py의 qwen_jobs_before와 같은 규칙, 같은 술어).
+        qwen_jobs = 0
+        for job_id in pending:
+            try:
+                forecast = forecast_job(queue, infer_fn, job_id)
+            except DegenerateOutputError as exc:
+                print(f"[degenerate] job={job_id} raw={exc}", file=sys.stderr, flush=True)
+                if qwen_jobs == 0:
+                    # 재개가 완료된 잡을 건너뛰므로 이 잡은 이미 한 번 재시도를 소비했다 —
+                    # 여기서 확정 기록해야 다음 실행부터 건너뛰어져 루프가 수렴한다.
+                    _append(args.out, _error_forecast(queue, job_id, DEGENERATE))
+                raise SystemExit(EXIT_DEGENERATE) from exc
+            _append(args.out, forecast)
+            done[job_id] = forecast
+            if forecast.new_row_count:
+                qwen_jobs += 1
+
+    forecasts = [done[job_id] for job_id in meta.job_ids if job_id in done]
+    print(render(forecasts, summarize(forecasts)))
+
+
+if __name__ == "__main__":
+    main()
