@@ -12,9 +12,13 @@ tools가 worker를 끄는 첫 사례다(방향은 tools → worker 단방향) �
 """
 
 import json
+import tempfile
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 from pathlib import Path
+
+from handwriting.amount_read import DegenerateOutputError
+from worker.plan import build_plan, new_rows
 
 # 산출 기본 경로 — ml/.gitignore의 results/ 아래라 커밋 대상이 아니다.
 DEFAULT_OUT = Path("results/dryrun/forecast.jsonl")
@@ -168,3 +172,62 @@ def parse_done(lines: Iterable[str]) -> dict[int, JobForecast]:
             continue
         done[data["job_id"]] = JobForecast(**data)
     return done
+
+
+def _error_forecast(queue, job_id: int, message: str) -> JobForecast:
+    """예측 불가 잡의 레코드 — pair는 조회로 채운다.
+
+    fetch_pairs는 추론과 무관하게 성립한다. 분모에서 빠지는 규모가 보이지 않으면 "미결 21.9%"가
+    몇 건을 대변하는지 알 수 없다(spec §6). 이 조회마저 실패하면 0으로 둔다.
+    """
+    try:
+        pair_count = len(queue.fetch_pairs(job_id))
+    except Exception:  # noqa: BLE001 — 진단 필드 하나의 실패가 리포트를 죽이지 않는다
+        pair_count = 0
+    return JobForecast(
+        job_id=job_id,
+        new_row_count=0,
+        pair_count=pair_count,
+        relinked=0,
+        orphaned=0,
+        error=message,
+    )
+
+
+def forecast_job(queue, infer_fn, job_id: int) -> JobForecast:
+    """잡 1건을 예측 전용으로 재추론한다 — 커밋도 크롭 교체도 하지 않는다.
+
+    pair_count는 fetch_pairs를 다시 부르지 않고 계획에서 센다 — plan_relink의 계약이
+    "relinked ∪ orphaned = old_pairs 전량"이다(handwriting/relink.py docstring).
+
+    Args:
+        queue: WorkerQueue(또는 fetch_image_path·fetch_pairs 계약의 대역).
+        infer_fn: (image_path, crop_dir, job_id) → result_json. 운영 워커와 같은 계약.
+        job_id: 대상 OCR 잡 id.
+
+    Returns:
+        JobForecast. 잡 부재·추론 실패는 error가 실린 예측 불가 레코드다.
+
+    Raises:
+        DegenerateOutputError: 판독기가 붕괴했을 때. **잡 격리 except보다 앞에서 다시
+            던진다**(worker/poll.py와 같은 순서 제약) — 붕괴는 프로세스 지속 상태라
+            여기서 삼키면 이후 모든 예측이 조용히 오염된다.
+    """
+    try:
+        image_path = queue.fetch_image_path(job_id)
+        if image_path is None:
+            return _error_forecast(queue, job_id, "잡 없음")
+        with tempfile.TemporaryDirectory(prefix=f"sjmj-dryrun-job-{job_id}-") as crop_dir:
+            result = infer_fn(image_path, crop_dir, job_id)
+        plan = build_plan(queue, job_id, result)
+    except DegenerateOutputError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — 잡 단위 격리(배치 생존)
+        return _error_forecast(queue, job_id, f"{type(exc).__name__}: {exc}")
+    return JobForecast(
+        job_id=job_id,
+        new_row_count=len(new_rows(result)),
+        pair_count=len(plan.relinked) + len(plan.orphaned),
+        relinked=len(plan.relinked),
+        orphaned=len(plan.orphaned),
+    )

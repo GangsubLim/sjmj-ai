@@ -50,3 +50,95 @@ def test_plan_module_stays_importable_from_the_paddle_free_core():
     src = Path(__file__).resolve().parents[1] / "worker" / "plan.py"
     module_level, _ = import_scopes(src)
     assert [n for n in module_level if not n.startswith("handwriting.relink")] == []
+
+
+def test_the_dryrun_forecast_uses_the_same_plan_production_commits(tmp_path, monkeypatch):
+    """같은 엔진·같은 infer 결과에서 두 경로의 RelinkPlan이 구조적으로 같다.
+
+    "같은 함수를 부른다"는 호출 이름 가드로는 인자가 갈리는 드리프트를 못 잡는다
+    (tests/test_warp_gate_rows.py가 같은 문제를 다루며 남긴 교훈). #106 이후에도 예측이
+    자동으로 따라오게 하는 유일한 고정 장치다.
+
+    엔진을 두 벌 만드는 이유: process_one_job은 commit_job까지 가서 crop_ref·row_index를
+    바꾸므로, 같은 엔진에서 뒤이어 예측하면 입력이 이미 달라져 있다.
+    """
+    from sqlalchemy import create_engine, text
+
+    from tools import reprocess_dryrun as rd
+    from worker.db import WorkerQueue
+    from worker.poll import process_one_job
+
+    class _CapturingQueue(WorkerQueue):
+        """claim_next_pending만 대역 — sqlite는 FOR UPDATE를 파싱하지 못한다(실측:
+        OperationalError near "FOR"). 나머지 메서드는 실제 SQL을 그대로 탄다."""
+
+        def __init__(self, engine, job):
+            super().__init__(engine)
+            self._job = job
+            self.committed = []
+
+        def claim_next_pending(self):
+            return self._job
+
+        def commit_job(self, job_id, result_json, plan):
+            self.committed.append(plan)
+            super().commit_job(job_id, result_json, plan)
+
+    def _seeded():
+        engine = create_engine("sqlite://", future=True)
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE TABLE ocr_jobs (id INTEGER PRIMARY KEY, status TEXT, "
+                    "image_path TEXT, result_json TEXT, curation_reviewed INTEGER DEFAULT 1)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE TABLE training_pairs (id INTEGER PRIMARY KEY, job_id INTEGER, "
+                    "crop_ref TEXT UNIQUE, row_index INTEGER, supply INTEGER, "
+                    "draft_supply INTEGER, status TEXT, exclusion_reason TEXT, reviewed_at TEXT)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO ocr_jobs (id, status, image_path, result_json) "
+                    "VALUES (5, 'running', '/data/up/5.jpeg', '{}')"
+                )
+            )
+            for pid, (ri, sup) in enumerate([(0, 3000), (1, 7000)], start=1):
+                conn.execute(
+                    text(
+                        "INSERT INTO training_pairs (id, job_id, crop_ref, row_index, supply, "
+                        "draft_supply, status) VALUES (:pid, 5, :ref, :ri, :sup, :sup, 'included')"
+                    ),
+                    {"pid": pid, "ref": f"job-5/row-{ri}", "ri": ri, "sup": sup},
+                )
+        return engine
+
+    def infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        return RESULT
+
+    production = _CapturingQueue(
+        _seeded(), {"id": 5, "image_path": "/data/up/5.jpeg", "is_reprocess": True}
+    )
+    process_one_job(production, infer, tmp_path, 1)
+
+    dryrun_queue = WorkerQueue(_seeded())
+    captured: dict = {}
+    real_build_plan = rd.build_plan
+
+    def spy(queue, job_id, result_json):
+        plan = real_build_plan(queue, job_id, result_json)
+        captured["plan"] = plan
+        captured["args"] = (job_id, result_json)
+        return plan
+
+    monkeypatch.setattr(rd, "build_plan", spy)
+    forecast = rd.forecast_job(dryrun_queue, infer, 5)
+
+    assert captured["args"] == (5, RESULT), "forecast_job이 build_plan에 넘긴 인자까지 고정한다"
+    assert production.committed[0] == captured["plan"]
+    assert forecast.relinked == len(captured["plan"].relinked)
+    assert forecast.orphaned == len(captured["plan"].orphaned)
