@@ -347,6 +347,58 @@ def test_a_torn_last_line_in_the_out_file_is_refused_not_a_traceback(tmp_path, m
     assert seen == []
 
 
+def test_a_meta_line_missing_the_job_ids_key_is_refused_not_a_traceback(tmp_path, monkeypatch):
+    """유효한 JSON이라도 job_ids 키가 없으면 KeyError가 그대로 새어나가면 안 된다.
+
+    parse_meta(lines[0])는 문법 오류가 아닌 손상도 낼 수 있다 — 좁은
+    except json.JSONDecodeError로는 못 잡아 docstring의 EXIT_USAGE 약속을 어긴다(실측).
+    """
+    out = tmp_path / "forecast.jsonl"
+    out.write_text('{"job_id": 27, "code_version": "sha-1"}\n', encoding="utf-8")
+    infer_fn, seen = _infer_ok()
+    _wire(monkeypatch, _engine(jobs=(27, 40)), infer_fn)
+
+    with pytest.raises(SystemExit) as exc:
+        rd.main(["--job", "27", "40", "--out", str(out)])
+    assert exc.value.code == rd.EXIT_USAGE
+    assert seen == []
+
+
+def test_a_meta_line_that_is_a_json_scalar_is_refused_not_a_traceback(tmp_path, monkeypatch):
+    """첫 줄이 유효한 JSON 스칼라(정수 등)면 dict 구독이 TypeError를 낸다 — 이 역시 거부다."""
+    out = tmp_path / "forecast.jsonl"
+    out.write_text("5\n", encoding="utf-8")
+    infer_fn, seen = _infer_ok()
+    _wire(monkeypatch, _engine(jobs=(27, 40)), infer_fn)
+
+    with pytest.raises(SystemExit) as exc:
+        rd.main(["--job", "27", "40", "--out", str(out)])
+    assert exc.value.code == rd.EXIT_USAGE
+    assert seen == []
+
+
+def test_a_record_line_with_an_unexpected_field_is_refused_not_a_traceback(tmp_path, monkeypatch):
+    """메타 줄은 멀쩡해도 레코드 줄에 JobForecast에 없는 필드가 섞이면 TypeError가 난다.
+
+    JobForecast(**data)는 레코드 형태를 검증하지 않는다 — 이 역시 거부해야 한다.
+    """
+    out = tmp_path / "forecast.jsonl"
+    out.write_text(
+        meta_line(RunMeta(job_ids=(27, 40), code_version="sha-1"))
+        + "\n"
+        + '{"job_id": 27, "bogus": 1}'
+        + "\n",
+        encoding="utf-8",
+    )
+    infer_fn, seen = _infer_ok()
+    _wire(monkeypatch, _engine(jobs=(27, 40)), infer_fn)
+
+    with pytest.raises(SystemExit) as exc:
+        rd.main(["--job", "27", "40", "--out", str(out)])
+    assert exc.value.code == rd.EXIT_USAGE
+    assert seen == []
+
+
 def test_a_resume_with_a_different_batch_or_code_is_refused(tmp_path, monkeypatch):
     """과거 예측이 이번 합계에 섞이지 않게 거부하고 비0으로 종료한다(spec §3.4)."""
     out = tmp_path / "forecast.jsonl"
@@ -462,6 +514,32 @@ def test_the_shell_retry_loop_converges_on_a_job_that_always_collapses(tmp_path,
     # ③ 3회차 — 40을 건너뛰고 나머지를 완주해 0으로 종료(SystemExit 없음).
     rd.main(argv)
     assert sorted(parse_done(out.read_text(encoding="utf-8").splitlines())) == [27, 40, 51]
+
+
+def test_a_job_that_collapses_as_the_batchs_very_first_qwen_job_is_recorded_immediately(
+    tmp_path, monkeypatch
+):
+    """배치의 맨 앞 잡이 곧바로 이 프로세스의 첫 Qwen 잡으로 붕괴하면 재시도 없이 확정 기록.
+
+    위 수렴 테스트는 '첫 잡이 아닌' 경로(27이 먼저 Qwen을 부른 뒤 40이 붕괴)만 덮는다 —
+    이 테스트는 붕괴 관측이 정확히 1회뿐인 첫 실행 자체를 고정한다(런북 199행 서술의 근거).
+    """
+    calls = []
+
+    def infer_fn(image_path, crop_dir, job_id):
+        calls.append(job_id)
+        raise DegenerateOutputError("!" * 32)
+
+    out = tmp_path / "forecast.jsonl"
+    _wire(monkeypatch, _engine(jobs=(27, 40, 51)), infer_fn)
+
+    with pytest.raises(SystemExit) as exc:
+        rd.main(["--job", "27", "40", "51", "--out", str(out)])
+
+    assert exc.value.code == rd.EXIT_DEGENERATE
+    assert calls == [27], "붕괴 관측은 정확히 1회 — 재시도 없이 그 자리에서 기록된다"
+    done = parse_done(out.read_text(encoding="utf-8").splitlines())
+    assert done[27].error == rd.DEGENERATE
 
 
 def test_a_jobs_file_is_read_one_id_per_line(tmp_path, monkeypatch):

@@ -314,7 +314,7 @@ def _load_resume(out: Path, meta: RunMeta) -> dict[int, JobForecast]:
             )
             raise SystemExit(EXIT_USAGE)
         return parse_done(lines)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, KeyError, TypeError):
         print(
             f"--out 파일이 손상됐다({out}) — append-only라 손상은 마지막 줄일 것이다. "
             "마지막 줄을 지우거나 --out에 새 경로를 줄 것",
@@ -373,8 +373,8 @@ def main(argv: list[str] | None = None) -> None:
             except DegenerateOutputError as exc:
                 print(f"[degenerate] job={job_id} raw={exc}", file=sys.stderr, flush=True)
                 if qwen_jobs == 0:
-                    # 재개가 완료된 잡을 건너뛰므로 이 잡은 이미 한 번 재시도를 소비했다 —
-                    # 여기서 확정 기록해야 다음 실행부터 건너뛰어져 루프가 수렴한다.
+                    # 첫 Qwen 잡의 붕괴는 프로세스 시작 시점에 이미 MLX가 sticky 상태였다는
+                    # 뜻 — 새 프로세스도 그대로 재현하니 재시도는 무의미, 여기서 확정 기록해야 수렴.
                     _append(args.out, _error_forecast(queue, job_id, DEGENERATE))
                 raise SystemExit(EXIT_DEGENERATE) from exc
             _append(args.out, forecast)
