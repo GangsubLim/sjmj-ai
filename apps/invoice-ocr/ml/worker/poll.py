@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from handwriting.amount_read import DegenerateOutputError
-from handwriting.relink import NewRow, plan_relink
+from worker.plan import build_plan, new_rows
 
 
 class PollOutcome(NamedTuple):
@@ -37,19 +37,6 @@ class DegenerateWorkerState(SystemExit):
     보장한다. 종료 자체가 launchd KeepAlive=true의 재기동 트리거다 — KeepAlive는 boolean
     true라 종료 코드와 무관하게 재기동한다(code=1은 로그 판별용).
     """
-
-
-def _new_rows(result_json: dict) -> list[NewRow]:
-    """새 초안에서 행 앵커 입력을 뽑는다.
-
-    supply는 assemble_result_json이 THOUSAND_MULT를 적용한 뒤의 원 단위라
-    training_pairs.supply(사람이 화면에 입력한 원 단위)와 자가 같다(spec §4 축 정합).
-    rows가 없거나 리스트가 아니면 빈 목록으로 본다 — 전량 미결이 되어 사람에게 드러난다.
-    """
-    rows = result_json.get("rows")
-    if not isinstance(rows, list):
-        return []
-    return [NewRow(row_index=r["row_index"], supply=r.get("supply")) for r in rows]
 
 
 def _swap_crop_dir(tmp_dir: Path, final_dir: Path) -> None:
@@ -113,8 +100,7 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             shutil.rmtree(old_dir, ignore_errors=True)
             tmp_dir.rename(old_dir)
         result = infer_fn(job["image_path"], tmp_dir, job_id)
-        new_rows = _new_rows(result)
-        plan = plan_relink(job_id, queue.fetch_pairs(job_id), new_rows)
+        plan = build_plan(queue, job_id, result)
         queue.commit_job(job_id, result, plan)
     except DegenerateOutputError as exc:
         # **잡 격리 except Exception보다 반드시 앞에 온다.** 스팸 결과가 commit_job에 닿는
@@ -147,8 +133,9 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             queue.mark_failed(job_id, {"error": str(exc)})
         return PollOutcome(worked=True, qwen_called=False)
     # 게이트 강등·quad_missing은 rows=[]로 돌아온다 — Qwen 미호출이므로 계수하지 않는다.
-    # try 안에서 이미 뽑은 new_rows를 재사용한다 — "rows가 있다"의 정의를 파일 안에서 하나로 통일.
-    qwen_called = bool(new_rows)
+    # new_rows는 순수함수라 두 번 호출이 무해하고, "rows가 있다"의 정의는 여전히 worker.plan
+    # 한 곳에 있다(드라이런의 크래시루프 카운터도 같은 술어를 쓴다).
+    qwen_called = bool(new_rows(result))
     try:
         _swap_crop_dir(tmp_dir, final_dir)
     except OSError as exc:

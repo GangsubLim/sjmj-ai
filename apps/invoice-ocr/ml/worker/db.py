@@ -103,6 +103,25 @@ class WorkerQueue:
             ).fetchall()
         return [OldPair(pair_id=r[0], row_index=r[1], supply=r[2], draft_supply=r[3]) for r in rows]
 
+    def fetch_image_path(self, job_id: int) -> str | None:
+        """그 잡의 사진 경로만 읽는다 — 상태를 바꾸지 않는 유일한 잡 조회 경로.
+
+        드라이런은 claim_next_pending을 쓸 수 없다: 그 호출 자체가 status='running' 전이라
+        "DB 무변경"이 첫 줄에서 깨진다(spec §3.2). 여기서는 SELECT 하나만 한다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            사진 경로. 그 id의 잡이 없으면 None.
+        """
+        with self.engine.begin() as conn:
+            row = conn.execute(
+                text("SELECT image_path FROM ocr_jobs WHERE id=:id"),
+                {"id": job_id},
+            ).fetchone()
+        return None if row is None else row[0]
+
     def commit_job(self, job_id: int, result_json: dict, plan: RelinkPlan) -> None:
         """초안 갱신과 라벨 승계를 한 트랜잭션으로 커밋한다(ADR 0010).
 
