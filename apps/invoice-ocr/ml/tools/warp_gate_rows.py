@@ -51,8 +51,8 @@ def rewarp(bgr):
     quad = _form_quad(bgr)
     if quad is None:
         return None
-    # handwriting.infer_job.infer_job()의 워프 호출부는 warp를 두 번 부르지만
-    # warp는 결정론적 순수 변환이라 1회로 동치다.
+    # 운영 워프 호출부(handwriting.infer_job._gated_warp)는 후보당 warp를 1회만 부른다
+    # (raw = warp(bgr, quad)가 호이스트됨) — 이 하네스의 1회 호출과 직접 대응한다.
     w = warp(bgr, quad)
     return rotate(w, deskew_angle(w))
 

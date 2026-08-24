@@ -18,8 +18,8 @@ from worker.db import WorkerQueue
 # ---------------------------------------------------------------------------
 
 _SCHEMA = (
-    "CREATE TABLE ocr_jobs (id INTEGER PRIMARY KEY, status TEXT, result_json TEXT, "
-    "curation_reviewed INTEGER DEFAULT 1)",
+    "CREATE TABLE ocr_jobs (id INTEGER PRIMARY KEY, status TEXT, image_path TEXT, "
+    "result_json TEXT, curation_reviewed INTEGER DEFAULT 1)",
     # crop_ref UNIQUE는 운영 스키마 그대로다(migration_008) — 2-pass 순서 제약의 근거라
     # 여기서도 걸어야 순서를 뒤집었을 때 테스트가 실제로 깨진다.
     # draft_supply는 migration_012가 만든 ② 앵커 컬럼 — fetch_pairs가 이 컬럼만 읽는다.
@@ -39,7 +39,10 @@ def _live_engine(pairs):
         for ddl in _SCHEMA:
             conn.execute(text(ddl))
         conn.execute(
-            text("INSERT INTO ocr_jobs (id, status, result_json) VALUES (5, 'running', '{}')")
+            text(
+                "INSERT INTO ocr_jobs (id, status, image_path, result_json) "
+                "VALUES (5, 'running', '/data/up/5.jpeg', '{}')"
+            )
         )
         for p in pairs:
             conn.execute(
@@ -711,3 +714,23 @@ def test_a_pair_without_a_stored_draft_stays_orphaned():
 
     assert plan.relinked == ()
     assert [o.pair_id for o in plan.orphaned] == [1]
+
+
+# ---------------------------------------------------------------------------
+# fetch_image_path — 드라이런의 유일한 잡 조회(읽기 전용)
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_image_path_reads_the_photo_without_changing_the_job():
+    """claim_next_pending과 달리 status를 전이시키지 않는다 — 드라이런 무변경의 근거(spec §3.2)."""
+    engine = _live_engine([])
+
+    assert WorkerQueue(engine).fetch_image_path(5) == "/data/up/5.jpeg"
+
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT status FROM ocr_jobs WHERE id=5")).fetchone()
+    assert row[0] == "running", "조회가 상태를 건드리면 무변경 보장이 무너진다"
+
+
+def test_fetch_image_path_is_none_for_a_missing_job():
+    assert WorkerQueue(_live_engine([])).fetch_image_path(999) is None
