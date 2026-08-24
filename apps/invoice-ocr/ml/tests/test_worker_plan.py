@@ -30,6 +30,7 @@ def test_new_rows_treats_a_missing_or_malformed_rows_key_as_empty():
     # 전량 미결이 되어 사람에게 드러나는 것이 계약이다(옮겨온 _new_rows docstring).
     assert new_rows({"warp_ok": False}) == []
     assert new_rows({"rows": None}) == []
+    assert new_rows({"rows": "not-a-list"}) == []
 
 
 def test_build_plan_equals_the_hand_wired_composition():
@@ -38,7 +39,9 @@ def test_build_plan_equals_the_hand_wired_composition():
         OldPair(pair_id=7, row_index=0, supply=3000, draft_supply=2800),
         OldPair(pair_id=8, row_index=1, supply=9000, draft_supply=8900),
     ]
-    assert build_plan(_queue(pairs), 5, RESULT) == plan_relink(5, pairs, new_rows(RESULT))
+    queue = _queue(pairs)
+    assert build_plan(queue, 5, RESULT) == plan_relink(5, pairs, new_rows(RESULT))
+    queue.fetch_pairs.assert_called_once_with(5)
 
 
 def test_plan_module_stays_importable_from_the_paddle_free_core():

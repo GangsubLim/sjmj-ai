@@ -42,4 +42,6 @@ def build_plan(queue, job_id: int, result_json: dict) -> RelinkPlan:
     Returns:
         승계·미결이 빠짐없이 담긴 RelinkPlan.
     """
-    return plan_relink(job_id, queue.fetch_pairs(job_id), new_rows(result_json))
+    # rows 먼저 뽑아 malformed 입력이 DB 왕복 이전에 드러남.
+    rows = new_rows(result_json)
+    return plan_relink(job_id, queue.fetch_pairs(job_id), rows)

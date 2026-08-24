@@ -13,6 +13,7 @@ tools가 worker를 끄는 첫 사례다(방향은 tools → worker 단방향) �
 
 import argparse
 import json
+import re
 import sys
 import tempfile
 from collections.abc import Iterable
@@ -269,7 +270,7 @@ def _parse_jobs_file(path: Path) -> list[int]:
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
-        if not line.lstrip("-").isdigit():
+        if not re.fullmatch(r"-?\d+", line):
             print(
                 f"--jobs-file에 정수가 아닌 줄이 있다({path}): {line!r} — "
                 "mysql은 헤더 없이 뽑는다(-N -B)",
@@ -295,22 +296,32 @@ def _load_resume(out: Path, meta: RunMeta) -> dict[int, JobForecast]:
         이미 예측된 잡. 파일이 없으면 메타 줄만 쓰고 빈 dict.
 
     Raises:
-        SystemExit: 기존 파일의 메타가 이번 실행과 다를 때(EXIT_USAGE).
+        SystemExit: 기존 파일의 메타가 이번 실행과 다르거나(EXIT_USAGE), --out 파일이
+            손상돼 파싱할 수 없을 때(EXIT_USAGE).
     """
     if not out.exists():
         out.write_text(meta_line(meta) + "\n", encoding="utf-8")
         return {}
     lines = out.read_text(encoding="utf-8").splitlines()
-    prior = parse_meta(lines[0]) if lines else None
-    if prior != meta:
+    try:
+        prior = parse_meta(lines[0]) if lines else None
+        if prior != meta:
+            print(
+                f"--out의 실행 메타가 이번 실행과 다르다({out}) — 기존 {prior}, 이번 {meta}. "
+                "--out에 새 경로를 주거나 기존 파일을 치울 것",
+                file=sys.stderr,
+                flush=True,
+            )
+            raise SystemExit(EXIT_USAGE)
+        return parse_done(lines)
+    except json.JSONDecodeError:
         print(
-            f"--out의 실행 메타가 이번 실행과 다르다({out}) — 기존 {prior}, 이번 {meta}. "
-            "--out에 새 경로를 주거나 기존 파일을 치울 것",
+            f"--out 파일이 손상됐다({out}) — append-only라 손상은 마지막 줄일 것이다. "
+            "마지막 줄을 지우거나 --out에 새 경로를 줄 것",
             file=sys.stderr,
             flush=True,
         )
-        raise SystemExit(EXIT_USAGE)
-    return parse_done(lines)
+        raise SystemExit(EXIT_USAGE) from None
 
 
 def _append(out: Path, forecast: JobForecast) -> None:

@@ -190,12 +190,22 @@ def _infer_ok(result=RESULT):
 
 
 def test_forecast_counts_rows_pairs_relinks_and_orphans():
-    queue = WorkerQueue(_engine(jobs=(27,), pairs_per_job=2))
+    """새 rows(2개)가 못 짝짓는 옛 쌍(supply 9999)을 하나 심어 orphan 반쪽도 실측한다."""
+    engine = _engine(jobs=(27,), pairs_per_job=2)
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "INSERT INTO training_pairs (id, job_id, crop_ref, row_index, supply, "
+                "draft_supply, status, exclusion_reason, reviewed_at) VALUES "
+                "(3, 27, 'job-27/row-2', 2, 9999, 9999, 'included', NULL, NULL)"
+            )
+        )
+    queue = WorkerQueue(engine)
     infer_fn, seen = _infer_ok()
 
     forecast = forecast_job(queue, infer_fn, 27)
 
-    assert forecast == JobForecast(job_id=27, new_row_count=2, pair_count=2, relinked=2, orphaned=0)
+    assert forecast == JobForecast(job_id=27, new_row_count=2, pair_count=3, relinked=2, orphaned=1)
     assert seen[0]["image_path"] == "/data/up/27.jpeg"
 
 
@@ -316,6 +326,25 @@ def test_a_resumed_run_skips_jobs_already_in_the_out_file(tmp_path, monkeypatch)
 
     assert [s["job_id"] for s in seen] == [40], "이미 예측한 잡은 다시 추론하지 않는다"
     assert sorted(parse_done(out.read_text(encoding="utf-8").splitlines())) == [27, 40]
+
+
+def test_a_torn_last_line_in_the_out_file_is_refused_not_a_traceback(tmp_path, monkeypatch):
+    """kill -9·ENOSPC로 --out 마지막 줄이 잘려도 traceback이 아니라 EXIT_USAGE로 거부한다."""
+    out = tmp_path / "forecast.jsonl"
+    out.write_text(
+        meta_line(RunMeta(job_ids=(27, 40), code_version="sha-1"))
+        + "\n"
+        + '{"job_id": 40, "new_ro'
+        + "\n",
+        encoding="utf-8",
+    )
+    infer_fn, seen = _infer_ok()
+    _wire(monkeypatch, _engine(jobs=(27, 40)), infer_fn)
+
+    with pytest.raises(SystemExit) as exc:
+        rd.main(["--job", "27", "40", "--out", str(out)])
+    assert exc.value.code == rd.EXIT_USAGE
+    assert seen == []
 
 
 def test_a_resume_with_a_different_batch_or_code_is_refused(tmp_path, monkeypatch):
@@ -447,15 +476,21 @@ def test_a_jobs_file_is_read_one_id_per_line(tmp_path, monkeypatch):
 
 
 def test_a_malformed_jobs_file_exits_with_the_non_retryable_code(tmp_path, monkeypatch):
-    """셸 until 루프는 코드를 구분하지 않는다 — 사람이 고쳐야 하는 실패는 1이 아니어야 한다."""
-    jobs_file = tmp_path / "jobs.txt"
-    jobs_file.write_text("id\n27\n", encoding="utf-8")  # mysql 헤더를 그대로 넘긴 경우
+    """셸 until 루프는 코드를 구분하지 않는다 — 사람이 고쳐야 하는 실패는 1이 아니어야 한다.
+
+    "--5"·"²"는 lstrip("-").isdigit()는 통과하지만 int()에서 ValueError를 내던 값이다
+    (leading dash 전량 제거 + Unicode 숫자 오탐) — 같은 EXIT_USAGE 경로로 들어와야 한다.
+    """
     infer_fn, _ = _infer_ok()
     _wire(monkeypatch, _engine(jobs=(27,)), infer_fn)
 
-    with pytest.raises(SystemExit) as exc:
-        rd.main(["--jobs-file", str(jobs_file), "--out", str(tmp_path / "forecast.jsonl")])
-    assert exc.value.code == rd.EXIT_USAGE
+    for i, line in enumerate(("id", "--5", "²")):
+        jobs_file = tmp_path / f"jobs{i}.txt"
+        jobs_file.write_text(f"{line}\n27\n", encoding="utf-8")
+
+        with pytest.raises(SystemExit) as exc:
+            rd.main(["--jobs-file", str(jobs_file), "--out", str(tmp_path / f"forecast{i}.jsonl")])
+        assert exc.value.code == rd.EXIT_USAGE
 
 
 def test_an_unhandled_exception_does_not_look_like_a_retryable_collapse(tmp_path):
