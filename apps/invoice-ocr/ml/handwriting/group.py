@@ -103,12 +103,15 @@ class Row:
 
 @dataclass(frozen=True)
 class Proposal:
-    """그룹핑 결과 — 행 목록·블록 수·DB 항목 수·상태."""
+    """그룹핑 결과 — 행 목록·블록 수·DB 항목 수·상태·하단에서 절단한 cont 수."""
 
     rows: tuple
     n_blocks: int
     dbn: int
     status: str
+    # 마지막 품목행 이후에서 잘라낸 cont 수(#39). 절단은 read_fn 호출을 없애 병합 원문에
+    # 흔적을 남기지 않으므로, 이 값이 block_amounts의 진단 표기로 이어지는 유일한 통로다.
+    trimmed_cont: int = 0
 
 
 def snap_box_v(stroke_rows, y0, y1, pad):
@@ -124,7 +127,18 @@ def snap_box_v(stroke_rows, y0, y1, pad):
     return (top, bot)
 
 
-def _assemble(bands, item_inks, amt_inks, types, stroke_rows_per_band, db_names, pad, db_skips=()):
+def _assemble(
+    bands,
+    item_inks,
+    amt_inks,
+    types,
+    stroke_rows_per_band,
+    db_names,
+    pad,
+    db_skips=(),
+    *,
+    trimmed_cont=0,
+):
     blocks = form_blocks(types)
     block_of = {idx: bi for bi, blk in enumerate(blocks) for idx in blk}
     skips = set(db_skips)
@@ -143,7 +157,7 @@ def _assemble(bands, item_inks, amt_inks, types, stroke_rows_per_band, db_names,
             box = (y0, y1)  # 합계: 셀 전체(소비측에서 좌측 품목영역까지 전폭 렌더/크롭)
         rows.append(Row((y0, y1), item_inks[i], amt_inks[i], t, box, blk, db_idx, db_name))
     status = "ok" if len(blocks) == len(available) else "needs_review"
-    return Proposal(tuple(rows), len(blocks), len(available), status)
+    return Proposal(tuple(rows), len(blocks), len(available), status, trimmed_cont)
 
 
 def build_proposal(
@@ -159,9 +173,17 @@ def build_proposal(
     db_skips=(),
 ):
     """ink로 행을 분류·트림한 뒤 DB명에 블록을 매핑한 Proposal을 만든다."""
-    types, _trimmed = trim_to_data_block(classify_types(item_inks, amt_inks, item_min, amt_min))
+    types, trimmed_cont = trim_to_data_block(classify_types(item_inks, amt_inks, item_min, amt_min))
     return _assemble(
-        bands, item_inks, amt_inks, types, stroke_rows_per_band, db_names, pad, db_skips
+        bands,
+        item_inks,
+        amt_inks,
+        types,
+        stroke_rows_per_band,
+        db_names,
+        pad,
+        db_skips,
+        trimmed_cont=trimmed_cont,
     )
 
 
@@ -171,7 +193,8 @@ def apply_corrections(
     """사람이 교정한 타입(같은 밴드)으로 proposal을 재조립한다.
 
     박스는 타입에서 재스냅한다. db_skips는 손글씨 행이 없는 DB 인덱스(합쳐쓴 항목 등)로 매핑에서
-    제외한다.
+    제외한다. trimmed_cont는 전달하지 않는다(=0) — 교정된 타입에는 트림을 재적용하지 않으므로
+    기계 절단 표기를 사람 판단 위에 덧씌우면 진단이 거짓 신호가 된다(#39 §2.1).
     """
     bands = [r.band for r in proposal.rows]
     item_inks = [r.item_ink for r in proposal.rows]
@@ -229,7 +252,12 @@ def merge_amounts(entries):
     return total, "+".join(txt if v is not None else "?" for v, txt in entries)
 
 
-def block_amounts(rows, read_fn):
+# 절단 진단 접미 — 마지막 품목행 이후에서 잘라낸 cont 수를 병합 원문 끝에 남긴다(#39 §2.1).
+# raw는 표시·전달 전용이라 하류가 재파싱하지 않으므로 계약 변경 없이 result_json에 실린다.
+TRIM_NOTE = " (cont×{n} 절단)"
+
+
+def block_amounts(rows, read_fn, *, trimmed_cont=0):
     """new행마다 자신 + 같은 블록 cont행을 read_fn으로 읽어 금액을 병합한다(약식 분해 합산).
 
     new행 선별 술어(new + box 보유)를 이 함수가 단독 소유해 호출부와 발산하지 않게 한다.
@@ -239,6 +267,9 @@ def block_amounts(rows, read_fn):
         read_fn: Row → (금액|None, 원문). 금액칸 OCR 주입점(테스트는 Fake로 대체).
             멤버 cont행은 box=None이므로(_assemble은 new/total에만 box 부여) crop 좌표는
             r.box가 아니라 r.band를 써야 한다.
+        trimmed_cont: trim_to_data_block이 마지막 품목행 이후에서 잘라낸 cont 수(#39).
+            0보다 크면 마지막 new행의 병합 원문 끝에 TRIM_NOTE를 붙인다 — 금액값·행 개수·
+            read_fn 호출 집합에는 관여하지 않는 순수 진단 표기다.
 
     Returns:
         (news, amounts) — news는 출력 대상 new행 리스트, amounts는 같은 순서의 병합 결과.
@@ -254,4 +285,7 @@ def block_amounts(rows, read_fn):
             continue
         news.append(r)
         amounts.append(merge_amounts([read_fn(m) for m in members[r.block]]))
+    if trimmed_cont and amounts:
+        amt, raw = amounts[-1]
+        amounts[-1] = (amt, raw + TRIM_NOTE.format(n=trimmed_cont))
     return news, amounts

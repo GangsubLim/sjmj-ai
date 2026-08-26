@@ -10,6 +10,7 @@ from handwriting.group import (
     ROW_NEW,
     ROW_TOTAL,
     Row,
+    apply_corrections,
     block_amounts,
     build_proposal,
     form_blocks,
@@ -274,3 +275,70 @@ def test_job27_totals_row_is_not_merged_into_the_last_item_row():
     assert prop.n_blocks == 7
     assert prop.status == "ok"
     assert [r.db_idx for r in prop.rows if r.rtype == "new"] == [0, 1, 2, 3, 4, 5, 6]
+
+
+# --- 절단 진단 표기 (#39 §2.1) ---
+
+
+def test_trimmed_count_reaches_the_proposal():
+    # 개수가 Proposal까지 오지 못하면 표기 경로가 통째로 성립하지 않는다.
+    prop = build_proposal_from_types(["new", "cont", "cont"])
+
+    assert prop.trimmed_cont == 2
+
+
+def test_human_corrected_types_carry_no_trim_count():
+    # apply_corrections는 사람이 정한 타입을 그대로 쓰고 트림을 재적용하지 않는다 —
+    # 사람 판단 위에 기계 절단 표기를 덧씌우면 진단이 거짓말을 한다.
+    prop = build_proposal_from_types(["new", "cont", "cont"])
+    stroke_rows = [[True] * BAND_H for _ in prop.rows]
+
+    fixed = apply_corrections(prop, ["new", "cont", "cont"], [], stroke_rows, pad=0)
+
+    assert fixed.trimmed_cont == 0
+    assert [r.rtype for r in fixed.rows] == ["new", "cont", "cont"]
+
+
+def test_trimmed_block_raw_carries_the_truncation_note():
+    # spec §2.1 (수용 기준 4): 절단은 read_fn 호출을 없애 raw에서 병합 흔적을 지우므로,
+    # 절단 개수를 마지막 new행 원문에 남겨 사후 추적한다. 도달 지점은 ocr_jobs.result_json(영구)
+    # · 큐레이션 확정 전 상세 화면(Task 3) · 오프라인 리포트(tools/curation_report.py:512 ·
+    # tools/curation_render.py:373)이며, 확정 후 상세는 pair 화이트리스트라 표기가 오지 않는다.
+    rows = rows_from_types(["new"])
+    reader = FakeReader({(0, 10): (15, "15")})
+
+    news, amounts = block_amounts(rows, reader, trimmed_cont=4)
+
+    assert amounts == [(15, "15 (cont×4 절단)")]
+    assert [r.band for r in news] == [(0, 10)]
+
+
+def test_note_lands_on_the_last_item_row_only():
+    # 절단은 표 하단에서만 일어난다 — 앞 블록 원문까지 오염되면 진단이 아니라 잡음이다.
+    rows = rows_from_types(["new", "new"])
+    reader = FakeReader({(0, 10): (380, "380"), (10, 20): (15, "15")})
+
+    _news, amounts = block_amounts(rows, reader, trimmed_cont=2)
+
+    assert amounts == [(380, "380"), (15, "15 (cont×2 절단)")]
+
+
+def test_no_note_and_no_value_change_when_nothing_was_trimmed():
+    # 절단 0이면 현행 원문·금액이 그대로여야 한다(46건 병합 행 전부에 표기가 붙으면 안 된다).
+    rows = rows_from_types(["new", "cont"])
+    reader = FakeReader({(0, 10): (160, "160"), (10, 20): (40, "40")})
+
+    _news, amounts = block_amounts(rows, reader)
+
+    assert amounts == [(200, "160+40")]
+
+
+def test_job27_note_records_the_four_trimmed_rows():
+    # 개수가 실제 절단 수(합계행 1 + 빈 칸 3)와 맞아야 진단으로 쓸 수 있다.
+    prop = build_proposal_from_types(JOB27_TYPES)
+    reader = FakeReader(dict(JOB27_READS))
+
+    _news, amounts = block_amounts(prop.rows, reader, trimmed_cont=prop.trimmed_cont)
+
+    assert amounts[-1] == (15, "15 (cont×4 절단)")
+    assert amounts[1] == (230, "160+40+30")  # 중간 블록 원문은 표기 없이 그대로
