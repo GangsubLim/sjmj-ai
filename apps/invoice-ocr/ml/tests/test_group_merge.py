@@ -14,6 +14,7 @@ from handwriting.group import (
     build_proposal,
     form_blocks,
     merge_amounts,
+    trim_to_data_block,
 )
 
 BAND_H = 10
@@ -173,3 +174,103 @@ def test_bang_spam_in_a_cont_cell_propagates_instead_of_becoming_a_question_mark
 
     with pytest.raises(DegenerateOutputError):
         block_amounts(rows, read_fn)
+
+
+# --- 하단 경계 트림 (#39) ---
+
+JOB27_TYPES = ["new", "new", "cont", "cont"] + ["new"] * 5 + ["cont"] * 4
+"""report.md §7 잡 27 재현 — 13밴드, 마지막 품목행(idx 8) 아래 합계행 1 + 빈 칸 3이 전부 cont."""
+
+JOB27_READS = {
+    (0, 10): (380, "380"),
+    (10, 20): (160, "160"),
+    (20, 30): (40, "40"),
+    (30, 40): (30, "30"),
+    (40, 50): (10, "10"),
+    (50, 60): (168, "168"),
+    (60, 70): (20, "20"),
+    (70, 80): (190, "190"),
+    (80, 90): (15, "15"),
+}
+"""잡 27의 확정 액면(report.md §2). 밴드 90 이후(합계행·빈 칸)는 일부러 비워 둔다 —
+절단이 풀리면 read_fn이 그 밴드를 읽으려다 KeyError로 즉시 드러난다."""
+
+
+def build_proposal_from_types(types, db_names=()):
+    """types를 그대로 재현하는 합성 ink로 build_proposal을 태운다(classify 경로 경유).
+
+    item 0.13/0.02는 ITEM_MIN=0.04 양쪽, amt 0.12는 AMT_MIN=0.045 초과 — 빈 칸의 격자선이
+    금액 잉크로 계상돼 ROW_EMPTY가 소멸한 잡 27 상황(report.md §7)을 그대로 만든다.
+    db_names를 주면 블록↔DB 매핑까지 살아나 status·db_idx 불변식을 함께 핀할 수 있다.
+    """
+    bands = [(i * BAND_H, i * BAND_H + BAND_H) for i in range(len(types))]
+    item_inks = [0.13 if t == "new" else 0.02 for t in types]
+    amt_inks = [0.0 if t == "empty" else 0.12 for t in types]
+    stroke_rows = [[True] * BAND_H for _ in types]
+    return build_proposal(
+        bands, item_inks, amt_inks, stroke_rows, list(db_names), item_min=0.04, amt_min=0.045, pad=0
+    )
+
+
+def test_trailing_cont_after_the_last_item_row_is_demoted_to_empty():
+    # spec §2 (수용 기준 1): 마지막 new 뒤 cont는 표 하단(합계행·빈 행)이라 블록 구성원이 아니다.
+    types, trimmed = trim_to_data_block(["new", "cont", "cont", "cont"])
+
+    assert types == ["new", "empty", "empty", "empty"]
+    assert trimmed == 3
+    assert form_blocks(types) == [[0]]
+
+
+def test_middle_block_keeps_its_cont_rows_when_a_later_item_row_exists():
+    # spec 수용 기준 5 (양성 가드): 마지막이 아닌 블록의 new+cont×2는 병합을 유지해야 한다.
+    # 기존 test_job27_pattern_...은 마지막 원소가 new라 이 손실을 검출하지 못한다.
+    types, trimmed = trim_to_data_block(["new", "cont", "cont", "new", "cont", "cont"])
+
+    assert types == ["new", "cont", "cont", "new", "empty", "empty"]
+    assert trimmed == 2
+    assert form_blocks(types) == [[0, 1, 2], [3]]
+
+
+def test_no_item_row_at_all_leaves_the_sequence_untouched():
+    # spec §2: ROW_NEW 전무면 무동작 — orphan cont 블록은 block_amounts가 이미 read_fn 없이 제외.
+    types, trimmed = trim_to_data_block(["cont", "cont"])
+
+    assert types == ["cont", "cont"]
+    assert trimmed == 0
+
+
+def test_last_row_being_an_item_row_leaves_nothing_to_trim():
+    types, trimmed = trim_to_data_block(["new", "cont", "new"])
+
+    assert types == ["new", "cont", "new"]
+    assert trimmed == 0
+
+
+def test_existing_bottom_noise_trim_still_owns_rows_below_the_first_empty():
+    # 기존 트림과의 공존: 첫 빈행 아래는 예전대로 empty로 강제되고, 그 결과 마지막 new 이후에
+    # cont가 남지 않아 새 규칙은 발동조차 하지 않는다(trimmed == 0).
+    types, trimmed = trim_to_data_block(["new", "cont", "new", "empty", "new", "cont"])
+
+    assert types == ["new", "cont", "new", "empty", "empty", "empty"]
+    assert trimmed == 0
+
+
+def test_job27_totals_row_is_not_merged_into_the_last_item_row():
+    # spec 수용 기준 2·3 (report.md §7 재현): 마지막 품목행(액면 15) 아래 합계행·빈 칸 4행이
+    # cont로 분류돼도 병합에 섞이지 않고, 중간 블록의 정상 병합은 그대로 남는다.
+    prop = build_proposal_from_types(JOB27_TYPES, [f"n{i}" for i in range(7)])
+    reader = FakeReader(dict(JOB27_READS))
+
+    news, amounts = block_amounts(prop.rows, reader)
+
+    assert [r.rtype for r in prop.rows][8:] == ["new", "empty", "empty", "empty", "empty"]
+    assert [r.band for r in news][-1] == (80, 90)
+    # 수용 기준 2의 15,000은 액면 15에 infer_job.THOUSAND_MULT(×1000)를 곱한 값 —
+    # 코어는 액면만 다루므로(read_amount 주석 "천원곱 미적용") 여기서는 15를 단언한다.
+    assert amounts[-1][0] == 15  # 병합 937이 아니라 마지막 품목행 단독 액면
+    assert amounts[1] == (230, "160+40+30")  # 중간 블록 정상 병합은 무회귀
+    # 강등은 블록 구성원만 줄이고 블록 수·상태·DB 매핑은 건드리지 않는다 —
+    # build_proposal 소비자 5곳(특히 dataset_build 학습셋)의 무회귀가 이 불변식에 걸려 있다.
+    assert prop.n_blocks == 7
+    assert prop.status == "ok"
+    assert [r.db_idx for r in prop.rows if r.rtype == "new"] == [0, 1, 2, 3, 4, 5, 6]

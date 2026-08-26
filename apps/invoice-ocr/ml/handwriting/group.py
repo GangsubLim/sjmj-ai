@@ -26,23 +26,46 @@ def classify_types(item_inks, amt_inks, item_min, amt_min):
 
 
 def trim_to_data_block(types):
-    """상단 첫 데이터행부터 '연속 데이터 블록'만 남긴다.
+    """상단 첫 데이터행부터 '연속 데이터 블록'만 남기고 (타입, 절단한 cont 수)를 돌려준다.
 
     첫 빈행 이후(하단 노이즈: 합계·메모·전화번호)는 empty로 강제. 양식상 품목은 헤더 직후부터
     연속으로 내려가고 약식분해 연속행도 금액칸이 차 있어(cont) 데이터 블록은 amt-present 연속
     구간이다.
+
+    여기에 하단 경계 규칙을 하나 더 얹는다 — 마지막 ROW_NEW 이후의 ROW_CONT는 ROW_EMPTY로
+    강등한다. 위 트림은 ROW_EMPTY를 자를 지점으로 삼는데, 빈 칸의 격자선이 amt_min을 넘으면
+    ROW_EMPTY가 소멸해 규칙이 통째로 무력화되고 표 하단의 합계행·빈 행이 마지막 품목행에
+    합산된다(Issue #39). 마지막 품목행 이후의 cont는 실데이터 37잡 전수에서 합계행 또는 빈
+    행뿐이었다.
+
+    Args:
+        types: classify_types가 낸 행 타입 시퀀스.
+
+    Returns:
+        (트림된 타입 리스트, 마지막 ROW_NEW 이후에서 강등한 ROW_CONT 개수) 한 쌍. 개수는
+        절단 사후 진단 표기의 유일한 입력이다 — 강등은 read_fn 호출 자체를 없애 병합 원문에
+        흔적을 남기지 않는다.
     """
     out = list(types)
     start = next((i for i, t in enumerate(out) if t in (ROW_NEW, ROW_CONT)), None)
     if start is None:
-        return out
+        return out, 0
     end = start
     while end < len(out) and out[end] in (ROW_NEW, ROW_CONT):
         end += 1
     for i in range(end, len(out)):
         if out[i] in (ROW_NEW, ROW_CONT):  # 하단 잡음만 empty화, total/empty 표식은 보존
             out[i] = ROW_EMPTY
-    return out
+    # ROW_NEW가 전무하면 무동작 — orphan cont 블록은 block_amounts가 이미 read_fn 없이 제외한다.
+    last_new = max((i for i, t in enumerate(out) if t == ROW_NEW), default=None)
+    if last_new is None:
+        return out, 0
+    trimmed = 0
+    for i in range(last_new + 1, len(out)):
+        if out[i] == ROW_CONT:
+            out[i] = ROW_EMPTY
+            trimmed += 1
+    return out, trimmed
 
 
 def form_blocks(types):
@@ -136,7 +159,7 @@ def build_proposal(
     db_skips=(),
 ):
     """ink로 행을 분류·트림한 뒤 DB명에 블록을 매핑한 Proposal을 만든다."""
-    types = trim_to_data_block(classify_types(item_inks, amt_inks, item_min, amt_min))
+    types, _trimmed = trim_to_data_block(classify_types(item_inks, amt_inks, item_min, amt_min))
     return _assemble(
         bands, item_inks, amt_inks, types, stroke_rows_per_band, db_names, pad, db_skips
     )
