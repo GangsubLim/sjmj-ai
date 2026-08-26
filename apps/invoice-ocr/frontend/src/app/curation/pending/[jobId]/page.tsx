@@ -206,7 +206,7 @@ export default function UnconfirmedJobDetailPage() {
                     row.amount_raw !== "" && (
                       <div
                         title="금액 OCR 원문"
-                        className="text-muted-foreground text-xs"
+                        className="text-muted-foreground max-w-[12rem] truncate text-xs"
                       >
                         {row.amount_raw}
                       </div>

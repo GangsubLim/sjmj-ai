@@ -154,6 +154,38 @@ describe("UnconfirmedJobDetailPage", () => {
     expect(screen.queryByTitle("금액 OCR 원문")).not.toBeInTheDocument();
   });
 
+  it("amount_raw가 null이면 원문 줄을 그리지 않는다", async () => {
+    // api-spec은 amount_raw를 nullable: true로 선언한다 — typeof 가드의 첫 절(null 입력)이
+    // 실제로 도달 가능한 케이스임을 고정한다.
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          rows: [
+            {
+              row_index: 0,
+              crop_ref: "job-42/row-0",
+              item_top5: [],
+              supply: null,
+              amount_raw: null,
+            },
+          ],
+          supply_sum: 0,
+          warp_ok: true,
+        },
+      },
+    } as unknown as Awaited<ReturnType<typeof ocrAPI.getJob>>);
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByAltText("0행 크롭")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTitle("금액 OCR 원문")).not.toBeInTheDocument();
+  });
+
   it("rows가 null이어도 런타임 오류 없이 그린다", async () => {
     mockGetJob.mockResolvedValue({
       success: true,

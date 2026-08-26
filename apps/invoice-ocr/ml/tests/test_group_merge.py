@@ -333,6 +333,17 @@ def test_no_note_and_no_value_change_when_nothing_was_trimmed():
     assert amounts == [(200, "160+40")]
 
 
+def test_empty_raw_note_has_no_leading_space():
+    # Minor 3: 미판독(raw="")에 절단 표기가 붙으면 raw+TRIM_NOTE가 맨 앞 공백째로
+    # 남는다 — lstrip 처리로 선행 공백 없이 "(cont×N 절단)"만 남아야 한다.
+    rows = rows_from_types(["new"])
+    reader = FakeReader({(0, 10): (None, "")})
+
+    _news, amounts = block_amounts(rows, reader, trimmed_cont=3)
+
+    assert amounts == [(None, "(cont×3 절단)")]
+
+
 def test_job27_note_records_the_four_trimmed_rows():
     # 개수가 실제 절단 수(합계행 1 + 빈 칸 3)와 맞아야 진단으로 쓸 수 있다.
     prop = build_proposal_from_types(JOB27_TYPES)
