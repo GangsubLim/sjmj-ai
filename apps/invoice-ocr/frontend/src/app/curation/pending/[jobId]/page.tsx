@@ -192,11 +192,26 @@ export default function UnconfirmedJobDetailPage() {
                       .join(" · ") || "후보 없음"}
                   </p>
                 </div>
-                <span className="text-sm">
-                  {typeof row.supply === "number"
-                    ? row.supply.toLocaleString()
-                    : "—"}
-                </span>
+                <div className="shrink-0 text-right text-sm">
+                  <div>
+                    {typeof row.supply === "number"
+                      ? row.supply.toLocaleString()
+                      : "—"}
+                  </div>
+                  {/* 금액 OCR 원문 — 병합("160+40+30")·재시도("→")·하단 절단("(cont×N 절단)")의
+                      유일한 화면 노출 지점(#39 §2.1). 워커가 쓴 외부 문자열이므로 파싱하지 않고
+                      그대로 보여준다(amount_raw는 표시·전달 전용 계약). title은 테스트가 이 줄을
+                      집는 안정적 손잡이이자 화면의 설명이다. */}
+                  {typeof row.amount_raw === "string" &&
+                    row.amount_raw !== "" && (
+                      <div
+                        title="금액 OCR 원문"
+                        className="text-muted-foreground text-xs"
+                      >
+                        {row.amount_raw}
+                      </div>
+                    )}
+                </div>
               </div>
             );
           })}

@@ -88,6 +88,72 @@ describe("UnconfirmedJobDetailPage", () => {
     expect(screen.queryAllByRole("textbox")).toHaveLength(0);
   });
 
+  it("금액 OCR 원문을 그대로 보여준다 — 하단 절단 표기의 유일한 화면 노출 지점", async () => {
+    // #39 §2.1: 절단은 read_fn 호출을 없애 raw에서 병합 흔적을 지우므로 절단 개수를
+    // amount_raw 접미로 남긴다. 화면이 이 문자열을 보여주지 않으면 사후 진단이 성립하지 않는다.
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          rows: [
+            {
+              row_index: 0,
+              crop_ref: "job-42/row-0",
+              item_top5: [{ label: "항균필터", sim: 0.9 }],
+              supply: 15000,
+              amount_raw: "15 (cont×4 절단)",
+            },
+          ],
+          supply_sum: 15000,
+          warp_ok: true,
+        },
+      },
+    });
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByTitle("금액 OCR 원문")).toHaveTextContent(
+        "15 (cont×4 절단)",
+      ),
+    );
+    // 원문은 표시 전용 — 금액 표시는 supply(천원곱 적용값)를 그대로 쓴다.
+    expect(screen.getByText("15,000")).toBeInTheDocument();
+  });
+
+  it("amount_raw가 빈 문자열이면 원문 줄을 그리지 않는다", async () => {
+    // 워커는 미판독 시 ""를 쓴다(infer_job.py:83) — 빈 줄이 금액 아래 남으면 잡음이다.
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          rows: [
+            {
+              row_index: 0,
+              crop_ref: "job-42/row-0",
+              item_top5: [],
+              supply: null,
+              amount_raw: "",
+            },
+          ],
+          supply_sum: 0,
+          warp_ok: true,
+        },
+      },
+    });
+
+    renderDetail();
+
+    await waitFor(() =>
+      expect(screen.getByAltText("0행 크롭")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTitle("금액 OCR 원문")).not.toBeInTheDocument();
+  });
+
   it("rows가 null이어도 런타임 오류 없이 그린다", async () => {
     mockGetJob.mockResolvedValue({
       success: true,
