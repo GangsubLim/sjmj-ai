@@ -155,3 +155,15 @@ def test_warp_failure_path_also_carries_the_stamp():
         "item_conf_threshold": ITEM_CONF_THRESHOLD,
         "retrieval_version": "a1b2c3d4e5f6",
     }
+
+
+def test_truncation_note_survives_serialization_without_touching_supply():
+    # spec 수용 기준 2의 최종 형태 — 코어 액면 15가 ×1000으로 15,000이 되고, 진단 접미가
+    # 붙은 amount_raw는 한 글자도 변형 없이 result_json에 실린다(#39 §2.1).
+    rows = [{"row_index": 0, "item_top5": [], "supply": 15, "amount_raw": "15 (cont×4 절단)"}]
+
+    out = assemble_result_json(27, rows, True)
+
+    assert out["rows"][0]["supply"] == 15000
+    assert out["rows"][0]["amount_raw"] == "15 (cont×4 절단)"
+    assert out["supply_sum"] == 15000

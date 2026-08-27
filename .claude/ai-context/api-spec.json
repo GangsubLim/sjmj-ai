@@ -3602,7 +3602,7 @@
           "amount_raw": {
             "type": "string",
             "nullable": true,
-            "description": "금액 OCR 원문(천원곱 이전)."
+            "description": "금액 OCR 원문(천원곱 이전). 진단 표기가 섞일 수 있다 — 블록 병합은 '160+40+30', 재시도는 '→' join(ml amount_read.py), 하단 cont 절단은 ' (cont×N 절단)' 접미(Issue #39). 표시·전달 전용이며 서버·클라이언트 모두 재파싱하지 않는다."
           },
           "item_uncertain": {
             "type": "boolean",

@@ -217,3 +217,26 @@ def test_main_loads_the_aligner_once_from_the_env_and_passes_it_down():
     assert src.func.attr == "get"
     assert [a.value for a in src.args if isinstance(a, ast.Constant)] == ["SJMJ_ML_MODELS_DIR"]
     assert len(src.args) == 1 and not src.keywords, "env 조회에 기본값 금지"
+
+
+def test_trim_diagnostics_are_handed_to_block_amounts():
+    """절단 표기는 prop.trimmed_cont가 block_amounts로 넘어가야만 생긴다(#39 §2.1).
+
+    group.py 쪽 단위테스트는 keyword를 직접 주므로 운영 배선이 빠져도 초록이다 — 이 정적
+    가드만이 '진단이 운영 경로에서 조용히 사라진 상태'를 잡는다.
+    표현식 형태를 `prop.trimmed_cont` 문자열로 고정하므로 중간 변수(`tc = prop.trimmed_cont`)를
+    끼우면 거짓 RED가 된다 — 같은 파일 `test_amount_consumption_...`의 `args[1].id == "read_fn"`
+    고정과 동일한 트레이드오프이며, 배선 누락 검출을 위해 의도적으로 감수한다.
+    """
+    _, fn = _extract_rows_fn()
+    supplied = [
+        ast.unparse(kw.value)
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "block_amounts"
+        for kw in node.keywords
+        if kw.arg == "trimmed_cont"
+    ]
+
+    assert supplied == ["prop.trimmed_cont"]
