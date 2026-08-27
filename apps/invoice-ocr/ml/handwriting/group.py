@@ -285,7 +285,7 @@ def block_amounts(rows, read_fn, *, trimmed_cont=0):
             continue
         news.append(r)
         amounts.append(merge_amounts([read_fn(m) for m in members[r.block]]))
-    if trimmed_cont and amounts:
+    if trimmed_cont:
         amt, raw = amounts[-1]
         # raw가 미판독으로 빈 문자열이면 결합 시 선행 공백이 남으므로 lstrip으로 제거한다
         # (정상 케이스는 raw가 비지 않아 lstrip이 아무 것도 지우지 않는다).
