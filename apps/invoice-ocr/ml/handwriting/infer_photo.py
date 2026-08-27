@@ -181,7 +181,7 @@ def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     def read_fn(r):
         return read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter))
 
-    news, amounts = block_amounts(prop.rows, read_fn)
+    news, amounts = block_amounts(prop.rows, read_fn, trimmed_cont=prop.trimmed_cont)
 
     # new 행 품목 crop → 임베딩 → 뱅크 retrieval 쿼리
     x1, x2 = ITEM_X
