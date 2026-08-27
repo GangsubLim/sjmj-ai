@@ -5,6 +5,19 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.13.1] — 2026-08-27
+
+마지막 품목행 금액이 표 하단의 빈 행·합계행까지 삼켜 과대 계상되던 경로 차단, 절단 사실은 화면과 원문에 진단으로 보존 ([#127](https://github.com/GangsubLim/sjmj-ai/pull/127)).
+
+### Fixed
+
+- 금액 OCR이 마지막 품목행에 표 하단 빈 행·합계행을 병합해 금액을 부풀리던 문제 수정 — 잡 27에서 937,000원으로 읽히던 행이 확정값 15,000원으로 교정 ([#127](https://github.com/GangsubLim/sjmj-ai/pull/127))
+
+### Added
+
+- 큐레이션 확정 전 상세에 금액 OCR 원문 노출 — 제안값이 어떤 판독에서 나왔는지 확정 전에 대조 가능 ([#127](https://github.com/GangsubLim/sjmj-ai/pull/127))
+- 금액 원문 끝에 `(cont×N 절단)` 접미 표기 — 병합이 몇 행에서 잘렸는지 사후 진단 가능 ([#127](https://github.com/GangsubLim/sjmj-ai/pull/127))
+
 ## [v0.13.0] — 2026-08-25
 
 재처리를 되돌릴 수 없게 커밋하기 전에 승계·미결 예상치를 미리 본다 — "돌려봐야 안다"를 없앤 무커밋 드라이런 ([#124](https://github.com/GangsubLim/sjmj-ai/pull/124)).
