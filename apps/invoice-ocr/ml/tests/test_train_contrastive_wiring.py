@@ -143,3 +143,38 @@ def test_the_baseline_path_loads_a_checkpoint_without_training():
 
     assert fn is not None
     assert _called_names(fn) & {"train_fixed", "train_production", "train_split"} == set()
+
+
+# --- 셀 간 비교 가능성 ---
+
+
+def test_cell_seed_depends_only_on_fold_so_every_n_shares_random_numbers():
+    """같은 fold의 모든 N이 동일 초기화·셔플에서 출발해야 곡선 차이가 N 효과만 남는다."""
+    src = SRC.read_text(encoding="utf-8")
+    seeds = [
+        ast.get_source_segment(src, n.args[0])
+        for n in ast.walk(_fn("run_curve"))
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr in ("manual_seed", "seed")
+    ]
+
+    assert len(seeds) == 2
+    assert all("n_requested" not in s for s in seeds)
+    assert all("cell.fold" in s for s in seeds)
+
+
+def test_the_cell_loop_skips_a_cell_whose_train_bank_is_empty():
+    """--bootstrap-npz 생략 + N=0이면 embed가 빈 배열에서 죽으므로 셀 자체를 건너뛴다."""
+    guards = [
+        n
+        for n in ast.walk(_fn("run_curve"))
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.UnaryOp)
+        and isinstance(n.test.op, ast.Not)
+        and isinstance(n.test.operand, ast.Name)
+        and n.test.operand.id == "tr_idx"
+    ]
+
+    assert len(guards) == 1
+    assert any(isinstance(n, ast.Continue) for n in ast.walk(guards[0]))

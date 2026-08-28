@@ -510,13 +510,23 @@ def run_curve(args, device):
             continue
         tr_idx = [idx_of[k] for k in cell.train_keys]
         qa_idx = [idx_of[k] for k in cell.holdout_keys]
+        # 부트스트랩을 생략(--bootstrap-npz 없음)하면 N=0 셀의 train 뱅크가 통째로 빈다.
+        # 그대로 두면 embed의 np.concatenate([])가 불투명한 ValueError로 죽으므로 사유를
+        # 남기고 건너뛴다(집계에서도 빠진다).
+        if not tr_idx:
+            print(
+                f"⏭️ 셀 건너뜀 — N={cell.n_requested} fold={cell.fold}는 train 뱅크 0건"
+                " (--bootstrap-npz 없이 N=0)"
+            )
+            continue
         if cell.n_requested and not cell.n_actual_pairs:
             print(f"⚠️ 격자점 붕괴 — N={cell.n_requested} fold={cell.fold}는 쌍 0건으로 실행됨")
-        # 셀별로 재시드한다 — build_model의 head 초기화 등 전역 RNG 소비가 셀마다 갈리면
-        # N 차이가 아닌 초기화 난수 차이가 곡선에 섞인다(H3, E5). seed는 (fold, N)에서
-        # 결정론적이라 --holdout-fold로 재개해도 같은 셀은 같은 수치를 낸다.
-        torch.manual_seed(SEED + cell.fold * 1000 + cell.n_requested)
-        np.random.seed(SEED + cell.fold * 1000 + cell.n_requested)
+        # 셀별로 재시드하되 seed는 fold에만 의존한다 — 같은 fold의 모든 N이 동일 초기화·동일
+        # 셔플에서 출발해야(common random numbers) 곡선의 셀 간 차이가 N 차이만 남는다. N을
+        # seed에 섞으면 격자점마다 난수가 갈려 그 분산이 N 효과에 섞인다(H3, E5). fold가 seed에
+        # 남으므로 --holdout-fold로 재개해도 같은 셀은 같은 수치를 낸다.
+        torch.manual_seed(SEED + cell.fold * 1000)
+        np.random.seed(SEED + cell.fold * 1000)
         ft_model = train_fixed(base, ids, tr_idx, args, device)
         ft = score_pair(ft_model, base, tr_idx, qa_idx, cell, ds, device)
         slot = _acc(agg_ft, cell.n_requested, ft)
