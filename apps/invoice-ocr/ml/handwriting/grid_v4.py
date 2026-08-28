@@ -17,6 +17,12 @@ OUT = Path("/Users/gangsub/projects/sjmj-ai/apps/invoice-ocr/ml/report")
 CROPS = Path(__file__).parent / "crops"
 WARP_W, WARP_H = 900, 2100
 AMOUNT_X = (612, 896)  # 공급가 열 (템플릿)
+# 금액 크롭 좌측 경계 실측(#50) — 템플릿 612는 정상 전표에서도 인쇄 세로선보다 18~31px 왼쪽
+# (단가칸 안)이라 `×2`의 2 같은 단가칸 끝 획이 크롭에 섞인다. 데이터 구간을 세로로 관통하는
+# 파랑 선만 인정(짧은 손글씨 획 배제)하고, 창 밖·미검출이면 템플릿으로 폴백한다.
+AMOUNT_LEFT_SEARCH = (560, 680)  # 후보 창 — 종이 88% 점유(선 584)~두꺼운 여백(643)까지
+AMOUNT_LEFT_MIN_COVER = 0.35  # 선이 DATA_Y 높이의 이 비율 이상을 덮어야 인쇄선
+AMOUNT_LEFT_PAD = 3  # 선 우측 가장자리에서 띄우는 px — 선 잔재 배제, 첫 획은 보존
 DATA_Y = (612, 1948)  # 데이터 행 범위 (공급내역 헤더 아래 ~ 합계 위)
 
 
@@ -141,6 +147,23 @@ def hlines_from_mask(m):
         else:
             i += 1
     return ys
+
+
+def amount_crop_left(warped):
+    """금액 크롭의 좌측 x — 전표별 실측 세로선 우측 +pad, 미검출 시 AMOUNT_X[0].
+
+    행 분류(rows.band_features)는 여전히 AMOUNT_X를 쓴다 — 분류 임계가 그 창 기준으로
+    튜닝돼 있어 여기 결과는 Qwen에 넘기는 크롭에만 적용한다(infer_photo.extract_rows_for_job).
+    """
+    x0, x1 = AMOUNT_LEFT_SEARCH
+    m = blue_mask(warped)[DATA_Y[0] : DATA_Y[1], x0:x1]
+    vert = cv2.morphologyEx(m, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, 120)))
+    xs = np.flatnonzero(vert.mean(0) / 255.0 >= AMOUNT_LEFT_MIN_COVER)
+    if xs.size == 0:
+        return AMOUNT_X[0]
+    groups = np.split(xs, np.flatnonzero(np.diff(xs) > 4) + 1)
+    best = min(groups, key=lambda g: abs(int(g.mean()) + x0 - AMOUNT_X[0]))
+    return int(best.max()) + x0 + AMOUNT_LEFT_PAD
 
 
 def hline_ys(warped):

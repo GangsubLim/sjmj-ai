@@ -162,7 +162,7 @@ def replicate_rows(warped) -> dict:
     tests/test_warp_gate_rows.py의 AST 배선 가드가 잡는다.
     """
     from handwriting.canon import global_pitch
-    from handwriting.grid_v4 import DATA_Y, hline_ys
+    from handwriting.grid_v4 import DATA_Y, amount_crop_left, hline_ys
     from handwriting.group import block_amounts, build_proposal
     from handwriting.grouping import AMT_MIN, ITEM_MIN, PAD
     from handwriting.rows import band_features, detect_grid_rows
@@ -175,10 +175,13 @@ def replicate_rows(warped) -> dict:
     prop = build_proposal(
         bands, item_inks, amt_inks, stroke_rows, [], item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD
     )
+    # 금액 크롭 좌측 실측(#50) — 운영은 read_fn 크롭에만 쓰고 여기선 전사가 없으므로 값만 기록
+    amount_left = amount_crop_left(warped)
     news, _amounts = block_amounts(prop.rows, _fake_read)
     boxes = [[int(r.box[0]), int(r.box[1])] for r in news]
     crops = [item_crop(warped, b) for b in boxes]
     return {
+        "amount_left": amount_left,
         "n_bands": len(bands),
         "n_new": len(news),
         "boxes": boxes,
