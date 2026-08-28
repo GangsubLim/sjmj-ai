@@ -652,3 +652,14 @@ def test_changed_pairs_orders_rows_deterministically():
     pairs = {(23, 1), (7, 0), (23, 0), (4, 2)}  # 실측: 이 set의 순회 순서는 정렬 순서가 아니다
 
     assert changed_pairs(before, after, pairs)["moved"] == [(4, 2), (7, 0), (23, 0), (23, 1)]
+
+
+def test_snapshot_diff_ignores_amount_left_added_by_issue50():
+    # amount_left는 금액 크롭 좌측 실측값(#50)으로, 이 게이트가 지키는 품목 크롭 identity
+    # (boxes·crop_sha, 축 ②-a)가 아니다 — 패치 이전 베이스라인에는 키 자체가 없으므로
+    # identity에 넣으면 실제 경계가 612 그대로인 잡까지 전부 changed로 오판된다.
+    from tools.warp_gate_calib import snapshot_diff
+
+    before = {"59": {"boxes": [[10, 20]], "crop_sha": ["aa"]}}
+    after = {"59": {"boxes": [[10, 20]], "crop_sha": ["aa"], "amount_left": 636}}
+    assert snapshot_diff(before, after)["changed"] == []
