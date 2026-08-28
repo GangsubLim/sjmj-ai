@@ -9,6 +9,8 @@ TrainSet으로 모으고, 잡 단위 hold-out 격자를 torch 없이 계획·채
 함수 본문 지연 import라 paddle-free venv에서도 import가 성공하고 CI가 이 모듈을 테스트한다.
 """
 
+import random
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -132,3 +134,110 @@ def merge(*sets: TrainSet) -> TrainSet:
         keys=tuple(x for s in sets for x in s.keys),
         origin=tuple(x for s in sets for x in s.origin),
     )
+
+
+# 큐레이션 전표 식별자 — bank_update.inv_of의 산출 형식. 부트스트랩 inv
+# ('2025-08-18_inv011.jpg')는 매칭되지 않으므로 fold 축 오염을 여기서 잡는다.
+JOB_INV_RE = re.compile(r"^job-\d+$")
+
+
+@dataclass(frozen=True)
+class Cell:
+    """학습곡선 격자의 한 칸 — (요청 N, fold) 하나에 대응하는 완결된 실험 정의.
+
+    n_actual_pairs·n_actual_jobs는 큐레이션만 센다(부트스트랩은 모든 셀에서 동일 상수라
+    x축이 되지 못한다). eval_cohort는 fold별로 고정돼 N이 달라도 같은 쿼리 집합을 채점한다 —
+    작은 N에서 peer가 사라진 쿼리는 분모에서 빠지는 대신 miss로 잡힌다.
+    """
+
+    n_requested: int
+    fold: int
+    train_keys: tuple[str, ...]
+    holdout_keys: tuple[str, ...]
+    n_actual_pairs: int
+    n_actual_jobs: int
+    eval_cohort: tuple[str, ...]
+
+
+def job_folds(curated_invs, k: int, seed: int) -> list[set[str]]:
+    """큐레이션 잡을 K개 fold로 나눈다(잡 단위·seed 재현).
+
+    부트스트랩 전표는 fold에 넣지 않는다 — 그 크롭은 모든 셀에서 train 고정이므로
+    hold-out 축이 아니다. 섞여 들어오면 즉시 실패시킨다.
+
+    Raises:
+        ValueError: 큐레이션 형식이 아닌 inv가 섞였거나 k가 1 미만·잡 수 초과일 때.
+    """
+    bad = sorted({iv for iv in curated_invs if not JOB_INV_RE.fullmatch(iv)})
+    if bad:
+        raise ValueError(f"큐레이션 전표 형식이 아님 {bad} — 부트스트랩 inv는 fold 축이 아니다")
+    jobs = sorted(set(curated_invs))
+    if k < 1 or k > len(jobs):
+        raise ValueError(f"fold 수 {k}가 잡 수 {len(jobs)} 범위를 벗어남")
+    random.Random(seed).shuffle(jobs)
+    return [set(jobs[i::k]) for i in range(k)]
+
+
+def limit_curated(curated_keys, curated_invs, n: int, seed: int) -> set[str]:
+    """잡 단위로 셔플해 누적 쌍 수가 n을 넘기 직전까지 포함한다(잡 경계 절단).
+
+    한도를 넘는 잡에서 continue가 아니라 break하는 이유는 중첩성이다 — prefix로 자르면
+    작은 N의 포함 집합이 큰 N의 부분집합이 되어 곡선의 x축이 '같은 데이터 + 추가분'이 된다.
+    건너뛰기(greedy packing)는 N마다 다른 잡 조합을 만들어 곡선을 데이터 교체와 뒤섞는다.
+    """
+    by_job: dict[str, list[str]] = {}
+    for key, iv in zip(curated_keys, curated_invs, strict=True):
+        by_job.setdefault(iv, []).append(key)
+    jobs = sorted(by_job)
+    random.Random(seed).shuffle(jobs)
+    out: set[str] = set()
+    total = 0
+    for iv in jobs:
+        if total + len(by_job[iv]) > n:
+            break
+        out |= set(by_job[iv])
+        total += len(by_job[iv])
+    return out
+
+
+def plan_cells(
+    *,
+    curated_keys,
+    curated_invs,
+    curated_labs,
+    bootstrap_keys,
+    bootstrap_labs,
+    n_grid,
+    k: int,
+    seed: int,
+) -> list[Cell]:
+    """(요청 N × fold) 격자를 계획한다 — torch 없이 도는 순수 실험계획.
+
+    부트스트랩은 모든 셀의 train에 전량 들어가고, 큐레이션은 hold-out fold를 뺀 나머지에
+    limit_curated를 적용한다. eval_cohort는 'N=전량 train 뱅크'에 정답 peer가 있는 hold-out
+    쿼리로 fold마다 한 번만 정해져 N 전체에서 공유된다.
+    """
+    lab_of = dict(zip(curated_keys, curated_labs, strict=True))
+    inv_by_key = dict(zip(curated_keys, curated_invs, strict=True))
+    cells: list[Cell] = []
+    for fold_no, fold_jobs in enumerate(job_folds(curated_invs, k, seed), start=1):
+        holdout = tuple(key for key in curated_keys if inv_by_key[key] in fold_jobs)
+        pool_keys = [key for key in curated_keys if inv_by_key[key] not in fold_jobs]
+        pool_invs = [inv_by_key[key] for key in pool_keys]
+        full_labels = set(bootstrap_labs) | {lab_of[key] for key in pool_keys}
+        cohort = tuple(q for q in holdout if lab_of[q] in full_labels)
+        for n in n_grid:
+            keep = limit_curated(pool_keys, pool_invs, n, seed)
+            kept = [key for key in pool_keys if key in keep]
+            cells.append(
+                Cell(
+                    n_requested=n,
+                    fold=fold_no,
+                    train_keys=tuple(bootstrap_keys) + tuple(kept),
+                    holdout_keys=holdout,
+                    n_actual_pairs=len(kept),
+                    n_actual_jobs=len({inv_by_key[key] for key in kept}),
+                    eval_cohort=cohort,
+                )
+            )
+    return cells

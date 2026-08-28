@@ -11,10 +11,14 @@ import pytest
 from tests.conftest import import_scopes
 from tools.train_input import (
     BOOTSTRAP_ARRAYS,
+    Cell,
     TrainSet,
+    job_folds,
+    limit_curated,
     load_bootstrap,
     load_curated,
     merge,
+    plan_cells,
     select_curated,
 )
 
@@ -227,3 +231,148 @@ def test_train_input_keeps_heavy_imports_out_of_module_scope():
 
     assert module_level & {"numpy", "cv2", "torch", "handwriting.fewshot"} == set()
     assert {"numpy", "cv2", "handwriting.fewshot"} <= in_functions
+
+
+# --- 실험계획: 잡 단위 K분할 ---
+
+_CUR_KEYS = tuple(f"job-{j}/row-{r}" for j in (1, 2, 3, 4, 5, 6) for r in (0, 1))
+_CUR_INVS = tuple(f"job-{j}" for j in (1, 2, 3, 4, 5, 6) for _ in (0, 1))
+_CUR_LABS = ("A", "B", "A", "C", "B", "C", "A", "D", "B", "D", "C", "A")
+_BOOT_KEYS = ("2025-08-18_inv011_0", "2025-08-18_inv011_1")
+_BOOT_LABS = ("A", "E")
+
+
+def test_job_folds_puts_every_job_in_exactly_one_fold():
+    folds = job_folds(_CUR_INVS, 3, 7)
+
+    assert len(folds) == 3
+    assert set().union(*folds) == set(_CUR_INVS)
+    assert sum(len(f) for f in folds) == len(set(_CUR_INVS))
+
+
+def test_job_folds_is_reproducible_for_a_seed_and_varies_across_seeds():
+    assert job_folds(_CUR_INVS, 3, 7) == job_folds(_CUR_INVS, 3, 7)
+    assert job_folds(_CUR_INVS, 3, 7) != job_folds(_CUR_INVS, 3, 8)
+
+
+def test_job_folds_rejects_a_bootstrap_invoice():
+    """부트스트랩 전표는 fold 축이 아니다 — 섞여 들어오면 hold-out 정의가 무너진다."""
+    with pytest.raises(ValueError, match="2025-08-18_inv011.jpg"):
+        job_folds((*_CUR_INVS, "2025-08-18_inv011.jpg"), 3, 7)
+
+
+def test_job_folds_rejects_more_folds_than_jobs():
+    with pytest.raises(ValueError, match="fold"):
+        job_folds(("job-1", "job-2"), 3, 7)
+
+
+# --- 실험계획: N 제한 ---
+
+
+def test_limit_curated_cuts_at_a_job_boundary_and_never_exceeds_n():
+    keep = limit_curated(_CUR_KEYS, _CUR_INVS, 5, 7)
+
+    assert len(keep) <= 5
+    assert len(keep) % 2 == 0  # 잡마다 쌍 2건 — 잡 경계에서만 잘린다
+    kept_jobs = {k.split("/", 1)[0] for k in keep}
+    for job in kept_jobs:
+        assert {k for k in _CUR_KEYS if k.startswith(f"{job}/")} <= keep
+
+
+def test_limit_curated_returns_an_empty_set_for_zero():
+    assert limit_curated(_CUR_KEYS, _CUR_INVS, 0, 7) == set()
+
+
+def test_limit_curated_returns_everything_when_n_reaches_the_total():
+    assert limit_curated(_CUR_KEYS, _CUR_INVS, len(_CUR_KEYS), 7) == set(_CUR_KEYS)
+
+
+def test_limit_curated_is_nested_across_n_so_the_curve_x_axis_is_monotone():
+    """작은 N은 큰 N의 부분집합이어야 한다 — 아니면 곡선의 단조성이 데이터 교체로 오염된다."""
+    small = limit_curated(_CUR_KEYS, _CUR_INVS, 4, 7)
+    large = limit_curated(_CUR_KEYS, _CUR_INVS, 8, 7)
+
+    assert small <= large
+
+
+def test_limit_curated_is_reproducible_for_a_seed():
+    assert limit_curated(_CUR_KEYS, _CUR_INVS, 6, 7) == limit_curated(_CUR_KEYS, _CUR_INVS, 6, 7)
+
+
+# --- 실험계획: 셀 생성 ---
+
+
+def _cells(n_grid=(0, 4, 12), k=3, seed=7):
+    return plan_cells(
+        curated_keys=_CUR_KEYS,
+        curated_invs=_CUR_INVS,
+        curated_labs=_CUR_LABS,
+        bootstrap_keys=_BOOT_KEYS,
+        bootstrap_labs=_BOOT_LABS,
+        n_grid=n_grid,
+        k=k,
+        seed=seed,
+    )
+
+
+def test_plan_cells_produces_one_cell_per_grid_point_and_fold():
+    assert len(_cells()) == 3 * 3
+    assert {c.fold for c in _cells()} == {1, 2, 3}
+    assert {c.n_requested for c in _cells()} == {0, 4, 12}
+
+
+def test_plan_cells_keeps_every_bootstrap_key_in_every_train_set():
+    for cell in _cells():
+        assert set(_BOOT_KEYS) <= set(cell.train_keys)
+
+
+def test_plan_cells_holdout_is_identical_across_n_for_a_fold():
+    """hold-out은 N과 무관해야 한다 — 셀마다 평가 대상이 바뀌면 곡선을 비교할 수 없다."""
+    by_fold = {}
+    for cell in _cells():
+        by_fold.setdefault(cell.fold, set()).add(cell.holdout_keys)
+
+    assert all(len(v) == 1 for v in by_fold.values())
+
+
+def test_plan_cells_cohort_is_fixed_per_fold_regardless_of_n():
+    by_fold = {}
+    for cell in _cells():
+        by_fold.setdefault(cell.fold, set()).add(cell.eval_cohort)
+
+    assert all(len(v) == 1 for v in by_fold.values())
+
+
+def test_plan_cells_cohort_is_the_holdout_queries_answerable_by_the_full_train_bank():
+    for cell in _cells(n_grid=(12,)):
+        lab_of = dict(zip(_CUR_KEYS, _CUR_LABS, strict=True))
+        train_labs = set(_BOOT_LABS) | {lab_of[k] for k in cell.train_keys if k in lab_of}
+        expected = tuple(q for q in cell.holdout_keys if lab_of[q] in train_labs)
+        assert cell.eval_cohort == expected
+
+
+def test_plan_cells_train_and_holdout_never_intersect():
+    for cell in _cells():
+        assert set(cell.train_keys) & set(cell.holdout_keys) == set()
+
+
+def test_plan_cells_reports_actual_curated_counts_not_the_request():
+    for cell in _cells(n_grid=(0, 4, 12)):
+        assert cell.n_actual_pairs <= cell.n_requested
+        assert cell.n_actual_pairs == len(set(cell.train_keys) - set(_BOOT_KEYS))
+        assert cell.n_actual_jobs == len({k.split("/", 1)[0] for k in cell.train_keys if "/" in k})
+
+
+def test_plan_cells_zero_grid_point_trains_on_bootstrap_only():
+    zero = [c for c in _cells() if c.n_requested == 0]
+
+    assert zero and all(set(c.train_keys) == set(_BOOT_KEYS) for c in zero)
+    assert all(c.n_actual_pairs == 0 and c.n_actual_jobs == 0 for c in zero)
+
+
+def test_cell_is_frozen():
+    cell = _cells()[0]
+
+    assert isinstance(cell, Cell)
+    with pytest.raises(FrozenInstanceError):
+        cell.fold = 9
