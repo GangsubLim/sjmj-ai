@@ -2959,6 +2959,11 @@
             "type": "string",
             "format": "date-time"
           },
+          "ocr_job_id": {
+            "type": "integer",
+            "nullable": true,
+            "description": "이 명세서를 확정한 OCR 잡 번호(ocr_jobs.id). 목록 응답에만 포함되며, 수기 입력 등 OCR 유래가 아니면 null"
+          },
           "items": {
             "type": "array",
             "items": {

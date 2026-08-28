@@ -1,4 +1,5 @@
 import { useParams } from "react-router-dom";
+import { ExternalLinkIcon, PencilIcon } from "lucide-react";
 
 import { useCurationJob } from "@/hooks/use-curation-job";
 import { usePageParam } from "@/hooks/use-page-param";
@@ -83,9 +84,25 @@ export default function CurationJobPage() {
             </span>
           )}
         </h1>
-        <Button onClick={handleReview} disabled={job.curation_reviewed}>
-          검수 완료
-        </Button>
+        <div className="flex items-center gap-2">
+          {/* 검수 흐름(이전/다음 잡 이동)을 끊지 않도록 새 탭으로 연다. */}
+          {job.invoice_id != null && (
+            <Button variant="outline" asChild>
+              <a
+                href={`/edit/${job.invoice_id}`}
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <PencilIcon aria-hidden="true" />
+                명세서 수정
+                <ExternalLinkIcon aria-hidden="true" />
+              </a>
+            </Button>
+          )}
+          <Button onClick={handleReview} disabled={job.curation_reviewed}>
+            검수 완료
+          </Button>
+        </div>
       </div>
 
       {/* 라이브 리전은 이미 DOM에 있는 요소의 변경만 통지한다 — 영역을 내용과 함께

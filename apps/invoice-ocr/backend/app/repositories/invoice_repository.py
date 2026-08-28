@@ -48,7 +48,11 @@ class InvoiceRepository:
         sql = f"""
             SELECT i.id, i.document_title, i.issue_date, i.recipient, i.recipient2,
                    i.vehicle_no, i.memo, i.show_stamp, i.issuer_id,
-                   i.total_supply, i.total_vat, i.grand_total, i.created_at, i.updated_at
+                   i.total_supply, i.total_vat, i.grand_total, i.created_at, i.updated_at,
+                   -- OCR 유래 식별용 잡 번호. JOIN이 아닌 상관 서브쿼리를 쓰는 이유는
+                   -- 한 명세서에 잡이 2건 이상 걸릴 때 조인이 행을 불려 LIMIT/OFFSET과
+                   -- count_all이 어긋나기 때문. 미연결이면 NULL.
+                   (SELECT MAX(j.id) FROM ocr_jobs j WHERE j.invoice_id = i.id) AS ocr_job_id
             FROM invoices i
             WHERE {where}
             ORDER BY {col} {order}, i.id DESC

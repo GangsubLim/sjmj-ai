@@ -85,6 +85,11 @@ function InvoiceCard({
                   {invoice.vehicle_no}
                 </Badge>
               )}
+              {invoice.ocr_job_id != null && (
+                <Badge variant="outline" className="text-xs">
+                  잡 #{invoice.ocr_job_id}
+                </Badge>
+              )}
               {smsTargetLabel && (
                 <span className="text-muted-foreground truncate text-xs">
                   문자: {smsTargetLabel}

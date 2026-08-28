@@ -27,6 +27,8 @@ export interface Invoice {
   items: InvoiceItem[];
   created_at?: string;
   updated_at?: string;
+  // 이 명세서를 확정한 OCR 잡 번호. 목록 조회에만 실리고, 수기 입력이면 null.
+  ocr_job_id?: number | null;
 }
 
 export interface InvoiceFilters {

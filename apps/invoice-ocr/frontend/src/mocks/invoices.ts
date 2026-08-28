@@ -14,6 +14,7 @@ export const mockInvoices: Invoice[] = [
     total_supply: 213000,
     total_vat: 21300,
     grand_total: 234300,
+    ocr_job_id: 128,
     items: [
       {
         id: 1,

@@ -1,6 +1,7 @@
 import pytest
 
 from app.repositories.invoice_repository import InvoiceRepository
+from app.repositories.ocr_repository import OcrRepository
 from tests.fixtures import test_data as td
 
 pytestmark = pytest.mark.usefixtures("db_conn")
@@ -91,3 +92,29 @@ def test_find_all_for_export_date_filter():
     repo.insert(td.invoice({"issue_date": "2026-06-01"}))
     rows = repo.find_all_for_export({"date_from": "2026-05-01", "date_to": "", "company_id": None})
     assert len(rows) == 1 and rows[0]["issue_date"].isoformat() == "2026-06-01"
+
+
+def test_find_all_includes_ocr_job_id_when_linked():
+    inv_repo = InvoiceRepository()
+    ocr_repo = OcrRepository()
+    linked_id = inv_repo.insert(td.invoice({"recipient": "OCR유래"}))
+    manual_id = inv_repo.insert(td.invoice({"recipient": "수동입력"}))
+    job_id = ocr_repo.insert_job("/tmp/a.jpg")
+    ocr_repo.link_invoice(job_id, linked_id)
+    rows = {r["id"]: r for r in inv_repo.find_all(_filters())}
+    assert rows[linked_id]["ocr_job_id"] == job_id
+    assert rows[manual_id]["ocr_job_id"] is None
+
+
+def test_find_all_keeps_one_row_when_invoice_has_two_jobs():
+    """잡 2건이 한 명세서를 가리켜도 목록 행이 불어나지 않는다(LIMIT/count_all 정합)."""
+    inv_repo = InvoiceRepository()
+    ocr_repo = OcrRepository()
+    iid = inv_repo.insert(td.invoice())
+    first = ocr_repo.insert_job("/tmp/a.jpg")
+    second = ocr_repo.insert_job("/tmp/b.jpg")
+    ocr_repo.link_invoice(first, iid)
+    ocr_repo.link_invoice(second, iid)
+    rows = inv_repo.find_all(_filters())
+    assert len(rows) == 1 == inv_repo.count_all(_filters())
+    assert rows[0]["ocr_job_id"] == second
