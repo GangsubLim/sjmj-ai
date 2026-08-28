@@ -227,9 +227,8 @@ class CurationRepository:
         순서로 잠그므로, patch_pair가 반대 순서로 잠그면 두 **사람 경로** 사이에 순환
         대기가 성립한다. 같은 순서를 쓰면 사람 경로끼리는 추가 직렬화(SELECT … FOR
         UPDATE) 없이 교착이 배제된다. 기계 apply 경로(ml/tools/blank_crop_report.py의
-        build_apply_script)는 자식→부모라 사람 경로와의 순환 대기가 여전히 가능하다 —
-        #52 이전부터 있던 위험이며 오퍼레이터 단발 실행 + InnoDB 교착 감지로 수용한다
-        (정렬은 후속 이슈 #76). 이 순서는 repository가 강제할 수 없고 service의 호출
+        build_apply_script)도 #76에서 부모→자식으로 정렬돼 세 경로의 락 순서가 같다.
+        이 순서는 repository가 강제할 수 없고 service의 호출
         순서에만 달려 있다 — 강제 장치는 service 단위 테스트의 호출 순서 단언이다.
 
         curation_reviewed_at을 지우지 않는 것이 "재검수 필요"(해제됐지만 과거에 검수된 잡)와
