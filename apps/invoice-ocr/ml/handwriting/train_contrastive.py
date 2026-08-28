@@ -586,7 +586,11 @@ def main():
     )
     ap.add_argument("--batch", type=int, default=24)
     ap.add_argument("--folds", type=int, default=1, help="curve: 큐레이션 잡을 K개 fold로 분할")
-    ap.add_argument("--production", action="store_true", help="전체 데이터 학습 → 배포 모델+뱅크")
+    ap.add_argument(
+        "--production",
+        action="store_true",
+        help="전체 데이터 학습 → 배포 모델+뱅크 (AC3까지 비활성 — args.production 미배선)",
+    )
     ap.add_argument("--smoke", action="store_true", help="2 epoch 스모크")
     ap.add_argument("--bootstrap-npz", type=Path, help="부트스트랩 크롭 npz(clean_crops.npz)")
     ap.add_argument("--pairs-jsonl", type=Path, help="bank_update export-pairs의 pairs.jsonl")

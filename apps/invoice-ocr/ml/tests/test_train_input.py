@@ -104,6 +104,26 @@ def test_load_bootstrap_rejects_a_crop_array_that_is_not_224_rgb(tmp_path):
         load_bootstrap(_npz(tmp_path / "c.npz", n=2, sq=bad))
 
 
+def test_load_bootstrap_rejects_columns_whose_lengths_disagree(tmp_path):
+    """lab/inv/keys가 sq와 다른 길이로 어긋나면 즉시 실패한다 — 부분 정렬된 npz 방치 금지."""
+    path = tmp_path / "c.npz"
+    np.savez(
+        path,
+        sq=np.zeros((3, 224, 224, 3), np.uint8),
+        lab=np.array(["a", "b"], object),
+        inv=np.array(
+            ["2025-08-18_inv000.jpg", "2025-08-18_inv001.jpg", "2025-08-18_inv002.jpg"], object
+        ),
+        keys=np.array(
+            ["2025-08-18_inv000_0", "2025-08-18_inv001_0", "2025-08-18_inv002_0"], object
+        ),
+        key="cachekey01",
+    )
+
+    with pytest.raises(ValueError, match="열 길이 불일치"):
+        load_bootstrap(path)
+
+
 # --- 큐레이션 모집단 ---
 
 
@@ -167,6 +187,16 @@ def test_load_curated_rejects_a_square_fn_that_returns_the_wrong_shape(tmp_path)
 
     with pytest.raises(ValueError, match="job-1/row-0"):
         load_curated(pairs, root, square_fn=lambda img: np.zeros((128, 128, 3), np.uint8))
+
+
+def test_load_curated_rejects_a_square_fn_that_returns_the_wrong_dtype(tmp_path):
+    """shape는 맞아도 dtype이 uint8이 아니면 거부한다 — 검증이 shape OR dtype 두 갈래다."""
+    root = tmp_path / "ocr_crops"
+    _png(root, "job-1/row-0")
+    pairs = [_pair(crop_ref="job-1/row-0")]
+
+    with pytest.raises(ValueError, match="job-1/row-0"):
+        load_curated(pairs, root, square_fn=lambda img: np.zeros((224, 224, 3), np.float32))
 
 
 def test_load_curated_defaults_to_the_production_square_preprocessing(tmp_path, monkeypatch):
@@ -265,6 +295,21 @@ def test_job_folds_rejects_a_bootstrap_invoice():
 def test_job_folds_rejects_more_folds_than_jobs():
     with pytest.raises(ValueError, match="fold"):
         job_folds(("job-1", "job-2"), 3, 7)
+
+
+def test_job_folds_allows_k_equal_to_the_number_of_jobs():
+    """leave-one-job-out(k == 잡 수)도 유효 경계다 — `k >= len(jobs)`로 바뀌는 off-by-one 차단."""
+    jobs = set(_CUR_INVS)
+    folds = job_folds(_CUR_INVS, len(jobs), 7)
+
+    assert len(folds) == len(jobs)
+    assert all(f for f in folds)
+    assert set().union(*folds) == jobs
+
+
+def test_job_folds_rejects_fewer_than_one_fold():
+    with pytest.raises(ValueError, match="fold"):
+        job_folds(_CUR_INVS, 0, 7)
 
 
 # --- 실험계획: N 제한 ---
@@ -480,6 +525,23 @@ def test_score_cell_ignores_holdout_queries_outside_the_cohort():
     )
 
     assert rec["n_cohort"] == 1 and rec["t1"] == 1
+
+
+def test_score_cell_returns_all_zero_counts_for_an_empty_cohort():
+    """빈 cohort는 임베딩 인덱싱 없이 네 카운트 모두 0이어야 한다."""
+    rec = score_cell(
+        emb_q=np.zeros((0, 2), np.float32),
+        q_keys=[],
+        q_labs=[],
+        q_invs=[],
+        emb_b=np.array([[1.0, 0.0]], np.float32),
+        b_keys=["job-1/row-0"],
+        b_labs=["A"],
+        b_invs=["job-1"],
+        cell=_cell([]),
+    )
+
+    assert rec == {"t1": 0, "t5": 0, "n_cohort": 0, "n_covered": 0}
 
 
 def test_score_cell_fails_fast_when_a_cohort_key_is_not_among_the_queries():

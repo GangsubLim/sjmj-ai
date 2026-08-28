@@ -2144,11 +2144,16 @@ def test_cmd_export_pairs_writes_reviewed_job_ids_as_a_sorted_array(tmp_path, mo
 
 
 def test_cmd_export_pairs_writes_export_meta_with_utc_timestamp_and_counts(tmp_path, monkeypatch):
-    """report §1의 반출 시점 서술은 이 메타의 exported_at을 근거로 삼는다."""
-    out = _export_workspace(tmp_path, monkeypatch, [_pair(), _pair(id=2)], {1, 2})
+    """report §1의 반출 시점 서술은 이 메타의 exported_at을 근거로 삼는다.
+
+    n_pairs·n_reviewed를 다른 값으로 둬 두 필드가 뒤바뀌어도 잡히도록 각각 단언한다.
+    """
+    pairs = [_pair(), _pair(id=2, crop_ref="job-1/row-1"), _pair(id=3, crop_ref="job-1/row-2")]
+    out = _export_workspace(tmp_path, monkeypatch, pairs, {1, 2})
 
     meta = json.loads((out / "export_meta.json").read_text(encoding="utf-8"))
-    assert meta["n_pairs"] == 2 and meta["n_reviewed"] == 2
+    assert meta["n_pairs"] == 3
+    assert meta["n_reviewed"] == 2
     assert meta["exported_at"].endswith("+00:00") or meta["exported_at"].endswith("Z")
 
 

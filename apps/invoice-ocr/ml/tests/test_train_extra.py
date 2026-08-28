@@ -20,6 +20,14 @@ def _pyproject() -> dict:
         return tomllib.load(f)
 
 
+def test_core_dependencies_stay_pillow_only_so_torch_never_leaks_into_ci():
+    """CI는 `uv sync --frozen --extra worker --extra cv`만 돌린다 — core dependencies는 extra와
+    무관하게 항상 설치되므로, torch가 여기로 옮겨오면 train extra 분리가 무의미해진다."""
+    deps = _pyproject()["project"]["dependencies"]
+
+    assert deps == ["pillow>=10.0"]
+
+
 def test_train_extra_pins_the_torch_stack_to_the_measured_local_versions():
     extras = _pyproject()["project"]["optional-dependencies"]
 
@@ -50,3 +58,4 @@ def test_ci_installs_only_the_worker_and_cv_extras_for_ml():
 
     assert "uv sync --frozen --extra worker --extra cv" in ci
     assert "--extra train" not in ci
+    assert "torch" not in ci

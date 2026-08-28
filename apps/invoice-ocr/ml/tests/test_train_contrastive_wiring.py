@@ -32,9 +32,16 @@ def _defined_names():
 
 
 def _called_names(fn):
-    return {
-        n.func.id for n in ast.walk(fn) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-    }
+    """fn 안의 호출 이름 전체 — `foo(...)`와 `obj.foo(...)` 양쪽 형태 모두 포함."""
+    out = set()
+    for n in ast.walk(fn):
+        if not isinstance(n, ast.Call):
+            continue
+        if isinstance(n.func, ast.Name):
+            out.add(n.func.id)
+        elif isinstance(n.func, ast.Attribute):
+            out.add(n.func.attr)
+    return out
 
 
 def _cli_flags():
@@ -107,7 +114,20 @@ def test_curve_mode_exposes_every_documented_flag():
 
 
 def test_curve_is_a_positional_mode_so_existing_flag_only_invocations_still_parse():
-    assert "mode" in _cli_flags()
+    """`nargs="?"`가 없으면 mode가 필수 위치인자가 되어 flag-only 호출이 깨진다."""
+    call = next(
+        n
+        for n in ast.walk(_tree())
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "add_argument"
+        and n.args
+        and isinstance(n.args[0], ast.Constant)
+        and n.args[0].value == "mode"
+    )
+    nargs = next(kw.value.value for kw in call.keywords if kw.arg == "nargs")
+
+    assert nargs == "?"
 
 
 # --- hold-out 무오염 ---
@@ -145,6 +165,31 @@ def test_the_baseline_path_loads_a_checkpoint_without_training():
     assert _called_names(fn) & {"train_fixed", "train_production", "train_split"} == set()
 
 
+def test_the_frozen_baseline_model_loads_once_outside_the_cell_loop():
+    """루프 안에서 적재하면 build_model 초기화가 전역 torch RNG를 소비해, 재학습 셀의 초기화까지
+    --baseline-ckpt 지정 여부로 갈라진다(N3, E6) — 그래서 loop 밖 1회 적재가 확정 결정이다.
+    """
+    fn = _fn("run_curve")
+    src = SRC.read_text(encoding="utf-8")
+    loop = next(
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.For) and isinstance(n.target, ast.Name) and n.target.id == "cell"
+    )
+    loop_nodes = set(ast.walk(loop))
+    calls = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Name)
+        and n.func.id == "load_ckpt_model"
+    ]
+
+    assert calls, "load_ckpt_model 호출이 run_curve에서 사라짐"
+    assert [c for c in calls if c in loop_nodes] == []
+    assert "load_ckpt_model" not in ast.get_source_segment(src, loop)
+
+
 # --- 셀 간 비교 가능성 ---
 
 
@@ -162,6 +207,9 @@ def test_cell_seed_depends_only_on_fold_so_every_n_shares_random_numbers():
     assert len(seeds) == 2
     assert all("n_requested" not in s for s in seeds)
     assert all("cell.fold" in s for s in seeds)
+    assert all("".join(s.split()) == "SEED+cell.fold*1000" for s in seeds), (
+        "확정 공식(SEED + cell.fold * 1000)이 아닌 다른 N-상관 표현으로도 위 두 단언은 통과한다"
+    )
 
 
 def test_the_cell_loop_skips_a_cell_whose_train_bank_is_empty():

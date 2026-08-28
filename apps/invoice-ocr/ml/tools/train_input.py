@@ -22,7 +22,6 @@ SEED = 20260828
 # 부트스트랩 npz의 필수 배열. 실파일에는 prepare()가 남긴 캐시 `key`가 하나 더 있으므로
 # 상등이 아니라 부분집합으로 검증한다(2026-08-28 실측: files=['key','sq','lab','inv','keys']).
 BOOTSTRAP_ARRAYS = ("sq", "lab", "inv", "keys")
-ORIGINS = ("bootstrap", "curated")
 
 
 @dataclass(frozen=True)
@@ -50,18 +49,23 @@ def load_bootstrap(npz_path) -> TrainSet:
     """
     import numpy as np
 
-    z = np.load(Path(npz_path), allow_pickle=True)
-    missing = [k for k in BOOTSTRAP_ARRAYS if k not in z.files]
-    if missing:
-        raise ValueError(f"부트스트랩 npz 배열 누락 {missing} — 있는 배열: {sorted(z.files)}")
-    sq = z["sq"]
-    if sq.ndim != 4 or tuple(sq.shape[1:]) != (CROP_SIZE, CROP_SIZE, 3):
-        raise ValueError(f"크롭 규격 불일치 {sq.shape} — (N,{CROP_SIZE},{CROP_SIZE},3)이어야 한다")
-    lab, inv, keys = z["lab"].tolist(), z["inv"].tolist(), z["keys"].tolist()
-    if not len(sq) == len(lab) == len(inv) == len(keys):
-        raise ValueError(f"열 길이 불일치: sq{len(sq)}/lab{len(lab)}/inv{len(inv)}/keys{len(keys)}")
+    with np.load(Path(npz_path), allow_pickle=True) as z:
+        missing = [k for k in BOOTSTRAP_ARRAYS if k not in z.files]
+        if missing:
+            raise ValueError(f"부트스트랩 npz 배열 누락 {missing} — 있는 배열: {sorted(z.files)}")
+        sq = z["sq"]
+        if sq.ndim != 4 or tuple(sq.shape[1:]) != (CROP_SIZE, CROP_SIZE, 3):
+            raise ValueError(
+                f"크롭 규격 불일치 {sq.shape} — (N,{CROP_SIZE},{CROP_SIZE},3)이어야 한다"
+            )
+        lab, inv, keys = z["lab"].tolist(), z["inv"].tolist(), z["keys"].tolist()
+        if not len(sq) == len(lab) == len(inv) == len(keys):
+            raise ValueError(
+                f"열 길이 불일치: sq{len(sq)}/lab{len(lab)}/inv{len(inv)}/keys{len(keys)}"
+            )
+        sq = tuple(sq)
     return TrainSet(
-        sq=tuple(sq),
+        sq=sq,
         lab=tuple(lab),
         inv=tuple(inv),
         keys=tuple(keys),
