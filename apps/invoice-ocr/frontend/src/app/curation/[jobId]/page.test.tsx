@@ -240,4 +240,19 @@ describe("CurationJobPage", () => {
     expect(router.state.location.pathname).toBe("/curation/128");
     expect(screen.queryByText("목록")).not.toBeInTheDocument();
   });
+
+  it("연결된 명세서의 수정 화면을 새 탭 링크로 연다", () => {
+    setup(job({ invoice_id: 341 }));
+    const link = screen.getByRole("link", { name: /명세서 수정/ });
+    expect(link).toHaveAttribute("href", "/edit/341");
+    expect(link).toHaveAttribute("target", "_blank");
+    expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+  });
+
+  it("확정 전이라 invoice_id가 없으면 수정 링크를 걸지 않는다", () => {
+    setup(job({ invoice_id: null }));
+    expect(
+      screen.queryByRole("link", { name: /명세서 수정/ }),
+    ).not.toBeInTheDocument();
+  });
 });
