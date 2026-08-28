@@ -597,11 +597,13 @@ _REVERT = {
 
 
 def test_build_apply_script_emits_full_transaction_in_order():
-    # 전문 고정 — ROW_COUNT() 프로브는 자기 UPDATE 바로 뒤에 와야 하고(다른 문이 끼면
-    # 엉뚱한 문의 행수를 읽는다), 잡 표식 되돌림은 모든 쌍 UPDATE 뒤에 와야 한다.
+    # 전문 고정 — 부모(ocr_jobs) 잠금이 첫 문이고(#76, 사람 경로와 같은 부모→자식 순서),
+    # ROW_COUNT() 프로브는 자기 UPDATE 바로 뒤에 와야 하고(다른 문이 끼면 엉뚱한 문의
+    # 행수를 읽는다), 잡 표식 되돌림은 모든 쌍 UPDATE 뒤에 와야 한다.
     sql = build_apply_script([_u(), _u(**_REVERT)])
     assert sql == (
         "START TRANSACTION;\n"
+        "DO (SELECT COUNT(*) FROM ocr_jobs WHERE id IN (3, 5) FOR UPDATE);\n"
         "UPDATE training_pairs SET status = 'excluded', exclusion_reason = 'blank_crop', "
         "reviewed_at = NULL "
         "WHERE id = 7 AND status = 'included' AND exclusion_reason <=> NULL;\n"
@@ -615,6 +617,14 @@ def test_build_apply_script_emits_full_transaction_in_order():
         "WHERE tp.job_id = ocr_jobs.id AND tp.reviewed_at IS NULL);\n"
         "COMMIT;\n"
     )
+
+
+def test_build_apply_script_locks_parent_jobs_before_any_child_update():
+    """락 순서 부모→자식 고정(#76) — 잠금 문은 결과셋을 내지 않는 DO 꼴이어야 파서가 산다."""
+    sql = build_apply_script([_u(job_id=9), _u(**{**_REVERT, "job_id": 2})])
+    lock = sql.index("DO (SELECT COUNT(*) FROM ocr_jobs WHERE id IN (2, 9) FOR UPDATE);")
+    assert lock < sql.index("UPDATE training_pairs")
+    assert "SELECT id FROM ocr_jobs" not in sql
 
 
 def test_build_apply_script_carries_seen_state_in_where():

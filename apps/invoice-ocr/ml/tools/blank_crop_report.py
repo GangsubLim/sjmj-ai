@@ -287,6 +287,12 @@ def build_apply_script(updates: list[PairUpdate]) -> str:
     있는 잡'이다. 충돌만 있고 변경 0인 잡은 조건이 거짓이 되어 표식이 유지되므로
     '미검수 + 미처리 0'(사람이 "볼 것 없음"으로 읽는 상태)이 만들어지지 않는다.
 
+    잠금 순서는 **부모(ocr_jobs) → 자식(training_pairs)** 이다(#76). 첫 문이 대상 잡 행을
+    정렬된 id 순서로 `FOR UPDATE` 잠근 뒤에 쌍 UPDATE로 내려간다 — 백엔드 사람 경로
+    (`mark_reviewed` / `patch_pair`, ADR 0004)와 같은 순서라 순환 대기가 성립하지 않는다.
+    잠금 문은 결과셋을 내지 않는 `DO (SELECT … FOR UPDATE)` 꼴이다 — `SELECT … FOR UPDATE`를
+    그대로 쓰면 `id` 결과셋이 stdout에 섞여 `parse_apply_output`의 엄격 파싱(M1)이 깨진다.
+
     ROW_COUNT 프로브는 전부 COMMIT 앞에서 출력된다(M4) — 교착·연결 끊김으로 COMMIT 자체가
     실패해도 stdout엔 이미 `affected 1`이 찍혀 있어, 출력만 보면 "적용 성공"처럼 읽힐 수
     있다. 원자성 자체는 문제없다(부분 적용 없음). **Task 11이 지켜야 할 계약**: apply 글루는
@@ -304,7 +310,15 @@ def build_apply_script(updates: list[PairUpdate]) -> str:
     """
     if not updates:
         return ""
-    parts = ["START TRANSACTION;"]
+    job_id_set = {u.job_id for u in updates}
+    for jid in job_id_set:
+        _id_lit(jid)  # sorted()가 mixed-type 비교로 TypeError를 내기 전에 먼저 검증한다
+    job_ids = ", ".join(str(j) for j in sorted(job_id_set))
+    parts = [
+        "START TRANSACTION;",
+        # 부모 먼저 잠근다(#76). 결과셋 없는 DO 꼴 — docstring 참조.
+        f"DO (SELECT COUNT(*) FROM ocr_jobs WHERE id IN ({job_ids}) FOR UPDATE);",
+    ]
     for u in updates:
         pair_id_lit = _id_lit(u.pair_id)
         parts.append(
@@ -316,10 +330,6 @@ def build_apply_script(updates: list[PairUpdate]) -> str:
             f"AND exclusion_reason <=> {_reason_lit(u.seen_reason)};"
         )
         parts.append(f"SELECT {pair_id_lit} AS pair_id, ROW_COUNT() AS affected;")
-    job_id_set = {u.job_id for u in updates}
-    for jid in job_id_set:
-        _id_lit(jid)  # sorted()가 mixed-type 비교로 TypeError를 내기 전에 먼저 검증한다
-    job_ids = ", ".join(str(j) for j in sorted(job_id_set))
     parts.append(
         "UPDATE ocr_jobs SET curation_reviewed = FALSE "
         f"WHERE id IN ({job_ids}) AND EXISTS ("

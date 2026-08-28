@@ -126,6 +126,9 @@ class CornerModel:
         if digest != EXPECTED_SHA256:
             raise ValueError(f"모델 SHA-256 불일치: {path} (실측 {digest})")
         self._session = _make_session(path)
+        # 직전 quad() 호출이 삼킨 추론 예외의 타입명. None이면 예외 없음(순수 미검출 포함).
+        # 공급자(quad_candidates)가 읽어 폴백 사유를 no-detection / error:{타입}으로 가른다(#120).
+        self.last_failure = None
         self._input_name = self._session.get_inputs()[0].name
         self._output_names = [o.name for o in self._session.get_outputs()]
         # 이름이 어긋나면 quad()가 잡마다 KeyError→None으로 조용히 색 경로 퇴행한다 —
@@ -150,11 +153,13 @@ class CornerModel:
             (4, 2) float32 코너 또는 None.
         """
         h, w = bgr.shape[:2]
+        self.last_failure = None
         try:
             outs = self._session.run(self._output_names, {self._input_name: preprocess(bgr)})
             named = dict(zip(self._output_names, outs, strict=True))
             return postprocess(named["points"], named["has_obj"], h=h, w=w)
         except Exception as e:
+            self.last_failure = type(e).__name__
             print(f"[corner-dl] 추론 실패({type(e).__name__}: {e})", file=sys.stderr, flush=True)
             return None
 
@@ -204,6 +209,8 @@ def log_fallback(job_id, reason):
         job_id: 잡 id — 운영(infer_job)은 int, 데모 CLI(infer_photo)는 파일명 str을 넘긴다.
             None이면 태그를 생략한다(현재는 테스트만 이 값을 쓴다).
         reason: no-detection | invalid-quad | error:{예외타입} | gate-demoted.
+            error:{예외타입}은 어댑터가 예외를 던진 경우와 CornerModel이 삼킨 추론 예외
+            (`last_failure`) 양쪽을 덮는다 — 미검출(no-detection)과는 구분된다(#120).
     """
     tag = f"job={job_id} " if job_id is not None else ""
     print(f"[corner-dl] {tag}fallback reason={reason}", flush=True)
@@ -247,14 +254,16 @@ def quad_candidates(bgr, aligner, job_id=None):
         재적용하면 퇴화 quad에서 현행 동작과 갈릴 수 있다.
     """
     if aligner is not None:
-        # CornerModel.quad는 추론 예외를 내부에서 삼켜 None으로 닫으므로(추론 경로 다운 금지
-        # 불변식) 이 라벨은 순수 미검출뿐 아니라 삼켜진 추론 예외도 포함한다 — 상세는 stderr의
-        # `[corner-dl] 추론 실패(...)`에 있다.
+        # CornerModel.quad는 추론 예외를 내부에서 삼켜 None으로 닫는다(추론 경로 다운 금지
+        # 불변식). 삼켜진 예외는 `last_failure` 속성으로만 남으므로 여기서 읽어 순수 미검출과
+        # 갈라 라벨링한다(#120) — 예외 자체는 여전히 밖으로 나가지 않는다.
         reason = "no-detection"
         try:
             raw = aligner.quad(bgr)
             dl_quad = _ordered_or_none(raw)
-            if raw is not None and dl_quad is None:
+            if raw is None and getattr(aligner, "last_failure", None):
+                reason = f"error:{aligner.last_failure}"
+            elif raw is not None and dl_quad is None:
                 reason = "invalid-quad"
         except Exception as e:  # 어댑터 계약 위반도 추론 경로를 죽이지 않는다
             dl_quad, reason = None, f"error:{type(e).__name__}"

@@ -8,6 +8,12 @@
 전부 cv2/numpy 전용이다. `replicate_rows`는 `handwriting.infer_photo.extract_rows_for_job`에서
 모델 의존 구간(임베딩·금액 전사)만 뺀 접두를 그대로 옮겨 적은 것이다(아래 함수 docstring 참조).
 
+⚠️ quad 공급(`_form_quad`)은 **색 경로(`rectify.form_quad_robust`)만** 재현한다. 운영 워커는
+`infer_job._gated_warp`(DL 코너검출 후보 → 게이트 채점 → 색 폴백, #117)를 타지만, DL 모델이
+배치되지 않아 `aligner=None`인 동안은 두 경로가 동일하다(#118 재측정으로 DL 비활성 유지 확정,
+2026-08-28 기준). **DL을 활성화(모델 배치)하는 시점에는 이 공급을 `_gated_warp` 경로로 정렬해야
+한다** — 정렬 전까지 이 하네스의 산출은 활성화 이후 운영 워프의 기준선이 아니다(#119).
+
 ⚠️ `hline_ys`는 `handwriting.grid_v4` 모듈 전역 `_FAINT`(기본 False)를 읽는다. `infer_photo`는
 `sys.path` 트릭으로 `grid_v4`를 별도 모듈 객체로 다시 import하지만(위 경고 참조), 양쪽 모두
 `_FAINT`의 초기값은 False이고 이 하네스는 `FaintOn`을 쓰지 않으므로 ambient False로 돈다 —
