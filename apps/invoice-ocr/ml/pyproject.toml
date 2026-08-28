@@ -50,6 +50,8 @@ dl = [
 # 0.27.1 · transformers 5.12.1) — 학습 환경이 ft_prod.pt를 적재하는 추론 환경과 갈리면
 # state_dict 정합·transformers ViT 레이어 접근(vit.layers[i], 5.x API)이 조용히 흔들린다.
 # cv와 함께 동기화한다: `uv sync --extra train --extra cv`.
+# lock 재해석으로 setuptools 83.0.0→81.0.0·tokenizers 0.23.1→0.22.2 이동(ml extra 한정,
+# worker+cv 무영향) — 사유: torch/transformers 상한과의 공동 해석.
 train = [
     "torch>=2.12,<2.13",
     "torchvision>=0.27,<0.28",

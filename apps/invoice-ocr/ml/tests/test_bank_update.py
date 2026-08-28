@@ -2128,7 +2128,11 @@ def test_cmd_export_pairs_writes_every_pair_without_filtering(tmp_path, monkeypa
     ]
     out = _export_workspace(tmp_path, monkeypatch, pairs, {1})
 
-    rows = [json.loads(ln) for ln in (out / "pairs.jsonl").read_text().splitlines() if ln.strip()]
+    rows = [
+        json.loads(ln)
+        for ln in (out / "pairs.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
     assert [r["id"] for r in rows] == [1, 2, 3]
     assert rows[0]["crop_ref"] == "job-1/row-0" and rows[2]["status"] == "excluded"
 
@@ -2136,7 +2140,7 @@ def test_cmd_export_pairs_writes_every_pair_without_filtering(tmp_path, monkeypa
 def test_cmd_export_pairs_writes_reviewed_job_ids_as_a_sorted_array(tmp_path, monkeypatch):
     out = _export_workspace(tmp_path, monkeypatch, [_pair()], {9, 1, 4})
 
-    assert json.loads((out / "reviewed_jobs.json").read_text()) == [1, 4, 9]
+    assert json.loads((out / "reviewed_jobs.json").read_text(encoding="utf-8")) == [1, 4, 9]
 
 
 def test_cmd_export_pairs_writes_export_meta_with_utc_timestamp_and_counts(tmp_path, monkeypatch):
