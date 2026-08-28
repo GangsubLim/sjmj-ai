@@ -241,3 +241,59 @@ def plan_cells(
                 )
             )
     return cells
+
+
+def score_cell(
+    *,
+    emb_q,
+    q_keys,
+    q_labs,
+    q_invs,
+    emb_b,
+    b_keys,
+    b_labs,
+    b_invs,
+    cell: Cell,
+) -> dict:
+    """셀의 고정 cohort로 hold-out retrieval을 채점한다 — 분모는 언제나 cohort 크기다.
+
+    bank_update.retrieval 계열과 분모 규칙이 다르다. retrieval()은 정답 peer가 없는 쿼리를
+    아예 건너뛰지만(분모에서 제외) 학습곡선은 그러면 안 된다 — 작은 N에서 peer가 사라진
+    쿼리가 조용히 분모에서 빠지면 데이터가 줄수록 정확도가 오르는 착시가 생긴다. 여기서는
+    peer 부재를 miss로 계산하고, 커버리지 효과를 분리해 보고 싶은 소비자를 위해 n_covered를
+    함께 돌려준다.
+
+    제외 축·top-k 규칙은 bank_update를 그대로 부른다(운영 채점과 같은 기준).
+
+    Args:
+        emb_q: hold-out 쿼리 임베딩 [Nq, D](L2 정규화 전제).
+        q_keys/q_labs/q_invs: 쿼리 열. cell.eval_cohort의 key가 q_keys에 있어야 한다.
+        emb_b: train 뱅크 임베딩 [Nb, D].
+        b_keys/b_labs/b_invs: 뱅크 열.
+        cell: 채점할 셀(eval_cohort가 분모).
+
+    Returns:
+        카운트 dict — ``t1``·``t5``(적중 수) · ``n_cohort``(분모) · ``n_covered``(제외 후
+        정답 peer가 있던 쿼리 수).
+
+    Raises:
+        KeyError: cohort key가 쿼리 열에 없을 때(셀과 임베딩이 어긋난 사고).
+    """
+    from tools.bank_update import TOPK, excluded_indices, has_peer_sample, topk_dedup
+
+    idx_of = {key: i for i, key in enumerate(q_keys)}
+    b_keys, b_labs, b_invs = list(b_keys), list(b_labs), list(b_invs)
+    t1 = t5 = covered = 0
+    for query in cell.eval_cohort:
+        if query not in idx_of:
+            raise KeyError(f"cohort key가 쿼리 열에 없음: {query}")
+        i = idx_of[query]
+        excluded = excluded_indices(b_keys, b_invs, self_inv=q_invs[i])
+        if not has_peer_sample(q_labs[i], b_labs, excluded):
+            continue
+        covered += 1
+        sims = (emb_b @ emb_q[i]).tolist()
+        preds = [lb for lb, _ in topk_dedup(sims, b_labs, excluded, TOPK)]
+        t1 += bool(preds) and preds[0] == q_labs[i]
+        t5 += q_labs[i] in preds
+    return {"t1": int(t1), "t5": int(t5), "n_cohort": len(cell.eval_cohort), "n_covered": covered}

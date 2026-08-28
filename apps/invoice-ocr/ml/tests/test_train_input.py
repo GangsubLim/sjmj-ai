@@ -19,6 +19,7 @@ from tools.train_input import (
     load_curated,
     merge,
     plan_cells,
+    score_cell,
     select_curated,
 )
 
@@ -376,3 +377,121 @@ def test_cell_is_frozen():
     assert isinstance(cell, Cell)
     with pytest.raises(FrozenInstanceError):
         cell.fold = 9
+
+
+# --- cohort 고정 채점 ---
+
+
+def _cell(cohort, holdout=None):
+    return Cell(
+        n_requested=0,
+        fold=1,
+        train_keys=(),
+        holdout_keys=tuple(holdout if holdout is not None else cohort),
+        n_actual_pairs=0,
+        n_actual_jobs=0,
+        eval_cohort=tuple(cohort),
+    )
+
+
+def test_score_cell_counts_a_top1_hit_against_the_cohort_denominator():
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0]], np.float32),
+        q_keys=["job-3/row-0"],
+        q_labs=["A"],
+        q_invs=["job-3"],
+        emb_b=np.array([[1.0, 0.0], [0.0, 1.0]], np.float32),
+        b_keys=["job-1/row-0", "job-2/row-0"],
+        b_labs=["A", "B"],
+        b_invs=["job-1", "job-2"],
+        cell=_cell(["job-3/row-0"]),
+    )
+
+    assert rec == {"t1": 1, "t5": 1, "n_cohort": 1, "n_covered": 1}
+
+
+def test_score_cell_scores_a_cohort_query_without_a_peer_as_a_miss_not_an_exclusion():
+    """작은 N에서 peer가 사라진 cohort 쿼리는 분모에 남고 분자에서만 빠진다."""
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0]], np.float32),
+        q_keys=["job-3/row-0"],
+        q_labs=["Z"],
+        q_invs=["job-3"],
+        emb_b=np.array([[1.0, 0.0]], np.float32),
+        b_keys=["job-1/row-0"],
+        b_labs=["A"],
+        b_invs=["job-1"],
+        cell=_cell(["job-3/row-0"]),
+    )
+
+    assert rec == {"t1": 0, "t5": 0, "n_cohort": 1, "n_covered": 0}
+
+
+def test_score_cell_excludes_bank_items_from_the_query_invoice():
+    """같은 전표 항목이 뱅크에 있으면 제외된다 — 남는 peer가 없으면 miss다."""
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0]], np.float32),
+        q_keys=["job-3/row-0"],
+        q_labs=["A"],
+        q_invs=["job-3"],
+        emb_b=np.array([[1.0, 0.0]], np.float32),
+        b_keys=["job-3/row-9"],
+        b_labs=["A"],
+        b_invs=["job-3"],
+        cell=_cell(["job-3/row-0"]),
+    )
+
+    assert rec == {"t1": 0, "t5": 0, "n_cohort": 1, "n_covered": 0}
+
+
+def test_score_cell_counts_a_top5_only_hit_separately():
+    """정답이 1위는 아니지만 dedup top-5 안에 있으면 t5만 오른다."""
+    emb_b = np.array(
+        [[1.0, 0.0], [0.95, 0.31], [0.9, 0.44], [0.85, 0.53], [0.8, 0.6], [0.7, 0.71]],
+        np.float32,
+    )
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0]], np.float32),
+        q_keys=["job-9/row-0"],
+        q_labs=["F"],
+        q_invs=["job-9"],
+        emb_b=emb_b,
+        b_keys=[f"job-{i}/row-0" for i in range(1, 7)],
+        b_labs=["A", "B", "C", "D", "F", "G"],
+        b_invs=[f"job-{i}" for i in range(1, 7)],
+        cell=_cell(["job-9/row-0"]),
+    )
+
+    assert rec == {"t1": 0, "t5": 1, "n_cohort": 1, "n_covered": 1}
+
+
+def test_score_cell_ignores_holdout_queries_outside_the_cohort():
+    """cohort 밖 hold-out 쿼리는 채점하지 않는다(분모 고정이 목적)."""
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0], [0.0, 1.0]], np.float32),
+        q_keys=["job-3/row-0", "job-3/row-1"],
+        q_labs=["A", "B"],
+        q_invs=["job-3", "job-3"],
+        emb_b=np.array([[1.0, 0.0], [0.0, 1.0]], np.float32),
+        b_keys=["job-1/row-0", "job-2/row-0"],
+        b_labs=["A", "B"],
+        b_invs=["job-1", "job-2"],
+        cell=_cell(["job-3/row-0"], holdout=["job-3/row-0", "job-3/row-1"]),
+    )
+
+    assert rec["n_cohort"] == 1 and rec["t1"] == 1
+
+
+def test_score_cell_fails_fast_when_a_cohort_key_is_not_among_the_queries():
+    with pytest.raises(KeyError, match="job-9/row-0"):
+        score_cell(
+            emb_q=np.array([[1.0, 0.0]], np.float32),
+            q_keys=["job-3/row-0"],
+            q_labs=["A"],
+            q_invs=["job-3"],
+            emb_b=np.array([[1.0, 0.0]], np.float32),
+            b_keys=["job-1/row-0"],
+            b_labs=["A"],
+            b_invs=["job-1"],
+            cell=_cell(["job-9/row-0"]),
+        )
