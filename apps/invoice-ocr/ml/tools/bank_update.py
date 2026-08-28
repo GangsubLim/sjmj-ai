@@ -11,6 +11,7 @@ Usage:
     uv run python -m tools.bank_update plan
     uv run python -m tools.bank_update apply --plan results/bank_update/plan.jsonl
     uv run python -m tools.bank_update score --before <bank.bak> --after <bank.npz>
+    uv run python -m tools.bank_update export-pairs
 """
 
 import argparse
@@ -1243,7 +1244,7 @@ def cmd_score(args) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """서브커맨드(plan/apply/score)를 파싱해 실행한다."""
+    """서브커맨드(plan/apply/score/export-pairs)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="bank_update", description=__doc__)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(

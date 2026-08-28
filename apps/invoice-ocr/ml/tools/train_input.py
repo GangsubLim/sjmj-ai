@@ -220,6 +220,11 @@ def plan_cells(
     부트스트랩은 모든 셀의 train에 전량 들어가고, 큐레이션은 hold-out fold를 뺀 나머지에
     limit_curated를 적용한다. eval_cohort는 'N=전량 train 뱅크'에 정답 peer가 있는 hold-out
     쿼리로 fold마다 한 번만 정해져 N 전체에서 공유된다.
+
+    n_grid는 중복 제거 후 오름차순으로 정렬해 순회한다 — 호출부(run_curve)가 만드는 grid는
+    잡 수에 따라 우연히 중복될 수 있고, `--curated-n`으로 사용자가 직접 주는 값도 중복·역순일
+    수 있다. 중복을 그대로 두면 같은 fold에 동일한 Cell이 두 번 생겨 재학습이 두 배로 돌고,
+    집계도 같은 fold를 두 번 더해 분모(n_folds)와 어긋난다.
     """
     lab_of = dict(zip(curated_keys, curated_labs, strict=True))
     inv_by_key = dict(zip(curated_keys, curated_invs, strict=True))
@@ -230,7 +235,7 @@ def plan_cells(
         pool_invs = [inv_by_key[key] for key in pool_keys]
         full_labels = set(bootstrap_labs) | {lab_of[key] for key in pool_keys}
         cohort = tuple(q for q in holdout if lab_of[q] in full_labels)
-        for n in n_grid:
+        for n in sorted(set(n_grid)):
             keep = limit_curated(pool_keys, pool_invs, n, seed)
             kept = [key for key in pool_keys if key in keep]
             cells.append(
@@ -261,7 +266,7 @@ def score_cell(
 ) -> dict:
     """셀의 고정 cohort로 hold-out retrieval을 채점한다 — 분모는 언제나 cohort 크기다.
 
-    bank_update.retrieval 계열과 분모 규칙이 다르다. retrieval()은 정답 peer가 없는 쿼리를
+    train_contrastive.retrieval과 분모 규칙이 다르다. retrieval()은 정답 peer가 없는 쿼리를
     아예 건너뛰지만(분모에서 제외) 학습곡선은 그러면 안 된다 — 작은 N에서 peer가 사라진
     쿼리가 조용히 분모에서 빠지면 데이터가 줄수록 정확도가 오르는 착시가 생긴다. 여기서는
     peer 부재를 miss로 계산하고, 커버리지 효과를 분리해 보고 싶은 소비자를 위해 n_covered를
@@ -292,7 +297,8 @@ def score_cell(
         if query not in idx_of:
             raise KeyError(f"cohort key가 쿼리 열에 없음: {query}")
         i = idx_of[query]
-        excluded = excluded_indices(b_keys, b_invs, self_inv=q_invs[i])
+        # self_ref도 함께 넘겨 뱅크 inv 값이 어떻든 자기 제외를 보장한다(D4, bank_update._axis_excluded).
+        excluded = excluded_indices(b_keys, b_invs, self_ref=query, self_inv=q_invs[i])
         if not has_peer_sample(q_labs[i], b_labs, excluded):
             continue
         covered += 1

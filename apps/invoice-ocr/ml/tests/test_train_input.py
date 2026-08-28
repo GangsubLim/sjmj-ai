@@ -416,6 +416,16 @@ def test_plan_cells_zero_grid_point_trains_on_bootstrap_only():
     assert all(c.n_actual_pairs == 0 and c.n_actual_jobs == 0 for c in zero)
 
 
+def test_plan_cells_deduplicates_and_sorts_a_duplicated_unsorted_n_grid():
+    """중복·역순 n_grid(run_curve의 [0, 25, 50, len(cur_keys)]가 우연히 겹치거나 사용자가
+    --curated-n을 뒤섞어 줄 때)는 fold당 distinct N 하나씩만, 오름차순으로 셀을 만든다."""
+    cells = _cells(n_grid=(50, 0, 25, 50))
+
+    for fold in {c.fold for c in cells}:
+        by_fold = [c.n_requested for c in cells if c.fold == fold]
+        assert by_fold == [0, 25, 50]
+
+
 def test_cell_is_frozen():
     cell = _cells()[0]
 
@@ -483,6 +493,25 @@ def test_score_cell_excludes_bank_items_from_the_query_invoice():
         b_keys=["job-3/row-9"],
         b_labs=["A"],
         b_invs=["job-3"],
+        cell=_cell(["job-3/row-0"]),
+    )
+
+    assert rec == {"t1": 0, "t5": 0, "n_cohort": 1, "n_covered": 0}
+
+
+def test_score_cell_excludes_a_bank_item_whose_key_matches_the_query_even_if_its_inv_disagrees():
+    """D4 — bank_update._axis_excluded와 같은 불변식: self_inv만으로는 뱅크 항목의 inv가
+    자기 자신과 어긋날 때 못 잡는다. self_ref도 함께 넘겨야 key 일치만으로도 확실히
+    제외되고, 안 그러면 이 항목이 유사도 1.0으로 자기 자신을 맞혀버린다."""
+    rec = score_cell(
+        emb_q=np.array([[1.0, 0.0]], np.float32),
+        q_keys=["job-3/row-0"],
+        q_labs=["A"],
+        q_invs=["job-3"],
+        emb_b=np.array([[1.0, 0.0]], np.float32),
+        b_keys=["job-3/row-0"],  # 쿼리 자신의 key
+        b_labs=["A"],
+        b_invs=["job-9"],  # 그러나 inv는 어긋난다
         cell=_cell(["job-3/row-0"]),
     )
 
