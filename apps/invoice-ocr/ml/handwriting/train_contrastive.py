@@ -5,10 +5,10 @@
 few-shot retrieval. 따라서 평가도 '전표 단위 hold-out → 학습 뱅크에 retrieval'로 한다
 (fewshot.py의 leave-one-invoice-out과 동일 정신, 단 train/val 누수 없음).
 
-데이터: build_labelset_grouped와 동일 walk(label_inspect.build_rows) 280 crop
-        → review/dataset_corrections.json 적용:
-          drop/ditto 제외 → relabel(crop별 오답 교정) → merge(라벨 변형 통합, transitive).
-정답 라벨 = 교정 후 DB 정식명. 축약(엔→엔진오일)은 그대로 정답(작성자 특화의 핵심).
+데이터(#133부터): tools.train_input이 구성한다 — 부트스트랩 크롭 npz(clean_crops.npz) +
+        큐레이션 학습쌍 크롭(ocr_crops/job-N/row-K.png)을 curve 모드가 한 벌 TrainSet으로
+        병합한다. 정답 라벨 = 큐레이션 쌍의 canonical_label(검수 확정) 또는 부트스트랩 lab.
+        축약(엔→엔진오일)은 그대로 정답(작성자 특화의 핵심).
 
 학습: ViT embeddings+layer[0:FREEZE] 동결, 마지막 (12-FREEZE)층 + layernorm + 128d
       projection head만 SupCon(2-view)으로 미세조정. 강한 손글씨-안전 증강 + 전표분할 early stop.
@@ -18,17 +18,18 @@ few-shot retrieval. 따라서 평가도 '전표 단위 hold-out → 학습 뱅�
             top-1/top-3 비교. 베이스라인 대비 상승이 본질. (역사적 기준 few-shot 47.3/58.7%)
 
 usage:
-  poc/bin/python item/train_contrastive.py            # 학습(증강·early stop)
-  poc/bin/python item/train_contrastive.py --epochs 40 --smoke
+  uv run python -m handwriting.train_contrastive curve \
+      --bootstrap-npz report/sp2_spike/item/clean_crops.npz \
+      --pairs-jsonl results/bank_update/pairs.jsonl \
+      --reviewed-json results/bank_update/reviewed_jobs.json \
+      --crops-root "$SJMJ_DATA_DIR/ocr_crops" --folds 4 --baseline-ckpt runs/ft_prod.pt
 """
 
 import argparse
-import hashlib
 import json
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
 import torch
 import torch.nn as nn
@@ -38,11 +39,7 @@ from torchvision.transforms import v2 as T
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE))
-from fewshot import square  # noqa: E402  (tight_crop+224 정사각 — 베이스라인과 동일 전처리)
-
 ML = HERE.parents[2]
-CORR = ML / "review/dataset_corrections.json"
-CACHE = HERE / "clean_crops.npz"
 RUNS = HERE / "runs"
 PROD_CKPT = RUNS / "ft_prod.pt"  # 배포 모델(전체 데이터 학습)
 BANK = RUNS / "bank.npz"  # 배포 뱅크(전체 crop projection 임베딩 + 라벨)
@@ -67,56 +64,7 @@ TRAIN_TF = T.Compose(
 EVAL_TF = T.Compose([T.Resize((IMG, IMG), antialias=True), T.Normalize(MEAN, STD)])
 
 
-# ---------------- 데이터 준비 (교정 적용) ----------------
-def merge_resolver(merge):
-    """transitive: 변형→정식 체인을 끝까지 따라간다(루프 방지)."""
-
-    def canon(lbl):
-        seen = set()
-        while lbl in merge and lbl not in seen:
-            seen.add(lbl)
-            lbl = merge[lbl]
-        return lbl
-
-    return canon
-
-
-def prepare(corr):
-    """build_rows(동일 walk) → 교정 적용 → (square_rgb[uint8], label, invoice, key) 리스트. 캐시."""
-    key = hashlib.md5(
-        ("v2" + json.dumps(corr, sort_keys=True, ensure_ascii=False)).encode()
-    ).hexdigest()[:10]
-    if CACHE.exists():
-        z = np.load(CACHE, allow_pickle=True)
-        if str(z["key"]) == key and "keys" in z.files:
-            print(f"clean 캐시 사용 ({CACHE.name})")
-            return list(z["sq"]), list(z["lab"]), list(z["inv"]), list(z["keys"])
-    from label_inspect import build_rows
-
-    rows = build_rows()
-    drop, ditto = set(corr.get("drop", [])), set(corr.get("ditto", []))
-    relabel, canon = corr.get("relabel", {}), merge_resolver(corr.get("merge", {}))
-    sq, lab, inv, keys = [], [], [], []
-    for r in rows:
-        k = r["key"]
-        if k in drop or k in ditto:
-            continue
-        sq.append(square(cv2.cvtColor(r["std"], cv2.COLOR_BGR2RGB)))
-        lab.append(canon(relabel.get(k, r["name"])))
-        inv.append(r["cn"])
-        keys.append(k)
-    np.savez(
-        CACHE,
-        key=key,
-        sq=np.array(sq),
-        lab=np.array(lab, object),
-        inv=np.array(inv, object),
-        keys=np.array(keys, object),
-    )
-    print(f"clean {len(sq)} crop 캐시 저장 → {CACHE.name}")
-    return sq, lab, inv, keys
-
-
+# ---------------- 데이터 분할 ----------------
 def split_invoices(inv, labels, recurring, val_frac=0.25, rng=None):
     """전표 단위 train(bank)/val(query) 분할. 재현라벨마다 train에 ≥1전표 남겨 bank 커버리지 보장."""
     rng = rng or np.random.default_rng(SEED)
@@ -402,151 +350,285 @@ def train_production(base, ids, lab_arr, inv_arr, keys, lab2id, args, device):
     print(f"배포 모델 → {PROD_CKPT}\n배포 뱅크({len(Z)} crop) → {BANK}")
 
 
+# ---------------- 학습곡선 (#133 AC2) ----------------
+def load_curve_data(args):
+    """부트스트랩 npz + 큐레이션 크롭을 한 벌 TrainSet으로 모은다.
+
+    Args:
+        args: curve 모드 파싱 결과(bootstrap_npz·pairs_jsonl·reviewed_json·crops_root).
+
+    Returns:
+        (merged TrainSet, 부트스트랩 key 목록, 큐레이션 key 목록).
+    """
+    from tools import train_input as ti
+
+    pairs = [
+        json.loads(ln)
+        for ln in Path(args.pairs_jsonl).read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    reviewed = set(json.loads(Path(args.reviewed_json).read_text(encoding="utf-8")))
+    curated = ti.load_curated(ti.select_curated(pairs, reviewed), args.crops_root)
+    sets = [curated]
+    boot_keys: list[str] = []
+    if args.bootstrap_npz:
+        boot = ti.load_bootstrap(args.bootstrap_npz)
+        boot_keys = list(boot.keys)
+        sets.insert(0, boot)
+    merged = ti.merge(*sets)
+    print(
+        f"학습 입력: 부트스트랩 {len(boot_keys)} + 큐레이션 {len(curated.keys)} "
+        f"= {len(merged.keys)} crop · 라벨 {len(set(merged.lab))} · "
+        f"큐레이션 잡 {len(set(curated.inv))}"
+    )
+    return merged, boot_keys, list(curated.keys)
+
+
+def train_fixed(base, ids, tr_idx, args, device):
+    """고정 epoch로 학습만 한다 — 채점·조기종료·체크포인트 저장 없음.
+
+    train_split과 갈라지는 유일한 이유가 hold-out 오염이다. train_split은 매 epoch val을
+    채점해 best를 고르므로 그 val은 더 이상 hold-out이 아니다(선택에 쓰인 순간 학습 신호다).
+    학습곡선은 epoch를 사전 고정하고 종료 후 1회만 채점한다.
+
+    루프 본문은 train_production과 같은 모양이지만 공유하지 않는다 — train_production은
+    ADR 0001의 production 재학습 경로이고 이번 범위는 그 경로 무접촉이다(AC3 소관).
+    """
+    model = build_model(device)
+    crit = SupConLoss()
+    enc_p = [p for p in model.enc.parameters() if p.requires_grad]
+    opt = torch.optim.AdamW(
+        [{"params": enc_p, "lr": 2e-5}, {"params": model.head.parameters(), "lr": 5e-4}],
+        weight_decay=1e-4,
+    )
+    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=args.epochs)
+    idx_all = np.array(tr_idx)
+    steps = max(1, len(idx_all) // args.batch)
+    for _ep in range(1, args.epochs + 1):
+        model.train()
+        perm = np.random.permutation(idx_all)
+        for s in range(steps):
+            idx = perm[s * args.batch : (s + 1) * args.batch]
+            if len(idx) < 2:
+                continue
+            b = base[idx]
+            x = torch.cat(
+                [torch.stack([TRAIN_TF(z) for z in b]), torch.stack([TRAIN_TF(z) for z in b])]
+            ).to(device)
+            y = torch.tensor(np.concatenate([ids[idx], ids[idx]]), device=device)
+            z, _ = model(x)
+            loss = crit(z, y)
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        sched.step()
+    return model
+
+
+def load_ckpt_model(path, device):
+    """동결 기준선 — 지정 체크포인트를 적재한다(infer_photo.load_model_from과 같은 계약).
+
+    infer_photo를 import하지 않는다 — 그쪽이 이 모듈을 import하므로 순환이 된다.
+    """
+    model = build_model(device)
+    model.load_state_dict(torch.load(path, map_location=device)["model"])
+    model.eval()
+    return model
+
+
+def score_pair(model, base, tr_idx, qa_idx, cell, ds, device):
+    """한 모델로 train 뱅크·hold-out 쿼리를 임베딩해 셀의 고정 cohort로 채점한다."""
+    from tools import train_input as ti
+
+    emb_b, _ = embed(model, [base[i] for i in tr_idx], EVAL_TF, device)
+    emb_q, _ = embed(model, [base[i] for i in qa_idx], EVAL_TF, device)
+    return ti.score_cell(
+        emb_q=emb_q,
+        q_keys=[ds.keys[i] for i in qa_idx],
+        q_labs=[ds.lab[i] for i in qa_idx],
+        q_invs=[ds.inv[i] for i in qa_idx],
+        emb_b=emb_b,
+        b_keys=[ds.keys[i] for i in tr_idx],
+        b_labs=[ds.lab[i] for i in tr_idx],
+        b_invs=[ds.inv[i] for i in tr_idx],
+        cell=cell,
+    )
+
+
+def _rate(num, den):
+    """카운트 쌍을 백분율 문자열로 만든다(분모 0이면 —)."""
+    return f"{100 * num / den:.1f}%" if den else "—"
+
+
+def _acc(agg, key, rec):
+    """N별 micro-average 누적기 — 카운트를 그대로 더한다."""
+    empty = {"t1": 0, "t5": 0, "n_cohort": 0, "n_covered": 0, "pairs": 0, "jobs": 0}
+    slot = agg.setdefault(key, empty)
+    for k in ("t1", "t5", "n_cohort", "n_covered"):
+        slot[k] += rec[k]
+    return slot
+
+
+def run_curve(args, device):
+    """학습곡선 격자를 돌려 (재학습, 동결) 쌍의 cohort 고정 채점표를 stdout에 낸다."""
+    from tools import train_input as ti
+
+    ds, boot_keys, cur_keys = load_curve_data(args)
+    idx_of = {k: i for i, k in enumerate(ds.keys)}
+    lab_of = dict(zip(ds.keys, ds.lab, strict=True))
+    inv_of_key = dict(zip(ds.keys, ds.inv, strict=True))
+    lab2id = {L: k for k, L in enumerate(sorted(set(ds.lab)))}
+    ids = np.array([lab2id[L] for L in ds.lab])
+    base = T.functional.to_dtype(
+        torch.stack([T.functional.to_image(s) for s in ds.sq]), torch.float32, scale=True
+    )
+    n_grid = args.curated_n if args.curated_n else [0, 25, 50, len(cur_keys)]
+    cells = ti.plan_cells(
+        curated_keys=cur_keys,
+        curated_invs=[inv_of_key[k] for k in cur_keys],
+        curated_labs=[lab_of[k] for k in cur_keys],
+        bootstrap_keys=boot_keys,
+        bootstrap_labs=[lab_of[k] for k in boot_keys],
+        n_grid=n_grid,
+        k=args.folds,
+        seed=ti.SEED,
+    )
+    print(f"\n격자 {len(cells)}셀 (N {n_grid} × fold {args.folds}) · epoch {args.epochs} 고정\n")
+    print(
+        "| N요청 | fold | holdout | train쌍 | train잡 | cohort "
+        "| ft t1 | ft t5 | ft cov | bl t1 | bl t5 |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|---|---|")
+    agg_ft: dict[int, dict] = {}
+    agg_bl: dict[int, dict] = {}
+    # 기준선은 셀마다 재학습되지 않으므로 루프 밖에서 1회만 적재한다 — 루프 안에서 매번
+    # 적재하면 build_model 초기화가 전역 torch RNG를 소비해 재학습 셀의 초기화까지
+    # --baseline-ckpt 지정 여부로 바뀐다(N3, E6).
+    bl_model = load_ckpt_model(args.baseline_ckpt, device) if args.baseline_ckpt else None
+    for cell in cells:
+        if args.holdout_fold is not None and cell.fold != args.holdout_fold:
+            continue
+        tr_idx = [idx_of[k] for k in cell.train_keys]
+        qa_idx = [idx_of[k] for k in cell.holdout_keys]
+        # 부트스트랩을 생략(--bootstrap-npz 없음)하면 N=0 셀의 train 뱅크가 통째로 빈다.
+        # 그대로 두면 embed의 np.concatenate([])가 불투명한 ValueError로 죽으므로 사유를
+        # 남기고 건너뛴다(집계에서도 빠진다).
+        if not tr_idx:
+            print(
+                f"⏭️ 셀 건너뜀 — N={cell.n_requested} fold={cell.fold}는 train 뱅크 0건"
+                " (--bootstrap-npz 없이 N=0)"
+            )
+            continue
+        if cell.n_requested and not cell.n_actual_pairs:
+            print(f"⚠️ 격자점 붕괴 — N={cell.n_requested} fold={cell.fold}는 쌍 0건으로 실행됨")
+        # 셀별로 재시드하되 seed는 fold에만 의존한다 — 같은 fold의 모든 N이 동일 초기화·동일
+        # 셔플에서 출발해야(common random numbers) 곡선의 셀 간 차이가 N 차이만 남는다. N을
+        # seed에 섞으면 격자점마다 난수가 갈려 그 분산이 N 효과에 섞인다(H3, E5). fold가 seed에
+        # 남으므로 --holdout-fold로 재개해도 같은 셀은 같은 수치를 낸다.
+        torch.manual_seed(SEED + cell.fold * 1000)
+        np.random.seed(SEED + cell.fold * 1000)
+        ft_model = train_fixed(base, ids, tr_idx, args, device)
+        ft = score_pair(ft_model, base, tr_idx, qa_idx, cell, ds, device)
+        slot = _acc(agg_ft, cell.n_requested, ft)
+        slot["pairs"] += cell.n_actual_pairs
+        slot["jobs"] += cell.n_actual_jobs
+        bl = score_pair(bl_model, base, tr_idx, qa_idx, cell, ds, device) if bl_model else None
+        if bl:
+            _acc(agg_bl, cell.n_requested, bl)
+        print(
+            f"| {cell.n_requested} | {cell.fold} | {len(cell.holdout_keys)} "
+            f"| {cell.n_actual_pairs} | {cell.n_actual_jobs} | {len(cell.eval_cohort)} "
+            f"| {_rate(ft['t1'], ft['n_cohort'])} | {_rate(ft['t5'], ft['n_cohort'])} "
+            f"| {_rate(ft['n_covered'], ft['n_cohort'])} "
+            f"| {_rate(bl['t1'], bl['n_cohort']) if bl else '—'} "
+            f"| {_rate(bl['t5'], bl['n_cohort']) if bl else '—'} |"
+        )
+    print("\n=== fold micro-average (x축 = 실측 train 쌍·잡 수의 fold 평균) ===")
+    print(
+        "| N요청 | train쌍(평균) | train잡(평균) | cohort | cov "
+        "| 재학습 t1 | 재학습 t5 | 재학습 t1_covered "
+        "| 동결 t1 | 동결 t5 | 동결 t1_covered | Δt1 |"
+    )
+    print("|---|---|---|---|---|---|---|---|---|---|---|---|")
+    n_folds = 1 if args.holdout_fold is not None else args.folds
+    for n in sorted(agg_ft):
+        f, b = agg_ft[n], agg_bl.get(n)
+        # n_covered는 라벨·제외집합만으로 정해져 재학습·동결 모델이 항상 같은 값을 낸다 —
+        # coverage는 1열로 충분하다(M3, E8).
+        d = (
+            f"{100 * (f['t1'] / f['n_cohort'] - b['t1'] / b['n_cohort']):+.1f}%p"
+            if b and f["n_cohort"] and b["n_cohort"]
+            else "—"
+        )
+        print(
+            f"| {n} | {f['pairs'] / n_folds:.1f} | {f['jobs'] / n_folds:.1f} | {f['n_cohort']} "
+            f"| {_rate(f['n_covered'], f['n_cohort'])} "
+            f"| {_rate(f['t1'], f['n_cohort'])} | {_rate(f['t5'], f['n_cohort'])} "
+            f"| {_rate(f['t1'], f['n_covered'])} "
+            f"| {_rate(b['t1'], b['n_cohort']) if b else '—'} "
+            f"| {_rate(b['t5'], b['n_cohort']) if b else '—'} "
+            f"| {_rate(b['t1'], b['n_covered']) if b else '—'} | {d} |"
+        )
+
+
 def main():
-    """CLI 인자를 파싱해 교차검증 또는 배포 학습을 실행한다."""
+    """CLI 인자를 파싱해 학습곡선(curve)을 실행한다."""
     ap = argparse.ArgumentParser()
-    ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument(
+        "mode",
+        nargs="?",
+        choices=["curve"],
+        default=None,
+        help="curve: 학습곡선 실측(#133 AC2). 생략 시 구 CV/production 경로 — AC3까지 비활성",
+    )
+    ap.add_argument(
+        "--epochs", type=int, default=None, help="curve: 셀별 고정 epoch(기본 PROD_EPOCHS)"
+    )
     ap.add_argument("--batch", type=int, default=24)
-    ap.add_argument("--patience", type=int, default=12)
-    ap.add_argument("--folds", type=int, default=1, help=">1 이면 전표 K-fold 교차검증(신뢰 수치)")
-    ap.add_argument("--production", action="store_true", help="전체 데이터 학습 → 배포 모델+뱅크")
+    ap.add_argument("--folds", type=int, default=1, help="curve: 큐레이션 잡을 K개 fold로 분할")
+    ap.add_argument(
+        "--production",
+        action="store_true",
+        help="전체 데이터 학습 → 배포 모델+뱅크 (AC3까지 비활성 — args.production 미배선)",
+    )
     ap.add_argument("--smoke", action="store_true", help="2 epoch 스모크")
+    ap.add_argument("--bootstrap-npz", type=Path, help="부트스트랩 크롭 npz(clean_crops.npz)")
+    ap.add_argument("--pairs-jsonl", type=Path, help="bank_update export-pairs의 pairs.jsonl")
+    ap.add_argument("--reviewed-json", type=Path, help="같은 반출의 reviewed_jobs.json")
+    ap.add_argument("--crops-root", type=Path, help="큐레이션 크롭 루트(SJMJ_DATA_DIR/ocr_crops)")
+    ap.add_argument(
+        "--curated-n",
+        type=int,
+        nargs="*",
+        default=None,
+        help="학습곡선 격자의 큐레이션 쌍 수(기본 0 25 50 + 전량)",
+    )
+    ap.add_argument("--holdout-fold", type=int, help="지정 fold 하나만 실행")
+    ap.add_argument("--baseline-ckpt", type=Path, help="동결 기준선 체크포인트(ft_prod.pt)")
     args = ap.parse_args()
-    if args.smoke:
-        args.epochs = 2
-    elif args.production:
-        args.epochs = PROD_EPOCHS
+
+    if args.mode != "curve":
+        sys.exit(
+            "이 진입점의 학습 입력은 #133 AC1에서 train_input으로 옮겨졌고 curve 모드만 배선됐다.\n"
+            "구 경로(--production · K-fold)는 레포에 없는 SP2 라벨셋 walk에 묶여 이미 실행이"
+            " 불가했고, 재배선은 AC3 소관이다(모델·뱅크 원자 활성화 설계 포함).\n"
+            "사용: python -m handwriting.train_contrastive curve --pairs-jsonl … "
+            "--reviewed-json … --crops-root … --folds 4"
+        )
+    if args.folds < 2:
+        sys.exit("curve 모드는 --folds 2 이상이 필요하다(큐레이션 잡을 K개 fold로 나눈다).")
+    if args.holdout_fold is not None and not (1 <= args.holdout_fold <= args.folds):
+        sys.exit(f"--holdout-fold은 1..{args.folds} 범위여야 한다(받은 값: {args.holdout_fold}).")
+    for name in ("pairs_jsonl", "reviewed_json", "crops_root"):
+        if getattr(args, name) is None:
+            sys.exit(f"curve 모드 필수 인자 누락: --{name.replace('_', '-')}")
+    args.epochs = 2 if args.smoke else (args.epochs or PROD_EPOCHS)
 
     torch.manual_seed(SEED)
     np.random.seed(SEED)
     device = "mps" if torch.backends.mps.is_available() else "cpu"
-    corr = {}
-    if CORR.exists():
-        with open(CORR, encoding="utf-8") as f:
-            corr = json.load(f)
-    print(
-        f"교정: drop {len(corr.get('drop', []))} · ditto {len(corr.get('ditto', []))} · "
-        f"relabel {len(corr.get('relabel', {}))} · merge {len(corr.get('merge', {}))}"
-    )
-
-    sq, lab, inv, keys = prepare(corr)
-    lab_inv = {}
-    for L, iv in zip(lab, inv, strict=False):
-        lab_inv.setdefault(L, set()).add(iv)
-    recurring = {L for L, s in lab_inv.items() if len(s) >= 2}
-    print(
-        f"clean {len(sq)} crop · 라벨 {len(set(lab))} · 재현(≥2전표) {len(recurring)} · 전표 {len(set(inv))}"
-    )
-
-    base = T.functional.to_dtype(
-        torch.stack([T.functional.to_image(s) for s in sq]), torch.float32, scale=True
-    )  # [N,3,224,224] in [0,1]
-    lab_arr, inv_arr = np.array(lab, object), np.array(inv, object)
-    lab2id = {L: k for k, L in enumerate(sorted(set(lab)))}
-    ids = np.array([lab2id[L] for L in lab])
-    ntr = sum(p.numel() for p in build_model("cpu").parameters() if p.requires_grad)
-    print(f"학습 파라미터 {ntr / 1e6:.1f}M (마지막 {12 - FREEZE}층+head)\n")
-    RUNS.mkdir(exist_ok=True)
-
-    if args.production:
-        train_production(base, ids, lab_arr, inv_arr, keys, lab2id, args, device)
-        return
-
-    # 분할 구성: 단일 split(빠름) 또는 전표 K-fold(각 전표가 정확히 1회 val → micro-average)
-    if args.folds <= 1:
-        train_inv, val_inv = split_invoices(inv, lab, recurring)
-        splits = [(set(val_inv), "single")]
-    else:
-        invs = sorted(set(inv))
-        np.random.default_rng(SEED).shuffle(invs)
-        splits = [
-            (set(g.tolist()), f"fold{k + 1}")
-            for k, g in enumerate(np.array_split(invs, args.folds))
-        ]
-
-    results = []
-    for val_set, tag in splits:
-        tr = [i for i in range(len(sq)) if inv[i] not in val_set]
-        va = [i for i in range(len(sq)) if inv[i] in val_set]
-        print(f"[{tag}] val {len(va)}crop/{len(val_set)}전표 · train {len(tr)}crop")
-        ck = (RUNS / "ft_best.pt") if tag in ("single", "fold1") else None
-        results.append(
-            train_split(
-                base,
-                ids,
-                lab_arr,
-                inv_arr,
-                recurring,
-                tr,
-                va,
-                lab2id,
-                args,
-                device,
-                ckpt=ck,
-                verbose=True,
-            )
-        )
-
-    # micro-average (각 crop 1회 채점). n은 baseline·best 동일(skip은 라벨/전표만 의존).
-    def rate(sel, key):
-        N = sum(r[sel]["n"] if sel == "base" else r["best"][sel]["n"] for r in results)
-        c = sum((r[sel] if sel == "base" else r["best"][sel])[key] for r in results)
-        return c / max(N, 1), N
-
-    BN = sum(r["base"]["n"] for r in results)
-    b1, _ = rate("base", "t1")
-    b3, _ = rate("base", "t3")
-    b5, _ = rate("base", "t5")
-    p1, _ = rate("p", "t1")
-    p3, _ = rate("p", "t3")
-    p5, _ = rate("p", "t5")
-    bb1, _ = rate("bb", "t1")
-    # 신뢰도 게이팅(운영 자동채움): 전 fold projection pairs 합산
-    pairs = [pr for r in results for pr in r["best"]["p"]["pairs"]]
-    cov95, prec95, _ = conf_gate(pairs, 0.95)
-    cov90, prec90, _ = conf_gate(pairs, 0.90)
-    mode = "단일 split" if args.folds <= 1 else f"{args.folds}-fold 교차검증"
-
-    print(f"\n=== 결과 ({mode} · 채점 {BN} crop · 운영=개방 retrieval, DB 사전지식 없음) ===")
-    print(f"베이스라인 동결 backbone : top-1 {b1:.1%} · top-3 {b3:.1%} · top-5 {b5:.1%}")
-    print(
-        f"파인튜닝 projection     : top-1 {p1:.1%} · top-3 {p3:.1%} · top-5 {p5:.1%}  (backbone top-1 {bb1:.1%})"
-    )
-    print(f"상승 Δtop-1 {p1 - b1:+.1%} · Δtop-3 {p3 - b3:+.1%} · Δtop-5 {p5 - b5:+.1%}")
-    print("운영 시나리오(자동채움 + 사용자 검수 드롭다운):")
-    print(
-        f"  · 신뢰도 게이팅 자동채움 — 정밀도 ≥95%: 커버리지 {cov95:.0%} (실측 {prec95:.0%}) · ≥90%: {cov90:.0%}"
-    )
-    print(
-        f"  · 나머지 행은 top-{3 if p3 >= p5 else 5} 드롭다운으로 사용자 선택(상위 후보 적중 top-3 {p3:.0%}/top-5 {p5:.0%})"
-    )
-    REPORT.write_text(
-        json.dumps(
-            {
-                "mode": mode,
-                "scored": BN,
-                "scenario": "input-assist + HITL (추론 시 DB 비어있음 → 개방 retrieval)",
-                "baseline_frozen_backbone": {
-                    "top1": round(b1, 4),
-                    "top3": round(b3, 4),
-                    "top5": round(b5, 4),
-                },
-                "finetuned_projection": {
-                    "top1": round(p1, 4),
-                    "top3": round(p3, 4),
-                    "top5": round(p5, 4),
-                },
-                "autofill_conf_gate": {
-                    "prec95_coverage": round(cov95, 4),
-                    "prec90_coverage": round(cov90, 4),
-                },
-            },
-            ensure_ascii=False,
-            indent=1,
-        ),
-        encoding="utf-8",
-    )
-    print("리포트 →", REPORT, "\n체크포인트 →", RUNS / "ft_best.pt")
+    print(f"device {device} · epoch {args.epochs} 고정 · 실험계획 seed는 train_input.SEED")
+    run_curve(args, device)
 
 
 if __name__ == "__main__":

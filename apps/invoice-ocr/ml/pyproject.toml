@@ -43,6 +43,20 @@ cv = [
 dl = [
     "onnxruntime==1.22.0",
 ]
+# 학습 전용(#133 AC2 학습곡선 · 이후 AC3 재학습) — CI는 이 extra 없이 돈다.
+# 실험계획·채점은 torch-free 모듈 tools/train_input.py에 있어 CI가 그쪽을 테스트하고,
+# handwriting/train_contrastive.py는 로컬(M5 Max MPS)·macmini에서만 실행된다.
+# 상한은 로컬 .venv 실측치의 minor에 고정한다(2026-08-28: torch 2.12.1 · torchvision
+# 0.27.1 · transformers 5.12.1) — 학습 환경이 ft_prod.pt를 적재하는 추론 환경과 갈리면
+# state_dict 정합·transformers ViT 레이어 접근(vit.layers[i], 5.x API)이 조용히 흔들린다.
+# cv와 함께 동기화한다: `uv sync --extra train --extra cv`.
+# lock 재해석으로 setuptools 83.0.0→81.0.0·tokenizers 0.23.1→0.22.2 이동(ml extra 한정,
+# worker+cv 무영향) — 사유: torch/transformers 상한과의 공동 해석.
+train = [
+    "torch>=2.12,<2.13",
+    "torchvision>=0.27,<0.28",
+    "transformers>=5.12,<5.13",
+]
 
 [dependency-groups]
 dev = [

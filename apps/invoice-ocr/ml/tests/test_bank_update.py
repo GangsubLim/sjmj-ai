@@ -26,6 +26,7 @@ from tools.bank_update import (
     backup_bank,
     bank_current_map,
     cmd_apply,
+    cmd_export_pairs,
     cmd_plan,
     cmd_score,
     diff_bank,
@@ -2105,3 +2106,68 @@ def test_prune_unsettled_jobs_is_a_noop_when_every_swap_finished():
     pruned, held = prune_unsettled_jobs(diff, lambda name: False)
 
     assert (pruned, held) == (diff, ())
+
+
+# --- export-pairs (로컬 학습 어댑터 입력 반출) ---
+
+
+def _export_workspace(tmp_path, monkeypatch, pairs, reviewed):
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: reviewed)
+    out = tmp_path / "out"
+    cmd_export_pairs(SimpleNamespace(backend_env="dummy.env", out=out))
+    return out
+
+
+def test_cmd_export_pairs_writes_every_pair_without_filtering(tmp_path, monkeypatch):
+    """선별은 로컬 어댑터(train_input.select_curated) 몫 — 반출은 전량이다."""
+    pairs = [
+        _pair(id=1, job_id=1, crop_ref="job-1/row-0"),
+        _pair(id=2, job_id=9, crop_ref="job-9/row-0"),  # 미검수 잡
+        _pair(id=3, job_id=1, crop_ref="job-1/row-1", status="excluded"),
+    ]
+    out = _export_workspace(tmp_path, monkeypatch, pairs, {1})
+
+    rows = [
+        json.loads(ln)
+        for ln in (out / "pairs.jsonl").read_text(encoding="utf-8").splitlines()
+        if ln.strip()
+    ]
+    assert [r["id"] for r in rows] == [1, 2, 3]
+    assert rows[0]["crop_ref"] == "job-1/row-0" and rows[2]["status"] == "excluded"
+
+
+def test_cmd_export_pairs_writes_reviewed_job_ids_as_a_sorted_array(tmp_path, monkeypatch):
+    out = _export_workspace(tmp_path, monkeypatch, [_pair()], {9, 1, 4})
+
+    assert json.loads((out / "reviewed_jobs.json").read_text(encoding="utf-8")) == [1, 4, 9]
+
+
+def test_cmd_export_pairs_writes_export_meta_with_utc_timestamp_and_counts(tmp_path, monkeypatch):
+    """report §1의 반출 시점 서술은 이 메타의 exported_at을 근거로 삼는다.
+
+    n_pairs·n_reviewed를 다른 값으로 둬 두 필드가 뒤바뀌어도 잡히도록 각각 단언한다.
+    """
+    pairs = [_pair(), _pair(id=2, crop_ref="job-1/row-1"), _pair(id=3, crop_ref="job-1/row-2")]
+    out = _export_workspace(tmp_path, monkeypatch, pairs, {1, 2})
+
+    meta = json.loads((out / "export_meta.json").read_text(encoding="utf-8"))
+    assert meta["n_pairs"] == 3
+    assert meta["n_reviewed"] == 2
+    assert meta["exported_at"].endswith("+00:00") or meta["exported_at"].endswith("Z")
+
+
+def test_cmd_export_pairs_keeps_korean_labels_readable(tmp_path, monkeypatch):
+    out = _export_workspace(tmp_path, monkeypatch, [_pair(canonical_label="안가방")], {1})
+
+    assert "안가방" in (out / "pairs.jsonl").read_text(encoding="utf-8")
+
+
+def test_main_dispatches_export_pairs(tmp_path, monkeypatch):
+    monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: [_pair()])
+    monkeypatch.setattr("tools.bank_update.fetch_reviewed_job_ids", lambda backend_env: {1})
+    out = tmp_path / "out"
+
+    main(["export-pairs", "--backend-env", "dummy.env", "--out", str(out)])
+
+    assert (out / "pairs.jsonl").exists() and (out / "reviewed_jobs.json").exists()
