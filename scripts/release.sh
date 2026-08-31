@@ -110,7 +110,7 @@ awk -v hdr="$HEADER" '
 
 # 5. release 브랜치 + 커밋
 git checkout -b "release/$TAG"
-git add VERSION CHANGELOG.md "$BACKEND_DIR/app/config.py"
+git add VERSION CHANGELOG.md "$BACKEND_DIR/app/config.py" .claude/ai-context/api-spec.json
 git commit -m "release: $TAG"
 
 cat <<EOF
