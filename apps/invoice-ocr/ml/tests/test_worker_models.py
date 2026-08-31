@@ -290,7 +290,7 @@ def _run_main_with(monkeypatch, tmp_path, outcomes):
     seen = []
     it = iter(outcomes)
 
-    def fake_process(queue, infer_fn, crops_root, qwen_jobs_before):
+    def fake_process(queue, infer_fn, crops_root, qwen_jobs_before, *, swap_failures=None):
         seen.append(qwen_jobs_before)
         try:
             return next(it)
@@ -318,6 +318,30 @@ def test_main_counts_only_the_jobs_that_actually_called_qwen(monkeypatch, tmp_pa
     assert seen[:4] == [0, 0, 1, 2], "qwen_called일 때만, 그리고 즉시 증가해야 한다"
 
 
+def test_main_passes_one_persistent_swap_failure_counter_across_calls(monkeypatch, tmp_path):
+    """상한(#88)은 호출 간 지속되는 카운터가 전제다 — 매 호출 새 dict면 영원히 1회째다.
+
+    process_one_job의 swap_failures 기본값(None)은 단발 테스트 편의라, main이 하나를
+    소유해 계속 넘기는 이 배선이 끊기면 상한이 조용히 무효가 된다.
+    """
+    _run_main_with(monkeypatch, tmp_path, [])
+    dicts = []
+
+    def record_swap_dict(queue, infer_fn, crops_root, qwen_jobs_before, *, swap_failures=None):
+        dicts.append(swap_failures)
+        if len(dicts) >= 2:
+            raise SystemExit(0)
+        return PollOutcome(worked=True, qwen_called=False)
+
+    monkeypatch.setattr(main_mod, "process_one_job", record_swap_dict)
+
+    with pytest.raises(SystemExit):
+        main_mod.main()
+
+    assert isinstance(dicts[0], dict)
+    assert dicts[0] is dicts[1], "같은 dict 인스턴스가 계속 전달돼야 상한이 선다"
+
+
 def test_main_does_not_swallow_the_degenerate_worker_state(monkeypatch, tmp_path):
     """프로세스 비0 종료가 곧 복구 수단이다 — 루프가 이 예외를 삼키면 재기동이 없다.
 
@@ -331,7 +355,7 @@ def test_main_does_not_swallow_the_degenerate_worker_state(monkeypatch, tmp_path
     """
     _run_main_with(monkeypatch, tmp_path, [])
 
-    def always_degenerate(queue, infer_fn, crops_root, qwen_jobs_before):
+    def always_degenerate(queue, infer_fn, crops_root, qwen_jobs_before, *, swap_failures=None):
         raise DegenerateWorkerState(1)
 
     monkeypatch.setattr(main_mod, "process_one_job", always_degenerate)

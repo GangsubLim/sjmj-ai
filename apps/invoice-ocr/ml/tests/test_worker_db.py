@@ -391,6 +391,23 @@ def test_mark_failed_serializes_json():
     assert params["id"] == 7
 
 
+def test_mark_failed_keep_result_preserves_the_draft():
+    """초안 보존 실패 전이 — status만 failed로 바꾸고 result_json은 그대로 둔다.
+
+    새 행 0건 가드(#92)·크롭 교체 상한(#88)이 쓰는 프리미티브다. 여기서 초안을 에러
+    JSON으로 덮으면 잡의 좌표·초안이 사라져 실패를 사람이 복구할 근거가 없어지고,
+    failed 재큐잉(#93) 시 신규/재처리 재분류의 판별자(rows 키)도 함께 부서진다.
+    """
+    engine = _live_engine([])
+
+    WorkerQueue(engine).mark_failed_keep_result(5)
+
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT status, result_json FROM ocr_jobs WHERE id=5")).fetchone()
+    assert row[0] == "failed"
+    assert row[1] == "{}", "초안이 실행 전 그대로 남아야 한다"
+
+
 # ---------------------------------------------------------------------------
 # claim_next_pending — row 존재
 # ---------------------------------------------------------------------------
@@ -438,7 +455,27 @@ def test_claim_next_pending_orders_new_uploads_before_reprocessing():
     WorkerQueue(engine).claim_next_pending()
 
     select_sql = str(conn.execute.call_args_list[0][0][0])
-    assert "ORDER BY (result_json IS NOT NULL), id" in select_sql
+    assert "ORDER BY (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL), id" in select_sql
+
+
+def test_claim_next_pending_does_not_classify_an_error_draft_as_reprocess():
+    """판별자는 rows 키 존재다 — result_json 존재가 아니다(이슈 #91).
+
+    mark_failed가 같은 컬럼에 {"error": ...}를 쓰므로, 실패 잡을 pending으로 되돌리면
+    옛 판별자(result_json IS NOT NULL)는 그것을 재처리로 오분류한다. 재실패 시
+    rollback_to_done이 불려 한 번도 성공한 적 없는 잡이 done + 에러 초안으로 남는다.
+    워커가 쓴 성공 초안만이 rows 키를 가진다(assemble_result_json) — JSON_EXTRACT는
+    MySQL·SQLite 모두에서 같은 뜻이라 실행형 픽스처의 문도 열어 둔다.
+    """
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = None
+
+    WorkerQueue(engine).claim_next_pending()
+
+    select_sql = str(conn.execute.call_args_list[0][0][0])
+    assert "(JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess" in select_sql
+    assert "(result_json IS NOT NULL) AS is_reprocess" not in select_sql
 
 
 def test_claim_next_pending_flags_reprocessing_jobs():

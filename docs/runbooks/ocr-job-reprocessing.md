@@ -408,9 +408,10 @@ ls -d "$SJMJ_DATA_DIR"/ocr_crops/job-*.tmp "$SJMJ_DATA_DIR"/ocr_crops/job-*.old 
 
   ```sql
   -- 2) 이제 잡을 집는 주체가 없으므로, status='running'인 잡은 전부 좌초된 것이다.
-  --    is_reprocess=1(옛 result_json 보유)이면 재처리 잡, 0이면 신규 업로드다 —
+  --    is_reprocess=1(rows 있는 옛 초안 보유 — 워커 판별자와 동일)이면 재처리 잡,
+  --    0이면 신규 업로드(또는 에러 JSON만 남은 실패 잡)다 —
   --    되돌리는 상태가 다르다(아래).
-  SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
+  SELECT id, status, (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess
   FROM ocr_jobs WHERE status='running';
   ```
 
@@ -502,7 +503,7 @@ until ! launchctl print gui/$(id -u)/ai.sjmj.ml-worker >/dev/null 2>&1; do sleep
 
 ```sql
 -- 좌초된 잡이 나오면 5단계의 3-a/3-b로 되돌린다.
-SELECT id, status, (result_json IS NOT NULL) AS is_reprocess
+SELECT id, status, (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess
 FROM ocr_jobs WHERE status='running';
 ```
 
