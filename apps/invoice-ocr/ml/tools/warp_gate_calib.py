@@ -355,8 +355,10 @@ def render_rewarp_report(records: list[dict], margins: dict, drift: list[dict], 
 
 # identity 비교에서 빼는 진단 전용 키. crop_ink는 축 ②-b의 신호(크롭이 비었는지)일 뿐
 # 무변경 판정 대상이 아니다 — float을 identity에 넣으면 로컬과 macmini의 1 ULP 차이만으로
-# DoD 4 게이트가 빨개진다.
-DIAGNOSTIC_KEYS = frozenset({"crop_ink"})
+# DoD 4 게이트가 빨개진다. amount_left(#50, 금액 크롭 좌측 실측)도 진단값이다 — 이 게이트의
+# identity는 품목 크롭(boxes·crop_sha)이고, 패치 이전 베이스라인에는 키가 없어 identity에
+# 넣으면 경계가 그대로인 잡까지 전부 changed가 된다.
+DIAGNOSTIC_KEYS = frozenset({"crop_ink", "amount_left"})
 
 
 def pair_rows(pairs: list[dict]) -> set[tuple[int, int]]:

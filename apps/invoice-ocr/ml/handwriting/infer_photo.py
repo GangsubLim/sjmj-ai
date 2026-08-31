@@ -31,7 +31,7 @@ sys.path.insert(0, str(HERE))
 from canon import global_pitch  # noqa: E402
 from dataset_build import load_bgr_path  # noqa: E402
 from fewshot import square  # noqa: E402
-from grid_v4 import AMOUNT_X, DATA_Y, hline_ys, warp  # noqa: E402
+from grid_v4 import AMOUNT_X, DATA_Y, amount_crop_left, hline_ys, warp  # noqa: E402
 from group import block_amounts, build_proposal  # noqa: E402
 from grouping import AMT_MIN, ITEM_MIN, PAD  # noqa: E402
 from rectify import deskew_angle, rotate  # noqa: E402
@@ -176,7 +176,8 @@ def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
     )
     # 금액칸 → Qwen3-VL 전사 (칸마다 고유 idx로 임시파일 분리). new행 선별·cont행 합산은
     # block_amounts가 소유한다 — 약식 분해로 품목칸이 빈 행(cont)의 금액도 여기서 읽힌다.
-    ax0, ax1 = AMOUNT_X
+    # 좌측 경계는 전표별 실측(#50) — 템플릿 612는 단가칸 끝 획을 물어 `2819`(잡 54) 같은 흡수를 낸다.
+    ax0, ax1 = amount_crop_left(w), AMOUNT_X[1]
 
     def read_fn(r):
         return read_amount(qwen, w[r.band[0] : r.band[1], ax0:ax1], tmp_dir, next(counter))

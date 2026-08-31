@@ -243,6 +243,26 @@ def test_quad_returns_none_when_the_session_raises(monkeypatch, tmp_path, capsys
 
     assert model.quad(np.zeros((100, 100, 3), np.uint8)) is None
     assert "[corner-dl]" in capsys.readouterr().err
+    assert model.last_failure == "RuntimeError"
+
+
+def test_quad_clears_last_failure_on_the_next_successful_call(monkeypatch, tmp_path):
+    """삼킨 예외 표식은 호출 단위다 — 다음 잡이 성공하면 지워져야 이전 잡의 사유가 새지 않는다."""
+    model, session = _model(
+        monkeypatch, tmp_path, np.zeros((1, 8), np.float32), np.array([[0.1]], np.float32)
+    )
+    original_run = session.run
+
+    def boom(names, feed):
+        raise RuntimeError("일시 실패")
+
+    monkeypatch.setattr(session, "run", boom)
+    model.quad(np.zeros((100, 100, 3), np.uint8))
+    assert model.last_failure == "RuntimeError"
+
+    monkeypatch.setattr(session, "run", original_run)
+    assert model.quad(np.zeros((100, 100, 3), np.uint8)) is None  # 미검출(has_obj 0.1)
+    assert model.last_failure is None
 
 
 def test_corner_model_rejects_a_model_with_unexpected_output_names(monkeypatch, tmp_path):
@@ -370,6 +390,26 @@ def test_quad_candidates_logs_no_detection_and_yields_only_the_color_quad(monkey
     assert candidates[0][0] == "color"
     assert np.allclose(candidates[0][1], COLOR_QUAD)
     assert "[corner-dl] job=7 fallback reason=no-detection" in capsys.readouterr().out
+
+
+class _SwallowingAligner:
+    """CornerModel 대역 — 추론 예외를 삼켜 None을 내고 last_failure만 남긴다(#120)."""
+
+    last_failure = "KeyError"
+
+    def quad(self, bgr):
+        return None
+
+
+def test_quad_candidates_labels_a_swallowed_inference_error_as_error(monkeypatch, capsys):
+    """삼켜진 추론 예외는 no-detection이 아니라 error:{타입}으로 잡 로그에 남아야 한다(#120)."""
+    monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: COLOR_QUAD)
+
+    candidates = list(corner_dl.quad_candidates(_bgr(), _SwallowingAligner(), job_id=9))
+
+    assert len(candidates) == 1
+    assert candidates[0][0] == "color"
+    assert "[corner-dl] job=9 fallback reason=error:KeyError" in capsys.readouterr().out
 
 
 def test_quad_candidates_logs_error_when_the_aligner_raises(monkeypatch, capsys):

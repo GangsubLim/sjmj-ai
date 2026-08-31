@@ -8,6 +8,12 @@
 전부 cv2/numpy 전용이다. `replicate_rows`는 `handwriting.infer_photo.extract_rows_for_job`에서
 모델 의존 구간(임베딩·금액 전사)만 뺀 접두를 그대로 옮겨 적은 것이다(아래 함수 docstring 참조).
 
+⚠️ quad 공급(`_form_quad`)은 **색 경로(`rectify.form_quad_robust`)만** 재현한다. 운영 워커는
+`infer_job._gated_warp`(DL 코너검출 후보 → 게이트 채점 → 색 폴백, #117)를 타지만, DL 모델이
+배치되지 않아 `aligner=None`인 동안은 두 경로가 동일하다(#118 재측정으로 DL 비활성 유지 확정,
+2026-08-28 기준). **DL을 활성화(모델 배치)하는 시점에는 이 공급을 `_gated_warp` 경로로 정렬해야
+한다** — 정렬 전까지 이 하네스의 산출은 활성화 이후 운영 워프의 기준선이 아니다(#119).
+
 ⚠️ `hline_ys`는 `handwriting.grid_v4` 모듈 전역 `_FAINT`(기본 False)를 읽는다. `infer_photo`는
 `sys.path` 트릭으로 `grid_v4`를 별도 모듈 객체로 다시 import하지만(위 경고 참조), 양쪽 모두
 `_FAINT`의 초기값은 False이고 이 하네스는 `FaintOn`을 쓰지 않으므로 ambient False로 돈다 —
@@ -156,7 +162,7 @@ def replicate_rows(warped) -> dict:
     tests/test_warp_gate_rows.py의 AST 배선 가드가 잡는다.
     """
     from handwriting.canon import global_pitch
-    from handwriting.grid_v4 import DATA_Y, hline_ys
+    from handwriting.grid_v4 import DATA_Y, amount_crop_left, hline_ys
     from handwriting.group import block_amounts, build_proposal
     from handwriting.grouping import AMT_MIN, ITEM_MIN, PAD
     from handwriting.rows import band_features, detect_grid_rows
@@ -169,10 +175,13 @@ def replicate_rows(warped) -> dict:
     prop = build_proposal(
         bands, item_inks, amt_inks, stroke_rows, [], item_min=ITEM_MIN, amt_min=AMT_MIN, pad=PAD
     )
+    # 금액 크롭 좌측 실측(#50) — 운영은 read_fn 크롭에만 쓰고 여기선 전사가 없으므로 값만 기록
+    amount_left = amount_crop_left(warped)
     news, _amounts = block_amounts(prop.rows, _fake_read)
     boxes = [[int(r.box[0]), int(r.box[1])] for r in news]
     crops = [item_crop(warped, b) for b in boxes]
     return {
+        "amount_left": amount_left,
         "n_bands": len(bands),
         "n_new": len(news),
         "boxes": boxes,

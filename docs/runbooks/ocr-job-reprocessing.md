@@ -66,9 +66,20 @@ mysql_q "SELECT COUNT(*) FROM ocr_jobs;"        # 접속 확인
 오분류돼 그림과 후보가 조용히 사라진다. 현재 생성 경로는 항상 표준 형식이므로 **0이 나오는
 것이 정상**이고, 확인 비용도 쿼리 한 줄이다. 0이 아니면 그 쌍부터 조사한 뒤 배치를 시작한다.
 
+`_ROW_CROP_REF_RE`를 그대로 부정하면 **미결 쌍까지 함께 걸린다** — 승계 실패 쌍은
+`job-N/orphan-{pair_id}` 좌표를 들고 있고(`ml/handwriting/relink.py`의 `orphan_ref`),
+그 형식이 곧 "행과 끊어졌다"는 의도된 표식이다. 미결이 하나라도 있는 DB에서는 부정 쿼리가
+구조적으로 0이 될 수 없어, 그대로 쓰면 매 회차 정상 미결 건수를 레거시 오염으로 오독하게
+된다. 그래서 아래 쿼리는 `orphan-` 네임스페이스를 모수에서 뺀다.
+
 ```sql
-SELECT COUNT(*) FROM training_pairs WHERE crop_ref NOT REGEXP '^job-[0-9]+/row-[0-9]+$';
+SELECT COUNT(*) FROM training_pairs
+WHERE crop_ref NOT REGEXP '^job-[0-9]+/row-[0-9]+$'
+  AND crop_ref NOT REGEXP '^job-[0-9]+/orphan-[0-9]+$';
 ```
+
+미결 건수 자체를 보려면 4단계의 사유 기준 쿼리를 쓴다 — 사람이 배제한 쌍은 사유가 NULL로
+지워지므로(ADR 0006 §6) 좌표 형식과 사유 어느 쪽도 단독으로는 미결 전량을 세지 못한다.
 
 ### 창 B 재백필 (`draft_supply` 도입 배포 직후 1회 — Issue #106)
 
@@ -441,6 +452,11 @@ SELECT id FROM ocr_jobs WHERE curation_reviewed = 1 AND id IN (<3단계에서 �
 (`backend/app/repositories/curation_repository.py`의 `list_jobs`) 그런 잡은 검수 화면에 아예
 뜨지 않아 사람이 검수 완료를 누를 수단이 없다 — 전량을 넣으면 아래 미검수 가드가 **반드시**
 걸리고, 4단계로 돌아가도 해소되지 않는다(그 잡엔 미결도, 검수할 화면도 없다).
+
+**게이트는 재처리 말고 제외로도 풀린다.** `ocr-bank-update.md` 2절의 크롭 육안 검수에서 쌍을
+하나라도 `excluded`로 바꾸면 `patch_pair`가 그 잡의 `curation_reviewed`를 0으로 내리므로, 위
+교집합을 **제외 처리 전에 뽑아 두면 그 잡이 실제로는 빠진 채 `apply`가 돈다**. 교집합 SQL은
+제외 처리를 모두 끝내고 재검수 완료까지 누른 뒤에 뽑는다(절차는 그 런북의 경고 블록 참조).
 
 **교집합에서 빠지는 잡이 누락 위험을 만들지 않는 근거.** 재임베딩 대상은 정의상 뱅크에
 항목이 있는 잡뿐이고, 뱅크에는 `curation_reviewed = 1`인 잡의 쌍만 들어간다(ADR 0004,

@@ -114,6 +114,25 @@ open results/curation/images_index.md   # ref → 파일 → 라벨 인덱스
 영속 처리**한다. 별도 제외 파일은 두지 않는다 — DB가 유일한 SSoT이고, 일회성 파일은 다음
 실행에서 멱등성을 깨뜨린다. 처리 후 macmini에서 `plan`을 재실행해 diff에서 빠졌는지 확인한다.
 
+> [!WARNING]
+> **쌍 하나를 제외하면 그 잡의 검수 게이트가 함께 풀린다.** `patch_pair`가 `update_pair`보다
+> 먼저 `release_gate`를 호출하므로(`backend/app/services/curation_service.py`), 제외한 잡은
+> `curation_reviewed = 0`이 되고 **그 잡의 남은 included 쌍까지 desired에서 통째로 빠진다**
+> (0절 ADR 0004 게이트). 7쌍 중 1쌍만 뺐는데 나머지 6쌍이 뱅크에 반영되지 않는 경로가 이것이며,
+> `plan`은 그 6쌍을 조용히 desired 밖에 둘 뿐 아무 경고도 내지 않는다.
+>
+> 그래서 제외 처리 뒤에는 **그 잡을 다시 검수 완료로 표시**한다. 남은 쌍이 전부 excluded인
+> 잡도 함께 눌러 둔다 — 게이트가 풀린 채로 남으면 다음 회차의 "재검수 필요" 목록에 근거 없이
+> 올라온다(`curation_reviewed_at`은 보존되므로 미검수와는 구분된다).
+>
+> ```bash
+> tok=$(curl -s "$API/curation/jobs/$JOB" | python3 -c 'import sys,json;print(json.load(sys.stdin)["data"]["job_token"])')
+> curl -s -X POST "$API/curation/jobs/$JOB/review" -H 'Content-Type: application/json' -d "{\"job_token\":\"$tok\"}"
+> ```
+>
+> 확인은 `plan`의 `desired N쌍`으로 한다 — 제외한 건수만큼만 줄었으면 정상이고, 그보다 많이
+> 줄었으면 게이트가 풀린 잡이 남아 있다.
+
 ## 3. apply — 뱅크 sync (백업 자동)
 
 ```bash

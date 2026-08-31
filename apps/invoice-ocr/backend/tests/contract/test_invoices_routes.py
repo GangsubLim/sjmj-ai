@@ -101,3 +101,19 @@ def test_export_csv_stream(client):
 def test_export_bad_format_400(client):
     r = client.get("/api/invoices/export", params={"format": "pdf"})
     assert r.status_code == 400 and r.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_index_exposes_ocr_job_id(client):
+    """목록 응답이 OCR 유래 여부 식별용 ocr_job_id를 싣는다(미연결은 null)."""
+    from app.repositories.ocr_repository import OcrRepository
+
+    _create(client)
+    invoice_id = client.get("/api/invoices").json()["data"][0]["id"]
+    r = client.get("/api/invoices")
+    assert r.json()["data"][0]["ocr_job_id"] is None
+
+    ocr_repo = OcrRepository()
+    job_id = ocr_repo.insert_job("/tmp/a.jpg")
+    ocr_repo.link_invoice(job_id, invoice_id)
+    r = client.get("/api/invoices")
+    assert r.json()["data"][0]["ocr_job_id"] == job_id

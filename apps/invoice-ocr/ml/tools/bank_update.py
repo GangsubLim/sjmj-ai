@@ -11,6 +11,7 @@ Usage:
     uv run python -m tools.bank_update plan
     uv run python -m tools.bank_update apply --plan results/bank_update/plan.jsonl
     uv run python -m tools.bank_update score --before <bank.bak> --after <bank.npz>
+    uv run python -m tools.bank_update export-pairs
 """
 
 import argparse
@@ -971,8 +972,35 @@ def _write_jsonl(path: Path, rows: list[dict]) -> None:
     _atomic_write_text(path, "\n".join(json.dumps(r, ensure_ascii=False) for r in rows) + "\n")
 
 
-def _write_json(path: Path, obj: dict) -> None:
+def _write_json(path: Path, obj: dict | list) -> None:
     _atomic_write_text(path, json.dumps(obj, ensure_ascii=False, indent=1) + "\n")
+
+
+def cmd_export_pairs(args) -> None:
+    """training_pairs 전량과 검수 완료 잡 id를 로컬 학습 어댑터용으로 반출한다.
+
+    필터를 걸지 않는 것이 계약이다 — 모집단 선별은 train_input.select_curated가 같은
+    bank_update 게이트로 수행하므로, 여기서 미리 거르면 선별 규칙이 두 곳으로 갈라진다.
+    """
+    pairs = fetch_pairs(args.backend_env)
+    reviewed = sorted(fetch_reviewed_job_ids(args.backend_env))
+    pairs_path = args.out / "pairs.jsonl"
+    reviewed_path = args.out / "reviewed_jobs.json"
+    meta_path = args.out / "export_meta.json"
+    _write_jsonl(pairs_path, pairs)
+    _write_json(reviewed_path, reviewed)
+    _write_json(
+        meta_path,
+        {
+            "exported_at": datetime.now(UTC).isoformat(),
+            "n_pairs": len(pairs),
+            "n_reviewed": len(reviewed),
+        },
+    )
+    print(
+        f"쌍 {len(pairs)}건 → {pairs_path}\n검수 완료 잡 {len(reviewed)}개 → {reviewed_path}\n"
+        f"반출 메타 → {meta_path}"
+    )
 
 
 def cmd_plan(args) -> None:
@@ -1216,7 +1244,7 @@ def cmd_score(args) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    """서브커맨드(plan/apply/score)를 파싱해 실행한다."""
+    """서브커맨드(plan/apply/score/export-pairs)를 파싱해 실행한다."""
     ap = argparse.ArgumentParser(prog="bank_update", description=__doc__)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
@@ -1255,9 +1283,19 @@ def main(argv: list[str] | None = None) -> None:
         default="reviewed",
         help="채점 모집단 — reviewed(검수 완료만, 기본) | all(미검수 포함, 채점 전용)",
     )
+    sub.add_parser(
+        "export-pairs",
+        parents=[common],
+        help="training_pairs 전량 + 검수 완료 잡 id를 로컬 학습용으로 반출(필터 없음)",
+    )
     args = ap.parse_args(argv)
 
-    {"plan": cmd_plan, "apply": cmd_apply, "score": cmd_score}[args.cmd](args)
+    {
+        "plan": cmd_plan,
+        "apply": cmd_apply,
+        "score": cmd_score,
+        "export-pairs": cmd_export_pairs,
+    }[args.cmd](args)
 
 
 if __name__ == "__main__":
