@@ -153,7 +153,8 @@ class CurationRepository:
         FOR UPDATE로 잡히므로, 확인과 전이 사이에 워커의 claim_next_pending이 끼어들어
         같은 잡을 두 번 집는 경합이 성립하지 않는다. 부모(ocr_jobs)를 먼저 잡는 자리라
         락 순서 불변식(잡 → 쌍)의 시작점이기도 하다 — Task 7의 mark_reviewed가 이 호출을
-        재사용해 "done이 아니면 409"를 reprocess와 같은 규칙으로 적용한다.
+        재사용해 상태 가드를 건다(허용 상태는 경로별로 다르다 — 검수 완료는 done만,
+        재처리 요청은 done·failed — #93).
 
         Args:
             job_id: 대상 OCR 잡 id.

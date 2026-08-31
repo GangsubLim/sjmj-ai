@@ -138,6 +138,11 @@ def main():
 
     crops_root = Path(_require("SJMJ_DATA_DIR")) / "ocr_crops"
     queue = WorkerQueue(build_engine())
+    # 부팅 워치독(#85) — 이전 프로세스가 running에 좌초시킨 잡을 폴링 전에 되돌린다.
+    # load_models보다 앞이다: 모델 적재가 실패해도 잡은 pending으로 복귀해 있어야 한다.
+    stale = queue.requeue_stale_running()
+    if stale:
+        print(f"[watchdog] 좌초 running 잡 {stale} → pending 재큐잉", file=sys.stderr, flush=True)
     models = load_models()
 
     def infer_fn(image_path, crop_dir, job_id):

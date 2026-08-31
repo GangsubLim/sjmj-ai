@@ -431,7 +431,7 @@
       {
         "method": "POST",
         "path": "/api/curation/jobs/{job_id}/reprocess",
-        "summary": "잡 재처리 큐잉(done → pending 전이; result_json은 보존 — 워커가 재처리로 판별하는 근거이자 실패 시 롤백 대상. 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 수행. done이 아니면 409)",
+        "summary": "잡 재처리 큐잉(done·failed → pending 전이; result_json은 보존 — 워커가 재처리로 판별하는 근거이자 실패 시 롤백 대상. failed 수용이 유일한 API 실패 복구 경로(#93). 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 수행. pending·running이면 409)",
         "auth": "public",
         "req": null,
         "res": "{job_id, status}",
@@ -2525,7 +2525,7 @@
     "/api/curation/jobs/{job_id}/review": {
       "post": {
         "summary": "잡 검수 완료 표시(curation_reviewed=TRUE, 미처리 쌍 reviewed_at 스탬프, 같은 세대·done 상태에서만 멱등; included 정식 라벨을 item_suggestions에 등록 — ADR 0008)",
-        "description": "요청 body의 job_token을 현재 잡 세대와 대조한다(spec §12). 이 경로는 게이트를 닫고 미검수 쌍 전량에 reviewed_at을 찍으므로, 재처리 이전에 열어둔 화면이 그대로 보내면 새로 생긴 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라지고 --reembed-job 가드까지 통과한다 — 세대가 다르면 409 CONFLICT로 거부한다. 상태가 done이 아니어도 409다(워커가 곧 덮어쓸 잡의 검수 완료는 의미가 없다 — reprocess와 같은 규칙).",
+        "description": "요청 body의 job_token을 현재 잡 세대와 대조한다(spec §12). 이 경로는 게이트를 닫고 미검수 쌍 전량에 reviewed_at을 찍으므로, 재처리 이전에 열어둔 화면이 그대로 보내면 새로 생긴 미결 쌍이 사람 눈에 닿기 전에 검수 큐에서 사라지고 --reembed-job 가드까지 통과한다 — 세대가 다르면 409 CONFLICT로 거부한다. 상태가 done이 아니어도 409다(워커가 곧 덮어쓸 잡의 검수 완료는 의미가 없다 — failed까지 받는 reprocess와 달리 done만 받는다). 409 메시지는 상태별로 갈린다(#93) — failed는 실패 사실과 재처리 복구 경로를 안내한다.",
         "tags": ["curation"],
         "parameters": [
           {
@@ -2612,7 +2612,7 @@
     },
     "/api/curation/jobs/{job_id}/reprocess": {
       "post": {
-        "summary": "잡 재처리 큐잉(done → pending 전이; result_json 보존)",
+        "summary": "잡 재처리 큐잉(done·failed → pending 전이; result_json 보존)",
         "tags": ["curation"],
         "parameters": [
           {
@@ -2666,7 +2666,7 @@
             }
           },
           "409": {
-            "description": "done이 아닌 잡(이미 큐에 있거나 실패한 잡)",
+            "description": "done·failed가 아닌 잡(이미 큐에 있거나 처리 중)",
             "content": {
               "application/json": {
                 "schema": {

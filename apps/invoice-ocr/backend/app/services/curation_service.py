@@ -194,7 +194,10 @@ class CurationService:
         다르면 409로 거부한다 — PATCH만 막으면 방어가 반쪽이다.
 
         상태가 done이 아니면 역시 409다. 재처리 큐에 든 잡의 검수 완료는 워커가 곧 덮어쓸
-        사실이라, reprocess 엔드포인트와 같은 규칙을 쓴다.
+        사실이다 — failed까지 받는 reprocess와 달리 이 경로는 done만 받는다. 메시지는
+        상태별로 가른다(#93) —
+        failed에 "끝난 뒤 다시 시도"는 사실과 다르다(영영 끝나지 않는다). 실패 사실과 복구
+        경로(재처리)를 알려야 사람이 기다리다 포기하는 대신 행동한다.
 
         Args:
             job_id: 검수 완료로 표시할 OCR 잡 id.
@@ -208,6 +211,8 @@ class CurationService:
             job = self.repo.find_job_for_update(job_id)  # ① ocr_jobs — 행잠금 + 존재 확인
             if job is None:
                 not_found("OCR 잡을 찾을 수 없습니다.")
+            if job["status"] == "failed":
+                conflict("처리에 실패한 잡입니다. 재처리를 요청해 다시 시도하세요.")
             if job["status"] != "done":
                 conflict("아직 처리 중인 잡입니다. 처리가 끝난 뒤 다시 시도하세요.")
             if self.repo.get_job_token(job_id) != job_token:  # ② 세대 대조
@@ -227,6 +232,10 @@ class CurationService:
         롤백 대상이다(spec §10). 크롭 갱신·라벨 승계는 ml-worker가 한 트랜잭션으로 한다
         (ADR 0010) — backend는 잡을 다시 큐에 넣는 것만 한다.
 
+        failed도 받는다(#93) — API의 유일한 실패 복구 경로다. 안전성은 워커 판별자
+        축소(#91)가 근거다: 에러 JSON만 남은 잡은 rows가 없어 신규로, 초안 보존
+        실패 잡(#92·#88)은 rows가 남아 재처리로 워커가 스스로 재분류한다.
+
         배치는 런북에서 잡 id 목록으로 이 엔드포인트를 반복 호출한다 — 배치 전용
         엔드포인트를 만들지 않는다(부분 실패 시 어디까지 걸렸는지가 오히려 명확하다).
 
@@ -237,14 +246,14 @@ class CurationService:
             {"job_id", "status"} — 전이 후 상태.
 
         Raises:
-            AppError: 잡이 없으면 404, done이 아니면 409(중복 요청 차단).
+            AppError: 잡이 없으면 404, done·failed가 아니면 409(중복 요청 차단).
         """
         with self._transaction():
             job = self.repo.find_job_for_update(job_id)
             if job is None:
                 not_found("OCR 잡을 찾을 수 없습니다.")
-            if job["status"] != "done":
-                conflict("재처리할 수 없는 잡입니다(추론이 끝난 잡만 다시 처리할 수 있습니다).")
+            if job["status"] not in ("done", "failed"):
+                conflict("아직 처리 중인 잡입니다. 처리가 끝난 뒤 다시 시도하세요.")
             self.repo.requeue_for_reprocess(job_id)
         return {"job_id": job_id, "status": "pending"}
 

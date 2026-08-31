@@ -391,6 +391,35 @@ def test_mark_failed_serializes_json():
     assert params["id"] == 7
 
 
+def test_requeue_stale_running_returns_stuck_jobs_to_pending():
+    """부팅 워치독(#85) — running으로 굳은 잡 전량을 pending으로 되돌리고 id를 보고한다.
+
+    추론 도중 프로세스가 죽으면 rollback_to_done이 돌지 않아 잡이 영구 running으로 남고,
+    claim은 pending만 집고 reprocess API는 409라 복구가 순수 수동 절차였다. result_json은
+    건드리지 않는다 — 신규/재처리는 다음 점유에서 rows 판별자가 스스로 재분류한다.
+    """
+    engine = _live_engine([])  # 잡 5가 running 상태로 심어진다
+
+    ids = WorkerQueue(engine).requeue_stale_running()
+
+    assert ids == [5]
+    with engine.begin() as conn:
+        row = conn.execute(text("SELECT status, result_json FROM ocr_jobs WHERE id=5")).fetchone()
+    assert row[0] == "pending"
+    assert row[1] == "{}", "재큐잉이 판별자 입력(result_json)을 건드리면 안 된다"
+
+
+def test_requeue_stale_running_is_a_noop_when_nothing_is_stuck():
+    engine = _live_engine([])
+    with engine.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET status='done' WHERE id=5"))
+
+    assert WorkerQueue(engine).requeue_stale_running() == []
+
+    with engine.begin() as conn:
+        assert conn.execute(text("SELECT status FROM ocr_jobs WHERE id=5")).fetchone()[0] == "done"
+
+
 def test_mark_failed_keep_result_preserves_the_draft():
     """초안 보존 실패 전이 — status만 failed로 바꾸고 result_json은 그대로 둔다.
 

@@ -344,7 +344,23 @@ def test_request_reprocess_409_when_job_is_not_done():
         _sync_svc(repo, MagicMock()).request_reprocess(7)
 
     assert exc.value.status == 409
+    assert "처리 중" in exc.value.message, "failed까지 허용된 지금 '추론이 끝난 잡만'은 거짓말이다"
     repo.requeue_for_reprocess.assert_not_called()
+
+
+def test_request_reprocess_requeues_a_failed_job():
+    """failed 잡의 유일한 API 복구 경로다(이슈 #93) — 이전에는 어디에도 없었다.
+
+    안전성은 워커 판별자 축소(#91)가 근거다: 에러 JSON만 남은 실패 잡은 rows가 없어
+    신규로, 초안 보존 실패 잡(#92·#88)은 rows가 남아 재처리로 스스로 재분류된다.
+    """
+    repo = MagicMock()
+    repo.find_job_for_update.return_value = {"id": 7, "status": "failed"}
+
+    result = _sync_svc(repo, MagicMock()).request_reprocess(7)
+
+    repo.requeue_for_reprocess.assert_called_once_with(7)
+    assert result == {"job_id": 7, "status": "pending"}
 
 
 # ---------------------------------------------------------------------------
@@ -536,6 +552,23 @@ def test_mark_reviewed_rejects_a_job_that_is_not_done_with_409():
         _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
 
     assert exc.value.status == 409
+    repo.mark_reviewed.assert_not_called()
+
+
+def test_mark_reviewed_409_names_the_failure_for_a_failed_job():
+    """failed 잡에 '처리가 끝난 뒤 다시 시도하세요'는 사실과 다르다 — 영영 끝나지 않는다(#93).
+
+    상태별로 메시지를 갈라 실패 사실과 복구 경로(재처리)를 알려야 사람이 기다리다 포기하는
+    대신 행동할 수 있다. 409라는 계약 자체는 그대로다.
+    """
+    repo = _reviewable(status="failed")
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    assert exc.value.status == 409
+    assert "실패" in exc.value.message
+    assert "끝난 뒤" not in exc.value.message
     repo.mark_reviewed.assert_not_called()
 
 
