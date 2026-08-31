@@ -5,6 +5,33 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.14.0] — 2026-08-31
+
+거래명세서와 OCR 잡을 화면에서 서로 이어 보게 하고, 금액 크롭 좌측 경계를 전표마다 실측해 인접 칸 숫자 흡수를 줄인 릴리스 ([#131](https://github.com/GangsubLim/sjmj-ai/pull/131), [#134](https://github.com/GangsubLim/sjmj-ai/pull/134)).
+
+### Added
+
+- 거래명세서 목록 카드에 OCR 잡 번호 배지 노출 — 어떤 명세서가 OCR 유래인지 목록에서 바로 식별 ([#131](https://github.com/GangsubLim/sjmj-ai/pull/131))
+- 큐레이션 잡 상세에 '명세서 수정' 바로가기 추가 — 검수 중 발견한 이상을 새 탭에서 곧바로 교정, 잡 간 이동 흐름은 유지 ([#131](https://github.com/GangsubLim/sjmj-ai/pull/131))
+- 품목 인코더 재학습용 학습 입력 경로 신설 — 큐레이션 학습쌍 반출(`bank_update export-pairs`)과 학습곡선 실측(`train_contrastive curve`) 가능 ([#135](https://github.com/GangsubLim/sjmj-ai/pull/135))
+
+### Fixed
+
+- 금액 크롭이 단가칸으로 넘쳐 인접 숫자를 흡수하던 문제 완화 — 좌측 경계를 템플릿 고정값 대신 전표별 인쇄 세로선으로 실측 ([#134](https://github.com/GangsubLim/sjmj-ai/pull/134))
+- `SJMJ_DATA_DIR` 미설정 시 crop 엔드포인트가 500으로 떨어지던 배포 함정 차단 — backend env 예시에 항목 추가 ([#132](https://github.com/GangsubLim/sjmj-ai/pull/132))
+- 큐레이션 기계 해제 경로의 락 순서를 부모→자식으로 정렬해 교착 가능 경로 제거 ([#132](https://github.com/GangsubLim/sjmj-ai/pull/132))
+- DL 코너 검출이 삼키던 추론 예외의 타입을 진단에 노출 — 검출 실패와 예외 실패 구분 가능 ([#132](https://github.com/GangsubLim/sjmj-ai/pull/132))
+
+### Changed
+
+- `api-spec.json`의 `info.version`을 릴리스 버전과 동기 — `sync-version.sh`가 VERSION·APP_VERSION과 함께 갱신 ([#132](https://github.com/GangsubLim/sjmj-ai/pull/132))
+- ml 의존성 pillow 12.3.0·setuptools 83.0.0 갱신 ([#130](https://github.com/GangsubLim/sjmj-ai/pull/130))
+- 재처리·뱅크 갱신 런북의 오독 유발 문안 교정 (8b0a908)
+
+### Removed
+
+- frontend `.env.example`에서 미사용 `VITE_API_MODE` 변수 제거 ([#132](https://github.com/GangsubLim/sjmj-ai/pull/132))
+
 ## [v0.13.1] — 2026-08-27
 
 마지막 품목행 금액이 표 하단의 빈 행·합계행까지 삼켜 과대 계상되던 경로 차단, 절단 사실은 화면과 원문에 진단으로 보존 ([#127](https://github.com/GangsubLim/sjmj-ai/pull/127)).
