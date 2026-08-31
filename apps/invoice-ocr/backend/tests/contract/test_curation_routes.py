@@ -850,10 +850,21 @@ def test_reprocess_returns_409_when_job_is_already_queued(client, db_conn):
     assert _job_row(db_conn, job_id)["status"] == "running"
 
 
-def test_reprocess_returns_409_for_a_failed_job(client, db_conn):
-    job_id = _seed_job(db_conn, status="failed")
+def test_reprocess_requeues_a_failed_job(client, db_conn):
+    """failed 잡도 재처리 큐로 되돌린다 — API의 유일한 실패 복구 경로다(이슈 #93).
 
-    assert client.post(f"/api/curation/jobs/{job_id}/reprocess").status_code == 409
+    result_json은 그대로 둔다: 에러 JSON만 남은 잡은 rows가 없어 워커가 신규로,
+    초안 보존 실패 잡(#92·#88)은 rows가 남아 재처리로 스스로 재분류된다(#91 판별자).
+    """
+    job_id = _seed_job(db_conn, status="failed", result_json='{"error": "warp explode"}')
+
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "status": "pending"}}
+    row = _job_row(db_conn, job_id)
+    assert row["status"] == "pending"
+    assert '"error"' in row["result_json"], "복구 경로가 초안·에러 기록을 지우면 안 된다"
 
 
 def test_reprocess_never_touches_the_confirmed_invoice(client, db_conn):

@@ -242,6 +242,29 @@ class WorkerQueue:
                 {"r": json.dumps(error_json, ensure_ascii=False), "id": job_id},
             )
 
+    def requeue_stale_running(self) -> list[int]:
+        """부팅 시 running으로 굳은 잡 전량을 pending으로 되돌린다(이슈 #85 워치독).
+
+        추론 도중 프로세스가 죽으면(배포·재시작·OOM·kill) rollback_to_done이 돌지 않아 잡이
+        영구 running으로 남는다 — claim_next_pending은 pending만 집고 reprocess API는 409라
+        복구가 순수 수동 절차(런북 5단계)였다. **단일 워커 전제다**(launchd
+        ai.sjmj.ml-worker 하나): 부팅 시점의 running이 전부 이전 프로세스의 좌초분이라는
+        보장이 이 전제에서 나오므로, 수동으로 두 번째 워커를 병행 기동하면 남의 in-flight
+        잡을 뺏는다 — 금지. result_json은 건드리지 않는다 — 되돌린 잡은 다음 점유에서
+        rows 판별자(claim_next_pending)가 신규/재처리로 스스로 재분류해 자동 재개된다.
+
+        Returns:
+            되돌린 잡 id 목록(id 오름차순, 호출자의 로그용). 좌초가 없으면 빈 리스트.
+        """
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text("SELECT id FROM ocr_jobs WHERE status='running' ORDER BY id")
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                conn.execute(text("UPDATE ocr_jobs SET status='pending' WHERE status='running'"))
+        return ids
+
     def mark_failed_keep_result(self, job_id: int) -> None:
         """잡을 failed로 전이하되 result_json은 건드리지 않는다 — 초안 보존 실패.
 

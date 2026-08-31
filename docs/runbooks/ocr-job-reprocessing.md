@@ -373,9 +373,13 @@ ls -d "$SJMJ_DATA_DIR"/ocr_crops/job-*.tmp "$SJMJ_DATA_DIR"/ocr_crops/job-*.old 
   `result_json`의 rows를 워커 판별자가 보고 재처리로 재분류한다).
 
 - **추론 도중(커밋 전)에 프로세스가 죽으면 잡은 `running`에서 멈춘다** — `pending → running`
-  전이만 있고(`worker/db.py`의 `claim_next_pending`), 죽은 `running` 잡을 되돌리는 워치독은
-  없다. `.tmp`도 함께 남는다. 이 잡은 `done`이 아니므로 3단계의 `reprocess` 호출이 409로
+  전이만 있고(`worker/db.py`의 `claim_next_pending`), 죽은 프로세스는 그 잡을 되돌리지
+  못한다. `.tmp`도 함께 남는다. 이 잡은 `done`이 아니므로 3단계의 `reprocess` 호출이 409로
   거부돼 그대로는 3단계로 돌아갈 수 없다.
+  **워커를 다시 기동하면 부팅 워치독이 자동 복구한다**(#85, `worker/db.py`의
+  `requeue_stale_running`) — 기동 시 `running` 전량을 `pending`으로 되돌려 순서대로 재처리한다
+  (`[watchdog]` 로그로 확인). 아래 수동 절차는 **워커를 기동하지 않은 채** 상태를 판정·정리해야
+  할 때(예: 좌초분을 `pending`이 아닌 `done`으로 되돌려 재처리 없이 마감하고 싶을 때)만 필요.
   **"처리 중이 아님"을 로그로 확인하지 않는다** — 정상 처리 중인 잡은 `[warp-gate]` 같은
   예외 신호가 없는 한 어떤 줄도 남기지 않으므로(3단계 참고), 로그가 비어 있다는 것이
   "처리 중이 아니다"의 증거가 되지 못한다. 지금 처리 중인 잡일수록 오히려 로그에 안
