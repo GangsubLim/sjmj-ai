@@ -36,15 +36,22 @@ class WorkerQueue:
         재처리 판별에 표식 컬럼을 만들지 않는다 — 신규 잡은 insert 시 result_json이 NULL이라
         "pending인데 초안이 이미 있는가"로 구분이 자연히 선다(spec §1 · ADR 0010).
 
+        판별자는 초안 존재가 아니라 **rows 키 존재**다(이슈 #91). mark_failed가 같은 컬럼에
+        {"error": ...}를 쓰므로 result_json IS NOT NULL이면 pending으로 되돌린 실패 잡이
+        재처리로 오분류되고, 재실패 시 rollback_to_done이 불려 한 번도 성공한 적 없는 잡이
+        done + 에러 초안으로 남는다. 워커가 쓴 성공 초안만 rows를 가진다(assemble_result_json).
+
         Returns:
             {"id", "image_path", "is_reprocess"} 또는 큐가 비었으면 None.
         """
         with self.engine.begin() as conn:
             row = conn.execute(
                 text(
-                    "SELECT id, image_path, (result_json IS NOT NULL) AS is_reprocess "
+                    "SELECT id, image_path, "
+                    "(JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess "
                     "FROM ocr_jobs WHERE status='pending' "
-                    "ORDER BY (result_json IS NOT NULL), id LIMIT 1 FOR UPDATE"
+                    "ORDER BY (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL), id "
+                    "LIMIT 1 FOR UPDATE"
                 )
             ).fetchone()
             if row is None:
@@ -233,6 +240,20 @@ class WorkerQueue:
             conn.execute(
                 text("UPDATE ocr_jobs SET status='failed', result_json=:r WHERE id=:id"),
                 {"r": json.dumps(error_json, ensure_ascii=False), "id": job_id},
+            )
+
+    def mark_failed_keep_result(self, job_id: int) -> None:
+        """잡을 failed로 전이하되 result_json은 건드리지 않는다 — 초안 보존 실패.
+
+        mark_failed와 계약이 다르다: 그쪽은 에러 JSON을 기록하는 신규 잡 실패 경로이고,
+        여기는 보존할 초안이 있는 실패다 — 새 행 0건 가드(#92, 옛 초안·좌표가 유일한
+        복구 근거)와 크롭 교체 상한(#88, 커밋된 새 초안이 이미 정본). 초안이 남아 있어야
+        failed 재큐잉(#93) 시 claim_next_pending의 rows 판별자가 재처리로 재분류한다.
+        """
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET status='failed' WHERE id=:id"),
+                {"id": job_id},
             )
 
     def rollback_to_done(self, job_id: int) -> None:

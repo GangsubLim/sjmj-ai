@@ -71,6 +71,44 @@ def test_stale_crops_disappear_when_fewer_rows_are_detected(tmp_path):
     assert sorted(p.name for p in live.iterdir()) == ["row-0.png"]
 
 
+def test_a_reprocess_with_zero_new_rows_fails_without_touching_pairs(tmp_path):
+    """새 행 0건 재처리는 승계를 건너뛰고 초안 보존 실패로 떨어진다(이슈 #92 고려안 1).
+
+    plan_relink는 "새 행 0건 + 옛 쌍 다수"를 전량 미결의 정상 계획으로 취급한다 — 잡 39는
+    이 경로로 확정 쌍 3건이 복구 불가능하게 좌표를 잃었다(crop_ref가 orphan-으로 옮겨지고
+    이어 붙일 새 행이 없다). 커밋 전에 막아야 옛 초안·좌표·크롭이 전부 그대로 남는다.
+    """
+    live = tmp_path / "job-9"
+    live.mkdir()
+    (live / "row-0.png").write_bytes(b"old")
+
+    def infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        return DEMOTED
+
+    q = _queue(_job(is_reprocess=True))
+    outcome = process_one_job(q, infer, tmp_path, 0)
+
+    assert outcome == PollOutcome(worked=True, qwen_called=False)
+    q.mark_failed_keep_result.assert_called_once_with(9)
+    q.fetch_pairs.assert_not_called()
+    q.commit_job.assert_not_called()
+    q.rollback_to_done.assert_not_called()
+    q.mark_failed.assert_not_called()
+    assert not (tmp_path / "job-9.tmp").exists(), "가드 실패도 반쪽 크롭을 남기지 않는다"
+    assert (live / "row-0.png").read_bytes() == b"old"
+
+
+def test_a_new_job_with_zero_rows_still_commits_normally(tmp_path):
+    """가드는 재처리 전용이다 — 신규 잡의 rows=0(게이트 강등)은 정상 커밋 경로다."""
+    q = _queue(_job())
+
+    process_one_job(q, lambda *a: DEMOTED, tmp_path, 0)
+
+    q.commit_job.assert_called_once()
+    q.mark_failed_keep_result.assert_not_called()
+
+
 def test_commit_receives_the_plan_built_from_new_rows(tmp_path):
     """poll은 계획을 만들지 않는다 — plan_relink가 만들고 여기서는 넘기기만 한다."""
     from handwriting.relink import OldPair
@@ -162,6 +200,66 @@ def test_swap_failure_after_commit_requeues_the_job(tmp_path, monkeypatch):
     assert process_one_job(q, infer, tmp_path, 0).worked is True
     q.requeue_for_reprocess.assert_called_once_with(9)
     q.rollback_to_done.assert_not_called()
+
+
+def test_a_swap_failure_below_the_cap_requeues_and_counts(tmp_path, monkeypatch):
+    """상한 전에는 현행 복구(재처리 큐 복귀) 그대로 — 실패 횟수만 잡별로 센다(이슈 #88)."""
+
+    def infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        return RESULT
+
+    monkeypatch.setattr("worker.poll._swap_crop_dir", MagicMock(side_effect=OSError("ENOTEMPTY")))
+    q = _queue(_job(is_reprocess=True))
+    counters = {}
+
+    process_one_job(q, infer, tmp_path, 0, swap_failures=counters)
+
+    q.requeue_for_reprocess.assert_called_once_with(9)
+    q.mark_failed_keep_result.assert_not_called()
+    assert counters == {9: 1}
+
+
+def test_a_swap_failure_at_the_cap_fails_the_job_and_keeps_the_draft(tmp_path, monkeypatch, capsys):
+    """상한 도달 시 requeue 대신 초안 보존 실패로 끊는다 — 무한 재추론 점유 차단(이슈 #88).
+
+    .old가 영구히 안 지워지는 잡은 requeue → 같은 지점 실패 루프에 상한이 없어, 잡당
+    수십 초의 모델 추론을 무한 반복하며 다른 재처리 잡을 굶긴다. DB는 이미 커밋된 새
+    좌표가 정본이고 .old 마커가 남아 재임베딩 가드는 계속 닫혀 있다 — failed가 사람에게
+    보이는 유일한 신호다.
+    """
+
+    def infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        return RESULT
+
+    monkeypatch.setattr("worker.poll._swap_crop_dir", MagicMock(side_effect=OSError("ENOTEMPTY")))
+    q = _queue(_job(is_reprocess=True))
+    counters = {9: 2}  # 앞선 두 실행이 이미 같은 지점에서 실패
+
+    outcome = process_one_job(q, infer, tmp_path, 0, swap_failures=counters)
+
+    assert outcome.worked is True
+    q.mark_failed_keep_result.assert_called_once_with(9)
+    q.requeue_for_reprocess.assert_not_called()
+    assert "상한" in capsys.readouterr().err
+
+
+def test_a_successful_swap_resets_the_failure_counter(tmp_path):
+    """중간에 교체가 성공하면 카운터를 지운다 — 상한은 연속 실패에만 건다."""
+
+    def infer(image_path, crop_dir, job_id):
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        (Path(crop_dir) / "row-0.png").write_bytes(b"new")
+        return RESULT
+
+    q = _queue(_job(is_reprocess=True))
+    counters = {9: 2}
+
+    process_one_job(q, infer, tmp_path, 0, swap_failures=counters)
+
+    assert counters == {}
+    q.mark_failed_keep_result.assert_not_called()
 
 
 def test_a_failing_rerun_keeps_the_unfinished_swap_marker_alive(tmp_path):

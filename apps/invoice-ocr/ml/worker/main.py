@@ -144,8 +144,13 @@ def main():
         return infer_job(image_path, models, crop_dir, job_id)
 
     qwen_jobs = 0
+    # 잡별 크롭 교체 연속 실패 카운터(이슈 #88) — qwen_jobs와 같은 소유 구조로, 프로세스
+    # 수명과 함께 리셋된다. 상한 판정은 process_one_job이 한다(SWAP_RETRY_LIMIT).
+    swap_failures: dict[int, int] = {}
     while True:
-        outcome = process_one_job(queue, infer_fn, crops_root, qwen_jobs)
+        outcome = process_one_job(
+            queue, infer_fn, crops_root, qwen_jobs, swap_failures=swap_failures
+        )
         if outcome.qwen_called:
             qwen_jobs += 1
         if not outcome.worked:
