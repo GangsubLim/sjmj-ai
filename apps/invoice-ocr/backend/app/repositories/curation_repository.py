@@ -7,6 +7,13 @@ from sqlalchemy import text
 from app.db import connection
 from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 
+# 세대 토큰(낙관적 잠금, spec §12)의 유일한 SQL 표현식 — 발급(find_job_detail)과
+# 대조(get_job_token)가 반드시 같은 문자열을 내야 한다. 두 곳이 갈라지면 대조가 영구
+# 불일치해 큐레이션 화면의 모든 쓰기가 409가 된다(#84). 표현·정밀도를 바꿀 일이 생기면
+# 반드시 이 상수만 고친다. 사용자 입력이 아닌 모듈 상수라 f-string 조립을 허용한다
+# (바인드 파라미터 자리가 아니다).
+JOB_TOKEN_SQL = "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR)"
+
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
     "(crop_ref, job_id, invoice_id, row_index, draft_label, draft_supply, final_label, "
@@ -54,7 +61,7 @@ class CurationRepository:
                     text(
                         "SELECT id, invoice_id, curation_reviewed, curation_reviewed_at, "
                         "result_json, created_at, "
-                        "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) AS job_token "
+                        f"{JOB_TOKEN_SQL} AS job_token "
                         "FROM ocr_jobs WHERE id = :id"
                     ),
                     {"id": job_id},
@@ -213,10 +220,7 @@ class CurationRepository:
         """
         with connection() as conn:
             return conn.execute(
-                text(
-                    "SELECT CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) FROM ocr_jobs "
-                    "WHERE id = :id FOR UPDATE"
-                ),
+                text(f"SELECT {JOB_TOKEN_SQL} FROM ocr_jobs WHERE id = :id FOR UPDATE"),
                 {"id": job_id},
             ).scalar()
 
