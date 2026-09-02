@@ -411,7 +411,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 시 409 CONFLICT. 응답에 갱신된 job_token 포함",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 또는 done 아님이면 409 CONFLICT. 응답에 갱신된 job_token 포함",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
