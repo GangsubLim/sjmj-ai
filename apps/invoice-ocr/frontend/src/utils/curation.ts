@@ -1,4 +1,4 @@
-import type { CurationJobSummary } from "@/types/curation";
+import type { CurationJobStatus, CurationJobSummary } from "@/types/curation";
 
 interface LabelTriplet {
   draft_label: string | null;
@@ -43,3 +43,28 @@ export const CURATION_STATE_LABELS: Record<CurationJobState, string> = {
   needs_recheck: "↺ 재검수 필요",
   reviewed: "✓ 검수됨",
 };
+
+// status가 done이 아니면 서버가 쌍 PATCH·검수완료를 409로 거부한다(curation_service의
+// patch_pair·mark_reviewed). 첫 저장 시도의 409에서야 상태를 알면 그때까지의 편집이
+// 통째로 낭비되므로, 화면이 열리는 시점에 같은 사실을 예고한다(#86). 차단은 하지 않는다.
+// 문구를 상태별로 가르는 이유: failed에 "처리가 끝난 뒤"는 사실과 다르다(영영 끝나지
+// 않는다) — 백엔드 메시지 분기(#93)와 같은 근거다.
+// 미지 상태는 경고 쪽으로 실패시킨다 — ocr_jobs.status는 VARCHAR라 새 상태값이 생길 수
+// 있고, done이 아닌 이상 patch_pair·mark_reviewed가 409로 거부하는 것은 동일하다.
+// 화이트리스트(pending|running만 배너)로 뒤집으면 그 새 상태에서 배너가 조용히 사라져
+// #86이 없애려던 증상이 그대로 재발한다.
+export function curationJobBlockedNotice(
+  status: CurationJobStatus,
+): { title: string; body: string } | null {
+  if (status === "done") return null;
+  if (status === "failed") {
+    return {
+      title: "⚠ 처리 실패",
+      body: "처리에 실패한 잡입니다. 재처리를 요청해 다시 시도하세요. 지금 수정해도 저장되지 않습니다.",
+    };
+  }
+  return {
+    title: "⏳ 재처리 대기·진행 중",
+    body: "재처리 큐에 든 잡입니다. 지금 수정해도 저장되지 않으니, 처리가 끝난 뒤 검수하세요.",
+  };
+}
