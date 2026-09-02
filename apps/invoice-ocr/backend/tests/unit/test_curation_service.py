@@ -201,18 +201,29 @@ def test_mark_reviewed_response_shape_is_unchanged():
     assert result == {"job_id": 7, "curation_reviewed": True}
 
 
+_PAIR_ID = 5
+_JOB_ID = 3
+
+
 def _patched(status, label, job_status="done"):
     """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다.
 
     MagicMock의 기본 반환은 dict가 아니라 Mock이라 find_job_for_update를 세우지 않으면
     잡 상태 가드가 Mock != "done"으로 걸린다(_reviewable과 같은 이유).
+
+    **인자 의존 stub인 것이 계약이다(#94).** 인자와 무관한 고정값을 돌려주면 서비스가
+    엉뚱한 id로 조회·잠금해도 전량 GREEN이라, "요청된 쌍의 소유 잡을 잠근다"는 회귀가
+    통째로 미검출된다. 토큰도 두 번의 읽기(② 대조 · 갱신 후 반환)를 서로 다른 값으로
+    돌려줘야 어느 쪽을 비교하고 어느 쪽을 반환하는지가 단언으로 갈린다.
     """
     repo = MagicMock()
-    repo.find_job_for_update.return_value = {"id": 3, "status": job_status}
+    repo.find_job_for_update.side_effect = lambda job_id: (
+        {"id": _JOB_ID, "status": job_status} if job_id == _JOB_ID else None
+    )
     pair = {
-        "id": 5,
+        "id": _PAIR_ID,
         "crop_ref": "job-3/row-0",
-        "job_id": 3,
+        "job_id": _JOB_ID,
         "row_index": 0,
         "draft_label": "중고타이어",
         "final_label": label,
@@ -222,8 +233,8 @@ def _patched(status, label, job_status="done"):
         "exclusion_reason": None,
         "reviewed_at": None,
     }
-    repo.find_pair.return_value = pair
-    repo.get_job_token.return_value = "1000"
+    repo.find_pair.side_effect = lambda pair_id: pair if pair_id == _PAIR_ID else None
+    repo.get_job_token.side_effect = ["1000", "1001"]
     return repo
 
 
@@ -497,7 +508,7 @@ def test_patch_pair_rejects_a_job_that_is_not_done_before_comparing_tokens():
 def test_patch_pair_rejects_a_stale_token_with_409():
     """재처리 이전 화면을 열어둔 사용자가 옛 그림을 근거로 새 쌍을 고치는 것을 막는다."""
     repo = _patched("included", "휠")
-    repo.get_job_token.return_value = "2000"
+    repo.get_job_token.side_effect = ["2000"]
 
     with pytest.raises(AppError) as exc:
         _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
@@ -509,13 +520,26 @@ def test_patch_pair_rejects_a_stale_token_with_409():
 
 
 def test_patch_pair_reads_the_token_before_touching_the_pair():
-    """락 순서 — 토큰 조회(FOR UPDATE)가 부모를 먼저 잡는다."""
+    """락 순서 — 부모(ocr_jobs) 조회·게이트 해제가 자식(training_pairs) 쓰기보다 앞선다.
+
+    두 지표의 index 비교만으로는 사이에 낀 순서 변경(게이트 해제와 쌍 갱신의 자리바꿈,
+    제3 호출의 삽입)이 드러나지 않는다. 시퀀스 전량을 못 박는다. 반환 토큰이 **갱신 후**
+    읽기라는 축은 test_patch_pair_returns_the_refreshed_token이 이미 소유하므로 여기서
+    겹치지 않는다.
+    """
     repo = _patched("included", "휠")
 
     _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
-    calls = [c[0] for c in repo.method_calls]
-    assert calls.index("get_job_token") < calls.index("update_pair")
+    assert [c[0] for c in repo.method_calls] == [
+        "find_pair",
+        "find_job_for_update",
+        "get_job_token",
+        "release_gate",
+        "update_pair",
+        "find_pair",
+        "get_job_token",
+    ]
 
 
 def test_patch_pair_returns_the_refreshed_token():
@@ -526,6 +550,22 @@ def test_patch_pair_returns_the_refreshed_token():
     result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
     assert result["job_token"] == "1001"
+
+
+def test_patch_pair_locks_the_job_that_owns_the_requested_pair():
+    """잠그고 고치는 대상은 요청된 쌍과 그 쌍의 소유 잡이다 — id가 섞이면 남의 잡을 잠근다.
+
+    stub이 인자 무관 고정값이면 find_job_for_update(pair_id) 같은 회귀가 그대로 통과한다.
+    """
+    repo = _patched("included", "휠")
+
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    repo.find_pair.assert_any_call(5)
+    repo.find_job_for_update.assert_called_once_with(3)
+    repo.release_gate.assert_called_once_with(3)
+    repo.update_pair.assert_called_once_with(5, {"canonical_label": "휠"})
+    assert [c.args for c in repo.get_job_token.call_args_list] == [(3,), (3,)]
 
 
 def test_mark_reviewed_rejects_a_stale_token_with_409():
