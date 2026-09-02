@@ -124,3 +124,31 @@ describe("mockCurationAPI.reviewJob — COALESCE 미러", () => {
     );
   });
 });
+
+describe("mockCurationAPI 쓰기 가드 — status !== done", () => {
+  // 서버는 재처리 큐에 든 잡의 PATCH·검수완료를 409로 거부한다(curation_service의
+  // patch_pair·mark_reviewed). mock이 미러하지 않으면 그 경로가 mock 모드·e2e에서만
+  // 통과해 실서버에서만 드러난다(job_token 대조를 미러하는 것과 같은 이유).
+  it("재처리 큐에 든 잡의 쌍 PATCH를 거부한다", async () => {
+    await expect(
+      mockCurationAPI.patchPair(6001, {
+        job_token: await tokenOfPair(6001),
+        canonical_label: "배추",
+      }),
+    ).rejects.toThrow(/mock 409/);
+  });
+
+  it("재처리 큐에 든 잡의 검수 완료를 거부한다", async () => {
+    await expect(
+      mockCurationAPI.reviewJob(125, await tokenOfJob(125)),
+    ).rejects.toThrow(/mock 409/);
+  });
+
+  it("done 잡의 쓰기는 그대로 통과한다", async () => {
+    const { data } = await mockCurationAPI.patchPair(9001, {
+      job_token: await tokenOfPair(9001),
+      canonical_label: "배추",
+    });
+    expect(data.canonical_label).toBe("배추");
+  });
+});

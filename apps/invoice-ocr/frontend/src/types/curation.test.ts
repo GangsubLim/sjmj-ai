@@ -55,6 +55,14 @@ describe("curation 타입 계약", () => {
     >().toEqualTypeOf<boolean>();
   });
 
+  it("잡 상세 status는 필수이며 잡 상태 4종만 허용한다(optional 회귀 차단)", () => {
+    // status가 optional로 되돌아가면 인덱스 접근 타입에 `| undefined`가 섞여 이 단언이
+    // tsc -b에서 깨진다. 배너 분기가 undefined를 done처럼 취급해 조용히 사라지는 회귀 차단.
+    expectTypeOf<CurationJobDetail["status"]>().toEqualTypeOf<
+      "pending" | "running" | "done" | "failed"
+    >();
+  });
+
   it("잡 상세 pair는 top5를 가지고 job_id·잡 게이트는 없다", () => {
     expectTypeOf<CurationJobPair>().toHaveProperty("top5");
     expectTypeOf<CurationJobPair>().not.toHaveProperty("job_id");

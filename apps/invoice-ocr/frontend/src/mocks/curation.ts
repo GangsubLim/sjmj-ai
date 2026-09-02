@@ -6,6 +6,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
   {
     job_id: 128,
     invoice_id: 341,
+    status: "done",
     curation_reviewed: false,
     // 한 번도 검수 안 한 잡 — curationJobState가 "unreviewed"로 판별한다.
     curation_reviewed_at: null,
@@ -63,6 +64,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
   {
     job_id: 127,
     invoice_id: 340,
+    status: "done",
     curation_reviewed: true,
     // 검수 완료 잡. e2e(curation.spec.ts)가 이 잡의 쌍을 수정해 상세의
     // "↺ 재검수 필요" 배너와 목록의 같은 이름 뱃지를 각각 확인한다 — 서버의
@@ -123,6 +125,7 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     // 목록 뱃지 단언은 행 스코프다). 시드를 늘릴 때 그 전제를 다시 확인할 것.
     job_id: 126,
     invoice_id: 339,
+    status: "done",
     curation_reviewed: false,
     curation_reviewed_at: "2026-06-29T17:20:00",
     warp_ok: true,
@@ -178,6 +181,38 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
         uncertain: false,
         crop_available: false,
         top5: [],
+      },
+    ],
+  },
+  {
+    // 재처리 큐에 든 잡(status="pending")을 정적으로 재현하는 자리 — 프론트에는 재처리
+    // 요청 API가 없어 이 상태는 런타임으로 도달할 수 없다. 이 잡이 없으면 상세의 경고
+    // 배너와 mock 쓰기 가드(409 미러)를 mock 모드 QA·단위 테스트가 볼 수 없다.
+    // curation_reviewed_at을 채워 "↺ 재검수 필요"로 두는 이유: 미검수로 두면 e2e
+    // (curation.spec.ts:9)의 무스코프 단언 getByText("● 미검수")가 2건을 매칭해 깨진다.
+    job_id: 125,
+    invoice_id: 338,
+    status: "pending",
+    curation_reviewed: false,
+    curation_reviewed_at: "2026-06-29T09:30:00",
+    warp_ok: true,
+    created_at: "2026-06-29T09:00:00",
+    job_token: "1780000040",
+    pairs: [
+      {
+        id: 6001,
+        crop_ref: "125/0",
+        row_index: 0,
+        draft_label: "시금치",
+        final_label: "시금치",
+        canonical_label: "시금치",
+        supply: 7000,
+        status: "included",
+        exclusion_reason: null,
+        reviewed_at: null,
+        uncertain: false,
+        crop_available: true,
+        top5: [{ label: "시금치", sim: 0.9 }],
       },
     ],
   },
