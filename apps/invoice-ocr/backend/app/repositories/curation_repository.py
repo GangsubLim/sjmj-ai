@@ -52,7 +52,7 @@ class CurationRepository:
             job_row = (
                 conn.execute(
                     text(
-                        "SELECT id, invoice_id, curation_reviewed, curation_reviewed_at, "
+                        "SELECT id, invoice_id, status, curation_reviewed, curation_reviewed_at, "
                         "result_json, created_at, "
                         "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) AS job_token "
                         "FROM ocr_jobs WHERE id = :id"

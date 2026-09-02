@@ -401,7 +401,7 @@
       {
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}",
-        "summary": "잡 상세(행별 top5; 승계 실패 미결 쌍은 crop_available=false로 행과 끊기고 목록 뒤로 정렬)",
+        "summary": "잡 상세(status(pending/running/done/failed) 포함 — done이 아니면 쓰기가 409라 프론트가 경고 배너 표시; 행별 top5; 승계 실패 미결 쌍은 crop_available=false로 행과 끊기고 목록 뒤로 정렬)",
         "auth": "public",
         "req": null,
         "res": "CurationJobDetail",
@@ -3847,6 +3847,11 @@
           "invoice_id": {
             "type": "integer",
             "nullable": true
+          },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "running", "done", "failed"],
+            "description": "잡 처리 상태(ocr_jobs.status 원값). done이 아니면 재처리 대기/진행 중이거나 실패한 잡이라 PATCH /pairs/{id}·POST /jobs/{job_id}/review가 409로 거부된다 — 프론트는 이 값으로 화면 상단에 경고 배너를 띄운다(편집 차단은 하지 않는다, #86)."
           },
           "curation_reviewed": {
             "type": "boolean"

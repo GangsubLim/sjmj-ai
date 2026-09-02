@@ -109,6 +109,9 @@ class CurationService:
         return {
             "job_id": int(job["id"]),
             "invoice_id": job["invoice_id"],
+            # 잡 상태 원값. done이 아니면 patch_pair·mark_reviewed가 409로 거부하므로,
+            # 화면이 열리는 시점에 경고 배너로 예고하도록 그대로 싣는다(#86).
+            "status": job["status"],
             "curation_reviewed": bool(job["curation_reviewed"]),
             "curation_reviewed_at": job["curation_reviewed_at"],
             "warp_ok": bool(result.get("warp_ok", False)),
