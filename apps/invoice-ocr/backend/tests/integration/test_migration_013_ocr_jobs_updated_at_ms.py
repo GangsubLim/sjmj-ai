@@ -60,11 +60,37 @@ def second_precision(db_conn):
     try:
         yield db_conn
     finally:
-        if _MIGRATION.is_file():
-            _migration_sql.apply(db_conn, _MIGRATION)
-        if _precision(db_conn) != 3:  # 파일이 아직 없거나 깨진 RED 구간의 안전망
-            with db_conn.begin() as conn:
-                conn.execute(text(_TO_MS_PRECISION))
+        # 승격 적용 자체가 던져도 안전망이 반드시 돌도록 중첩한다 — 바깥 finally 한 겹이면
+        # apply 의 예외가 그대로 빠져나가 세션 스키마가 초 정밀도로 남는다.
+        try:
+            if _MIGRATION.is_file():
+                _migration_sql.apply(db_conn, _MIGRATION)
+        finally:
+            if _precision(db_conn) != 3:  # 파일이 아직 없거나 깨진 RED 구간의 안전망
+                with db_conn.begin() as conn:
+                    conn.execute(text(_TO_MS_PRECISION))
+
+
+_TO_PARTIAL_DRIFT = (
+    "ALTER TABLE ocr_jobs MODIFY updated_at TIMESTAMP(3) NULL DEFAULT CURRENT_TIMESTAMP(3)"
+)
+
+
+@pytest.fixture
+def partial_drift(db_conn):
+    """updated_at 을 **정밀도만 3** 인 부분 드리프트 상태로 두고, 끝나면 반드시 되돌린다.
+
+    second_precision 과 달리 정밀도 축이 이미 목표값이라 `_precision != 3` 안전망이
+    성립하지 않는다 — 승격이 던지면 조건이 거짓이라 복구가 통째로 건너뛰어진다. 그래서
+    teardown 은 조건 없이 목표 DDL 4 축을 다시 먹인다(세션 엔진 스키마 보존).
+    """
+    with db_conn.begin() as conn:
+        conn.execute(text(_TO_PARTIAL_DRIFT))
+    try:
+        yield db_conn
+    finally:
+        with db_conn.begin() as conn:
+            conn.execute(text(_TO_MS_PRECISION))
 
 
 def test_migration_file_exists():
@@ -107,6 +133,22 @@ def test_reapplying_the_migration_skips_the_alter(second_precision):
     assert after_first - before == 1
     assert after_second - after_first == 0
     assert _precision(second_precision) == 3
+
+
+def test_partially_drifted_column_is_repaired_instead_of_skipped(partial_drift):
+    """정밀도만 3 이고 NOT NULL·ON UPDATE 가 어긋난 컬럼 — 가드가 승격을 **재실행**해야 한다.
+
+    다른 테스트는 전부 초 정밀도에서 출발해 1 축 가드와 3 축 가드의 착지가 같다 — 실측으로
+    가드에서 is_nullable·extra 두 줄을 지워도 이 파일 전량이 초록이었다. 부분 드리프트는
+    1 축 가드가 정상으로 오인해 영구 스킵하는 유일한 형태이며, ALTER 델타로만 갈린다.
+    """
+    assert _precision(partial_drift) == 3  # 전제 확인 — 정밀도 축은 이미 목표값
+    before = _alter_count(partial_drift)
+
+    _migration_sql.apply(partial_drift, _MIGRATION)
+
+    assert _alter_count(partial_drift) - before == 1  # 1 축 가드면 0 — 여기서 RED
+    _migration_sql.assert_ocr_jobs_updated_at_contract(partial_drift)
 
 
 def test_migration_body_is_splittable_by_the_shared_runner_helper():

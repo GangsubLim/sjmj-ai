@@ -34,6 +34,8 @@ def test_token_differs_between_two_millisecond_updates_in_the_same_second(db_con
 
     _set_updated_at(db_conn, job_id, "2026-09-01 12:00:00.001")
     first = repo.get_job_token(job_id)
+    # updated_at 불변이면 토큰도 불변 — 벽시계 결합 회귀 차단
+    assert repo.get_job_token(job_id) == first
     _set_updated_at(db_conn, job_id, "2026-09-01 12:00:00.002")
     second = repo.get_job_token(job_id)
 
