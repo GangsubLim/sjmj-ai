@@ -214,7 +214,7 @@ class CurationRepository:
         반드시 튄다 — 새 컬럼이 필요 없어 마이그레이션 0이 유지된다.
 
         DATE_FORMAT 대신 UNIX_TIMESTAMP를 쓰는 이유는 문자열 왕복의 안정성이다 — 포맷
-        문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, 정수 초는 타임존·표기 흔들림이 없다.
+        문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, epoch 수치는 타임존·표기 흔들림이 없다.
         정밀도는 밀리초다 — migration_013이 updated_at을 TIMESTAMP(3)으로 올려 같은 초 안의
         두 번째 쓰기도 토큰이 갈린다(#95-1). 같은 밀리초에 겹치는 창은 남는다 — 해상도를 올려
         창을 좁히는 것이지 충돌을 없애는 것이 아니다. 표현식은 JOB_TOKEN_SQL 한 곳에 있다.

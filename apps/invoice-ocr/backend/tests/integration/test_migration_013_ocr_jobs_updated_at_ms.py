@@ -76,7 +76,9 @@ def test_upgrades_updated_at_to_millisecond_precision(second_precision):
 
     _migration_sql.apply(second_precision, _MIGRATION)
 
-    assert _precision(second_precision) == 3
+    # 정밀도 한 축만 보면 NOT NULL·ON UPDATE가 갈려도 초록으로 남는다 — 4축 전부는
+    # test_curation_schema.py와 공유하는 _migration_sql.assert_ocr_jobs_updated_at_contract가 본다.
+    _migration_sql.assert_ocr_jobs_updated_at_contract(second_precision)
 
 
 def _alter_count(engine) -> int:
