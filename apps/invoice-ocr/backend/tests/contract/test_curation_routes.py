@@ -1,5 +1,7 @@
 """curation 슬라이스 계약 테스트 — 검수 큐 목록."""
 
+import json
+
 import pytest
 from sqlalchemy import text
 
@@ -819,13 +821,18 @@ def test_reprocess_allows_a_done_job_that_was_never_confirmed(client, db_conn):
 
 
 def test_reprocess_preserves_result_json(client, db_conn):
-    """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10)."""
-    job_id = _seed_job(db_conn, result_json='{"rows": [{"row_index": 0}]}')
+    """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10).
+
+    부분 문자열 검사로는 초안이 다른 값으로 재작성돼도 'row_index'만 남으면 통과한다 —
+    payload 전체 동일성을 본다.
+    """
+    draft = '{"rows": [{"row_index": 0, "supply": 3000}], "supply_sum": 3000}'
+    job_id = _seed_job(db_conn, result_json=draft)
 
     res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
 
     assert res.status_code == 200
-    assert '"row_index"' in _job_row(db_conn, job_id)["result_json"]
+    assert json.loads(_job_row(db_conn, job_id)["result_json"]) == json.loads(draft)
 
 
 def test_reprocess_returns_404_for_unknown_job(client):
@@ -844,6 +851,23 @@ def test_reprocess_returns_409_when_job_is_already_queued(client, db_conn):
     assert res.status_code == 409
     assert res.json()["error"]["code"] == "CONFLICT"
     assert _job_row(db_conn, job_id)["status"] == "running"
+
+
+def test_reprocess_twice_in_a_row_is_rejected_on_the_second_call(client, db_conn):
+    """docstring이 말하던 '중복 요청 차단'을 실제 연속 호출로 태운다.
+
+    첫 호출이 done → pending을 만들고, 두 번째는 그 pending에 걸려야 한다. 상태 가드가
+    사라지면 두 번째도 200이 되어 워커가 같은 잡을 두 번 집는 경합이 열린다.
+    """
+    job_id = _seed_job(db_conn)
+
+    first = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    second = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "CONFLICT"
+    assert _job_row(db_conn, job_id)["status"] == "pending"
 
 
 def test_reprocess_requeues_a_failed_job(client, db_conn):
