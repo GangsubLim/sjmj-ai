@@ -76,6 +76,23 @@ def test_matching_preserves_order_and_never_crosses():
     assert indexes == sorted(indexes)
 
 
+def test_plan_does_not_depend_on_the_order_of_its_inputs():
+    """공급자가 어떤 순서로 실어도 계획이 같다 — plan_relink가 스스로 정렬한다.
+
+    팩토리(_olds·_news)가 언제나 row_index 오름차순만 만들어, 이 테스트 없이는
+    plan_relink의 두 sorted()를 지워도 전량 GREEN이다(#94). fetch_pairs의 ORDER BY가
+    빠지거나 result_json의 rows가 뒤섞여 오는 순간 승계가 다른 줄에 붙는다.
+    """
+    olds = _olds(3000, 5000, 7000)
+    news = _news(3000, 5000, 7000)
+    ordered = plan_relink(JOB, olds, news)
+    assert ordered.orphaned == (), "전제 — 정렬된 입력에서는 항등 매칭이다"
+
+    scrambled = plan_relink(JOB, [olds[2], olds[0], olds[1]], [news[2], news[0], news[1]])
+
+    assert scrambled == ordered
+
+
 # --- ② 중복 금액 그룹 게이트 (§4 ②) ---
 
 
@@ -186,19 +203,30 @@ def test_invariant_2_staging_coordinates_never_look_like_row_refs():
 
 
 def test_invariant_3_stage_one_covers_every_pair_of_the_job():
-    """1단계 대상이 그 잡의 쌍 전량이다 — 이것 하나만 깨져도 duplicate key가 난다(§5)."""
+    """1단계 대상이 그 잡의 쌍 전량이고, 한 쌍이 두 갈래에 동시에 들지 않는다(§5).
+
+    set 합집합으로 비교하면 같은 pair_id가 relinked와 orphaned 양쪽에 들어가도 흡수돼
+    통과한다 — 그 상태는 1단계에서 같은 행에 두 번 UPDATE가 나가는 계획이다.
+    """
     olds = _olds(3000, 5000, None, 5000)
     plan = plan_relink(JOB, olds, _news(5000, 3000))
+    assert plan.relinked, "전제 — 승계가 최소 1건 나와야 이중 진입이 관측 가능하다"
 
-    staged = {r.pair_id for r in plan.relinked} | {o.pair_id for o in plan.orphaned}
-    assert staged == {p.pair_id for p in olds}
+    staged = [r.pair_id for r in plan.relinked] + [o.pair_id for o in plan.orphaned]
+    assert len(staged) == len(set(staged)), "한 쌍이 승계와 미결에 동시에 들어가면 안 된다"
+    assert sorted(staged) == sorted(p.pair_id for p in olds)
 
 
 def test_invariant_4_final_coordinates_are_unique():
-    """매칭이 1:1이므로 최종 좌표는 전부 유일하다."""
-    plan = plan_relink(JOB, _olds(3000, 5000, 7000), _news(3000, 5000, 7000))
+    """매칭이 1:1이므로 최종 좌표는 전부 유일하다.
+
+    항등 입력(옛과 새가 같은 배치)에서는 좌표가 제자리에 남아 유일성이 공짜로 성립한다 —
+    새 줄이 앞에 끼어 전량이 한 칸씩 밀리는, 이 작업의 주 케이스에서 본다.
+    """
+    plan = plan_relink(JOB, _olds(3000, 5000, 7000), _news(9000, 3000, 5000, 7000))
 
     finals = [r.final_ref for r in plan.relinked]
+    assert finals == ["job-42/row-1", "job-42/row-2", "job-42/row-3"]
     assert len(finals) == len(set(finals))
 
 
