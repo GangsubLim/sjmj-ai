@@ -348,9 +348,21 @@ def test_force_replace_never_touches_add_or_remove():
 
 
 def test_force_replace_keeps_replace_sorted_and_deduped():
-    diff = BankDiff(add=(), replace=("job-9/row-0",), remove=(), unchanged=("job-1/row-0",))
+    """이미 replace인 ref를 다시 승격해도 항목이 겹쳐 들어가지 않는다.
 
-    assert force_replace(diff, {"job-1/row-0"}).replace == ("job-1/row-0", "job-9/row-0")
+    입력이 서로소면 dedup 갈래가 실행되지 않아, set 결합을 리스트 결합으로 바꿔도 통과한다.
+    """
+    diff = BankDiff(
+        add=(),
+        replace=("job-9/row-0", "job-1/row-0"),
+        remove=(),
+        unchanged=("job-1/row-0", "job-3/row-0"),
+    )
+
+    out = force_replace(diff, {"job-1/row-0", "job-3/row-0"})
+
+    assert out.replace == ("job-1/row-0", "job-3/row-0", "job-9/row-0")
+    assert out.unchanged == ()
 
 
 def test_refs_of_jobs_selects_by_invoice_prefix():
@@ -394,14 +406,20 @@ def test_unreviewed_job_makes_plan_remove_its_entire_bank_share():
 
 
 def test_require_settled_crops_passes_when_no_leftovers():
-    """잔여 마커가 전혀 없으면 조용히 통과한다 — 반환값 None이 그 통과의 명시적 증거다.
+    """잔여 마커가 전혀 없으면 조용히 통과한다 — 그리고 잡별 두 접미사를 모두 조회한다.
 
-    가드가 무력화돼 dir_exists 결과와 무관하게 항상 raise하도록 바뀌면 이 assert 이전에
-    예외로 즉시 RED.
+    반환값 None만 보면 가드가 인자를 통째로 무시하고 언제나 통과하도록 바뀌어도 GREEN이다
+    (-> None 함수라 반환값 단언은 실패할 수 없다). 어떤 이름을 물었는지까지 못 박아야
+    "지정 잡 전부를, .tmp와 .old 양쪽으로" 검사한다는 계약이 선다.
     """
-    result = require_settled_crops(lambda name: False, [42, 43])
+    probed = []
 
-    assert result is None
+    def dir_exists(name):
+        probed.append(name)
+        return False
+
+    assert require_settled_crops(dir_exists, [42, 43]) is None
+    assert sorted(probed) == ["job-42.old", "job-42.tmp", "job-43.old", "job-43.tmp"]
 
 
 def test_require_settled_crops_rejects_a_job_with_a_leftover_tmp():
@@ -1275,6 +1293,37 @@ def test_main_apply_rejects_backend_env_option():
         main(["apply", "--plan", "plan.jsonl", "--backend-env", "x.env"])
 
 
+def test_main_plan_registers_reembed_job_as_a_repeatable_int_option(monkeypatch):
+    """--reembed-job의 파서 등록·type=int·nargs='+'·기본값을 고정한다.
+
+    cmd_plan을 SimpleNamespace로 직접 부르는 배선 테스트들은 argparse를 통째로 우회해,
+    옵션이 파서에서 사라지거나 type=int가 빠져도(문자열 '1'이 흘러 refs_of_jobs의 접두
+    비교가 조용히 어긋난다) 전량 GREEN이다.
+    """
+    captured = {}
+    monkeypatch.setattr("tools.bank_update.cmd_plan", lambda args: captured.update(vars(args)))
+
+    main(["plan", "--reembed-job", "7", "9"])
+
+    assert captured["reembed_job"] == [7, 9]
+
+
+def test_main_plan_defaults_reembed_job_to_an_empty_list(monkeypatch):
+    """플래그가 없으면 빈 목록이다 — cmd_plan의 `if args.reembed_job` 갈래가 닫힌다."""
+    captured = {}
+    monkeypatch.setattr("tools.bank_update.cmd_plan", lambda args: captured.update(vars(args)))
+
+    main(["plan"])
+
+    assert captured["reembed_job"] == []
+
+
+def test_main_plan_rejects_a_non_integer_reembed_job():
+    """잡 id가 아닌 값은 파서에서 끊는다 — 문자열이 흘러들면 승격이 조용히 0건이 된다."""
+    with pytest.raises(SystemExit):
+        main(["plan", "--reembed-job", "abc"])
+
+
 # --- CLI 오케스트레이션 (M4: fetch_* monkeypatch + 합성 뱅크 + Fake 임베딩) ---
 
 
@@ -1309,11 +1358,14 @@ def test_cmd_plan_writes_plan_jsonl_and_only_prunes_missing_crops_for_add_or_rep
     assert records == [{"action": "add", "crop_ref": "job-2/row-0", "label": "공임"}]
 
 
-def _reembed_workspace(tmp_path, monkeypatch, *, reviewed):
+def _reembed_workspace(tmp_path, monkeypatch, *, reviewed, with_crop=True):
     """--reembed-job 배선 테스트 공용 픽스처 — unchanged 쌍(job-1/row-0) 1건 + 크롭 PNG.
 
     bank의 job-1/row-0 라벨과 pairs의 canonical_label을 동일하게 둬 diff_bank가 unchanged로
     판정하게 만든다(force_replace가 승격할 대상이 있어야 배선을 검증할 수 있다).
+
+    with_crop=False면 크롭 PNG를 만들지 않는다 — 승격이 크롭 존재 검사보다 앞서는지를
+    가르는 입력이다(순서가 뒤집히면 승격분이 검사를 건너뛴다).
     """
     models_dir = tmp_path / "models"
     models_dir.mkdir()
@@ -1321,7 +1373,8 @@ def _reembed_workspace(tmp_path, monkeypatch, *, reviewed):
     crops_root = data_dir / "ocr_crops"
     crops_root.mkdir(parents=True)
     _write_bank(models_dir / "bank.npz", ["job-1/row-0"], ["안가방"])
-    _touch_crop(crops_root, "job-1/row-0")
+    if with_crop:
+        _touch_crop(crops_root, "job-1/row-0")
 
     pairs = [_pair(job_id=1, crop_ref="job-1/row-0", canonical_label="안가방")]
     monkeypatch.setattr("tools.bank_update.fetch_pairs", lambda backend_env: pairs)
@@ -1346,6 +1399,24 @@ def test_cmd_plan_reembed_job_promotes_unchanged_to_replace(tmp_path, monkeypatc
         json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
     ]
     assert records == [{"action": "replace", "crop_ref": "job-1/row-0", "label": "안가방"}]
+
+
+def test_cmd_plan_holds_a_promoted_ref_whose_crop_png_is_missing(tmp_path, monkeypatch, capsys):
+    """승격이 먼저이고 크롭 존재 검사가 나중이다 — 승격분도 같은 검사를 받는다(cmd_plan §11).
+
+    순서가 뒤집히면 승격된 ref가 검사를 건너뛰어, 크롭 PNG가 없는 항목이 replace로
+    plan.jsonl에 실린다 — apply가 임베딩할 그림이 없는 항목을 뱅크에 쓰려 든다.
+    """
+    _reembed_workspace(tmp_path, monkeypatch, reviewed={1}, with_crop=False)
+
+    out_dir = tmp_path / "out"
+    cmd_plan(SimpleNamespace(backend_env="dummy.env", out=out_dir, reembed_job=[1]))
+
+    records = [
+        json.loads(ln) for ln in (out_dir / "plan.jsonl").read_text().splitlines() if ln.strip()
+    ]
+    assert records == [], "크롭이 없는 승격분은 보류된다"
+    assert "missing_crop" in capsys.readouterr().out
 
 
 def test_cmd_plan_reembed_job_rejects_a_job_with_unsettled_crops(tmp_path, monkeypatch):
