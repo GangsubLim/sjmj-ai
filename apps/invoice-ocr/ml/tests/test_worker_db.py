@@ -2,7 +2,9 @@
 
 from unittest.mock import MagicMock
 
+import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy.exc import IntegrityError
 
 from handwriting.relink import RELINK_FAILED, NewRow, OldPair, plan_relink
 from worker.db import WorkerQueue
@@ -25,14 +27,15 @@ _SCHEMA = (
     # draft_supply는 migration_012가 만든 ② 앵커 컬럼 — fetch_pairs가 이 컬럼만 읽는다.
     "CREATE TABLE training_pairs (id INTEGER PRIMARY KEY, job_id INTEGER, "
     "crop_ref TEXT UNIQUE, row_index INTEGER, supply INTEGER, draft_supply INTEGER, "
-    "status TEXT, exclusion_reason TEXT, reviewed_at TEXT)",
+    "draft_label TEXT, status TEXT, exclusion_reason TEXT, reviewed_at TEXT)",
 )
 
 
 def _live_engine(pairs):
     """ocr_jobs 1건 + 주어진 training_pairs로 채운 인메모리 엔진을 만든다.
 
-    pairs 항목의 "dsup"(draft_supply)는 선택이다 — 생략하면 NULL(앵커 없음)이다.
+    pairs 항목의 "dsup"(draft_supply)·"dlab"(draft_label)는 선택이다 — 생략하면
+    NULL(앵커·초안 라벨 없음)이다.
     """
     engine = create_engine("sqlite://", future=True)
     with engine.begin() as conn:
@@ -48,10 +51,10 @@ def _live_engine(pairs):
             conn.execute(
                 text(
                     "INSERT INTO training_pairs (id, job_id, crop_ref, row_index, supply, "
-                    "draft_supply, status, exclusion_reason, reviewed_at) VALUES "
-                    "(:id, 5, :ref, :ri, :sup, :dsup, :st, :reason, :rev)"
+                    "draft_supply, draft_label, status, exclusion_reason, reviewed_at) VALUES "
+                    "(:id, 5, :ref, :ri, :sup, :dsup, :dlab, :st, :reason, :rev)"
                 ),
-                {"dsup": None, **p},
+                {"dsup": None, "dlab": None, **p},
             )
     return engine
 
@@ -63,6 +66,14 @@ def _pair(engine, pair_id):
             {"id": pair_id},
         ).fetchone()
     return {"status": row[0], "exclusion_reason": row[1], "crop_ref": row[2]}
+
+
+def _draft_labels(engine):
+    with engine.begin() as conn:
+        rows = conn.execute(
+            text("SELECT id, draft_label FROM training_pairs ORDER BY id")
+        ).fetchall()
+    return {r[0]: r[1] for r in rows}
 
 
 # ---------------------------------------------------------------------------
@@ -91,14 +102,56 @@ def test_commit_job_updates_draft_and_marks_done():
     assert params["id"] == 5
 
 
-def test_commit_job_uses_a_single_transaction():
-    """초안 갱신과 승계가 갈라지면 그 사이가 정식 중간 단계로 승격된다(ADR 0010)."""
-    engine = MagicMock()
-    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+def test_commit_job_rolls_everything_back_when_one_statement_fails():
+    """초안 갱신과 승계가 갈라지면 그 사이가 정식 중간 단계로 승격된다(ADR 0010).
 
-    WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
+    engine.begin 호출 수를 세는 것으로는 원자성이 서지 않는다 — 한 번 열고 그 밖에서
+    쓰는 코드도 call_count == 1이다. 문장 하나를 실패시켜 **아무것도 남지 않는지**를
+    실 엔진에서 본다. 잡 5는 이미 다른 쌍이 job-5/row-0을 점유하고 있어 ②단계 최종
+    좌표 기입이 crop_ref UNIQUE에 걸린다(운영 스키마 migration_008 그대로).
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-9",
+                "ri": 9,
+                "sup": 3000,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/row-0",  # 계획 밖의 쌍이 최종 좌표를 선점
+                "ri": 0,
+                "sup": 9999,
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+        ]
+    )
+    plan = plan_relink(5, [OldPair(1, 9, 3000)], [NewRow(0, 3000)])
 
-    assert engine.begin.call_count == 1
+    with pytest.raises(IntegrityError):
+        WorkerQueue(engine).commit_job(5, {"rows": [], "warp_ok": True}, plan)
+
+    with engine.begin() as conn:
+        job = conn.execute(text("SELECT status, result_json FROM ocr_jobs WHERE id=5")).fetchone()
+    assert job == ("running", "{}"), "초안 갱신도 함께 되돌아간다"
+    assert _pair(engine, 1)["crop_ref"] == "job-5/row-9", "1단계 임시 좌표도 남지 않는다"
+
+
+def _table_of(sql):
+    """문장이 건드리는 테이블을 판별한다 — 아는 두 테이블 중 정확히 하나여야 한다.
+
+    else로 떨어뜨리면 제3의 테이블(ocr_corrections 등)이 트랜잭션에 끼어들어도
+    training_pairs로 분류돼 락 순서 단언이 그대로 통과한다(#94).
+    """
+    hit = [t for t in ("ocr_jobs", "training_pairs") if t in sql]
+    assert len(hit) == 1, f"알 수 없는 테이블을 건드린다: {sql}"
+    return hit[0]
 
 
 def test_commit_job_locks_parent_before_children():
@@ -109,7 +162,7 @@ def test_commit_job_locks_parent_before_children():
 
     WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
 
-    tables = ["ocr_jobs" if "ocr_jobs" in sql else "training_pairs" for sql, _ in _executed(conn)]
+    tables = [_table_of(sql) for sql, _ in _executed(conn)]
     assert tables[0] == "ocr_jobs"
     assert "ocr_jobs" not in tables[1:]
 
@@ -337,14 +390,42 @@ def test_commit_job_keeps_gate_when_every_pair_is_relinked():
 
 
 def test_commit_job_does_not_touch_draft_label():
-    """correction_json.lines[].draft_label과의 짝을 깨지 않는다(§8)."""
-    engine = MagicMock()
-    conn = engine.begin.return_value.__enter__.return_value
-    plan = plan_relink(5, [OldPair(1, 0, 3000)], [NewRow(0, 3000)])
+    """correction_json.lines[].draft_label과의 짝을 깨지 않는다(§8).
+
+    SQL 문자열에 'draft_label'이 없는지 보는 것은 반증이 어렵다 — 컬럼명을 감싸거나
+    다른 문장에서 같은 값을 바꿔도 통과한다. 실 엔진에 문장을 실어 **행의 값이 그대로인지**
+    본다. 계획은 승계와 미결을 함께 내야 네 문장이 전부 실행된다.
+    """
+    engine = _live_engine(
+        [
+            {
+                "id": 1,
+                "ref": "job-5/row-0",
+                "ri": 0,
+                "sup": 3000,
+                "dlab": "중고타이어",
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+            {
+                "id": 2,
+                "ref": "job-5/row-1",
+                "ri": 1,
+                "sup": 5000,
+                "dlab": "엔진오일",
+                "st": "included",
+                "reason": None,
+                "rev": None,
+            },
+        ]
+    )
+    plan = plan_relink(5, [OldPair(1, 0, 3000), OldPair(2, 1, 5000)], [NewRow(0, 3000)])
+    assert plan.relinked and plan.orphaned, "네 문장 전부를 태우려면 승계·미결이 둘 다 필요하다"
 
     WorkerQueue(engine).commit_job(5, {"rows": []}, plan)
 
-    assert all("draft_label" not in sql for sql, _ in _executed(conn))
+    assert _draft_labels(engine) == {1: "중고타이어", 2: "엔진오일"}
 
 
 def test_commit_job_does_not_touch_draft_supply():
