@@ -7,6 +7,8 @@
 import pytest
 from sqlalchemy import text
 
+from tests.fixtures.curation_helpers import job_token as _token
+
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
@@ -24,11 +26,6 @@ def _seed_pair(engine, *, status="included", reason=None):
         )
         pair_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
     return job_id, pair_id
-
-
-def _token(client, job_id):
-    """잡 상세에서 세대 토큰을 읽어 요청 body 조각으로 만든다(spec §12 — PATCH 필수 필드)."""
-    return {"job_token": client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]}
 
 
 def _state(engine, pair_id):

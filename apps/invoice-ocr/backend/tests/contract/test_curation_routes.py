@@ -4,6 +4,7 @@ import pytest
 from sqlalchemy import text
 
 from app.routers.curation import _LIMIT_MAX, _PAGE_MAX
+from tests.fixtures.curation_helpers import job_token as _token
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
@@ -33,11 +34,6 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical
                 {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i, "c": canonical},
             )
     return job_id
-
-
-def _token(client, job_id):
-    """잡 상세에서 세대 토큰을 읽어 요청 body 조각으로 만든다(spec §12 — 필수 필드)."""
-    return {"job_token": client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]}
 
 
 def test_list_jobs_returns_queue_with_counts(client, db_conn):
