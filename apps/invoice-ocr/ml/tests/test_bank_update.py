@@ -1277,6 +1277,18 @@ def test_require_env_returns_value_when_set(monkeypatch):
     assert require_env("SJMJ_ML_MODELS_DIR") == "/tmp/models"
 
 
+def _sentinel(name):
+    """서브커맨드 본체를 막는 감시자 — 파서가 거부해야 할 인자가 통과하면 여기서 드러난다."""
+
+    def _blocked(args):
+        raise AssertionError(f"{name}이 실행되면 안 된다(파서가 거부해야 한다): {vars(args)}")
+
+    return _blocked
+
+
+ARGPARSE_USAGE_EXIT = 2  # argparse가 사용법 위반에 쓰는 종료코드
+
+
 def test_main_requires_a_subcommand():
     with pytest.raises(SystemExit):
         main([])
@@ -1318,10 +1330,12 @@ def test_main_plan_defaults_reembed_job_to_an_empty_list(monkeypatch):
     assert captured["reembed_job"] == []
 
 
-def test_main_plan_rejects_a_non_integer_reembed_job():
+def test_main_plan_rejects_a_non_integer_reembed_job(monkeypatch):
     """잡 id가 아닌 값은 파서에서 끊는다 — 문자열이 흘러들면 승격이 조용히 0건이 된다."""
-    with pytest.raises(SystemExit):
+    monkeypatch.setattr("tools.bank_update.cmd_plan", _sentinel("cmd_plan"))
+    with pytest.raises(SystemExit) as exc:
         main(["plan", "--reembed-job", "abc"])
+    assert exc.value.code == ARGPARSE_USAGE_EXIT
 
 
 # --- CLI 오케스트레이션 (M4: fetch_* monkeypatch + 합성 뱅크 + Fake 임베딩) ---
@@ -1879,18 +1893,6 @@ def test_main_score_defaults_to_reviewed_scope(monkeypatch):
     monkeypatch.setattr("tools.bank_update.cmd_score", lambda args: captured.update(vars(args)))
     main(["score", "--before", "b.npz", "--after", "a.npz"])
     assert captured["scope"] == "reviewed"
-
-
-def _sentinel(name):
-    """서브커맨드 본체를 막는 감시자 — 파서가 거부해야 할 인자가 통과하면 여기서 드러난다."""
-
-    def _blocked(args):
-        raise AssertionError(f"{name}이 실행되면 안 된다(파서가 거부해야 한다): {vars(args)}")
-
-    return _blocked
-
-
-ARGPARSE_USAGE_EXIT = 2  # argparse가 사용법 위반에 쓰는 종료코드
 
 
 def test_main_score_rejects_an_unknown_scope(monkeypatch):
