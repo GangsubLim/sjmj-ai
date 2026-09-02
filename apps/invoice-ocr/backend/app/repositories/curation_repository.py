@@ -207,7 +207,9 @@ class CurationRepository:
 
         DATE_FORMAT 대신 UNIX_TIMESTAMP를 쓰는 이유는 문자열 왕복의 안정성이다 — 포맷
         문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, 정수 초는 타임존·표기 흔들림이 없다.
-        정밀도가 초 단위라는 한계는 spec §12가 수용한 것이다(필요해지면 TIMESTAMP(3)).
+        정밀도는 밀리초다 — migration_013이 updated_at을 TIMESTAMP(3)으로 올려 같은 초 안의
+        두 번째 쓰기도 토큰이 갈린다(#95-1). 같은 밀리초에 겹치는 창은 남는다 — 해상도를 올려
+        창을 좁히는 것이지 충돌을 없애는 것이 아니다. 표현식은 JOB_TOKEN_SQL 한 곳에 있다.
 
         FOR UPDATE로 부모(ocr_jobs)를 먼저 잡으므로 뒤따르는 release_gate·update_pair가
         락 순서 불변식(잡 → 쌍)을 그대로 지킨다.

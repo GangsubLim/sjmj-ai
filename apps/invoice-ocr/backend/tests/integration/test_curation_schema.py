@@ -137,3 +137,32 @@ def test_training_pairs_draft_supply_column_type_matches_production_ddl(db_conn)
     assert col is not None
     assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("int", "YES")
     assert "unsigned" not in col["COLUMN_TYPE"].lower()
+
+
+def test_ocr_jobs_updated_at_column_contract_matches_production_ddl(db_conn):
+    """하니스의 updated_at 정의가 운영 DDL(migration_013 — 같은 PR의 Task 3)과 같아야 한다.
+
+    행동 테스트(test_curation_job_token)가 통과해도 하니스만 밀리초이고 운영이 초로 남으면
+    운영에서만 같은 초 창이 살아남는다. 정밀도 한 축만 단언하면 형제 테스트가 실측으로 남긴
+    교훈(2026-08-05: 컬럼을 VARCHAR(32)로 바꿔도 스위트 559건이 전부 통과)을 반복한다 —
+    타입·정밀도·nullable·ON UPDATE를 함께 못 박아 운영 DDL과의 정합을 고정한다.
+    """
+    with db_conn.begin() as conn:
+        col = (
+            conn.execute(
+                text(
+                    "SELECT DATA_TYPE, DATETIME_PRECISION, IS_NULLABLE, EXTRA "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = 'ocr_jobs' "
+                    "AND column_name = 'updated_at'"
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert col is not None
+    assert (col["DATA_TYPE"], col["DATETIME_PRECISION"]) == ("timestamp", 3)
+    assert col["IS_NULLABLE"] == "NO"
+    # EXTRA 표기는 버전마다 접두(DEFAULT_GENERATED)와 (3) 표기가 흔들려 부분 문자열만 본다
+    # (로컬 9.6.0 실측: 'DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)').
+    assert "on update" in col["EXTRA"].lower()

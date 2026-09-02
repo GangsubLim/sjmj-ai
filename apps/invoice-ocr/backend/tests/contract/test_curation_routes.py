@@ -946,7 +946,8 @@ def test_job_detail_exposes_crop_available_for_orphaned_pairs(client, db_conn):
 def _push_token_forward(engine, job_id):
     """updated_at을 1초 **앞으로** 밀어 세대 토큰을 결정론적으로 벌린다(spec §12).
 
-    updated_at은 초 단위라 같은 초 안에서 상태를 전이하면 토큰이 전이 전과 같아진다.
+    토큰 해상도는 밀리초(migration_013)라 대개 전이만으로 값이 갈리지만, 같은 밀리초에 겹치면
+    여전히 같아진다 — 1초를 밀어 결정론을 보장한다.
     UPDATE 문이 updated_at을 **명시 지정**하면 ON UPDATE CURRENT_TIMESTAMP가 발동하지
     않으므로 여기서 쓴 값이 그대로 남는다 — 그래서 이 호출은 그 테스트의 **마지막 쓰기**
     여야 한다(앞에 두면 뒤따르는 쓰기가 NOW로 되돌려 무효가 된다).
@@ -1056,9 +1057,10 @@ def test_the_refreshed_token_lets_the_editor_continue_without_reloading(client, 
 
     게이트가 걸린 잡(reviewed=1)으로 시작해야 첫 PATCH의 release_gate가 값을 실제로 바꿔
     updated_at이 튄다(같은 값 UPDATE는 ON UPDATE CURRENT_TIMESTAMP를 발동시키지 않는다).
-    시드의 updated_at을 1초 **뒤로** 밀어 그 튐이 초 경계를 반드시 넘게 만든다 — 여기서는
-    앞선 stale 테스트와 의도가 반대라 방향도 반대다. 같은 초에 머물면 쓰기 **이전**
-    토큰을 돌려주는 구현도 통과해(false-green) 연속 편집 회귀를 못 잡는다.
+    시드의 updated_at을 1초 **뒤로** 밀어 그 튐이 반드시 값을 갈라놓게 만든다 — 여기서는
+    앞선 stale 테스트와 의도가 반대라 방향도 반대다. 해상도가 밀리초(migration_013)라도
+    같은 밀리초에 머물면 쓰기 **이전** 토큰을 돌려주는 구현이 통과해(false-green)
+    연속 편집 회귀를 못 잡는다.
     """
     job_id = _seed_job_with_pairs(db_conn, reviewed=1, pairs=1, unreviewed=1)
     pair_id = _first_pair_id(db_conn, job_id)
