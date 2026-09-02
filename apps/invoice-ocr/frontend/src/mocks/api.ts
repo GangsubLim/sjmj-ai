@@ -567,7 +567,7 @@ export const mockCurationAPI = {
     return { data: result as CurationPairPatchResult };
   },
 
-  reviewJob: async (jobId: number, jobToken?: string) => {
+  reviewJob: async (jobId: number, jobToken: string) => {
     await delay();
     if (!curationJobs.some((j) => j.job_id === jobId)) {
       throw new Error("잡을 찾을 수 없습니다");
