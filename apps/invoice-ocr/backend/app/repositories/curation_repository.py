@@ -157,6 +157,14 @@ class CurationRepository:
     def find_job_for_update(self, job_id: int) -> dict | None:
         """상태 전이 대상 잡의 현재 상태를 행잠금으로 읽는다(재처리 요청·검수 완료 공용).
 
+        **락 유지 전제.** FOR UPDATE 락은 호출자가 db.transaction()을 연 경우에만 유지된다.
+        트랜잭션 밖 standalone 호출은 connection()이 자체 트랜잭션을 열고 블록이 끝나는
+        즉시 커밋하므로 락이 그 자리에서 풀린다 — 확인과 전이 사이가 비어 아래 경합 배제가
+        성립하지 않는다. 이 전제를 지키는 장치는 두 축이다 — 토큰 조회의 **호출 배치**(트랜잭션 경계 안)는
+        service 단위 테스트가, 실 커넥션 합류와 부분 반영 롤백은
+        tests/integration/test_curation_service_transactions.py 가 고정한다. FOR UPDATE
+        락 수명 자체를 2 커넥션으로 재는 테스트는 없다(#84 범위 밖).
+
         FOR UPDATE로 잡히므로, 확인과 전이 사이에 워커의 claim_next_pending이 끼어들어
         같은 잡을 두 번 집는 경합이 성립하지 않는다. 부모(ocr_jobs)를 먼저 잡는 자리라
         락 순서 불변식(잡 → 쌍)의 시작점이기도 하다 — Task 7의 mark_reviewed가 이 호출을
