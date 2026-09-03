@@ -29,6 +29,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
   return {
     job_id: 42,
     invoice_id: null,
+    status: "done",
     curation_reviewed: false,
     curation_reviewed_at: null,
     warp_ok: false,

@@ -53,9 +53,16 @@ export interface CurationPairPatchResult extends CurationPairBase {
   job_token: string;
 }
 
+// 잡 처리 상태 — 백엔드 ocr_jobs.status 원값(api-spec CurationJobDetail.status).
+// done이 아니면 서버가 쌍 PATCH·검수완료를 409로 거부한다.
+export type CurationJobStatus = "pending" | "running" | "done" | "failed";
+
 export interface CurationJobDetail {
   job_id: number;
   invoice_id: number | null;
+  // done이 아니면 화면이 경고 배너를 띄운다(편집 차단은 하지 않는다 — 저장 시도는
+  // 어차피 서버가 409로 막는다). optional로 두면 배너 분기가 조용히 사라진다.
+  status: CurationJobStatus;
   curation_reviewed: boolean;
   curation_reviewed_at: string | null;
   warp_ok: boolean;

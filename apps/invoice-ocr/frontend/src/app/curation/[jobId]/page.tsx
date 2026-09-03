@@ -10,7 +10,11 @@ import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { curationJobState, CURATION_STATE_LABELS } from "@/utils/curation";
+import {
+  curationJobState,
+  curationJobBlockedNotice,
+  CURATION_STATE_LABELS,
+} from "@/utils/curation";
 
 export default function CurationJobPage() {
   const { jobId } = useParams();
@@ -72,6 +76,8 @@ export default function CurationJobPage() {
     );
   }
 
+  const blocked = curationJobBlockedNotice(job.status);
+
   return (
     <PageContainer className="py-4">
       {nav}
@@ -109,7 +115,15 @@ export default function CurationJobPage() {
           삽입하면 쌍 수정 직후 뜨는 이 배너가 SR에 안 읽힌다. 컨테이너는 상시
           마운트하고 내용만 토글한다. */}
       <div aria-live="polite">
-        {curationJobState(job) === "needs_recheck" && (
+        {blocked && (
+          <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+            <p className="font-bold">{blocked.title}</p>
+            <p>{blocked.body}</p>
+          </div>
+        )}
+        {/* 상태 배너가 뜨는 동안은 재검수 배너를 억제한다 — 재검수 배너는 "검수 완료를
+            누르라"고 지시하지만 비-done 잡의 그 호출은 mark_reviewed가 409로 거부한다. */}
+        {!blocked && curationJobState(job) === "needs_recheck" && (
           <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
             <p className="font-bold">{CURATION_STATE_LABELS.needs_recheck}</p>
             <p>

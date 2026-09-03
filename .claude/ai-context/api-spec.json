@@ -401,7 +401,7 @@
       {
         "method": "GET",
         "path": "/api/curation/jobs/{job_id}",
-        "summary": "잡 상세(행별 top5; 승계 실패 미결 쌍은 crop_available=false로 행과 끊기고 목록 뒤로 정렬)",
+        "summary": "잡 상세(status(pending/running/done/failed) 포함 — done이 아니면 쓰기가 409라 프론트가 경고 배너 표시; 행별 top5; 승계 실패 미결 쌍은 crop_available=false로 행과 끊기고 목록 뒤로 정렬)",
         "auth": "public",
         "req": null,
         "res": "CurationJobDetail",
@@ -411,7 +411,7 @@
       {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
-        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 시 409 CONFLICT. 응답에 갱신된 job_token 포함",
+        "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 또는 done 아님이면 409 CONFLICT. 응답에 갱신된 job_token 포함",
         "auth": "public",
         "req": "CurationPairPatch",
         "res": "CurationPair",
@@ -3848,6 +3848,11 @@
             "type": "integer",
             "nullable": true
           },
+          "status": {
+            "type": "string",
+            "enum": ["pending", "running", "done", "failed"],
+            "description": "잡 처리 상태(ocr_jobs.status 원값). done이 아니면 재처리 대기/진행 중이거나 실패한 잡이라 PATCH /pairs/{id}·POST /jobs/{job_id}/review가 409로 거부된다 — 프론트는 이 값으로 화면 상단에 경고 배너를 띄운다(편집 차단은 하지 않는다, #86)."
+          },
           "curation_reviewed": {
             "type": "boolean"
           },
@@ -3862,7 +3867,7 @@
           },
           "job_token": {
             "type": "string",
-            "description": "잡 세대 토큰(ocr_jobs.updated_at 초 단위). PATCH /pairs/{id}와 POST /jobs/{job_id}/review에 실어 보내야 한다."
+            "description": "잡 세대 토큰(ocr_jobs.updated_at 밀리초). PATCH /pairs/{id}와 POST /jobs/{job_id}/review에 실어 보내야 한다."
           },
           "created_at": {
             "type": "string",

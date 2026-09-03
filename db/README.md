@@ -22,6 +22,7 @@ migration_009_training_pairs_exclusion_reason.sql  ← 배제 사유 축(ADR 000
 migration_010_sync_item_vocabulary.sql  ← 정식 라벨 → 자동완성 사전 일괄 등록(ADR 0008, Issue #40)
 migration_011_curation_reviewed_at.sql  ← 잡 첫 검수 시각(게이트 해제 후 재검수 판별, ADR 0004, Issue #52)
 migration_012_training_pairs_draft_supply.sql  ← 확정 시점 초안 금액 스냅샷(재처리 ② 앵커 고정, Issue #106); 백필은 JSON_TABLE + 정합 가드
+migration_013_ocr_jobs_updated_at_ms.sql  ← 세대 토큰 밀리초 해상도(ocr_jobs.updated_at TIMESTAMP(3), Issue #95·#84); 멱등 가드는 datetime_precision·is_nullable·extra(on update) 3축
 ```
 
 ## 일회성 데이터 마이그레이션 (빌드 순서 아님)

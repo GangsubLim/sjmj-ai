@@ -71,3 +71,34 @@ def seed_job(engine, *, reviewed: int) -> int:
             {"r": reviewed},
         )
         return conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+
+def assert_ocr_jobs_updated_at_contract(engine) -> None:
+    """ocr_jobs.updated_at이 운영 DDL(migration_013) 4축과 같은지 단언한다.
+
+    data_type · datetime_precision · is_nullable · extra(on-update 표기) 4축을 함께
+    본다. test_curation_schema.py(하니스가 만든 컬럼)와 test_migration_013…(마이그레이션이
+    만든 컬럼)가 이 헬퍼를 공유해 항상 같은 4축을 본다 — 정밀도 한 축만 보면 NOT NULL이나
+    ON UPDATE가 갈려도 스위트 전량이 초록으로 남는다. 그 드리프트는 migration_013 자신의
+    3축 가드(멱등 ALTER-skip)를 영구 미충족으로 만들어 배포마다 테이블 재작성 ALTER가
+    다시 도는 형태로 나타난다.
+    """
+    with engine.begin() as conn:
+        col = (
+            conn.execute(
+                text(
+                    "SELECT DATA_TYPE, DATETIME_PRECISION, IS_NULLABLE, EXTRA "
+                    "FROM information_schema.columns "
+                    "WHERE table_schema = DATABASE() AND table_name = 'ocr_jobs' "
+                    "AND column_name = 'updated_at'"
+                )
+            )
+            .mappings()
+            .first()
+        )
+    assert col is not None
+    assert (col["DATA_TYPE"], col["DATETIME_PRECISION"]) == ("timestamp", 3)
+    assert col["IS_NULLABLE"] == "NO"
+    # EXTRA 표기는 버전마다 접두(DEFAULT_GENERATED)와 (3) 표기가 흔들려 부분 문자열만 본다
+    # (로컬 9.6.0 실측: 'DEFAULT_GENERATED on update CURRENT_TIMESTAMP(3)').
+    assert "on update" in col["EXTRA"].lower()
