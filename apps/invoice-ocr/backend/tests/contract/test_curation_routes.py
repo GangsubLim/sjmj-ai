@@ -8,18 +8,24 @@ from app.routers.curation import _LIMIT_MAX, _PAGE_MAX
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목"):
+def _seed_job_with_pairs(
+    engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목", status="done"
+):
     """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환.
 
     canonical을 넘기면 final_label('품목')과 정식 라벨을 벌릴 수 있다 — 두 값이 같으면
     "정식 라벨을 등록한다"와 "final_label을 등록한다"를 단언으로 구분할 수 없다.
+
+    status를 넘기면 재처리 큐(pending/running)·실패(failed) 잡을 만들 수 있다 — 잡 상세가
+    이 값을 그대로 실어야 화면이 열리는 시점에 경고 배너를 띄운다(#86).
     """
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) VALUES ('done', '/x.jpg', :r)"
+                "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) "
+                "VALUES (:s, '/x.jpg', :r)"
             ),
-            {"r": reviewed},
+            {"r": reviewed, "s": status},
         )
         job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         for i in range(pairs):
@@ -179,6 +185,22 @@ def test_job_detail_pair_uncertain_reflects_item_uncertain_flag(client, db_conn)
     assert pairs[0]["uncertain"] is True
     # 플래그가 없는 과거 잡 행 → uncertain False(하위호환)
     assert pairs[1]["uncertain"] is False
+
+
+def test_job_detail_includes_job_status(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "done"
+
+
+def test_job_detail_status_exposes_reprocess_queue(client, db_conn):
+    # 재처리 큐에 든 잡. 프론트가 이 값 하나로 경고 배너를 띄우므로 존재 단언이 아니라
+    # 값 자체를 고정한다 — is not None류 무기력 단언이면 'done' 고정 회귀도 통과한다.
+    job_id = _seed_job_with_pairs(db_conn, status="pending")
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "pending"
 
 
 def test_job_detail_404_when_missing(client, db_conn):

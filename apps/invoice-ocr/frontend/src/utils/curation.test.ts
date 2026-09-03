@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  curationJobBlockedNotice,
   curationJobState,
   isLabelCorrected,
   isLabelRenormalized,
@@ -64,5 +65,30 @@ describe("curationJobState 3-state 판별", () => {
         curation_reviewed_at: null,
       }),
     ).toBe("reviewed");
+  });
+});
+
+describe("curationJobBlockedNotice 상태별 경고 문구", () => {
+  it("done 잡에는 문구가 없다", () => {
+    expect(curationJobBlockedNotice("done")).toBeNull();
+  });
+
+  it("pending·running은 재처리 대기·진행 문구를 공유한다", () => {
+    // 두 상태 모두 "곧 끝난다"가 사실이라 같은 안내로 묶는다.
+    expect(curationJobBlockedNotice("pending")).toEqual(
+      curationJobBlockedNotice("running"),
+    );
+    expect(curationJobBlockedNotice("pending")?.title).toBe(
+      "⏳ 재처리 대기·진행 중",
+    );
+  });
+
+  it("failed는 재처리 요청 복구 문구를 쓴다(대기·진행으로 오인시키지 않는다)", () => {
+    // 실패 잡에 "처리가 끝난 뒤"는 사실과 다르다(영영 끝나지 않는다) — 백엔드
+    // mark_reviewed의 메시지 분기(#93)와 같은 이유로 문구를 가른다.
+    const notice = curationJobBlockedNotice("failed");
+    expect(notice?.title).toBe("⚠ 처리 실패");
+    expect(notice?.body).toContain("재처리를 요청해 다시 시도하세요");
+    expect(notice?.body).not.toContain("처리가 끝난 뒤");
   });
 });

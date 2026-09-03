@@ -21,6 +21,7 @@ function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
   return {
     job_id: 128,
     invoice_id: 341,
+    status: "done",
     curation_reviewed: false,
     curation_reviewed_at: null,
     warp_ok: false,
@@ -187,6 +188,50 @@ describe("CurationJobPage", () => {
     );
     expect(screen.queryByText("↺ 재검수 필요")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "검수 완료" })).toBeDisabled();
+  });
+
+  it("재처리 큐에 든 잡에 경고 배너를 띄운다", () => {
+    setup(job({ status: "pending" }));
+    expect(screen.getByText("⏳ 재처리 대기·진행 중")).toBeInTheDocument();
+    expect(screen.getByText(/처리가 끝난 뒤 검수하세요/)).toBeInTheDocument();
+  });
+
+  it("처리에 실패한 잡에는 재처리 요청 문구 배너를 띄운다", () => {
+    setup(job({ status: "failed" }));
+    expect(screen.getByText("⚠ 처리 실패")).toBeInTheDocument();
+    expect(
+      screen.getByText(/재처리를 요청해 다시 시도하세요/),
+    ).toBeInTheDocument();
+    // 실패를 "대기·진행 중"으로 오인시키는 문구가 함께 뜨면 안 된다.
+    expect(
+      screen.queryByText("⏳ 재처리 대기·진행 중"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("done 잡에는 상태 배너가 없다", () => {
+    setup(job());
+    expect(
+      screen.queryByText("⏳ 재처리 대기·진행 중"),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("⚠ 처리 실패")).not.toBeInTheDocument();
+  });
+
+  it("배너는 경고일 뿐 편집·검수완료를 차단하지 않는다", () => {
+    // 확정 결정 — 차단은 백엔드 409의 몫이고 배너는 그 예고다. 여기서 disabled를
+    // 걸면 "저장이 안 되는 이유"를 화면이 두 곳에서 다르게 소유하게 된다.
+    setup(job({ status: "pending" }));
+    expect(screen.getByLabelText("행 0 라벨")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "검수 완료" })).toBeEnabled();
+  });
+
+  it("재처리 큐에 든 재검수 필요 잡에는 상태 배너만 띄운다(재검수 배너 억제)", () => {
+    // patch_pair가 게이트를 해제한 뒤 재처리를 요청하면 실제로 나오는 조합이다
+    // (release_gate는 curation_reviewed_at을 지우지 않고, requeue_for_reprocess는
+    // status만 전이한다). 두 배너를 함께 띄우면 "저장됐다"와 "저장되지 않는다"가
+    // 나란히 서고, 재검수 배너의 지시(검수 완료)는 409라 실행조차 못 한다.
+    setup({ ...needsRecheckJob(), status: "pending" });
+    expect(screen.getByText("⏳ 재처리 대기·진행 중")).toBeInTheDocument();
+    expect(screen.queryByText("↺ 재검수 필요")).not.toBeInTheDocument();
   });
 
   it("이전/다음 버튼이 렌더되고 이웃이 없으면 비활성이다", () => {

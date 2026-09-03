@@ -25,15 +25,17 @@ def _pair(pair_id: int, row_index: int) -> dict:
 
 
 class _Repo:
-    def __init__(self, result_json, pairs: list[dict] | None = None):
+    def __init__(self, result_json, pairs: list[dict] | None = None, *, status="done"):
         self._result_json = result_json
         self._pairs = [_pair(1, 0)] if pairs is None else pairs
+        self._status = status
 
     def find_job_detail(self, job_id: int) -> dict:
         return {
             "job": {
                 "id": job_id,
                 "invoice_id": 10,
+                "status": self._status,
                 "curation_reviewed": 0,
                 "curation_reviewed_at": None,
                 "created_at": "2026-07-28T09:00:00",
@@ -42,6 +44,13 @@ class _Repo:
             },
             "pairs": self._pairs,
         }
+
+
+def test_detail_exposes_job_status():
+    # 서비스는 잡 상태를 가공 없이 통과시킨다 — 화면이 pending/running/failed를 각각
+    # 다른 문구로 갈라 쓰므로 done 여부로 접으면 안 된다.
+    detail = CurationService(_Repo({"rows": []}, status="pending")).get_detail(1)
+    assert detail["status"] == "pending"
 
 
 def test_detail_pair_exposes_exclusion_reason():
@@ -374,6 +383,7 @@ def _detail_repo(pairs):
         "job": {
             "id": 42,
             "invoice_id": None,
+            "status": "done",
             "curation_reviewed": 0,
             "curation_reviewed_at": None,
             "created_at": "2026-08-06T00:00:00",
