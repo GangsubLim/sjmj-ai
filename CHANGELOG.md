@@ -5,6 +5,30 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.15.0] — 2026-09-03
+
+배치 재처리 운영에서 사람이 직접 DB를 고쳐야 했던 워커 실패·좌초 경로 5종을 자동 복구로 전환하고, 검수 화면이 잡 상태를 즉시 알리도록 확장한 릴리스 ([#142](https://github.com/GangsubLim/sjmj-ai/pull/142), [#143](https://github.com/GangsubLim/sjmj-ai/pull/143), [#145](https://github.com/GangsubLim/sjmj-ai/pull/145)).
+
+### Added
+
+- 큐레이션 잡 상세에 잡 상태 경고 배너 노출 — 재처리 대기·처리 중·실패 잡을 화면 진입 즉시 식별, 저장 시점의 409로 편집이 낭비되던 흐름 제거 ([#145](https://github.com/GangsubLim/sjmj-ai/pull/145))
+- 워커 부팅 워치독 신설 — 이전 프로세스가 `running`으로 남긴 좌초 잡을 기동 시 자동 재큐잉, 수동 SQL 복구 절차 불필요 ([#143](https://github.com/GangsubLim/sjmj-ai/pull/143))
+- `failed` 잡에 재처리 API 복구 경로 개방 — 실패한 잡을 화면에서 다시 큐에 넣어 복구 가능 ([#143](https://github.com/GangsubLim/sjmj-ai/pull/143))
+
+### Fixed
+
+- 실패한 잡이 재처리로 오분류돼 재실패 시 실패 사실이 조용히 사라지던 경로 차단 — 큐 판별자를 결과 행 존재로 축소 ([#142](https://github.com/GangsubLim/sjmj-ai/pull/142))
+- warp 실패로 새 행이 0건인 재처리가 확정 쌍 좌표를 전량 지우던 문제 차단 — 커밋 전 실패 처리하고 옛 초안·좌표·크롭 보존 ([#142](https://github.com/GangsubLim/sjmj-ai/pull/142))
+- 크롭 교체 재큐잉에 연속 실패 상한 도입 — 한 잡이 워커를 영구 점유하던 경로 차단 ([#142](https://github.com/GangsubLim/sjmj-ai/pull/142))
+- 큐레이션 저장 충돌 안내 문구를 잡 상태별로 분기 — 실패 잡에 "처리가 끝난 뒤 다시 시도"라는 잘못된 안내 제거 ([#143](https://github.com/GangsubLim/sjmj-ai/pull/143))
+- 같은 초 안에 연속 저장할 때 낙관적 잠금이 변경을 구분하지 못하던 여지 제거 — 세대 토큰을 밀리초 해상도로 승격 ([#144](https://github.com/GangsubLim/sjmj-ai/pull/144))
+
+### Changed
+
+- 세대 토큰 SQL 표현식을 단일 상수로 통합 — 발급·대조 한쪽만 바뀌어 모든 큐레이션 쓰기가 영구 충돌에 빠지는 경로 제거 ([#144](https://github.com/GangsubLim/sjmj-ai/pull/144))
+- 재처리·큐레이션 테스트의 무기력 단언 24좌표를 반증 가능한 단언으로 교체 — 구현을 뒤집어도 통과하던 검증 공백 해소 ([#146](https://github.com/GangsubLim/sjmj-ai/pull/146))
+- 프론트 의존성 4건 일괄 갱신 ([#147](https://github.com/GangsubLim/sjmj-ai/pull/147))
+
 ## [v0.14.0] — 2026-08-31
 
 거래명세서와 OCR 잡을 화면에서 서로 이어 보게 하고, 금액 크롭 좌측 경계를 전표마다 실측해 인접 칸 숫자 흡수를 줄인 릴리스 ([#131](https://github.com/GangsubLim/sjmj-ai/pull/131), [#134](https://github.com/GangsubLim/sjmj-ai/pull/134)).
