@@ -658,12 +658,31 @@ _TRACKED_METHODS = (
 )
 
 
-def _recorder(timeline, name, value):
-    """호출을 타임라인에 남기고 원래 return_value를 그대로 돌려주는 side_effect."""
+def _recorder(timeline, name, method):
+    """호출을 타임라인에 남기되 mock에 이미 세워진 스텁을 그대로 태우는 side_effect.
+
+    side_effect를 고정값으로 갈아끼우면 _patched의 인자 의존 stub과 토큰 2연값이 지워져,
+    find_job_for_update가 dict 대신 미설정 Mock을 돌려주고 잡 상태 가드가 409로 걸린다 —
+    기록만 얹고 반환은 원래 스텁(side_effect 우선, 없으면 return_value)에 위임한다.
+    """
+    stub = method.side_effect
+
+    if stub is None:
+
+        def _inner(*args, **kwargs):
+            return method.return_value
+
+    elif callable(stub):
+        _inner = stub
+    else:
+        values = iter(stub)
+
+        def _inner(*args, **kwargs):
+            return next(values)
 
     def _call(*args, **kwargs):
         timeline.append(name)
-        return value
+        return _inner(*args, **kwargs)
 
     return _call
 
@@ -686,7 +705,7 @@ def _tracked_svc(repo, timeline, item_repo=None):
     """repo 호출과 트랜잭션 경계를 한 타임라인에 기록하는 서비스."""
     for name in _TRACKED_METHODS:
         method = getattr(repo, name)
-        method.side_effect = _recorder(timeline, name, method.return_value)
+        method.side_effect = _recorder(timeline, name, method)
     return CurationService(
         repo, item_repo or MagicMock(), transaction=_tracking_transaction(timeline)
     )
