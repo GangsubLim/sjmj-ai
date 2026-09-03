@@ -1,21 +1,23 @@
 """재처리 전이의 repository 계약 — 실 MySQL."""
 
+import json
+
 import pytest
 from sqlalchemy import text
 
 from app.repositories.curation_repository import CurationRepository
+from tests.fixtures.curation_helpers import rewind_job_token
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed(engine, status="done"):
+def _seed(engine, status="done", result_json='{"rows": []}'):
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO ocr_jobs (status, image_path, result_json) "
-                "VALUES (:s, '/x.jpg', '{\"rows\": []}')"
+                "INSERT INTO ocr_jobs (status, image_path, result_json) VALUES (:s, '/x.jpg', :r)"
             ),
-            {"s": status},
+            {"s": status, "r": result_json},
         )
         return conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
 
@@ -31,7 +33,14 @@ def test_find_job_for_update_returns_none_for_unknown_job():
 
 
 def test_requeue_for_reprocess_keeps_result_json(db_conn):
-    job_id = _seed(db_conn, "done")
+    """초안은 재처리 판별의 근거이자 실패 시 롤백 대상이다 — 한 바이트도 바뀌지 않는다.
+
+    `is not None`으로는 '{}'로 덮어써도 통과한다. 워커의 재처리 판별자(#91)는 rows의
+    존재를 보므로 빈 dict로 덮이면 그 잡이 신규로 재분류돼 확정 라벨 승계가 통째로
+    사라진다 — 값 동일성까지 고정해야 그 회귀가 RED가 된다.
+    """
+    draft = '{"rows": [{"row_index": 0, "supply": 3000}], "supply_sum": 3000}'
+    job_id = _seed(db_conn, "done", draft)
 
     CurationRepository().requeue_for_reprocess(job_id)
 
@@ -44,4 +53,24 @@ def test_requeue_for_reprocess_keeps_result_json(db_conn):
             .first()
         )
     assert row["status"] == "pending"
-    assert row["result_json"] is not None
+    assert json.loads(row["result_json"]) == json.loads(draft)
+
+
+def test_requeue_for_reprocess_bumps_the_job_token(db_conn):
+    """재처리 전이는 세대 토큰을 반드시 올린다 — 낙관적 잠금의 유일한 실측 자리(spec §12).
+
+    토큰은 ocr_jobs.updated_at의 ON UPDATE CURRENT_TIMESTAMP에 얹혀 있어 새 컬럼이
+    없다(마이그레이션 0). 그 얹힘이 깨지면(updated_at을 명시 대입하는 UPDATE로 바뀌는 등)
+    재처리 직후에도 옛 화면의 토큰이 유효해져 PATCH·검수 완료가 409 없이 통과한다.
+
+    같은 초 안의 전이는 값이 안 변할 수 있다 — 전이 전 updated_at을 1초 과거로 밀어
+    시간·해상도에 기대지 않고 벌린다(밀리초 전환 #95 이후에도 같은 방식이 성립한다).
+    """
+    job_id = _seed(db_conn, "done")
+    rewind_job_token(db_conn, job_id)
+    repo = CurationRepository()
+    before = repo.get_job_token(job_id)
+
+    repo.requeue_for_reprocess(job_id)
+
+    assert repo.get_job_token(job_id) != before
