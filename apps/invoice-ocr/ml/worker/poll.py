@@ -14,6 +14,11 @@ from typing import NamedTuple
 from handwriting.amount_read import DegenerateOutputError
 from worker.plan import build_plan, new_rows
 
+# 크롭 교체(OSError) 연속 실패 상한(이슈 #88). 초과 시 requeue 대신 초안 보존 실패로
+# 끊는다 — .old가 영구히 안 지워지는 잡이 잡당 수십 초의 재추론을 무한 반복하며 워커를
+# 점유하는 것을 막는다. 카운터는 프로세스 메모리라 재시작 시 리셋된다(이슈가 수용 명시).
+SWAP_RETRY_LIMIT = 3
+
 
 class PollOutcome(NamedTuple):
     """한 번의 폴링 결과 — bool 반환을 명시 결과 타입으로 승격한 것.
@@ -61,7 +66,14 @@ def _swap_crop_dir(tmp_dir: Path, final_dir: Path) -> None:
     shutil.rmtree(old_dir, ignore_errors=True)
 
 
-def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollOutcome:
+def process_one_job(
+    queue,
+    infer_fn,
+    crops_root,
+    qwen_jobs_before: int,
+    *,
+    swap_failures: dict[int, int] | None = None,
+) -> PollOutcome:
     """대기 중인 잡 1건을 처리한다.
 
     Args:
@@ -73,6 +85,9 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             되돌릴지(≥1 — requeue_pending, 신규·재처리 동일) 가른다. 어느 쪽이든 워커는
             종료한다(sticky 붕괴라 살려둬도 회복되지 않는다). 카운터의 소유·갱신은 main()이
             한다.
+        swap_failures: 잡별 크롭 교체 연속 실패 횟수(이슈 #88). qwen_jobs와 같은 소유
+            구조다 — main()이 프로세스 수명 동안 하나를 들고 매 호출에 넘겨야 상한이
+            선다. None이면 호출 내 1회 실패가 전부라 상한에 닿지 않는다(단발 테스트 편의).
 
     Returns:
         PollOutcome. 큐가 비었으면 PollOutcome(False, False).
@@ -100,6 +115,21 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
             shutil.rmtree(old_dir, ignore_errors=True)
             tmp_dir.rename(old_dir)
         result = infer_fn(job["image_path"], tmp_dir, job_id)
+        if job["is_reprocess"] and not new_rows(result):
+            # 새 행 0건 재처리는 커밋 전에 실패로 끊는다(이슈 #92 고려안 1). plan_relink는
+            # 이 조합을 전량 미결의 정상 계획으로 취급하므로, 커밋에 닿으면 확정 쌍이
+            # 이어 붙일 새 행도 없이 orphan- 좌표로 옮겨져 복구 경로 없이 그림을 잃는다
+            # (잡 39). 신규 잡의 rows=0(게이트 강등)은 이 갈래를 타지 않는다 — 잃을 옛
+            # 좌표가 없어 커밋이 정상이다. 초안 보존 실패라 옛 초안·좌표·크롭이 그대로
+            # 남고, failed 재큐잉(#93)이 열리면 rows 판별자가 재처리로 재분류한다.
+            print(
+                f"[reprocess] job={job_id} 새 행 0건 — 승계를 건너뛰고 실패 처리(초안 보존)",
+                file=sys.stderr,
+                flush=True,
+            )
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            queue.mark_failed_keep_result(job_id)
+            return PollOutcome(worked=True, qwen_called=False)
         plan = build_plan(queue, job_id, result)
         queue.commit_job(job_id, result, plan)
     except DegenerateOutputError as exc:
@@ -136,15 +166,35 @@ def process_one_job(queue, infer_fn, crops_root, qwen_jobs_before: int) -> PollO
     # new_rows는 순수함수라 두 번 호출이 무해하고, "rows가 있다"의 정의는 여전히 worker.plan
     # 한 곳에 있다(드라이런의 크래시루프 카운터도 같은 술어를 쓴다).
     qwen_called = bool(new_rows(result))
+    if swap_failures is None:
+        swap_failures = {}
     try:
         _swap_crop_dir(tmp_dir, final_dir)
+        # 상한은 연속 실패에만 건다 — 중간 성공이 카운터를 지워야 훗날의 무관한 실패가
+        # 옛 실패와 합산돼 조기 은퇴하지 않는다.
+        swap_failures.pop(job_id, None)
     except OSError as exc:
-        # 커밋은 이미 성공했으므로 DB는 새 좌표, 파일은 옛 그림이다. 재처리는 멱등이라
-        # (같은 사진·같은 엔진이면 매칭이 항등) 다시 큐에 넣는 것이 복구다.
-        print(
-            f"[reprocess] job={job_id} 크롭 교체 실패 — 재처리 큐로 되돌린다: {exc}",
-            file=sys.stderr,
-            flush=True,
-        )
-        queue.requeue_for_reprocess(job_id)
+        failures = swap_failures.get(job_id, 0) + 1
+        swap_failures[job_id] = failures
+        if failures >= SWAP_RETRY_LIMIT:
+            # 커밋된 새 좌표가 정본이고 .old 마커가 재임베딩 가드를 계속 닫아 둔다 —
+            # failed 전이가 사람에게 보이는 유일한 신호다. 복구는 failed 재큐잉으로
+            # 재처리(멱등) 재시도.
+            print(
+                f"[reprocess] job={job_id} 크롭 교체 실패 {failures}회 — 재시도 상한 도달, "
+                f"실패 처리(초안 보존): {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            queue.mark_failed_keep_result(job_id)
+        else:
+            # 커밋은 이미 성공했으므로 DB는 새 좌표, 파일은 옛 그림이다. 재처리는 멱등이라
+            # (같은 사진·같은 엔진이면 매칭이 항등) 다시 큐에 넣는 것이 복구다.
+            print(
+                f"[reprocess] job={job_id} 크롭 교체 실패({failures}/{SWAP_RETRY_LIMIT}) — "
+                f"재처리 큐로 되돌린다: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+            queue.requeue_for_reprocess(job_id)
     return PollOutcome(worked=True, qwen_called=qwen_called)

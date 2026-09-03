@@ -3,6 +3,8 @@
 import pytest
 from sqlalchemy import text
 
+from tests.integration import _migration_sql
+
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
@@ -137,3 +139,18 @@ def test_training_pairs_draft_supply_column_type_matches_production_ddl(db_conn)
     assert col is not None
     assert (col["DATA_TYPE"], col["IS_NULLABLE"]) == ("int", "YES")
     assert "unsigned" not in col["COLUMN_TYPE"].lower()
+
+
+def test_ocr_jobs_updated_at_column_contract_matches_production_ddl(db_conn):
+    """하니스의 updated_at 정의가 운영 DDL(migration_013 — 같은 PR의 Task 3)과 같아야 한다.
+
+    행동 테스트(test_curation_job_token)가 통과해도 하니스만 밀리초이고 운영이 초로 남으면
+    운영에서만 같은 초 창이 살아남는다. 정밀도 한 축만 단언하면 형제 테스트가 실측으로 남긴
+    교훈(2026-08-05: 컬럼을 VARCHAR(32)로 바꿔도 스위트 559건이 전부 통과)을 반복한다 —
+    타입·정밀도·nullable·ON UPDATE를 함께 못 박아 운영 DDL과의 정합을 고정한다.
+
+    4축 단언은 _migration_sql.assert_ocr_jobs_updated_at_contract 공유 헬퍼다 —
+    test_migration_013…(마이그레이션이 만든 컬럼)와 같은 축을 본다. 둘 중 하나가 갈리면
+    (하니스 vs. 운영 DDL) 반드시 어느 한쪽이 RED가 된다.
+    """
+    _migration_sql.assert_ocr_jobs_updated_at_contract(db_conn)

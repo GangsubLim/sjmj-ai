@@ -40,6 +40,7 @@ function detail(jobId: number): CurationJobDetail {
   return {
     job_id: jobId,
     invoice_id: 341,
+    status: "done",
     curation_reviewed: false,
     curation_reviewed_at: null,
     warp_ok: true,

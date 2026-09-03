@@ -36,15 +36,22 @@ class WorkerQueue:
         재처리 판별에 표식 컬럼을 만들지 않는다 — 신규 잡은 insert 시 result_json이 NULL이라
         "pending인데 초안이 이미 있는가"로 구분이 자연히 선다(spec §1 · ADR 0010).
 
+        판별자는 초안 존재가 아니라 **rows 키 존재**다(이슈 #91). mark_failed가 같은 컬럼에
+        {"error": ...}를 쓰므로 result_json IS NOT NULL이면 pending으로 되돌린 실패 잡이
+        재처리로 오분류되고, 재실패 시 rollback_to_done이 불려 한 번도 성공한 적 없는 잡이
+        done + 에러 초안으로 남는다. 워커가 쓴 성공 초안만 rows를 가진다(assemble_result_json).
+
         Returns:
             {"id", "image_path", "is_reprocess"} 또는 큐가 비었으면 None.
         """
         with self.engine.begin() as conn:
             row = conn.execute(
                 text(
-                    "SELECT id, image_path, (result_json IS NOT NULL) AS is_reprocess "
+                    "SELECT id, image_path, "
+                    "(JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess "
                     "FROM ocr_jobs WHERE status='pending' "
-                    "ORDER BY (result_json IS NOT NULL), id LIMIT 1 FOR UPDATE"
+                    "ORDER BY (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL), id "
+                    "LIMIT 1 FOR UPDATE"
                 )
             ).fetchone()
             if row is None:
@@ -233,6 +240,43 @@ class WorkerQueue:
             conn.execute(
                 text("UPDATE ocr_jobs SET status='failed', result_json=:r WHERE id=:id"),
                 {"r": json.dumps(error_json, ensure_ascii=False), "id": job_id},
+            )
+
+    def requeue_stale_running(self) -> list[int]:
+        """부팅 시 running으로 굳은 잡 전량을 pending으로 되돌린다(이슈 #85 워치독).
+
+        추론 도중 프로세스가 죽으면(배포·재시작·OOM·kill) rollback_to_done이 돌지 않아 잡이
+        영구 running으로 남는다 — claim_next_pending은 pending만 집고 reprocess API는 409라
+        복구가 순수 수동 절차(런북 5단계)였다. **단일 워커 전제다**(launchd
+        ai.sjmj.ml-worker 하나): 부팅 시점의 running이 전부 이전 프로세스의 좌초분이라는
+        보장이 이 전제에서 나오므로, 수동으로 두 번째 워커를 병행 기동하면 남의 in-flight
+        잡을 뺏는다 — 금지. result_json은 건드리지 않는다 — 되돌린 잡은 다음 점유에서
+        rows 판별자(claim_next_pending)가 신규/재처리로 스스로 재분류해 자동 재개된다.
+
+        Returns:
+            되돌린 잡 id 목록(id 오름차순, 호출자의 로그용). 좌초가 없으면 빈 리스트.
+        """
+        with self.engine.begin() as conn:
+            rows = conn.execute(
+                text("SELECT id FROM ocr_jobs WHERE status='running' ORDER BY id")
+            ).fetchall()
+            ids = [r[0] for r in rows]
+            if ids:
+                conn.execute(text("UPDATE ocr_jobs SET status='pending' WHERE status='running'"))
+        return ids
+
+    def mark_failed_keep_result(self, job_id: int) -> None:
+        """잡을 failed로 전이하되 result_json은 건드리지 않는다 — 초안 보존 실패.
+
+        mark_failed와 계약이 다르다: 그쪽은 에러 JSON을 기록하는 신규 잡 실패 경로이고,
+        여기는 보존할 초안이 있는 실패다 — 새 행 0건 가드(#92, 옛 초안·좌표가 유일한
+        복구 근거)와 크롭 교체 상한(#88, 커밋된 새 초안이 이미 정본). 초안이 남아 있어야
+        failed 재큐잉(#93) 시 claim_next_pending의 rows 판별자가 재처리로 재분류한다.
+        """
+        with self.engine.begin() as conn:
+            conn.execute(
+                text("UPDATE ocr_jobs SET status='failed' WHERE id=:id"),
+                {"id": job_id},
             )
 
     def rollback_to_done(self, job_id: int) -> None:

@@ -1,6 +1,6 @@
 """CurationService 단위 테스트 — repository는 mock, DB 비의존."""
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,15 +25,17 @@ def _pair(pair_id: int, row_index: int) -> dict:
 
 
 class _Repo:
-    def __init__(self, result_json, pairs: list[dict] | None = None):
+    def __init__(self, result_json, pairs: list[dict] | None = None, *, status="done"):
         self._result_json = result_json
         self._pairs = [_pair(1, 0)] if pairs is None else pairs
+        self._status = status
 
     def find_job_detail(self, job_id: int) -> dict:
         return {
             "job": {
                 "id": job_id,
                 "invoice_id": 10,
+                "status": self._status,
                 "curation_reviewed": 0,
                 "curation_reviewed_at": None,
                 "created_at": "2026-07-28T09:00:00",
@@ -42,6 +44,13 @@ class _Repo:
             },
             "pairs": self._pairs,
         }
+
+
+def test_detail_exposes_job_status():
+    # 서비스는 잡 상태를 가공 없이 통과시킨다 — 화면이 pending/running/failed를 각각
+    # 다른 문구로 갈라 쓰므로 done 여부로 접으면 안 된다.
+    detail = CurationService(_Repo({"rows": []}, status="pending")).get_detail(1)
+    assert detail["status"] == "pending"
 
 
 def test_detail_pair_exposes_exclusion_reason():
@@ -201,18 +210,29 @@ def test_mark_reviewed_response_shape_is_unchanged():
     assert result == {"job_id": 7, "curation_reviewed": True}
 
 
+_PAIR_ID = 5
+_JOB_ID = 3
+
+
 def _patched(status, label, job_status="done"):
     """patch_pair 경로용 repo mock — 갱신 후 find_pair가 돌려줄 상태를 고정한다.
 
     MagicMock의 기본 반환은 dict가 아니라 Mock이라 find_job_for_update를 세우지 않으면
     잡 상태 가드가 Mock != "done"으로 걸린다(_reviewable과 같은 이유).
+
+    **인자 의존 stub인 것이 계약이다(#94).** 인자와 무관한 고정값을 돌려주면 서비스가
+    엉뚱한 id로 조회·잠금해도 전량 GREEN이라, "요청된 쌍의 소유 잡을 잠근다"는 회귀가
+    통째로 미검출된다. 토큰도 두 번의 읽기(② 대조 · 갱신 후 반환)를 서로 다른 값으로
+    돌려줘야 어느 쪽을 비교하고 어느 쪽을 반환하는지가 단언으로 갈린다.
     """
     repo = MagicMock()
-    repo.find_job_for_update.return_value = {"id": 3, "status": job_status}
+    repo.find_job_for_update.side_effect = lambda job_id: (
+        {"id": _JOB_ID, "status": job_status} if job_id == _JOB_ID else None
+    )
     pair = {
-        "id": 5,
+        "id": _PAIR_ID,
         "crop_ref": "job-3/row-0",
-        "job_id": 3,
+        "job_id": _JOB_ID,
         "row_index": 0,
         "draft_label": "중고타이어",
         "final_label": label,
@@ -222,8 +242,8 @@ def _patched(status, label, job_status="done"):
         "exclusion_reason": None,
         "reviewed_at": None,
     }
-    repo.find_pair.return_value = pair
-    repo.get_job_token.return_value = "1000"
+    repo.find_pair.side_effect = lambda pair_id: pair if pair_id == _PAIR_ID else None
+    repo.get_job_token.side_effect = ["1000", "1001"]
     return repo
 
 
@@ -344,7 +364,23 @@ def test_request_reprocess_409_when_job_is_not_done():
         _sync_svc(repo, MagicMock()).request_reprocess(7)
 
     assert exc.value.status == 409
+    assert "처리 중" in exc.value.message, "failed까지 허용된 지금 '추론이 끝난 잡만'은 거짓말이다"
     repo.requeue_for_reprocess.assert_not_called()
+
+
+def test_request_reprocess_requeues_a_failed_job():
+    """failed 잡의 유일한 API 복구 경로다(이슈 #93) — 이전에는 어디에도 없었다.
+
+    안전성은 워커 판별자 축소(#91)가 근거다: 에러 JSON만 남은 실패 잡은 rows가 없어
+    신규로, 초안 보존 실패 잡(#92·#88)은 rows가 남아 재처리로 스스로 재분류된다.
+    """
+    repo = MagicMock()
+    repo.find_job_for_update.return_value = {"id": 7, "status": "failed"}
+
+    result = _sync_svc(repo, MagicMock()).request_reprocess(7)
+
+    repo.requeue_for_reprocess.assert_called_once_with(7)
+    assert result == {"job_id": 7, "status": "pending"}
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +394,7 @@ def _detail_repo(pairs):
         "job": {
             "id": 42,
             "invoice_id": None,
+            "status": "done",
             "curation_reviewed": 0,
             "curation_reviewed_at": None,
             "created_at": "2026-08-06T00:00:00",
@@ -481,7 +518,7 @@ def test_patch_pair_rejects_a_job_that_is_not_done_before_comparing_tokens():
 def test_patch_pair_rejects_a_stale_token_with_409():
     """재처리 이전 화면을 열어둔 사용자가 옛 그림을 근거로 새 쌍을 고치는 것을 막는다."""
     repo = _patched("included", "휠")
-    repo.get_job_token.return_value = "2000"
+    repo.get_job_token.side_effect = ["2000"]
 
     with pytest.raises(AppError) as exc:
         _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
@@ -493,13 +530,26 @@ def test_patch_pair_rejects_a_stale_token_with_409():
 
 
 def test_patch_pair_reads_the_token_before_touching_the_pair():
-    """락 순서 — 토큰 조회(FOR UPDATE)가 부모를 먼저 잡는다."""
+    """락 순서 — 부모(ocr_jobs) 조회·게이트 해제가 자식(training_pairs) 쓰기보다 앞선다.
+
+    두 지표의 index 비교만으로는 사이에 낀 순서 변경(게이트 해제와 쌍 갱신의 자리바꿈,
+    제3 호출의 삽입)이 드러나지 않는다. 시퀀스 전량을 못 박는다. 반환 토큰이 **갱신 후**
+    읽기라는 축은 test_patch_pair_returns_the_refreshed_token이 이미 소유하므로 여기서
+    겹치지 않는다.
+    """
     repo = _patched("included", "휠")
 
     _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
-    calls = [c[0] for c in repo.method_calls]
-    assert calls.index("get_job_token") < calls.index("update_pair")
+    assert [c[0] for c in repo.method_calls] == [
+        "find_pair",
+        "find_job_for_update",
+        "get_job_token",
+        "release_gate",
+        "update_pair",
+        "find_pair",
+        "get_job_token",
+    ]
 
 
 def test_patch_pair_returns_the_refreshed_token():
@@ -510,6 +560,22 @@ def test_patch_pair_returns_the_refreshed_token():
     result = _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
 
     assert result["job_token"] == "1001"
+
+
+def test_patch_pair_locks_the_job_that_owns_the_requested_pair():
+    """잠그고 고치는 대상은 요청된 쌍과 그 쌍의 소유 잡이다 — id가 섞이면 남의 잡을 잠근다.
+
+    stub이 인자 무관 고정값이면 find_job_for_update(pair_id) 같은 회귀가 그대로 통과한다.
+    """
+    repo = _patched("included", "휠")
+
+    _sync_svc(repo, MagicMock()).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    repo.find_pair.assert_any_call(5)
+    repo.find_job_for_update.assert_called_once_with(3)
+    repo.release_gate.assert_called_once_with(3)
+    repo.update_pair.assert_called_once_with(5, {"canonical_label": "휠"})
+    assert [c.args for c in repo.get_job_token.call_args_list] == [(3,), (3,)]
 
 
 def test_mark_reviewed_rejects_a_stale_token_with_409():
@@ -539,6 +605,23 @@ def test_mark_reviewed_rejects_a_job_that_is_not_done_with_409():
     repo.mark_reviewed.assert_not_called()
 
 
+def test_mark_reviewed_409_names_the_failure_for_a_failed_job():
+    """failed 잡에 '처리가 끝난 뒤 다시 시도하세요'는 사실과 다르다 — 영영 끝나지 않는다(#93).
+
+    상태별로 메시지를 갈라 실패 사실과 복구 경로(재처리)를 알려야 사람이 기다리다 포기하는
+    대신 행동할 수 있다. 409라는 계약 자체는 그대로다.
+    """
+    repo = _reviewable(status="failed")
+
+    with pytest.raises(AppError) as exc:
+        _sync_svc(repo, MagicMock()).mark_reviewed(7, "1000")
+
+    assert exc.value.status == 409
+    assert "실패" in exc.value.message
+    assert "끝난 뒤" not in exc.value.message
+    repo.mark_reviewed.assert_not_called()
+
+
 def test_mark_reviewed_404_when_job_missing():
     """존재 확인은 토큰 대조보다 앞선다 — 없는 잡은 409가 아니라 404다."""
     repo = _reviewable()
@@ -560,3 +643,99 @@ def test_mark_reviewed_locks_the_job_before_stamping_pairs():
     calls = [c[0] for c in repo.method_calls]
     assert calls.index("find_job_for_update") < calls.index("mark_reviewed")
     assert calls.index("get_job_token") < calls.index("mark_reviewed")
+
+
+# ── 트랜잭션 경계 불변식(#84) ─────────────────────────────────────────────
+
+_TRACKED_METHODS = (
+    "find_job_for_update",
+    "get_job_token",
+    "release_gate",
+    "update_pair",
+    "find_pair",
+    "mark_reviewed",
+    "list_included_labels",
+)
+
+
+def _recorder(timeline, name, method):
+    """호출을 타임라인에 남기되 mock에 이미 세워진 스텁을 그대로 태우는 side_effect.
+
+    side_effect를 고정값으로 갈아끼우면 _patched의 인자 의존 stub과 토큰 2연값이 지워져,
+    find_job_for_update가 dict 대신 미설정 Mock을 돌려주고 잡 상태 가드가 409로 걸린다 —
+    기록만 얹고 반환은 원래 스텁(side_effect 우선, 없으면 return_value)에 위임한다.
+    """
+    stub = method.side_effect
+
+    if stub is None:
+
+        def _inner(*args, **kwargs):
+            return method.return_value
+
+    elif callable(stub):
+        _inner = stub
+    else:
+        values = iter(stub)
+
+        def _inner(*args, **kwargs):
+            return next(values)
+
+    def _call(*args, **kwargs):
+        timeline.append(name)
+        return _inner(*args, **kwargs)
+
+    return _call
+
+
+def _tracking_transaction(timeline):
+    """enter/exit 시점을 repo 호출과 같은 타임라인에 남기는 트랜잭션 스텁."""
+
+    @contextmanager
+    def _transaction():
+        timeline.append("enter")
+        try:
+            yield None
+        finally:
+            timeline.append("exit")
+
+    return _transaction
+
+
+def _tracked_svc(repo, timeline, item_repo=None):
+    """repo 호출과 트랜잭션 경계를 한 타임라인에 기록하는 서비스."""
+    for name in _TRACKED_METHODS:
+        method = getattr(repo, name)
+        method.side_effect = _recorder(timeline, name, method)
+    return CurationService(
+        repo, item_repo or MagicMock(), transaction=_tracking_transaction(timeline)
+    )
+
+
+def test_patch_pair_reads_the_job_token_inside_the_transaction():
+    """토큰 조회 2회(② 대조 · 재발급)가 모두 enter와 exit **사이**에 있어야 한다(#84).
+
+    enter 선행만 단언하면 호출을 with 블록 뒤로 옮겨도 통과한다(enter는 이미 발생했다) —
+    exit 이전까지 함께 고정해야 경계가 양쪽으로 닫힌다. 조회와 쓰기 사이가 벌어지면
+    낙관적 잠금이 무의미해진다.
+    """
+    timeline = []
+    repo = _patched("included", "휠")
+
+    _tracked_svc(repo, timeline).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    reads = [i for i, event in enumerate(timeline) if event == "get_job_token"]
+    assert len(reads) == 2
+    assert timeline.index("enter") < reads[0]
+    assert reads[-1] < timeline.index("exit")
+
+
+def test_mark_reviewed_reads_the_job_token_inside_the_transaction():
+    """검수 완료의 세대 대조도 같은 트랜잭션 안이어야 한다 — 한쪽만 막으면 방어가 반쪽이다."""
+    timeline = []
+    repo = _reviewable()
+
+    _tracked_svc(repo, timeline).mark_reviewed(7, "1000")
+
+    reads = [i for i, event in enumerate(timeline) if event == "get_job_token"]
+    assert len(reads) == 1
+    assert timeline.index("enter") < reads[0] < timeline.index("exit")

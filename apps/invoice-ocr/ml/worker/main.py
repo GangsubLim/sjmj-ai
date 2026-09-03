@@ -138,14 +138,24 @@ def main():
 
     crops_root = Path(_require("SJMJ_DATA_DIR")) / "ocr_crops"
     queue = WorkerQueue(build_engine())
+    # 부팅 워치독(#85) — 이전 프로세스가 running에 좌초시킨 잡을 폴링 전에 되돌린다.
+    # load_models보다 앞이다: 모델 적재가 실패해도 잡은 pending으로 복귀해 있어야 한다.
+    stale = queue.requeue_stale_running()
+    if stale:
+        print(f"[watchdog] 좌초 running 잡 {stale} → pending 재큐잉", file=sys.stderr, flush=True)
     models = load_models()
 
     def infer_fn(image_path, crop_dir, job_id):
         return infer_job(image_path, models, crop_dir, job_id)
 
     qwen_jobs = 0
+    # 잡별 크롭 교체 연속 실패 카운터(이슈 #88) — qwen_jobs와 같은 소유 구조로, 프로세스
+    # 수명과 함께 리셋된다. 상한 판정은 process_one_job이 한다(SWAP_RETRY_LIMIT).
+    swap_failures: dict[int, int] = {}
     while True:
-        outcome = process_one_job(queue, infer_fn, crops_root, qwen_jobs)
+        outcome = process_one_job(
+            queue, infer_fn, crops_root, qwen_jobs, swap_failures=swap_failures
+        )
         if outcome.qwen_called:
             qwen_jobs += 1
         if not outcome.worked:

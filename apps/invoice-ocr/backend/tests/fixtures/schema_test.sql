@@ -161,7 +161,7 @@ CREATE TABLE ocr_jobs (
     curation_reviewed BOOLEAN NOT NULL DEFAULT FALSE,
     curation_reviewed_at DATETIME NULL DEFAULT NULL,  -- migration_011: 첫 검수 시각(해제해도 유지)
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     INDEX idx_ocr_jobs_status (status),
     CONSTRAINT fk_ocr_jobs_invoice FOREIGN KEY (invoice_id)
         REFERENCES invoices(id) ON DELETE SET NULL

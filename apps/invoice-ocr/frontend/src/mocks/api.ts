@@ -465,6 +465,18 @@ function assertJobToken(jobId: number, sent: string | undefined): void {
   }
 }
 
+// 서버는 status !== 'done' 잡의 쓰기를 409로 거부한다(curation_service의 patch_pair ·
+// mark_reviewed). mock이 흉내 내지 않으면 재처리 큐에 든 잡의 편집이 mock 모드·e2e에서만
+// 통과해 실서버에서만 드러난다 — 세대 토큰을 미러하는 것과 같은 이유다. 상태별 메시지
+// 분기(#93)는 화면 문구와 백엔드의 몫이고, mock은 거부 사실만 미러한다.
+function assertJobWritable(jobId: number): void {
+  const job = curationJobs.find((j) => j.job_id === jobId);
+  if (!job || job.status === "done") return;
+  throw new Error(
+    `아직 처리가 끝나지 않은 잡입니다 (mock 409) — 현재 상태 ${job.status}`,
+  );
+}
+
 // 백엔드는 MySQL DATETIME(naive)을 jsonable_encoder로 "2026-06-30T08:30:00" 형태로 낸다.
 // toISOString()은 UTC "Z" + 밀리초라 서버가 만들 수 없는 값이고, 시드(mocks/curation.ts)와도
 // 형태가 갈린다 — 코드베이스의 iso.slice(5,16) 관용구가 KST 9시간 어긋난 값을 보이게 된다.
@@ -517,7 +529,12 @@ export const mockCurationAPI = {
     // 세대 대조·회전을 흉내 낸다. 없으면 훅이 토큰을 안 싣거나 직렬화가 깨진 회귀가
     // mock 모드·e2e에서 전부 GREEN으로 통과해, 실서버에서만 409로 드러난다.
     const owner = curationJobs.find((j) => j.pairs.some((p) => p.id === id));
-    if (owner) assertJobToken(owner.job_id, patch.job_token);
+    if (owner) {
+      // 순서는 서버와 같다(status → token). 뒤집으면 재처리로 토큰이 튄 잡에서 mock만
+      // 토큰 메시지를 내어, 사람이 새로고침하면 통과한다고 오인한다.
+      assertJobWritable(owner.job_id);
+      assertJobToken(owner.job_id, patch.job_token);
+    }
     let result: CurationPairPatchResult | null = null;
     curationJobs = curationJobs.map((job) => {
       const touched = job.pairs.some((p) => p.id === id);
@@ -567,13 +584,14 @@ export const mockCurationAPI = {
     return { data: result as CurationPairPatchResult };
   },
 
-  reviewJob: async (jobId: number, jobToken?: string) => {
+  reviewJob: async (jobId: number, jobToken: string) => {
     await delay();
     if (!curationJobs.some((j) => j.job_id === jobId)) {
       throw new Error("잡을 찾을 수 없습니다");
     }
     // 토큰을 무시하면 빈 문자열도 항상 성공해, 실서버에서 확정 409가 되는 경로가
     // mock에서만 조용히 통과한다(PATCH와 같은 이유).
+    assertJobWritable(jobId);
     assertJobToken(jobId, jobToken);
     // 서버는 한 트랜잭션의 단일 CURRENT_TIMESTAMP로 잡·쌍 스탬프를 함께 찍는다
     // (mark_reviewed) — mock도 한 번만 만든 시각을 공유해 "잡과 쌍이 같은 시각"

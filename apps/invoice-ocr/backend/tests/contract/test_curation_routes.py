@@ -1,25 +1,34 @@
 """curation 슬라이스 계약 테스트 — 검수 큐 목록."""
 
+import json
+
 import pytest
 from sqlalchemy import text
 
 from app.routers.curation import _LIMIT_MAX, _PAGE_MAX
+from tests.fixtures.curation_helpers import job_token as _token
 
 pytestmark = pytest.mark.usefixtures("db_conn")
 
 
-def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목"):
+def _seed_job_with_pairs(
+    engine, *, reviewed=0, pairs=2, unreviewed=2, canonical="품목", status="done"
+):
     """ocr_jobs 1건 + training_pairs N건 시드. job_id 반환.
 
     canonical을 넘기면 final_label('품목')과 정식 라벨을 벌릴 수 있다 — 두 값이 같으면
     "정식 라벨을 등록한다"와 "final_label을 등록한다"를 단언으로 구분할 수 없다.
+
+    status를 넘기면 재처리 큐(pending/running)·실패(failed) 잡을 만들 수 있다 — 잡 상세가
+    이 값을 그대로 실어야 화면이 열리는 시점에 경고 배너를 띄운다(#86).
     """
     with engine.begin() as conn:
         conn.execute(
             text(
-                "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) VALUES ('done', '/x.jpg', :r)"
+                "INSERT INTO ocr_jobs (status, image_path, curation_reviewed) "
+                "VALUES (:s, '/x.jpg', :r)"
             ),
-            {"r": reviewed},
+            {"r": reviewed, "s": status},
         )
         job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
         for i in range(pairs):
@@ -33,11 +42,6 @@ def _seed_job_with_pairs(engine, *, reviewed=0, pairs=2, unreviewed=2, canonical
                 {"r": f"job-{job_id}/row-{i}", "j": job_id, "i": i, "c": canonical},
             )
     return job_id
-
-
-def _token(client, job_id):
-    """잡 상세에서 세대 토큰을 읽어 요청 body 조각으로 만든다(spec §12 — 필수 필드)."""
-    return {"job_token": client.get(f"/api/curation/jobs/{job_id}").json()["data"]["job_token"]}
 
 
 def test_list_jobs_returns_queue_with_counts(client, db_conn):
@@ -179,6 +183,22 @@ def test_job_detail_pair_uncertain_reflects_item_uncertain_flag(client, db_conn)
     assert pairs[0]["uncertain"] is True
     # 플래그가 없는 과거 잡 행 → uncertain False(하위호환)
     assert pairs[1]["uncertain"] is False
+
+
+def test_job_detail_includes_job_status(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn)
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "done"
+
+
+def test_job_detail_status_exposes_reprocess_queue(client, db_conn):
+    # 재처리 큐에 든 잡. 프론트가 이 값 하나로 경고 배너를 띄우므로 존재 단언이 아니라
+    # 값 자체를 고정한다 — is not None류 무기력 단언이면 'done' 고정 회귀도 통과한다.
+    job_id = _seed_job_with_pairs(db_conn, status="pending")
+    res = client.get(f"/api/curation/jobs/{job_id}")
+    assert res.status_code == 200
+    assert res.json()["data"]["status"] == "pending"
 
 
 def test_job_detail_404_when_missing(client, db_conn):
@@ -823,13 +843,18 @@ def test_reprocess_allows_a_done_job_that_was_never_confirmed(client, db_conn):
 
 
 def test_reprocess_preserves_result_json(client, db_conn):
-    """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10)."""
-    job_id = _seed_job(db_conn, result_json='{"rows": [{"row_index": 0}]}')
+    """result_json은 재처리 판별의 근거이자 실패 시 롤백 대상이다(spec §10).
+
+    부분 문자열 검사로는 초안이 다른 값으로 재작성돼도 'row_index'만 남으면 통과한다 —
+    payload 전체 동일성을 본다.
+    """
+    draft = '{"rows": [{"row_index": 0, "supply": 3000}], "supply_sum": 3000}'
+    job_id = _seed_job(db_conn, result_json=draft)
 
     res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
 
     assert res.status_code == 200
-    assert '"row_index"' in _job_row(db_conn, job_id)["result_json"]
+    assert json.loads(_job_row(db_conn, job_id)["result_json"]) == json.loads(draft)
 
 
 def test_reprocess_returns_404_for_unknown_job(client):
@@ -850,10 +875,38 @@ def test_reprocess_returns_409_when_job_is_already_queued(client, db_conn):
     assert _job_row(db_conn, job_id)["status"] == "running"
 
 
-def test_reprocess_returns_409_for_a_failed_job(client, db_conn):
-    job_id = _seed_job(db_conn, status="failed")
+def test_reprocess_twice_in_a_row_is_rejected_on_the_second_call(client, db_conn):
+    """docstring이 말하던 '중복 요청 차단'을 실제 연속 호출로 태운다.
 
-    assert client.post(f"/api/curation/jobs/{job_id}/reprocess").status_code == 409
+    첫 호출이 done → pending을 만들고, 두 번째는 그 pending에 걸려야 한다. 상태 가드가
+    사라지면 두 번째도 200이 되어 워커가 같은 잡을 두 번 집는 경합이 열린다.
+    """
+    job_id = _seed_job(db_conn)
+
+    first = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+    second = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert second.json()["error"]["code"] == "CONFLICT"
+    assert _job_row(db_conn, job_id)["status"] == "pending"
+
+
+def test_reprocess_requeues_a_failed_job(client, db_conn):
+    """failed 잡도 재처리 큐로 되돌린다 — API의 유일한 실패 복구 경로다(이슈 #93).
+
+    result_json은 그대로 둔다: 에러 JSON만 남은 잡은 rows가 없어 워커가 신규로,
+    초안 보존 실패 잡(#92·#88)은 rows가 남아 재처리로 스스로 재분류된다(#91 판별자).
+    """
+    job_id = _seed_job(db_conn, status="failed", result_json='{"error": "warp explode"}')
+
+    res = client.post(f"/api/curation/jobs/{job_id}/reprocess")
+
+    assert res.status_code == 200
+    assert res.json() == {"success": True, "data": {"job_id": job_id, "status": "pending"}}
+    row = _job_row(db_conn, job_id)
+    assert row["status"] == "pending"
+    assert '"error"' in row["result_json"], "복구 경로가 초안·에러 기록을 지우면 안 된다"
 
 
 def test_reprocess_never_touches_the_confirmed_invoice(client, db_conn):
@@ -935,7 +988,8 @@ def test_job_detail_exposes_crop_available_for_orphaned_pairs(client, db_conn):
 def _push_token_forward(engine, job_id):
     """updated_at을 1초 **앞으로** 밀어 세대 토큰을 결정론적으로 벌린다(spec §12).
 
-    updated_at은 초 단위라 같은 초 안에서 상태를 전이하면 토큰이 전이 전과 같아진다.
+    토큰 해상도는 밀리초(migration_013)라 대개 전이만으로 값이 갈리지만, 같은 밀리초에 겹치면
+    여전히 같아진다 — 1초를 밀어 결정론을 보장한다.
     UPDATE 문이 updated_at을 **명시 지정**하면 ON UPDATE CURRENT_TIMESTAMP가 발동하지
     않으므로 여기서 쓴 값이 그대로 남는다 — 그래서 이 호출은 그 테스트의 **마지막 쓰기**
     여야 한다(앞에 두면 뒤따르는 쓰기가 NOW로 되돌려 무효가 된다).
@@ -1045,9 +1099,10 @@ def test_the_refreshed_token_lets_the_editor_continue_without_reloading(client, 
 
     게이트가 걸린 잡(reviewed=1)으로 시작해야 첫 PATCH의 release_gate가 값을 실제로 바꿔
     updated_at이 튄다(같은 값 UPDATE는 ON UPDATE CURRENT_TIMESTAMP를 발동시키지 않는다).
-    시드의 updated_at을 1초 **뒤로** 밀어 그 튐이 초 경계를 반드시 넘게 만든다 — 여기서는
-    앞선 stale 테스트와 의도가 반대라 방향도 반대다. 같은 초에 머물면 쓰기 **이전**
-    토큰을 돌려주는 구현도 통과해(false-green) 연속 편집 회귀를 못 잡는다.
+    시드의 updated_at을 1초 **뒤로** 밀어 그 튐이 반드시 값을 갈라놓게 만든다 — 여기서는
+    앞선 stale 테스트와 의도가 반대라 방향도 반대다. 해상도가 밀리초(migration_013)라도
+    같은 밀리초에 머물면 쓰기 **이전** 토큰을 돌려주는 구현이 통과해(false-green)
+    연속 편집 회귀를 못 잡는다.
     """
     job_id = _seed_job_with_pairs(db_conn, reviewed=1, pairs=1, unreviewed=1)
     pair_id = _first_pair_id(db_conn, job_id)

@@ -300,3 +300,28 @@ def test_queries_expose_curation_reviewed_at(db_conn):
     summary = next(r for r in rows if r["job_id"] == job_id)
     assert str(summary["curation_reviewed_at"]) == "2026-01-01 09:00:00"
     assert str(detail["job"]["curation_reviewed_at"]) == "2026-01-01 09:00:00"
+
+
+# ── 세대 토큰 SQL 단일 소스(#84) ──────────────────────────────────────────
+
+_JOB_TOKEN_SENTINEL = "'TOKEN-SENTINEL'"
+
+
+def test_both_token_sites_read_the_shared_job_token_sql(monkeypatch, db_conn):
+    """발급(find_job_detail)과 대조(get_job_token)가 같은 모듈 상수를 호출 시점에 읽는지 증명한다.
+
+    한쪽만 표현식이 바뀌면 대조가 영구 불일치해 큐레이션 화면의 모든 쓰기가 409가 되는데,
+    왕복 단언만으로는 "두 리터럴이 우연히 같다"와 "한 소스를 공유한다"를 구별하지 못한다.
+    상수를 sentinel로 갈아끼워 두 값이 함께 따라오는지 본다 — 리터럴이 남아 있으면 그 쪽만
+    옛 값을 내어 단언이 깨진다. 상수 자체가 없으면 monkeypatch.setattr가 AttributeError다.
+    """
+    job_id, _pair_id = _seed_job_and_pair(db_conn)
+    repo = CurationRepository()
+
+    # 양성 대조 — 실제 표현식에서는 발급 토큰과 대조 토큰이 같은 값이다(왕복).
+    assert repo.find_job_detail(job_id)["job"]["job_token"] == repo.get_job_token(job_id)
+
+    monkeypatch.setattr(curation_repository, "JOB_TOKEN_SQL", _JOB_TOKEN_SENTINEL)
+
+    assert repo.find_job_detail(job_id)["job"]["job_token"] == "TOKEN-SENTINEL"
+    assert repo.get_job_token(job_id) == "TOKEN-SENTINEL"
