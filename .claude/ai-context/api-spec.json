@@ -3867,7 +3867,7 @@
           },
           "job_token": {
             "type": "string",
-            "description": "잡 세대 토큰(ocr_jobs.updated_at 초 단위). PATCH /pairs/{id}와 POST /jobs/{job_id}/review에 실어 보내야 한다."
+            "description": "잡 세대 토큰(ocr_jobs.updated_at 밀리초). PATCH /pairs/{id}와 POST /jobs/{job_id}/review에 실어 보내야 한다."
           },
           "created_at": {
             "type": "string",

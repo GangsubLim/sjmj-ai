@@ -7,6 +7,13 @@ from sqlalchemy import text
 from app.db import connection
 from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 
+# 세대 토큰(낙관적 잠금, spec §12)의 유일한 SQL 표현식 — 발급(find_job_detail)과
+# 대조(get_job_token)가 반드시 같은 문자열을 내야 한다. 두 곳이 갈라지면 대조가 영구
+# 불일치해 큐레이션 화면의 모든 쓰기가 409가 된다(#84). 표현·정밀도를 바꿀 일이 생기면
+# 반드시 이 상수만 고친다. 사용자 입력이 아닌 모듈 상수라 f-string 조립을 허용한다
+# (바인드 파라미터 자리가 아니다).
+JOB_TOKEN_SQL = "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR)"
+
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
     "(crop_ref, job_id, invoice_id, row_index, draft_label, draft_supply, final_label, "
@@ -54,7 +61,7 @@ class CurationRepository:
                     text(
                         "SELECT id, invoice_id, status, curation_reviewed, curation_reviewed_at, "
                         "result_json, created_at, "
-                        "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) AS job_token "
+                        f"{JOB_TOKEN_SQL} AS job_token "
                         "FROM ocr_jobs WHERE id = :id"
                     ),
                     {"id": job_id},
@@ -150,6 +157,14 @@ class CurationRepository:
     def find_job_for_update(self, job_id: int) -> dict | None:
         """상태 전이 대상 잡의 현재 상태를 행잠금으로 읽는다(재처리 요청·검수 완료 공용).
 
+        **락 유지 전제.** FOR UPDATE 락은 호출자가 db.transaction()을 연 경우에만 유지된다.
+        트랜잭션 밖 standalone 호출은 connection()이 자체 트랜잭션을 열고 블록이 끝나는
+        즉시 커밋하므로 락이 그 자리에서 풀린다 — 확인과 전이 사이가 비어 아래 경합 배제가
+        성립하지 않는다. 이 전제를 지키는 장치는 두 축이다 — 토큰 조회의 **호출 배치**(트랜잭션 경계 안)는
+        service 단위 테스트가, 실 커넥션 합류와 부분 반영 롤백은
+        tests/integration/test_curation_service_transactions.py 가 고정한다. FOR UPDATE
+        락 수명 자체를 2 커넥션으로 재는 테스트는 없다(#84 범위 밖).
+
         FOR UPDATE로 잡히므로, 확인과 전이 사이에 워커의 claim_next_pending이 끼어들어
         같은 잡을 두 번 집는 경합이 성립하지 않는다. 부모(ocr_jobs)를 먼저 잡는 자리라
         락 순서 불변식(잡 → 쌍)의 시작점이기도 하다 — Task 7의 mark_reviewed가 이 호출을
@@ -199,8 +214,10 @@ class CurationRepository:
         반드시 튄다 — 새 컬럼이 필요 없어 마이그레이션 0이 유지된다.
 
         DATE_FORMAT 대신 UNIX_TIMESTAMP를 쓰는 이유는 문자열 왕복의 안정성이다 — 포맷
-        문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, 정수 초는 타임존·표기 흔들림이 없다.
-        정밀도가 초 단위라는 한계는 spec §12가 수용한 것이다(필요해지면 TIMESTAMP(3)).
+        문자열의 %는 DBAPI paramstyle과 충돌할 수 있고, epoch 수치는 타임존·표기 흔들림이 없다.
+        정밀도는 밀리초다 — migration_013이 updated_at을 TIMESTAMP(3)으로 올려 같은 초 안의
+        두 번째 쓰기도 토큰이 갈린다(#95-1). 같은 밀리초에 겹치는 창은 남는다 — 해상도를 올려
+        창을 좁히는 것이지 충돌을 없애는 것이 아니다. 표현식은 JOB_TOKEN_SQL 한 곳에 있다.
 
         FOR UPDATE로 부모(ocr_jobs)를 먼저 잡으므로 뒤따르는 release_gate·update_pair가
         락 순서 불변식(잡 → 쌍)을 그대로 지킨다.
@@ -213,10 +230,7 @@ class CurationRepository:
         """
         with connection() as conn:
             return conn.execute(
-                text(
-                    "SELECT CAST(UNIX_TIMESTAMP(updated_at) AS CHAR) FROM ocr_jobs "
-                    "WHERE id = :id FOR UPDATE"
-                ),
+                text(f"SELECT {JOB_TOKEN_SQL} FROM ocr_jobs WHERE id = :id FOR UPDATE"),
                 {"id": job_id},
             ).scalar()
 

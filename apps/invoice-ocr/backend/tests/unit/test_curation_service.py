@@ -1,6 +1,6 @@
 """CurationService 단위 테스트 — repository는 mock, DB 비의존."""
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from unittest.mock import MagicMock
 
 import pytest
@@ -603,3 +603,80 @@ def test_mark_reviewed_locks_the_job_before_stamping_pairs():
     calls = [c[0] for c in repo.method_calls]
     assert calls.index("find_job_for_update") < calls.index("mark_reviewed")
     assert calls.index("get_job_token") < calls.index("mark_reviewed")
+
+
+# ── 트랜잭션 경계 불변식(#84) ─────────────────────────────────────────────
+
+_TRACKED_METHODS = (
+    "find_job_for_update",
+    "get_job_token",
+    "release_gate",
+    "update_pair",
+    "find_pair",
+    "mark_reviewed",
+    "list_included_labels",
+)
+
+
+def _recorder(timeline, name, value):
+    """호출을 타임라인에 남기고 원래 return_value를 그대로 돌려주는 side_effect."""
+
+    def _call(*args, **kwargs):
+        timeline.append(name)
+        return value
+
+    return _call
+
+
+def _tracking_transaction(timeline):
+    """enter/exit 시점을 repo 호출과 같은 타임라인에 남기는 트랜잭션 스텁."""
+
+    @contextmanager
+    def _transaction():
+        timeline.append("enter")
+        try:
+            yield None
+        finally:
+            timeline.append("exit")
+
+    return _transaction
+
+
+def _tracked_svc(repo, timeline, item_repo=None):
+    """repo 호출과 트랜잭션 경계를 한 타임라인에 기록하는 서비스."""
+    for name in _TRACKED_METHODS:
+        method = getattr(repo, name)
+        method.side_effect = _recorder(timeline, name, method.return_value)
+    return CurationService(
+        repo, item_repo or MagicMock(), transaction=_tracking_transaction(timeline)
+    )
+
+
+def test_patch_pair_reads_the_job_token_inside_the_transaction():
+    """토큰 조회 2회(② 대조 · 재발급)가 모두 enter와 exit **사이**에 있어야 한다(#84).
+
+    enter 선행만 단언하면 호출을 with 블록 뒤로 옮겨도 통과한다(enter는 이미 발생했다) —
+    exit 이전까지 함께 고정해야 경계가 양쪽으로 닫힌다. 조회와 쓰기 사이가 벌어지면
+    낙관적 잠금이 무의미해진다.
+    """
+    timeline = []
+    repo = _patched("included", "휠")
+
+    _tracked_svc(repo, timeline).patch_pair(5, {"canonical_label": "휠"}, "1000")
+
+    reads = [i for i, event in enumerate(timeline) if event == "get_job_token"]
+    assert len(reads) == 2
+    assert timeline.index("enter") < reads[0]
+    assert reads[-1] < timeline.index("exit")
+
+
+def test_mark_reviewed_reads_the_job_token_inside_the_transaction():
+    """검수 완료의 세대 대조도 같은 트랜잭션 안이어야 한다 — 한쪽만 막으면 방어가 반쪽이다."""
+    timeline = []
+    repo = _reviewable()
+
+    _tracked_svc(repo, timeline).mark_reviewed(7, "1000")
+
+    reads = [i for i, event in enumerate(timeline) if event == "get_job_token"]
+    assert len(reads) == 1
+    assert timeline.index("enter") < reads[0] < timeline.index("exit")
