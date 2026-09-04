@@ -12,7 +12,7 @@ from app.core.errors import conflict, not_found
 from app.repositories.curation_repository import CurationRepository
 
 
-def _optional_int(value) -> int | None:
+def _optional_int(value: int | None) -> int | None:
     """관측된 값만 int로 좁히고 값 없음(None)은 그대로 둔다(0으로 접지 않는다)."""
     return None if value is None else int(value)
 

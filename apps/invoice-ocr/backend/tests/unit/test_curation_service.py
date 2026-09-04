@@ -788,6 +788,7 @@ def test_list_jobs_keeps_observed_zero_as_zero():
 
 
 def test_list_jobs_forwards_row_delta_and_offset_to_repository():
+    # limit != offset인 조합 — 같으면 위치인자 뒤바뀜(offset, limit)을 잡지 못한다.
     repo = _ListRepo([])
-    CurationService(repo).list_jobs(2, 20, row_delta=True)
-    assert repo.calls == [(20, 20, True)]
+    CurationService(repo).list_jobs(3, 10, row_delta=True)
+    assert repo.calls == [(10, 20, True)]

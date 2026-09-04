@@ -144,7 +144,7 @@ def test_filter_off_returns_all_jobs_and_untouched_total(db_conn):
     rows, total = CurationRepository().list_jobs(20, 0)
 
     ids = {r["job_id"] for r in rows}
-    assert {added, flat} <= ids
+    assert ids == {added, flat}
     assert total == 2
 
 

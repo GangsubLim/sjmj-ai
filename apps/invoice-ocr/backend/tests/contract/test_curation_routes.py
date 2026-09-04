@@ -1287,7 +1287,7 @@ def test_list_jobs_default_does_not_filter(client, db_conn):
     res = client.get("/api/curation/jobs")
 
     ids = {j["job_id"] for j in res.json()["data"]}
-    assert {hit, miss} <= ids
+    assert ids == {hit, miss}
     assert res.json()["pagination"]["total"] == 2
 
 
@@ -1310,5 +1310,5 @@ def test_list_jobs_explicit_false_row_delta_matches_default(client, db_conn):
     res = client.get("/api/curation/jobs", params={"row_delta": "false"})
 
     ids = {j["job_id"] for j in res.json()["data"]}
-    assert {hit, miss} <= ids
+    assert ids == {hit, miss}
     assert res.json()["pagination"]["total"] == 2
