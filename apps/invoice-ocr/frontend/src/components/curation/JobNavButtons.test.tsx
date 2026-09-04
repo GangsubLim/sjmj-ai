@@ -95,4 +95,30 @@ describe("JobNavButtons", () => {
       replace: true,
     });
   });
+
+  it("필터가 켜져 있으면 목록·이웃 이동 URL이 필터를 보존한다", () => {
+    setup({ page: 2, prev: { jobId: 11, page: 2 }, rowDelta: true });
+
+    fireEvent.click(screen.getByRole("button", { name: "← 목록" }));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/curation?page=2&row_delta=true",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "← 이전" }));
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/curation/11?page=2&row_delta=true",
+      { replace: true },
+    );
+  });
+
+  it("필터를 넘기지 않은 확정 전 호출부는 URL이 도입 이전과 같다", () => {
+    setup({
+      basePath: "/curation/pending",
+      page: 2,
+      prev: { jobId: 11, page: 2 },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "← 목록" }));
+    expect(mockNavigate).toHaveBeenCalledWith("/curation/pending?page=2");
+  });
 });
