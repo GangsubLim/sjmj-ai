@@ -12,6 +12,11 @@ from app.core.errors import conflict, not_found
 from app.repositories.curation_repository import CurationRepository
 
 
+def _optional_int(value: int | None) -> int | None:
+    """관측된 값만 int로 좁히고 값 없음(None)은 그대로 둔다(0으로 접지 않는다)."""
+    return None if value is None else int(value)
+
+
 def _normalize_label(label: str | None) -> str:
     """정식 라벨을 등록 기준 형태로 정규화한다(없으면 빈 문자열).
 
@@ -46,10 +51,16 @@ class CurationService:
         self.item_repo = item_repo
         self._transaction = transaction or db.transaction
 
-    def list_jobs(self, page: int, limit: int) -> tuple[list[dict], int]:
-        """검수 큐(페이지)를 조회하고 표시용 타입으로 정규화한다."""
+    def list_jobs(
+        self, page: int, limit: int, *, row_delta: bool = False
+    ) -> tuple[list[dict], int]:
+        """검수 큐(페이지)를 조회하고 표시용 타입으로 정규화한다.
+
+        row_delta=True면 행 증감이 관측된 잡만 남는다 — 목록과 total이 같은 조건으로
+        좁혀지므로 필터를 켠 화면의 총건수가 그대로 "남은 일"이 된다(spec §4-4).
+        """
         offset = (page - 1) * limit
-        rows, total = self.repo.list_jobs(limit, offset)
+        rows, total = self.repo.list_jobs(limit, offset, row_delta=row_delta)
         jobs = [
             {
                 "job_id": int(r["job_id"]),
@@ -59,6 +70,9 @@ class CurationService:
                 "curation_reviewed_at": r["curation_reviewed_at"],
                 "pair_count": int(r["pair_count"]),
                 "unreviewed_count": int(r["unreviewed_count"] or 0),
+                # 관측 없음은 null로 남긴다 — 증감 0과 섞으면 힌트가 거짓말한다(spec §4-1).
+                "rows_added": _optional_int(r["rows_added"]),
+                "rows_dropped": _optional_int(r["rows_dropped"]),
                 "created_at": r["created_at"],
             }
             for r in rows

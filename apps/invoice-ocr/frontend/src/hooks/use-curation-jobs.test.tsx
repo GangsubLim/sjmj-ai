@@ -20,6 +20,8 @@ function summary(over: Partial<CurationJobSummary> = {}): CurationJobSummary {
     curation_reviewed_at: null,
     pair_count: 3,
     unreviewed_count: 3,
+    rows_added: null,
+    rows_dropped: null,
     created_at: "2026-06-30T09:00:00",
     ...over,
   };
@@ -78,5 +80,41 @@ describe("useCurationJobs", () => {
     const { result } = renderJobs();
     await waitFor(() => expect(result.current.loading).toBe(false));
     expect(result.current.error).toBe("조회 실패");
+  });
+
+  it("URL의 row_delta=true를 조회 파라미터로 싣는다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([]));
+    renderJobs(20, "/curation?row_delta=true");
+    await waitFor(() =>
+      expect(mockGetJobs).toHaveBeenCalledWith({
+        page: 1,
+        limit: 20,
+        row_delta: true,
+      }),
+    );
+  });
+
+  it("필터가 꺼져 있으면 요청이 도입 이전과 같다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([]));
+    renderJobs(20, "/curation");
+    await waitFor(() =>
+      expect(mockGetJobs).toHaveBeenCalledWith({ page: 1, limit: 20 }),
+    );
+  });
+
+  it("setRowDelta가 URL을 바꿔 재조회를 일으킨다", async () => {
+    mockGetJobs.mockResolvedValue(listResponse([]));
+    const { result } = renderJobs(20, "/curation");
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    act(() => result.current.setRowDelta(true));
+
+    await waitFor(() =>
+      expect(mockGetJobs).toHaveBeenLastCalledWith({
+        page: 1,
+        limit: 20,
+        row_delta: true,
+      }),
+    );
   });
 });

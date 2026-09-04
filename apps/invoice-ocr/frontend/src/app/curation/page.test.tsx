@@ -22,6 +22,8 @@ function setup(over: Partial<ReturnType<typeof useCurationJobs>> = {}) {
     loading: false,
     error: null,
     setPage: vi.fn(),
+    rowDelta: false,
+    setRowDelta: vi.fn(),
     refetch: vi.fn(),
     ...over,
   });
@@ -46,6 +48,8 @@ describe("CurationQueuePage", () => {
           curation_reviewed_at: null,
           pair_count: 7,
           unreviewed_count: 7,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-30T09:00:00",
         },
       ],
@@ -65,6 +69,8 @@ describe("CurationQueuePage", () => {
           curation_reviewed_at: "2026-06-29T09:00:00",
           pair_count: 3,
           unreviewed_count: 0,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-29T09:00:00",
         },
       ],
@@ -84,6 +90,8 @@ describe("CurationQueuePage", () => {
           curation_reviewed_at: "2026-06-29T09:00:00",
           pair_count: 3,
           unreviewed_count: 1,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-29T09:00:00",
         },
       ],
@@ -108,6 +116,8 @@ describe("CurationQueuePage", () => {
           curation_reviewed_at: null,
           pair_count: 7,
           unreviewed_count: 7,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-30T09:00:00",
         },
       ],
@@ -141,11 +151,52 @@ describe("CurationQueuePage", () => {
           curation_reviewed_at: null,
           pair_count: 7,
           unreviewed_count: 7,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-30T09:00:00",
         },
       ],
     });
     fireEvent.click(screen.getByRole("button", { name: "잡 #128 상세" }));
     expect(mockNavigate).toHaveBeenCalledWith("/curation/128?page=3");
+  });
+
+  it("행 증감 컬럼을 방향별로 분리해 렌더한다", () => {
+    setup({
+      total: 1,
+      data: [
+        {
+          job_id: 128,
+          invoice_id: 341,
+          curation_reviewed: false,
+          curation_reviewed_at: null,
+          pair_count: 7,
+          unreviewed_count: 7,
+          rows_added: 2,
+          rows_dropped: 1,
+          created_at: "2026-06-30T09:00:00",
+        },
+      ],
+    });
+    expect(screen.getByText("행 증감")).toBeInTheDocument();
+    expect(screen.getByText("+2 / −1")).toBeInTheDocument();
+  });
+
+  it("필터 토글이 현재 상태를 aria-pressed로 알리고 setRowDelta를 부른다", () => {
+    const setRowDelta = vi.fn();
+    setup({ rowDelta: false, setRowDelta });
+
+    const toggle = screen.getByRole("button", { name: "행 증감만" });
+    expect(toggle).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(toggle);
+
+    expect(setRowDelta).toHaveBeenCalledWith(true);
+  });
+
+  it("필터가 켜진 빈 목록은 필터 기준으로 문구를 바꾼다", () => {
+    setup({ total: 0, data: [], rowDelta: true });
+    expect(
+      screen.getByText("행 증감이 관측된 잡이 없습니다"),
+    ).toBeInTheDocument();
   });
 });

@@ -6,6 +6,7 @@ import {
   isLabelCorrected,
   isLabelRenormalized,
   isPairChanged,
+  rowDeltaText,
 } from "./curation";
 
 const base = { draft_label: "무", final_label: "무", canonical_label: "무" };
@@ -90,5 +91,23 @@ describe("curationJobBlockedNotice 상태별 경고 문구", () => {
     expect(notice?.title).toBe("⚠ 처리 실패");
     expect(notice?.body).toContain("재처리를 요청해 다시 시도하세요");
     expect(notice?.body).not.toContain("처리가 끝난 뒤");
+  });
+});
+
+describe("rowDeltaText", () => {
+  it("더한 수와 버린 수를 갈라 표시한다(합산 금지)", () => {
+    expect(rowDeltaText({ rows_added: 2, rows_dropped: 1 })).toBe("+2 / −1");
+  });
+
+  it("증감 0도 관측된 사실이라 0으로 표시한다", () => {
+    expect(rowDeltaText({ rows_added: 0, rows_dropped: 0 })).toBe("+0 / −0");
+  });
+
+  it("관측 없음은 대시 하나로 닫는다", () => {
+    expect(rowDeltaText({ rows_added: null, rows_dropped: null })).toBe("—");
+  });
+
+  it("한쪽만 관측되면 없는 쪽만 물음표로 남긴다", () => {
+    expect(rowDeltaText({ rows_added: 3, rows_dropped: null })).toBe("+3 / −?");
   });
 });

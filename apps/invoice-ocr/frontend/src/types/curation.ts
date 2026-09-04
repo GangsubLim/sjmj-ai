@@ -14,6 +14,11 @@ export interface CurationJobSummary {
   curation_reviewed_at: string | null;
   pair_count: number;
   unreviewed_count: number;
+  // 확정 시 사람이 더한 행 수 / 버린 행 수(백엔드가 ocr_corrections에서 투영).
+  // null은 관측 없음 — 증감 0과 섞지 않는다. 방향별로 움직여야 할 기준선이 정반대라
+  // 합산하지 않고 갈라 센다. 판정이 아니라 어느 잡을 먼저 열지 고르는 힌트다.
+  rows_added: number | null;
+  rows_dropped: number | null;
   created_at: string;
 }
 

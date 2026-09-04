@@ -4,6 +4,7 @@ import { InboxIcon } from "lucide-react";
 import { useCurationJobs } from "@/hooks/use-curation-jobs";
 import { CurationTabs } from "@/components/curation/CurationTabs";
 import { PageContainer } from "@/components/layout";
+import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -20,6 +21,7 @@ import { jobDetailUrl } from "@/lib/curation-url";
 import {
   curationJobState,
   CURATION_STATE_LABELS,
+  rowDeltaText,
   type CurationJobState,
 } from "@/utils/curation";
 import type { CurationJobSummary } from "@/types/curation";
@@ -30,12 +32,21 @@ function formatDate(iso: string): string {
 
 export default function CurationQueuePage() {
   const navigate = useNavigate();
-  const { data, total, page, totalPages, loading, error, setPage } =
-    useCurationJobs(CURATION_PAGE_SIZE);
+  const {
+    data,
+    total,
+    page,
+    totalPages,
+    loading,
+    error,
+    setPage,
+    rowDelta,
+    setRowDelta,
+  } = useCurationJobs(CURATION_PAGE_SIZE);
   const visiblePages = getVisiblePages(page, totalPages);
 
   const goToJob = (jobId: number) =>
-    navigate(jobDetailUrl("/curation", jobId, page));
+    navigate(jobDetailUrl("/curation", jobId, page, { rowDelta }));
 
   return (
     <PageContainer className="py-4">
@@ -45,6 +56,18 @@ export default function CurationQueuePage() {
       </div>
 
       <CurationTabs active="confirmed" />
+
+      <div className="mt-3 mb-2 flex items-center gap-2">
+        <Button
+          type="button"
+          variant={rowDelta ? "default" : "outline"}
+          size="sm"
+          aria-pressed={rowDelta}
+          onClick={() => setRowDelta(!rowDelta)}
+        >
+          행 증감만
+        </Button>
+      </div>
 
       {error && (
         <p className="text-destructive py-8 text-center text-sm">{error}</p>
@@ -60,8 +83,14 @@ export default function CurationQueuePage() {
       {!loading && !error && data.length === 0 && (
         <EmptyState
           icon={InboxIcon}
-          title="검수할 잡이 없습니다"
-          description="confirmed된 OCR 잡이 생기면 여기에 표시됩니다."
+          title={
+            rowDelta ? "행 증감이 관측된 잡이 없습니다" : "검수할 잡이 없습니다"
+          }
+          description={
+            rowDelta
+              ? "필터를 끄면 전체 검수 큐가 보입니다."
+              : "confirmed된 OCR 잡이 생기면 여기에 표시됩니다."
+          }
         />
       )}
 
@@ -73,6 +102,7 @@ export default function CurationQueuePage() {
               <th>명세서</th>
               <th>행수</th>
               <th>미처리</th>
+              <th>행 증감</th>
               <th>상태</th>
               <th>생성일</th>
             </tr>
@@ -103,6 +133,7 @@ export default function CurationQueuePage() {
                 </td>
                 <td>{job.pair_count}</td>
                 <td>{job.unreviewed_count}</td>
+                <td className="tabular-nums">{rowDeltaText(job)}</td>
                 <td>
                   <CurationStateBadge job={job} />
                 </td>

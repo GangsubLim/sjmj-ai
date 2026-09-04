@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { CurationJobSummary } from "@/types/curation";
 import { curationAPI } from "@/services/api";
 import { usePageParam } from "@/hooks/use-page-param";
+import { useRowDeltaParam } from "@/hooks/use-row-delta-param";
 import { CURATION_PAGE_SIZE } from "@/lib/pagination";
 
 interface UseCurationJobsReturn {
@@ -12,6 +13,9 @@ interface UseCurationJobsReturn {
   loading: boolean;
   error: string | null;
   setPage: (p: number) => void;
+  /** 행 증감 필터(URL 소유). 상세·이웃 이동까지 같은 값이 따라간다. */
+  rowDelta: boolean;
+  setRowDelta: (on: boolean) => void;
   refetch: () => void;
 }
 
@@ -23,6 +27,7 @@ export function useCurationJobs(
   const [totalPages, setTotalPages] = useState(0);
   // page는 URL이 소유한다 — 뒤로가기·새로고침이 보던 페이지를 복원한다(useState(1)이면 1로 리셋).
   const { page, setPage } = usePageParam();
+  const { rowDelta, setRowDelta } = useRowDeltaParam();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const reqId = useRef(0);
@@ -32,7 +37,12 @@ export function useCurationJobs(
     setLoading(true);
     setError(null);
     try {
-      const res = await curationAPI.getJobs({ page, limit });
+      const res = await curationAPI.getJobs({
+        page,
+        limit,
+        // 꺼져 있으면 키 자체를 넘기지 않는다 — 요청 모양이 도입 이전과 같아야 한다.
+        ...(rowDelta ? { row_delta: true } : {}),
+      });
       if (myId !== reqId.current) return;
       setData(Array.isArray(res.data) ? res.data : []);
       setTotal(res.pagination?.total ?? 0);
@@ -43,7 +53,7 @@ export function useCurationJobs(
     } finally {
       if (myId === reqId.current) setLoading(false);
     }
-  }, [page, limit]);
+  }, [page, limit, rowDelta]);
 
   useEffect(() => {
     fetch();
@@ -63,6 +73,8 @@ export function useCurationJobs(
     loading,
     error,
     setPage,
+    rowDelta,
+    setRowDelta,
     refetch: fetch,
   };
 }

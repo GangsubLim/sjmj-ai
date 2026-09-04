@@ -44,6 +44,20 @@ export const fetchCurationPage: FetchPage = async (page) => {
   };
 };
 
+// 필터 켠 목록 전용 어댑터. 어댑터를 렌더 안에서 조립하지 않고 모듈 상수 2종으로 나눠
+// 두는 이유는 identity 고정이다 — 이 함수는 effect deps에 그대로 들어간다.
+export const fetchCurationRowDeltaPage: FetchPage = async (page) => {
+  const res = await curationAPI.getJobs({
+    page,
+    limit: CURATION_PAGE_SIZE,
+    row_delta: true,
+  });
+  return {
+    ids: res.data.map((job) => job.job_id),
+    totalPages: res.pagination?.totalPages ?? 1,
+  };
+};
+
 export const fetchUnconfirmedPage: FetchPage = async (page) => {
   const res = await ocrAPI.getUnconfirmedJobs({
     page,
@@ -80,12 +94,20 @@ export function useJobNeighbors({
   // 라우트에 key가 없어 jobId만 바뀌면 element가 재사용된다(main.tsx:95) — 그래서
   // 잡 간 이동에도 이 ref는 살아남는다. 목록 경유·새로고침이면 새 스냅샷이 만들어진다.
   const snapshotRef = useRef<Snapshot | null>(null);
+  const fetchPageRef = useRef(fetchPage);
   const reqId = useRef(0);
   const [state, setState] = useState<UseJobNeighborsReturn>(() =>
     isNavigableJobId(jobId) ? { prev: null, next: null, loading: true } : IDLE,
   );
 
   useEffect(() => {
+    // 어댑터가 바뀌면 모집단이 바뀐 것이다 — 옛 목록 순서를 들고 가면 다른 필터의
+    // 이웃을 계산한다. deps에 fetchPage가 있어 여기까지 재진입한다.
+    if (fetchPageRef.current !== fetchPage) {
+      fetchPageRef.current = fetchPage;
+      snapshotRef.current = null;
+    }
+
     // 무효 jobId 분기에서 setState를 하지 않는다 — react-hooks/set-state-in-effect가
     // error이고(eslint.config.js:26의 recommended), 반환값을 렌더 시 파생하면 상태를
     // 건드릴 필요 자체가 없다. 진행 중이던 요청은 여기서도 무효화한다.

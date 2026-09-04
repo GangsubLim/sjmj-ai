@@ -4,6 +4,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   useJobNeighbors,
   fetchCurationPage,
+  fetchCurationRowDeltaPage,
   fetchUnconfirmedPage,
   type FetchPage,
 } from "./use-job-neighbors";
@@ -306,6 +307,29 @@ describe("useJobNeighbors", () => {
     expect(result.current.prev).toBeNull();
     expect(result.current.next).toBeNull();
   });
+
+  it("fetchPage가 바뀌면 옛 스냅샷을 버리고 새 모집단에서 이웃을 계산한다", async () => {
+    // 상세에 머문 채 row_delta만 바뀌면 라우트 element가 재사용된다(main.tsx에 key 없음) —
+    // 스냅샷을 그대로 두면 다른 필터의 목록으로 이전/다음이 계산된다.
+    const unfiltered = vi
+      .fn()
+      .mockResolvedValue({ ids: [1, 2, 3], totalPages: 1 });
+    const filtered = vi.fn().mockResolvedValue({ ids: [2, 9], totalPages: 1 });
+    const { result, rerender } = renderHook(
+      ({ fetchPage }) => useJobNeighbors({ jobId: 2, page: 1, fetchPage }),
+      { initialProps: { fetchPage: unfiltered as FetchPage } },
+    );
+    await waitFor(() =>
+      expect(result.current.next).toEqual({ jobId: 3, page: 1 }),
+    );
+
+    rerender({ fetchPage: filtered as FetchPage });
+
+    await waitFor(() =>
+      expect(result.current.next).toEqual({ jobId: 9, page: 1 }),
+    );
+    expect(result.current.prev).toBeNull();
+  });
 });
 
 describe("fetchPage 어댑터", () => {
@@ -340,5 +364,27 @@ describe("fetchPage 어댑터", () => {
       limit: CURATION_PAGE_SIZE,
     });
     expect(res).toEqual({ ids: [11], totalPages: 1 });
+  });
+
+  it("fetchCurationRowDeltaPage는 필터를 실은 목록에서 이웃을 계산한다", async () => {
+    vi.mocked(curationAPI.getJobs).mockResolvedValue({
+      success: true,
+      data: [{ job_id: 7 }, { job_id: 9 }] as never,
+      pagination: { page: 2, limit: 20, total: 2, totalPages: 3 },
+    });
+
+    const res = await fetchCurationRowDeltaPage(2);
+
+    expect(curationAPI.getJobs).toHaveBeenCalledWith({
+      page: 2,
+      limit: CURATION_PAGE_SIZE,
+      row_delta: true,
+    });
+    expect(res).toEqual({ ids: [7, 9], totalPages: 3 });
+  });
+
+  it("두 어댑터는 서로 다른 모듈 상수다(effect deps identity 고정)", () => {
+    // 렌더마다 새로 조립하면 조회→setState→렌더→재조회 루프가 된다.
+    expect(fetchCurationRowDeltaPage).not.toBe(fetchCurationPage);
   });
 });

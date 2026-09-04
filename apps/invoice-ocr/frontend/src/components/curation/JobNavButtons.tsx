@@ -12,6 +12,8 @@ interface JobNavButtonsProps {
   prev: JobNeighbor | null;
   next: JobNeighbor | null;
   loading: boolean;
+  /** 행 증감 필터 — 목록 복귀·이웃 이동 URL에 함께 실린다. 확정 전 탭은 넘기지 않는다. */
+  rowDelta?: boolean;
 }
 
 // 두 상세 페이지가 공유한다(JobImagePanel 공유와 같은 선례). 도메인 규칙이 아니라 순수
@@ -22,15 +24,19 @@ export function JobNavButtons({
   prev,
   next,
   loading,
+  rowDelta = false,
 }: JobNavButtonsProps) {
   const navigate = useNavigate();
 
   // 이전/다음은 replace — 여러 번 눌러도 브라우저 뒤로가기 한 번이면 보던 목록 페이지로
   // 돌아온다. 이동 URL의 page는 스냅샷 항목이 기억하는 페이지를 쓴다.
   const goToNeighbor = (neighbor: JobNeighbor) =>
-    navigate(jobDetailUrl(basePath, neighbor.jobId, neighbor.page), {
-      replace: true,
-    });
+    navigate(
+      jobDetailUrl(basePath, neighbor.jobId, neighbor.page, { rowDelta }),
+      {
+        replace: true,
+      },
+    );
 
   return (
     // 이 nav는 로딩·에러 분기에서도 마운트된 채 남는다 — 이전/다음이 비활성인 이유가
@@ -43,7 +49,7 @@ export function JobNavButtons({
       <Button
         variant="outline"
         size="sm"
-        onClick={() => navigate(jobListUrl(basePath, page))}
+        onClick={() => navigate(jobListUrl(basePath, page, { rowDelta }))}
       >
         ← 목록
       </Button>

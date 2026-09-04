@@ -38,11 +38,11 @@ def _service() -> CurationService:
 
 
 @router.get("/curation/jobs")
-def list_jobs(page: int = 1, limit: int = 20):
-    """검수 큐(confirmed 잡) 목록을 페이지 조회한다."""
+def list_jobs(page: int = 1, limit: int = 20, row_delta: bool = False):
+    """검수 큐(confirmed 잡) 목록을 페이지 조회한다(row_delta=true면 행 증감 잡만)."""
     page = max(1, min(_PAGE_MAX, page))
     limit = max(1, min(_LIMIT_MAX, limit))
-    jobs, total = _service().list_jobs(page, limit)
+    jobs, total = _service().list_jobs(page, limit, row_delta=row_delta)
     total_pages = (total + limit - 1) // limit if total else 1
     return envelope.list_response(
         jobs, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}

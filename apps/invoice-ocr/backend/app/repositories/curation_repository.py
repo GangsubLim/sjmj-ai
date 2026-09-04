@@ -14,6 +14,34 @@ from app.schemas.curation import STATUS_EXCLUDED, STATUS_INCLUDED
 # (바인드 파라미터 자리가 아니다).
 JOB_TOKEN_SQL = "CAST(UNIX_TIMESTAMP(updated_at) AS CHAR)"
 
+
+def _row_delta_expr(key: str) -> str:
+    """correction_json의 정수 스칼라만 수치로 좁히는 SQL 식을 만든다.
+
+    JSON_TYPE이 INTEGER일 때만 캐스팅하고 그 외(키 부재·NULL·문자열·불리언)는 NULL로
+    닫는다 — 값 없음과 값 0을 섞지 않기 위함이며, ocr_observation이 rows_type != 'ARRAY'로
+    세운 방어와 같은 규율이다. 사용자 입력이 아닌 모듈 상수 조립이라 f-string을 허용한다.
+    """
+    path = f"'$.{key}'"
+    return (
+        f"CASE WHEN JSON_TYPE(JSON_EXTRACT(c.correction_json, {path})) = 'INTEGER' "
+        f"THEN CAST(JSON_EXTRACT(c.correction_json, {path}) AS SIGNED) END"
+    )
+
+
+ROWS_ADDED_SQL = _row_delta_expr("rows_added")
+ROWS_DROPPED_SQL = _row_delta_expr("rows_dropped")
+
+# 잡당 최신 correction 1건만 붙인다 — 명세서 삭제 후 재확정으로 job_id가 1:N이 될 수 있어,
+# 조건 없는 LEFT JOIN이면 COUNT(tp.id)·SUM(...)이 배로 부풀어 pair_count가 조용히 틀어진다.
+LATEST_CORRECTION_JOIN = (
+    "LEFT JOIN ocr_corrections c "
+    "ON c.id = (SELECT MAX(c2.id) FROM ocr_corrections c2 WHERE c2.job_id = j.id) "
+)
+
+# 행 증감이 관측된 잡만 — NULL은 비교가 NULL이라 자동으로 빠진다(값 없음은 대상 아님).
+ROW_DELTA_WHERE = f"WHERE ({ROWS_ADDED_SQL} > 0 OR {ROWS_DROPPED_SQL} > 0) "
+
 _PAIR_INSERT = text(
     "INSERT INTO training_pairs "
     "(crop_ref, job_id, invoice_id, row_index, draft_label, draft_supply, final_label, "
@@ -35,19 +63,53 @@ class CurationRepository:
                 conn.execute(_PAIR_INSERT, pair)
         return len(pairs)
 
-    def list_jobs(self, limit: int, offset: int) -> tuple[list[dict], int]:
-        """training_pairs 보유 잡을 검수상태·미처리수와 함께 페이지 조회한다."""
+    def list_jobs(
+        self, limit: int, offset: int, *, row_delta: bool = False
+    ) -> tuple[list[dict], int]:
+        """training_pairs 보유 잡을 검수상태·미처리수·행 증감과 함께 페이지 조회한다.
+
+        모집단은 training_pairs를 1건 이상 가진 확정 잡으로 한정된다 — 초안 행을 전량
+        교체해 쌍이 0건이 된 잡은 행 증감 신호가 가장 강해도 이 목록에서 빠진다.
+
+        rows_added/rows_dropped는 최신 ocr_corrections 1건에서 투영하며, 관측이 없으면
+        None이다(0과 구분 — spec §4-1). row_delta=True면 두 수 중 하나라도 0보다 큰 잡만
+        남기고 total도 같은 조건으로 센다. False면 쿼리·정렬·total이 도입 이전과 동일하다.
+
+        MAX()로 감싸는 이유: 조인이 잡당 최대 1행이라 MAX는 항등이지만, GROUP BY에 JSON
+        식을 나열하지 않고도 ONLY_FULL_GROUP_BY를 만족시킨다.
+
+        Args:
+            limit: 페이지 크기.
+            offset: 건너뛸 행 수.
+            row_delta: 행 증감이 있는 잡만 남길지 여부.
+
+        Returns:
+            (행 dict 리스트, 조건에 해당하는 전체 잡 수).
+        """
+        where = ROW_DELTA_WHERE if row_delta else ""
         list_sql = text(
             "SELECT j.id AS job_id, j.invoice_id, j.curation_reviewed, j.curation_reviewed_at, "
             "j.created_at, "
             "COUNT(tp.id) AS pair_count, "
-            "SUM(CASE WHEN tp.reviewed_at IS NULL THEN 1 ELSE 0 END) AS unreviewed_count "
+            "SUM(CASE WHEN tp.reviewed_at IS NULL THEN 1 ELSE 0 END) AS unreviewed_count, "
+            f"MAX({ROWS_ADDED_SQL}) AS rows_added, "
+            f"MAX({ROWS_DROPPED_SQL}) AS rows_dropped "
             "FROM ocr_jobs j JOIN training_pairs tp ON tp.job_id = j.id "
+            f"{LATEST_CORRECTION_JOIN}"
+            f"{where}"
             "GROUP BY j.id, j.invoice_id, j.curation_reviewed, j.curation_reviewed_at, j.created_at "
             "ORDER BY j.curation_reviewed ASC, j.created_at DESC, j.id DESC "
             "LIMIT :limit OFFSET :offset"
         )
-        count_sql = text("SELECT COUNT(DISTINCT job_id) FROM training_pairs")
+        count_sql = (
+            text(
+                "SELECT COUNT(DISTINCT j.id) FROM ocr_jobs j "
+                "JOIN training_pairs tp ON tp.job_id = j.id "
+                f"{LATEST_CORRECTION_JOIN}{ROW_DELTA_WHERE}"
+            )
+            if row_delta
+            else text("SELECT COUNT(DISTINCT job_id) FROM training_pairs")
+        )
         with connection() as conn:
             rows = conn.execute(list_sql, {"limit": limit, "offset": offset}).mappings().all()
             total = conn.execute(count_sql).scalar() or 0
