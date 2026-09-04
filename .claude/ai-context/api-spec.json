@@ -409,6 +409,16 @@
         "source": "app/routers/curation.py"
       },
       {
+        "method": "GET",
+        "path": "/api/curation/jobs/{job_id}/geometry",
+        "summary": "단계 기하 사이드카(crop_dir/geometry.json) 조회 — 잡·파일 부재 404, 파싱 실패·객체 아님·generation 키 부재 또는 정수 아님 500 SERVER_ERROR(404 위장 금지), generation 정수 불일치(≠ ocr_jobs.reprocess_seq)면 409 CONFLICT(이전 세대 기하). 백엔드는 generation 한 키만 읽고 스키마 검증은 하지 않는다 — 계약 소유자는 워커, version 판별은 프론트(ADR 0012). 과거 잡에는 백필하지 않으므로 404가 정상 상태다",
+        "auth": "public",
+        "req": null,
+        "res": "StageGeometry",
+        "router": "curation",
+        "source": "app/routers/curation.py"
+      },
+      {
         "method": "PATCH",
         "path": "/api/curation/pairs/{id}",
         "summary": "쌍 큐레이션(status/canonical_label; status=excluded 시 서버가 exclusion_reason NULL 적용; 수정된 쌍의 reviewed_at을 NULL로 되돌리고 그 잡의 curation_reviewed를 해제한다 — 응답 job_curation_reviewed는 항상 false. 정식 라벨의 사전 등록은 하지 않는다 — 등록 트리거는 검수 완료뿐) job_token 필수 — 불일치 또는 done 아님이면 409 CONFLICT. 응답에 갱신된 job_token 포함",
@@ -518,6 +528,7 @@
       "ErrorEnvelope": ["* (all endpoints on 400/404/409/500)"],
       "CurationJobSummary": ["GET /api/curation/jobs"],
       "CurationJobDetail": ["GET /api/curation/jobs/{job_id}"],
+      "StageGeometry": ["GET /api/curation/jobs/{job_id}/geometry"],
       "CurationPair": [
         "GET /api/curation/jobs/{job_id}",
         "PATCH /api/curation/pairs/{id}"
@@ -2457,6 +2468,42 @@
         }
       }
     },
+    "/api/curation/jobs/{job_id}/geometry": {
+      "get": {
+        "summary": "단계 기하 사이드카 조회 (ADR 0012 — result_json 계약 불변)",
+        "tags": ["curation"],
+        "parameters": [
+          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+        ],
+        "responses": {
+          "200": {
+            "description": "기하 문서. 워커가 도달한 단계까지만 담기므로 부분 문서가 정상이다",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    { "properties": { "data": { "$ref": "#/components/schemas/StageGeometry" } } }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "잡 없음 또는 기하 없음(관측 없음 — 과거 잡의 정상 상태)",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "409": {
+            "description": "이전 세대 기하 — 정수 generation ≠ ocr_jobs.reprocess_seq",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          },
+          "500": {
+            "description": "기하 파일 손상 — generation 키 부재·정수 아님도 포함. 404로 위장하지 않는다",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+          }
+        }
+      }
+    },
     "/api/curation/pairs/{id}": {
       "patch": {
         "summary": "쌍 큐레이션 — status 또는 canonical_label 갱신(Pydantic 검증)",
@@ -3902,6 +3949,36 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/CurationPair"
+            }
+          }
+        }
+      },
+      "StageGeometry": {
+        "type": "object",
+        "description": "한 잡이 각 단계에서 실제로 쓴 좌표·수치. 생산자는 ml 워커(handwriting/geometry.py)이고 계약 정본도 거기다 — 백엔드는 generation 한 키만 읽는다. 워커가 도달한 단계까지만 기록하므로 하류 키(hlines·pitch·item_x·amount_x·rows)는 강등 잡에서 **부재**한다(null이 아니라 키 자체가 없다).",
+        "properties": {
+          "version": { "type": "integer", "description": "계약 버전(현재 1). 프론트는 모르는 값이면 패널을 렌더하지 않고 안내 문구로 닫는다" },
+          "generation": { "type": "integer", "description": "워커가 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq(migration_014). 백엔드가 현재 값과 대조해 다르면 409" },
+          "image_size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "EXIF 적용 후 원본 [width, height]. 쿼드 오버레이 viewBox의 입력" },
+          "warp_size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "워프 결과 [width, height]. 워프 좌표계 패널 viewBox의 입력(상수 하드코딩 금지)" },
+          "quad": { "type": "array", "nullable": true, "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 4, "maxItems": 4, "description": "원본 좌표계 4점 [[x,y]×4]. 게이트 전량 강등이면 마지막 후보의 quad" },
+          "quad_source": { "type": "string", "nullable": true, "enum": ["dl", "color"], "description": "그 quad를 낸 공급자(corner_dl.quad_candidates 출력 그대로)" },
+          "deskew_deg": { "type": "number", "nullable": true, "description": "워프 후 적용한 deskew 각도(도)" },
+          "hlines": { "type": "array", "items": { "type": "integer" }, "description": "워프 좌표계 가로 격자선 y들. 강등 잡에는 키 자체가 없다" },
+          "pitch": { "type": "number", "description": "행 피치(중앙값). 강등 잡에는 키 자체가 없다" },
+          "item_x": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "품목 크롭의 실제 [x0, x1](rows.ITEM_X ±4). 템플릿 상수가 아니라 그 잡에 쓰인 값" },
+          "amount_x": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "금액 크롭의 실제 [x0, x1]. 좌측은 전표별 실측(grid_v4.amount_crop_left, #50)" },
+          "rows": {
+            "type": "array",
+            "description": "prop.rows 전량과 평행한 행 목록(cont·empty·total 포함). 강등 잡에는 키 자체가 없다",
+            "items": {
+              "type": "object",
+              "properties": {
+                "band": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
+                "type": { "type": "string", "enum": ["new", "cont", "empty", "total"] },
+                "item_box": { "type": "array", "nullable": true, "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "실제로 크롭된 행의 세로 박스 [y0, y1]. 크롭 대상이 아니면 null" },
+                "row_index": { "type": "integer", "nullable": true, "description": "row-{i}.png·crop_ref의 i와 같은 값. 크롭 대상이 아니면 null(spec 불변식 6)" }
+              }
             }
           }
         }

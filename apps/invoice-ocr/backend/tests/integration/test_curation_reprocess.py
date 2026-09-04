@@ -3,7 +3,7 @@
 import json
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 
 from app.repositories.curation_repository import CurationRepository
 from tests.fixtures.curation_helpers import rewind_job_token
@@ -74,3 +74,61 @@ def test_requeue_for_reprocess_bumps_the_job_token(db_conn):
     repo.requeue_for_reprocess(job_id)
 
     assert repo.get_job_token(job_id) != before
+
+
+def test_requeue_bumps_the_reprocess_generation_in_the_same_update(db_conn):
+    """세대 증가 지점은 하나다 — status 전이와 같은 UPDATE에서 오른다(spec §6-2).
+
+    두 문장으로 나누면 그 사이에 워커가 잡을 집어 옛 세대로 기하를 스탬프할 창이 생긴다.
+    최종 상태만 보면 두 UPDATE로 쪼개져도 같은 값에 도달하므로, 실행된 문장 수 자체를
+    센다 — SQLAlchemy 이벤트로 커서에 넘어간 SQL을 가로챈다.
+    """
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/a.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+    statements = []
+
+    def _capture(conn, cursor, statement, parameters, context, executemany):
+        if "ocr_jobs" in statement and "UPDATE" in statement.upper():
+            statements.append(statement)
+
+    event.listen(db_conn, "before_cursor_execute", _capture)
+    try:
+        CurationRepository().requeue_for_reprocess(job_id)
+    finally:
+        event.remove(db_conn, "before_cursor_execute", _capture)
+
+    assert len(statements) == 1
+    assert "reprocess_seq" in statements[0]
+    assert "status" in statements[0]
+
+    with db_conn.begin() as conn:
+        row = (
+            conn.execute(
+                text("SELECT status, reprocess_seq FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            )
+            .mappings()
+            .first()
+        )
+    assert row["status"] == "pending"
+    assert row["reprocess_seq"] == 1
+
+
+def test_requeue_twice_reaches_generation_two(db_conn):
+    """멱등이 아니다 — 재처리 요청마다 논리 세대가 하나씩 오른다."""
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/b.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+    repo = CurationRepository()
+    repo.requeue_for_reprocess(job_id)
+    with db_conn.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET status='done' WHERE id = :id"), {"id": job_id})
+    repo.requeue_for_reprocess(job_id)
+
+    with db_conn.begin() as conn:
+        seq = conn.execute(
+            text("SELECT reprocess_seq FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+        ).scalar()
+    assert seq == 2

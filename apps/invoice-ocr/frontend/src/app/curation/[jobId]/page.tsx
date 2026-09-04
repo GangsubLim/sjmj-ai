@@ -11,6 +11,7 @@ import {
 } from "@/hooks/use-job-neighbors";
 import { CurationPairRow } from "@/components/curation/CurationPairRow";
 import { JobImagePanel } from "@/components/curation/JobImagePanel";
+import { StageGeometryPanel } from "@/components/curation/StageGeometryPanel";
 import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -145,8 +146,11 @@ export default function CurationJobPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        {/* 좌: 단계 이미지 (확정 전 상세와 공유) */}
-        <JobImagePanel jobId={job.job_id} />
+        {/* 좌: 단계 이미지 (확정 전 상세와 공유) + 단계 기하 오버레이(확정 후 전용) */}
+        <div className="space-y-3">
+          <JobImagePanel jobId={job.job_id} />
+          <StageGeometryPanel jobId={job.job_id} />
+        </div>
 
         {/* 우: 행별 학습쌍 */}
         <div>

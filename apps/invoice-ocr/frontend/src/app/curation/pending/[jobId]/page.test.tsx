@@ -8,6 +8,8 @@ import {
   useJobNeighbors,
   fetchUnconfirmedPage,
 } from "@/hooks/use-job-neighbors";
+import { useJobGeometry } from "@/hooks/use-job-geometry";
+import type { StageGeometry } from "@/types/curation";
 
 vi.mock("@/services/api", () => ({
   ocrAPI: { getJob: vi.fn() },
@@ -21,9 +23,38 @@ vi.mock("@/hooks/use-job-neighbors", () => ({
   useJobNeighbors: vi.fn(),
   fetchUnconfirmedPage: vi.fn(),
 }));
+// 기하 훅도 주입한다 — 실 훅은 이 파일의 services/api mock에 curationAPI가 없어 무조건
+// 던지고 error로 접힌다. 그러면 패널이 ready 분기에 도달할 길이 없어 "기하 미노출" 단언이
+// 반증 불가능해진다(누출이 생겨도 통과). 렌더 가능한 상태를 강제해야 방어가 성립한다.
+vi.mock("@/hooks/use-job-geometry", () => ({ useJobGeometry: vi.fn() }));
 
 const mockGetJob = vi.mocked(ocrAPI.getJob);
 const mockNeighbors = vi.mocked(useJobNeighbors);
+const mockGeometry = vi.mocked(useJobGeometry);
+
+// 확정 후 상세 스펙과 같은 완전 문서 — 패널이 실제로 그려질 수 있는 입력이다.
+const FULL_GEOMETRY: StageGeometry = {
+  version: 1,
+  generation: 0,
+  image_size: [3024, 4032],
+  warp_size: [900, 2100],
+  quad: [
+    [10, 20],
+    [30, 20],
+    [30, 40],
+    [10, 40],
+  ],
+  quad_source: "color",
+  deskew_deg: 0.42,
+  hlines: [614, 696],
+  pitch: 82,
+  item_x: [96, 396],
+  amount_x: [630, 896],
+  rows: [
+    { band: [612, 694], type: "new", item_box: [618, 690], row_index: 0 },
+    { band: [694, 776], type: "cont", item_box: null, row_index: null },
+  ],
+};
 
 function renderDetail(jobId = "42", entry?: string) {
   // beforeEach의 vi.clearAllMocks()가 반환값도 지우므로 렌더 직전에 매번 세팅한다.
@@ -461,5 +492,41 @@ describe("UnconfirmedJobDetailPage", () => {
       expect(screen.getByText("확정 전 목록")).toBeInTheDocument(),
     );
     expect(router.state.location.search).toBe("?page=2");
+  });
+
+  it("확정 전 상세에는 단계 기하 패널이 없다", async () => {
+    // JobImagePanel을 확정 후 상세와 공유하므로 거기서 기하를 열면 §8이 범위 밖으로 둔
+    // 확정 전 화면에 기하가 샌다 — 신규 잡도 geometry 파일을 가져 404 폴백이 성립하지 않는다.
+    // 기하를 ready로 강제해 두는 것이 이 단언의 반증 가능성이다 — 패널이 확정 전 화면에
+    // 끼어드는 순간 testid가 나타나 RED가 된다.
+    mockGeometry.mockReturnValue({ status: "ready", geometry: FULL_GEOMETRY });
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          rows: [
+            {
+              row_index: 0,
+              crop_ref: "job-42/row-0",
+              item_top5: [{ label: "삼겹살", sim: 0.9 }],
+              supply: 100000,
+              amount_raw: "100000",
+              item_uncertain: false,
+            },
+          ],
+          supply_sum: 100000,
+          warp_ok: true,
+        },
+      },
+    });
+
+    renderDetail();
+
+    await screen.findByAltText("원본 전표");
+    expect(
+      screen.queryByTestId("stage-geometry-panel"),
+    ).not.toBeInTheDocument();
   });
 });

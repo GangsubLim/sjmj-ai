@@ -325,3 +325,17 @@ def test_both_token_sites_read_the_shared_job_token_sql(monkeypatch, db_conn):
 
     assert repo.find_job_detail(job_id)["job"]["job_token"] == "TOKEN-SENTINEL"
     assert repo.get_job_token(job_id) == "TOKEN-SENTINEL"
+
+
+def test_get_reprocess_seq_reads_the_current_generation(db_conn):
+    with db_conn.begin() as conn:
+        conn.execute(text("INSERT INTO ocr_jobs (status, image_path) VALUES ('done', '/g.jpg')"))
+        job_id = conn.execute(text("SELECT LAST_INSERT_ID()")).scalar()
+
+    repo = CurationRepository()
+    assert repo.get_reprocess_seq(job_id) == 0
+
+    repo.requeue_for_reprocess(job_id)
+
+    assert repo.get_reprocess_seq(job_id) == 1
+    assert repo.get_reprocess_seq(999999) is None

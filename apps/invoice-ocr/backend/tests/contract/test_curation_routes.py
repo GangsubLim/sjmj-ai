@@ -592,6 +592,135 @@ def test_image_blocks_path_traversal_via_kind(client, db_conn, _data_dir, tmp_pa
     assert b"SECRET-OUTSIDE-DATA-ROOT" not in res.content
 
 
+# ── GET /api/curation/jobs/{id}/geometry ───────────────────────────────────
+
+
+def _write_geometry(data_dir, job_id, body: str):
+    crop_dir = data_dir / "ocr_crops" / f"job-{job_id}"
+    crop_dir.mkdir(parents=True, exist_ok=True)
+    (crop_dir / "geometry.json").write_text(body, encoding="utf-8")
+
+
+_GEOMETRY_DOC = {
+    "version": 1,
+    "generation": 0,
+    "image_size": [4032, 3024],
+    "warp_size": [900, 2100],
+    "quad": [[0, 0], [10, 0], [10, 20], [0, 20]],
+    "quad_source": "color",
+    "deskew_deg": 0.42,
+}
+
+
+def test_geometry_returns_the_sidecar_document(client, db_conn, _data_dir):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps(_GEOMETRY_DOC))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 200
+    assert res.json()["data"] == _GEOMETRY_DOC
+
+
+def test_geometry_404_when_absent(client, db_conn, _data_dir):
+    """관측 없음은 404다 — warped_image와 같은 관례(과거 잡에는 백필하지 않는다)."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_geometry_404_when_job_missing(client, db_conn, _data_dir):
+    res = client.get("/api/curation/jobs/999999/geometry")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_corrupt_geometry_is_500_not_a_disguised_404(client, db_conn, _data_dir):
+    """손상을 404로 닫으면 '관측 없음'으로 위장되어 진단 기능이 거짓말한다(spec §5-3)."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, '{"version": 1, "generation":')  # 잘린 JSON
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+def test_non_object_geometry_is_also_corrupt(client, db_conn, _data_dir):
+    """JSON으로는 유효하지만 객체가 아닌 문서 — generation을 읽을 수 없으니 손상이다."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, "[1, 2, 3]")
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+def test_stale_generation_is_409(client, db_conn, _data_dir):
+    """재처리 실패(rollback_to_done)가 남기는 상태 — seq=N, 파일 generation=N-1(spec §6-2)."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps(_GEOMETRY_DOC))  # generation 0
+    with db_conn.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET reprocess_seq = 1 WHERE id = :id"), {"id": job_id})
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 409
+    assert res.json()["error"]["code"] == "CONFLICT"
+
+
+def test_missing_generation_key_is_500(client, db_conn, _data_dir):
+    """세대를 읽을 수 없는 문서는 손상이다 — test_non_object_geometry_is_also_corrupt와
+    같은 전제, 같은 결론."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({"version": 1}))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+def test_boolean_generation_is_500_not_treated_as_one(client, db_conn, _data_dir):
+    """bool은 int의 하위형이라 JSON true가 세대 1과 동등 판정되어 200으로 통과하면 안 된다."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({**_GEOMETRY_DOC, "generation": True}))
+    with db_conn.begin() as conn:
+        conn.execute(text("UPDATE ocr_jobs SET reprocess_seq = 1 WHERE id = :id"), {"id": job_id})
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+
+
+def test_float_generation_is_500_not_coerced(client, db_conn, _data_dir):
+    """float은 int와 값이 같아도(0.0 == 0) 타입이 다르므로 손상으로 처리된다."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({**_GEOMETRY_DOC, "generation": 0.0}))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+def test_geometry_passes_through_partial_document_without_schema_validation(
+    client, db_conn, _data_dir
+):
+    """generation만 유효하면 quad 등 다른 키가 없어도 손상으로 취급하지 않는다(스키마 검증 없음)."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({"generation": 0}))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 200
+    assert res.json()["data"] == {"generation": 0}
+
+
 # ── 정식 라벨 → 자동완성 사전 등록 배선(#40 spec §3.4) ──────────────────────
 
 

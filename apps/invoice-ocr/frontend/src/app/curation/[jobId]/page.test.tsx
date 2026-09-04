@@ -5,7 +5,8 @@ import { createMemoryRouter, RouterProvider } from "react-router-dom";
 import CurationJobPage from "./page";
 import { useCurationJob } from "@/hooks/use-curation-job";
 import { useJobNeighbors, fetchCurationPage } from "@/hooks/use-job-neighbors";
-import type { CurationJobDetail } from "@/types/curation";
+import { useJobGeometry } from "@/hooks/use-job-geometry";
+import type { CurationJobDetail, StageGeometry } from "@/types/curation";
 
 vi.mock("@/hooks/use-curation-job", () => ({ useCurationJob: vi.fn() }));
 vi.mock("@/hooks/use-items", () => ({ useItems: () => ({ data: [] }) }));
@@ -14,8 +15,37 @@ vi.mock("@/hooks/use-job-neighbors", () => ({
   useJobNeighbors: vi.fn(),
   fetchCurationPage: vi.fn(),
 }));
+// 기하 조회도 여기서 주입한다 — mock이 없으면 훅이 실제 axios를 타 기존 21건에도 fetch가 샌다.
+vi.mock("@/hooks/use-job-geometry", () => ({ useJobGeometry: vi.fn() }));
 const mockHook = vi.mocked(useCurationJob);
 const mockNeighbors = vi.mocked(useJobNeighbors);
+const mockGeometry = vi.mocked(useJobGeometry);
+
+// status: "absent"는 패널을 null로 닫는 계약이라 testid가 없다 — 렌더되는 상태(현 계약상
+// ready)로 세팅해야 성립한다. geometry는 Task 8 stage-geometry.test.ts의 FULL 시드와 같은 문서.
+const FULL: StageGeometry = {
+  version: 1,
+  generation: 0,
+  image_size: [3024, 4032],
+  warp_size: [900, 2100],
+  quad: [
+    [10, 20],
+    [30, 20],
+    [30, 40],
+    [10, 40],
+  ],
+  quad_source: "color",
+  deskew_deg: 0.42,
+  hlines: [614, 696],
+  pitch: 82,
+  item_x: [96, 396],
+  amount_x: [630, 896],
+  rows: [
+    { band: [612, 694], type: "new", item_box: [618, 690], row_index: 0 },
+    { band: [694, 776], type: "cont", item_box: null, row_index: null },
+    { band: [776, 858], type: "total", item_box: null, row_index: null },
+  ],
+};
 
 function job(over: Partial<CurationJobDetail> = {}): CurationJobDetail {
   return {
@@ -122,7 +152,12 @@ function setup(
 }
 
 describe("CurationJobPage", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // 기하는 이 화면의 부가 축이라 기본값은 "관측 없음"(패널이 null로 닫힘) —
+    // 기하를 보는 테스트만 렌더 직전에 덮어쓴다.
+    mockGeometry.mockReturnValue({ status: "absent" });
+  });
 
   it("잡 헤더와 행을 렌더한다", () => {
     setup(job());
@@ -299,5 +334,16 @@ describe("CurationJobPage", () => {
     expect(
       screen.queryByRole("link", { name: /명세서 수정/ }),
     ).not.toBeInTheDocument();
+  });
+
+  it("확정 후 상세는 단계 기하 패널을 조합한다", async () => {
+    // beforeEach의 vi.clearAllMocks()가 반환값을 지우므로 렌더 직전에 세팅한다
+    // (mockNeighbors 관용구와 동일).
+    mockGeometry.mockReturnValue({ status: "ready", geometry: FULL });
+    setup(job());
+
+    expect(
+      await screen.findByTestId("stage-geometry-panel"),
+    ).toBeInTheDocument();
   });
 });

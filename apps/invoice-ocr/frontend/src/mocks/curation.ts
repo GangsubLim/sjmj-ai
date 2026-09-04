@@ -1,4 +1,4 @@
-import type { CurationJobDetail } from "@/types/curation";
+import type { CurationJobDetail, StageGeometry } from "@/types/curation";
 
 // 인메모리 정본: 잡 상세 배열. 요약/목록은 여기서 파생한다.
 // 주의: e2e(curation.spec.ts)가 #128의 row_index 0·1 존재에 의존한다. 행 추가/삭제 시 e2e 셀렉터 동기.
@@ -217,3 +217,32 @@ export const mockCurationJobDetails: CurationJobDetail[] = [
     ],
   },
 ];
+
+// 잡 128만 기하를 갖는다 — 나머지는 "관측 없음"(404 폴백)을 mock 모드에서 재현한다.
+// 과거 잡에 백필하지 않는 것이 계약이므로(ADR 0012) 부재가 다수인 것이 운영과 같은 모양이다.
+export const mockCurationGeometry: Record<number, StageGeometry> = {
+  128: {
+    version: 1,
+    generation: 0,
+    image_size: [3024, 4032],
+    warp_size: [900, 2100],
+    quad: [
+      [220, 380],
+      [2790, 410],
+      [2760, 3600],
+      [250, 3560],
+    ],
+    quad_source: "color",
+    deskew_deg: 0.42,
+    hlines: [614, 696, 778, 860],
+    pitch: 82,
+    item_x: [96, 396],
+    amount_x: [630, 896],
+    rows: [
+      { band: [612, 694], type: "new", item_box: [618, 690], row_index: 0 },
+      { band: [694, 776], type: "cont", item_box: null, row_index: null },
+      { band: [776, 858], type: "new", item_box: [782, 854], row_index: 1 },
+      { band: [858, 940], type: "empty", item_box: null, row_index: null },
+    ],
+  },
+};
