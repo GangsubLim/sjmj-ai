@@ -64,6 +64,8 @@ describe("큐레이션 목록 위치 보존 수용 흐름", () => {
           curation_reviewed_at: null,
           pair_count: 1,
           unreviewed_count: 1,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-30T09:00:00",
         },
       ],

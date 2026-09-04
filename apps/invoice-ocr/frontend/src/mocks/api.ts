@@ -487,6 +487,29 @@ const toServerDateTime = (d: Date): string => {
   return `${formatYYYYMMDD(d)}T${hh}:${mm}:${ss}`;
 };
 
+// 행 증감은 잡 상세(CurationJobDetail)에 없는 축이다 — 서버는 ocr_corrections에서 투영한다.
+// mock에는 그 테이블이 없으므로 잡별 관측치를 여기 고정한다. 세 표시 상태(증감 있음 ·
+// 증감 0 · 관측 없음)를 모두 덮어야 목록 셀 분기가 mock 모드·e2e에서도 살아 있다.
+const MOCK_ROW_DELTA: Record<
+  number,
+  { rows_added: number | null; rows_dropped: number | null }
+> = {
+  128: { rows_added: 2, rows_dropped: 0 },
+  127: { rows_added: 0, rows_dropped: 1 },
+  126: { rows_added: 0, rows_dropped: 0 },
+  // 125는 correction 없음 — 관측 없음(null)
+};
+
+const NO_ROW_DELTA = { rows_added: null, rows_dropped: null };
+
+const rowDeltaOf = (jobId: number) => MOCK_ROW_DELTA[jobId] ?? NO_ROW_DELTA;
+
+// 서버 WHERE와 같은 의미 — NULL은 비교가 성립하지 않아 자동으로 빠진다.
+const hasRowDelta = (jobId: number) => {
+  const d = rowDeltaOf(jobId);
+  return (d.rows_added ?? 0) > 0 || (d.rows_dropped ?? 0) > 0;
+};
+
 const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
   job_id: job.job_id,
   invoice_id: job.invoice_id,
@@ -494,11 +517,16 @@ const toSummary = (job: CurationJobDetail): CurationJobSummary => ({
   curation_reviewed_at: job.curation_reviewed_at,
   pair_count: job.pairs.length,
   unreviewed_count: job.pairs.filter((p) => p.reviewed_at === null).length,
+  ...rowDeltaOf(job.job_id),
   created_at: job.created_at,
 });
 
 export const mockCurationAPI = {
-  getJobs: async (params?: { page?: number; limit?: number }) => {
+  getJobs: async (params?: {
+    page?: number;
+    limit?: number;
+    row_delta?: boolean;
+  }) => {
     await delay();
     // 서버 정렬 갈음: 미검수(false) 우선, 그다음 최신 생성순.
     const sorted = [...curationJobs].sort((a, b) => {
@@ -507,13 +535,24 @@ export const mockCurationAPI = {
       }
       return b.created_at.localeCompare(a.created_at);
     });
+    // 필터는 목록과 total을 같은 조건으로 좁힌다(서버와 같은 계약).
+    const filtered = params?.row_delta
+      ? sorted.filter((j) => hasRowDelta(j.job_id))
+      : sorted;
     const page = params?.page ?? 1;
     const limit = params?.limit ?? 20;
-    const total = sorted.length;
+    const total = filtered.length;
     const start = (page - 1) * limit;
     return {
-      data: sorted.slice(start, start + limit).map(toSummary),
-      pagination: { page, limit, total, totalPages: Math.ceil(total / limit) },
+      data: filtered.slice(start, start + limit).map(toSummary),
+      // 서버는 total=0에서도 totalPages=1이다(routers/curation.py의 `if total else 1`).
+      // 필터로 결과가 빌 수 있게 되면서 이 차이가 도달 가능해진다 — mock은 계약물이므로 맞춘다.
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
     };
   },
 

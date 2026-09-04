@@ -102,4 +102,15 @@ describe("curation 타입 계약", () => {
       string | undefined
     >();
   });
+
+  it("행 증감 두 필드는 필수이며 number|null이다(optional 회귀 차단)", () => {
+    // optional로 되돌아가면 `| undefined`가 섞여 이 단언이 tsc -b에서 깨진다.
+    // 값 없음(null)과 증감 0을 타입 차원에서 구분해 두는 자리다.
+    expectTypeOf<CurationJobSummary["rows_added"]>().toEqualTypeOf<
+      number | null
+    >();
+    expectTypeOf<CurationJobSummary["rows_dropped"]>().toEqualTypeOf<
+      number | null
+    >();
+  });
 });
