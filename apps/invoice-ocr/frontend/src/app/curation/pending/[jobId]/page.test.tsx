@@ -462,4 +462,37 @@ describe("UnconfirmedJobDetailPage", () => {
     );
     expect(router.state.location.search).toBe("?page=2");
   });
+
+  it("확정 전 상세에는 단계 기하 패널이 없다", async () => {
+    // JobImagePanel을 확정 후 상세와 공유하므로 거기서 기하를 열면 §8이 범위 밖으로 둔
+    // 확정 전 화면에 기하가 샌다 — 신규 잡도 geometry 파일을 가져 404 폴백이 성립하지 않는다.
+    mockGetJob.mockResolvedValue({
+      success: true,
+      data: {
+        id: 42,
+        status: "done",
+        result: {
+          rows: [
+            {
+              row_index: 0,
+              crop_ref: "job-42/row-0",
+              item_top5: [{ label: "삼겹살", sim: 0.9 }],
+              supply: 100000,
+              amount_raw: "100000",
+              item_uncertain: false,
+            },
+          ],
+          supply_sum: 100000,
+          warp_ok: true,
+        },
+      },
+    });
+
+    renderDetail();
+
+    await screen.findByAltText("원본 전표");
+    expect(
+      screen.queryByTestId("stage-geometry-panel"),
+    ).not.toBeInTheDocument();
+  });
 });
