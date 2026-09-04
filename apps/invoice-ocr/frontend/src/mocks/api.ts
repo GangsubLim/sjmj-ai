@@ -18,6 +18,7 @@ import type {
   CurationJobDetail,
   CurationPairPatchBody,
   CurationPairPatchResult,
+  StageGeometry,
 } from "@/types/curation";
 import { mockInvoices } from "./invoices";
 import { mockCompanies } from "./companies";
@@ -25,7 +26,7 @@ import { mockItems } from "./items";
 import { mockIssuer, mockAppSettings } from "./settings";
 import { mockSalespeople } from "./salespeople";
 import { mockSalesRecords } from "./sales-records";
-import { mockCurationJobDetails } from "./curation";
+import { mockCurationJobDetails, mockCurationGeometry } from "./curation";
 import { formatYYYYMMDD } from "@/utils/calendar";
 
 // --- In-memory stores (deep clone to avoid mutation of originals) ---
@@ -651,5 +652,13 @@ export const mockCurationAPI = {
         : job,
     );
     return { data: { job_id: jobId, curation_reviewed: true } };
+  },
+
+  getGeometry: async (jobId: number) => {
+    await delay();
+    const doc = mockCurationGeometry[jobId];
+    // 서버는 파일이 없으면 404다 — mock도 같은 모양으로 실패해야 폴백 분기가 재현된다.
+    if (!doc) throw new Error("단계 기하가 없습니다");
+    return { data: JSON.parse(JSON.stringify(doc)) as StageGeometry };
   },
 };

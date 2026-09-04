@@ -18,6 +18,7 @@ import type {
   CurationPairPatchBody,
   CurationPairPatchResult,
   CurationImageKind,
+  StageGeometry,
 } from "@/types/curation";
 import type { UnconfirmedJobSummary } from "@/types/observation";
 
@@ -365,6 +366,13 @@ const _realCurationAPI = {
     const response = await api.post(`/curation/jobs/${jobId}/review`, {
       job_token: jobToken,
     });
+    return response.data;
+  },
+
+  getGeometry: async (
+    jobId: number,
+  ): Promise<SingleResponse<StageGeometry>> => {
+    const response = await api.get(`/curation/jobs/${jobId}/geometry`);
     return response.data;
   },
 };

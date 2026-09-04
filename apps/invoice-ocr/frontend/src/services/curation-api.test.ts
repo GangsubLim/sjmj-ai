@@ -50,3 +50,15 @@ describe("curationAPI.getJobs", () => {
     });
   });
 });
+
+describe("curationAPI.getGeometry", () => {
+  it("잡별 geometry 경로로 GET한다", async () => {
+    const get = vi.spyOn(api, "get").mockResolvedValue({
+      data: { success: true, data: { version: 1 } },
+    });
+
+    await curationAPI.getGeometry(42);
+
+    expect(get).toHaveBeenCalledWith("/curation/jobs/42/geometry");
+  });
+});
