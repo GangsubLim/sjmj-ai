@@ -1227,3 +1227,88 @@ def test_list_jobs_clamps_absurdly_large_page_without_500(client, db_conn):
     # total은 결정적으로 1이다 — `>= 1`이면 total이 잡 수가 아닌 학습쌍 수로 바뀌는
     # 회귀를 통과시킨다.
     assert body["pagination"]["total"] == 1
+
+
+# ---------------------------------------------------------------------------
+# row_delta — 행 증감 노출·필터 (S1)
+# ---------------------------------------------------------------------------
+
+
+def _seed_correction(engine, job_id, correction):
+    """확정 교정 이력을 심는다 — 행 증감의 유일한 출처(build_correction 산출물)."""
+    with engine.begin() as conn:
+        conn.execute(
+            text("INSERT INTO ocr_corrections (job_id, correction_json) VALUES (:j, :c)"),
+            {"j": job_id, "c": json.dumps(correction, ensure_ascii=False)},
+        )
+
+
+def test_list_jobs_exposes_row_delta_counts(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _seed_correction(db_conn, job_id, {"lines": [], "rows_added": 2, "rows_dropped": 1})
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    assert job["rows_added"] == 2
+    assert job["rows_dropped"] == 1
+
+
+def test_list_jobs_row_delta_is_null_without_correction(client, db_conn):
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs")
+
+    job = next(j for j in res.json()["data"] if j["job_id"] == job_id)
+    # 값 없음이 0으로 오염되면 "증감 없음"과 "관측 없음"을 화면이 구분할 수 없다.
+    assert job["rows_added"] is None
+    assert job["rows_dropped"] is None
+
+
+def test_list_jobs_row_delta_filter_narrows_data_and_total(client, db_conn):
+    hit = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _seed_correction(db_conn, hit, {"lines": [], "rows_added": 0, "rows_dropped": 2})
+    miss = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _seed_correction(db_conn, miss, {"lines": [], "rows_added": 0, "rows_dropped": 0})
+
+    res = client.get("/api/curation/jobs", params={"row_delta": "true"})
+
+    body = res.json()
+    ids = [j["job_id"] for j in body["data"]]
+    assert ids == [hit]
+    assert body["pagination"]["total"] == 1
+
+
+def test_list_jobs_default_does_not_filter(client, db_conn):
+    hit = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _seed_correction(db_conn, hit, {"lines": [], "rows_added": 1, "rows_dropped": 0})
+    miss = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs")
+
+    ids = {j["job_id"] for j in res.json()["data"]}
+    assert {hit, miss} <= ids
+    assert res.json()["pagination"]["total"] == 2
+
+
+def test_list_jobs_rejects_non_boolean_row_delta_with_400_envelope(client, db_conn):
+    res = client.get("/api/curation/jobs", params={"row_delta": "maybe"})
+
+    assert res.status_code == 400
+    body = res.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    # details는 {필드: 메시지} 문자열 맵이어야 한다(외부 계약 불변식).
+    assert isinstance(body["error"]["details"]["query.row_delta"], str)
+
+
+def test_list_jobs_explicit_false_row_delta_matches_default(client, db_conn):
+    hit = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _seed_correction(db_conn, hit, {"lines": [], "rows_added": 1, "rows_dropped": 0})
+    miss = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+
+    res = client.get("/api/curation/jobs", params={"row_delta": "false"})
+
+    ids = {j["job_id"] for j in res.json()["data"]}
+    assert {hit, miss} <= ids
+    assert res.json()["pagination"]["total"] == 2
