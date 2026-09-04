@@ -143,7 +143,7 @@ def write_geometry(crop_dir, doc: dict) -> bool:
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
         with tmp.open("w", encoding="utf-8") as fh:
-            json.dump(doc, fh, ensure_ascii=False)
+            json.dump(doc, fh, ensure_ascii=False, allow_nan=False)
         os.replace(tmp, target)
         return True
     except (OSError, TypeError, ValueError) as exc:

@@ -83,9 +83,9 @@ function LineOverlay({
       preserveAspectRatio="none"
       className="pointer-events-none absolute inset-0 h-full w-full"
     >
-      {ys.map((y) => (
+      {ys.map((y, i) => (
         <line
-          key={y}
+          key={i}
           x1={0}
           x2={width}
           y1={y}
@@ -301,5 +301,5 @@ export function StageGeometryPanel({ jobId }: StageGeometryPanelProps) {
       />
     );
   }
-  return <GeometryStages jobId={jobId} geometry={state.geometry} />;
+  return <GeometryStages key={jobId} jobId={jobId} geometry={state.geometry} />;
 }

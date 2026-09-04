@@ -153,6 +153,18 @@ describe("mockCurationAPI 쓰기 가드 — status !== done", () => {
   });
 });
 
+describe("mockCurationAPI.getGeometry", () => {
+  it("잡 128은 기하 문서를 반환한다", async () => {
+    const { data } = await mockCurationAPI.getGeometry(128);
+    expect(data.version).toBe(1);
+    expect(data.generation).toBe(0);
+  });
+
+  it("기하가 없는 잡은 실패한다(404 폴백 재현)", async () => {
+    await expect(mockCurationAPI.getGeometry(999999)).rejects.toThrow();
+  });
+});
+
 describe("mockCurationAPI.getJobs", () => {
   it("요약에 행 증감 두 수를 싣는다", async () => {
     const { data } = await mockCurationAPI.getJobs();

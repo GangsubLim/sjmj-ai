@@ -15,6 +15,8 @@ from handwriting.geometry import (
     row_geometry,
     write_geometry,
 )
+from handwriting.group import Row as GroupRow
+from handwriting.group import block_amounts
 
 
 @dataclass(frozen=True)
@@ -54,11 +56,30 @@ def test_item_box_is_only_the_actually_cropped_box():
     assert rows[1]["item_box"] == [85, 155]
 
 
+class _NpScalarLike:
+    """numpy 스칼라의 __int__ 프로토콜만 흉내 낸 대역(이 모듈은 numpy를 import할 수 없다)."""
+
+    def __init__(self, v):
+        self._v = v
+
+    def __int__(self):
+        return int(self._v)
+
+
 def test_bands_and_boxes_are_plain_ints():
     """json.dumps가 통과해야 한다 — 상류 좌표는 numpy 스칼라일 수 있다."""
-    rows = row_geometry([_Row((10, 20), "new", (11, 19))])
+    rows = row_geometry(
+        [
+            _Row(
+                (_NpScalarLike(10), _NpScalarLike(20)),
+                "new",
+                (_NpScalarLike(11), _NpScalarLike(19)),
+            )
+        ]
+    )
 
     assert rows[0]["band"] == [10, 20]
+    assert all(type(v) is int for v in rows[0]["band"])
     json.dumps(rows)
 
 
@@ -138,3 +159,26 @@ def test_write_failure_is_swallowed_and_reported(tmp_path, capsys):
 
     assert write_geometry(missing / "\x00bad", {"a": 1}) is False
     assert "[geometry]" in capsys.readouterr().err
+
+
+def test_row_index_matches_block_amounts_news_selection_using_real_group_types():
+    """row_geometry의 크롭 대상 판정이 group.block_amounts의 실제 선별과 구조적으로
+    일치하는지, 로컬 대역(_Row)이 아니라 진짜 group.Row·group.block_amounts로 실증한다.
+
+    _Row는 group.Row와 같은 3필드(band/rtype/box)만 흉내 낸 대역이라, 두 술어가 우연히
+    같은 이름의 필드를 흉내 냈을 뿐 실제 group.py 타입과는 검증된 적이 없었다.
+    """
+    rows = (
+        GroupRow((100, 180), 0.0, 0.0, "new", (105, 175), 0, None, None),
+        GroupRow((180, 260), 0.0, 0.0, "cont", None, 0, None, None),
+        GroupRow((260, 340), 0.0, 0.0, "new", None, 1, None, None),
+        GroupRow((340, 420), 0.0, 0.0, "new", (345, 415), 2, None, None),
+        GroupRow((420, 500), 0.0, 0.0, "total", (425, 495), None, None, None),
+    )
+
+    news, _ = block_amounts(rows, read_fn=lambda r: (0, "0"))
+    geo_rows = row_geometry(rows)
+
+    news_positions = [i for i, r in enumerate(rows) if r in news]
+    geo_positions = [i for i, r in enumerate(geo_rows) if r["row_index"] is not None]
+    assert news_positions == geo_positions

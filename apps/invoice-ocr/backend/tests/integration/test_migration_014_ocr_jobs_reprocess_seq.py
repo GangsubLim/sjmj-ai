@@ -40,7 +40,7 @@ def _column(engine):
 
 def _alter_count(engine) -> int:
     with engine.begin() as conn:
-        return int(conn.execute(text("SHOW GLOBAL STATUS LIKE 'Com_alter_table'")).first()[1])
+        return int(conn.execute(text("SHOW SESSION STATUS LIKE 'Com_alter_table'")).first()[1])
 
 
 @pytest.fixture

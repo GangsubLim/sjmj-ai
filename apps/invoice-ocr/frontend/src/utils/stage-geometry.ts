@@ -17,6 +17,16 @@ export const ROW_TYPE_CSS_COLOR: Record<StageGeometryRowType, string> = {
   total: "rgb(255, 140, 0)", // BGR (0, 140, 255)
 };
 
+/** 계약 밖 row type 방어 — 백엔드는 스키마를 검증하지 않으므로 조용한 undefined 대신 눈에 띄는 색으로 닫는다. */
+const UNKNOWN_ROW_TYPE_COLOR = "rgb(255, 0, 255)";
+
+function rowTypeColor(type: StageGeometryRowType): string {
+  return (
+    (ROW_TYPE_CSS_COLOR as Record<string, string>)[type] ??
+    UNKNOWN_ROW_TYPE_COLOR
+  );
+}
+
 /** 아는 계약 버전인지 — 모르는 version이면 화면이 패널 대신 안내 문구로 닫는다. */
 export function isSupportedGeometryVersion(g: StageGeometry): boolean {
   return g.version === STAGE_GEOMETRY_VERSION;
@@ -73,7 +83,7 @@ export function rowBandRects(g: StageGeometry): OverlayRect[] {
     y: r.band[0],
     width: warpWidth,
     height: r.band[1] - r.band[0],
-    color: ROW_TYPE_CSS_COLOR[r.type],
+    color: rowTypeColor(r.type),
   }));
 }
 
@@ -88,7 +98,7 @@ export function itemCropRects(g: StageGeometry): OverlayRect[] {
       y: r.item_box![0],
       width: itemX[1] - itemX[0],
       height: r.item_box![1] - r.item_box![0],
-      color: ROW_TYPE_CSS_COLOR[r.type],
+      color: rowTypeColor(r.type),
     }));
 }
 
@@ -113,7 +123,7 @@ export function amountCropRects(g: StageGeometry): OverlayRect[] {
       y: r.band[0],
       width: amountX[1] - amountX[0],
       height: r.band[1] - r.band[0],
-      color: ROW_TYPE_CSS_COLOR[r.type],
+      color: rowTypeColor(r.type),
     }));
 }
 

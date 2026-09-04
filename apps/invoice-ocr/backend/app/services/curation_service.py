@@ -322,11 +322,16 @@ class CurationService:
         if not self.repo.job_exists(job_id):
             not_found("OCR 잡을 찾을 수 없습니다.")
         path = crop_dir(job_id) / "geometry.json"
-        if not path.is_file():
-            not_found("단계 기하가 없습니다.")
         try:
-            doc = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raw = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            not_found("단계 기하가 없습니다.")
+        except (OSError, UnicodeDecodeError) as exc:
+            logger.exception("기하 파일 읽기 실패: %s", path)
+            raise AppError(500, "SERVER_ERROR", "기하 파일이 손상되었습니다.") from exc
+        try:
+            doc = json.loads(raw)
+        except json.JSONDecodeError as exc:
             logger.exception("기하 파일 파싱 실패: %s", path)
             raise AppError(500, "SERVER_ERROR", "기하 파일이 손상되었습니다.") from exc
         if not isinstance(doc, dict):

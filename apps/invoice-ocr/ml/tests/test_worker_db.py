@@ -906,17 +906,19 @@ def test_claim_next_pending_selects_the_reprocess_generation():
 
 
 def test_worker_internal_requeues_do_not_bump_the_generation():
-    """워커 내부 재시도는 같은 논리 세대다(spec §6-2) — 같은 사진·같은 엔진의 멱등 재실행.
+    """워커 내부 재시도는 같은 논리 세대다(spec §6-2) — 각 경로를 독립적으로 검증한다.
 
-    올리면 재실행이 쓴 geometry.json이 자기 잡의 DB 세대보다 뒤처져 영구 409가 된다.
+    세 함수를 한 잡에 순차로 걸면 앞선 호출이 status를 바꿔 뒤의 requeue_stale_running이
+    대상 행 0건으로 no-op이 된다(그 UPDATE는 status='running'에만 걸린다) — 각자 자신이
+    요구하는 초기 status로 새로 세팅해야 세 경로 모두를 실제로 태운다.
     """
-    engine = _live_engine([])
-    q = WorkerQueue(engine)
-
-    q.requeue_for_reprocess(5)
-    q.requeue_pending(5)
-    q.requeue_stale_running()
-
-    with engine.begin() as conn:
-        seq = conn.execute(text("SELECT reprocess_seq FROM ocr_jobs WHERE id=5")).scalar()
-    assert seq == 0
+    for call in (
+        lambda q: q.requeue_for_reprocess(5),
+        lambda q: q.requeue_pending(5),
+        lambda q: q.requeue_stale_running(),
+    ):
+        engine = _live_engine([])  # 매번 status='running'으로 새로 시딩
+        call(WorkerQueue(engine))
+        with engine.begin() as conn:
+            seq = conn.execute(text("SELECT reprocess_seq FROM ocr_jobs WHERE id=5")).scalar()
+        assert seq == 0

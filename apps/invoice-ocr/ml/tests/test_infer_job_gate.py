@@ -780,6 +780,7 @@ def test_recorded_amount_x_matches_the_crop_actually_used_by_extract_rows_for_jo
         import grid_v4 as flat_grid_v4
     finally:
         sys.path.remove(str(handwriting_dir))
+        sys.modules.pop("grid_v4", None)
     import handwriting.grid_v4 as qualified_grid_v4
 
     assert flat_grid_v4 is not qualified_grid_v4  # 전제 확인 — 진짜 별개 sys.modules 인스턴스

@@ -697,6 +697,30 @@ def test_boolean_generation_is_500_not_treated_as_one(client, db_conn, _data_dir
     assert res.status_code == 500
 
 
+def test_float_generation_is_500_not_coerced(client, db_conn, _data_dir):
+    """float은 int와 값이 같아도(0.0 == 0) 타입이 다르므로 손상으로 처리된다."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({**_GEOMETRY_DOC, "generation": 0.0}))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+def test_geometry_passes_through_partial_document_without_schema_validation(
+    client, db_conn, _data_dir
+):
+    """generation만 유효하면 quad 등 다른 키가 없어도 손상으로 취급하지 않는다(스키마 검증 없음)."""
+    job_id = _seed_job_with_pairs(db_conn, pairs=1, unreviewed=1)
+    _write_geometry(_data_dir, job_id, json.dumps({"generation": 0}))
+
+    res = client.get(f"/api/curation/jobs/{job_id}/geometry")
+
+    assert res.status_code == 200
+    assert res.json()["data"] == {"generation": 0}
+
+
 # ── 정식 라벨 → 자동완성 사전 등록 배선(#40 spec §3.4) ──────────────────────
 
 
