@@ -35,7 +35,7 @@ describe("useRowDeltaParam", () => {
   });
 
   it("끄면 파라미터가 사라진다", () => {
-    const { result } = renderParam("/curation?row_delta=true");
+    const { result } = renderParam("/curation?page=5&row_delta=true");
     act(() => result.current.setRowDelta(false));
     expect(result.current.location.search).toBe("");
   });

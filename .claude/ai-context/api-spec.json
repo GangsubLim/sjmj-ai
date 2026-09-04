@@ -2340,6 +2340,7 @@
     "/api/curation/jobs": {
       "get": {
         "summary": "검수 큐 — confirmed 잡 목록(검수상태·미처리수·행 증감, 페이지네이션; row_delta=true면 행 증감 잡만)",
+        "description": "모집단은 training_pairs를 1건 이상 보유한 확정 잡이다 — 초안 행을 전량 교체해 쌍이 0건이 된 잡은 행 증감 신호가 가장 강해도 이 목록에서 빠진다.",
         "tags": ["curation"],
         "parameters": [
           {
@@ -2397,7 +2398,7 @@
             }
           },
           "400": {
-            "description": "row_delta가 boolean으로 해석되지 않음",
+            "description": "쿼리 파라미터가 선언된 타입으로 해석되지 않음(예: row_delta 비-boolean). 범위 초과(page·limit)는 400이 아니라 clamp",
             "content": {
               "application/json": {
                 "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }

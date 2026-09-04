@@ -68,6 +68,9 @@ class CurationRepository:
     ) -> tuple[list[dict], int]:
         """training_pairs 보유 잡을 검수상태·미처리수·행 증감과 함께 페이지 조회한다.
 
+        모집단은 training_pairs를 1건 이상 가진 확정 잡으로 한정된다 — 초안 행을 전량
+        교체해 쌍이 0건이 된 잡은 행 증감 신호가 가장 강해도 이 목록에서 빠진다.
+
         rows_added/rows_dropped는 최신 ocr_corrections 1건에서 투영하며, 관측이 없으면
         None이다(0과 구분 — spec §4-1). row_delta=True면 두 수 중 하나라도 0보다 큰 잡만
         남기고 total도 같은 조건으로 센다. False면 쿼리·정렬·total이 도입 이전과 동일하다.
