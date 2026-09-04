@@ -3,13 +3,17 @@
 라우터(HTTP)와 repository(SQL) 사이의 정규화·비즈니스 로직 계층.
 """
 
+import json
+import logging
 import re
 from pathlib import Path
 
 from app import db
 from app.config import crop_dir
-from app.core.errors import conflict, not_found
+from app.core.errors import AppError, conflict, not_found
 from app.repositories.curation_repository import CurationRepository
+
+logger = logging.getLogger(__name__)
 
 
 def _optional_int(value: int | None) -> int | None:
@@ -291,6 +295,52 @@ class CurationService:
         if not path.is_file():
             not_found("워프 이미지가 없습니다.")
         return str(path)
+
+    def stage_geometry(self, job_id: int) -> dict:
+        """단계 기하 사이드카(crop_dir/geometry.json)를 그대로 반환한다(ADR 0012).
+
+        분기 셋을 가른다 —
+        · 파일 없음 → 404. warped_image와 같은 관례("관측 없음"). 과거 잡에는 백필하지
+          않으므로(ADR 0012 Consequences) 이 갈래가 당분간 다수다.
+        · 파싱 실패·객체 아님·generation 키 부재 또는 정수 아님 → 500. 404로 닫으면 손상이
+          "관측 없음"으로 위장되어 진단 기능 자체가 거짓말한다. 원인은 로그로 남긴다.
+        · generation ≠ ocr_jobs.reprocess_seq(둘 다 정수) → 409. 재처리 실패 후
+          rollback_to_done이 옛 crop 디렉터리를 보존해 남는 상태다(spec §6-2).
+
+        **스키마 검증은 하지 않는다.** 계약 소유자는 워커(handwriting/geometry.py)이고
+        version 판별은 프론트가 한다 — 백엔드가 읽는 키는 generation 하나뿐이다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            기하 문서 dict.
+
+        Raises:
+            AppError: 잡·파일이 없으면 404, 문서가 손상됐으면 500, 세대가 다르면 409.
+        """
+        if not self.repo.job_exists(job_id):
+            not_found("OCR 잡을 찾을 수 없습니다.")
+        path = crop_dir(job_id) / "geometry.json"
+        if not path.is_file():
+            not_found("단계 기하가 없습니다.")
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.exception("기하 파일 파싱 실패: %s", path)
+            raise AppError(500, "SERVER_ERROR", "기하 파일이 손상되었습니다.") from exc
+        if not isinstance(doc, dict):
+            logger.error("기하 파일이 객체가 아니다: %s (%s)", path, type(doc).__name__)
+            raise AppError(500, "SERVER_ERROR", "기하 파일이 손상되었습니다.")
+        gen = doc.get("generation")
+        # bool은 int의 하위형이라 배제 절이 필수다 — 없으면 JSON true가 세대 1과 동등
+        # 판정되어 200으로 통과한다. float도 같은 함정(0.0 == 0)이라 정수만 받는다.
+        if not isinstance(gen, int) or isinstance(gen, bool):
+            logger.error("기하 파일에 정수 generation이 없다: %s (%r)", path, gen)
+            raise AppError(500, "SERVER_ERROR", "기하 파일이 손상되었습니다.")
+        if gen != self.repo.get_reprocess_seq(job_id):
+            conflict("이전 세대의 기하입니다. 재처리가 끝난 뒤 다시 시도하세요.")
+        return doc
 
     def _register_label(self, label: str | None) -> None:
         """정규화한 정식 라벨을 자동완성 사전에 등록한다(빈 값은 건너뛴다).

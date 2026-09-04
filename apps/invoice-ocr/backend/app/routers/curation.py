@@ -78,6 +78,12 @@ def reprocess(job_id: int):
     return envelope.single(_service().request_reprocess(job_id))
 
 
+@router.get("/curation/jobs/{job_id}/geometry")
+def geometry(job_id: int):
+    """단계 기하 사이드카를 조회한다(부재 404 · 손상 500 · 이전 세대 409)."""
+    return envelope.single(_service().stage_geometry(job_id))
+
+
 @router.get("/curation/jobs/{job_id}/image/{kind}")
 def image(job_id: int, kind: ImageKind):
     """원본/워프 전표 이미지를 raw 바이트로 반환한다(envelope 예외)."""

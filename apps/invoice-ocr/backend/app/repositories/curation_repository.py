@@ -280,6 +280,28 @@ class CurationRepository:
                 text("SELECT image_path FROM ocr_jobs WHERE id = :id"), {"id": job_id}
             ).scalar()
 
+    def get_reprocess_seq(self, job_id: int) -> int | None:
+        """잡의 현재 재처리 논리 세대를 읽는다(migration_014).
+
+        crop_dir/geometry.json의 generation과 대조하는 유일한 상대다 — 재처리가 실패하면
+        rollback_to_done이 옛 crop 디렉터리를 그대로 두므로 seq=N, 파일=N−1이 되고, 그
+        불일치를 409로 드러내는 것이 계약이다(spec §5-3 · §6-2).
+
+        FOR UPDATE를 걸지 않는다 — 읽기 전용 조회이며 대조 결과가 곧 응답이라 락으로 지킬
+        후속 쓰기가 없다.
+
+        Args:
+            job_id: 대상 OCR 잡 id.
+
+        Returns:
+            세대(정수). 잡이 없으면 None.
+        """
+        with connection() as conn:
+            seq = conn.execute(
+                text("SELECT reprocess_seq FROM ocr_jobs WHERE id = :id"), {"id": job_id}
+            ).scalar()
+        return None if seq is None else int(seq)
+
     def get_job_token(self, job_id: int) -> str | None:
         """잡의 세대 토큰을 행잠금으로 읽는다 — 낙관적 잠금 대조·갱신용(spec §12).
 
