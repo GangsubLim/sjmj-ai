@@ -736,3 +736,62 @@ def test_recorded_item_x_matches_the_crop_baked_into_extract_rows_for_job(
         ITEM_X[0] - int(m.group(1)),
         ITEM_X[1] + int(m.group(2)),
     ]
+
+
+def test_recorded_amount_x_matches_the_crop_actually_used_by_extract_rows_for_job(
+    monkeypatch, tmp_path, make_warped
+):
+    """기록된 amount_x가 실제 크롭식과 갈리면 geometry.json이 조용히 거짓을 말한다.
+
+    item_x 가드(test_recorded_item_x_matches_the_crop_baked_into_extract_rows_for_job)와
+    같은 관용구 — extract_rows_for_job 소스에서 실제 크롭 표현을 AST/정규식으로 읽는다.
+
+    amount_x는 item_x와 달리 상수가 아니라 함수(amount_crop_left) 호출이고, infer_job은
+    handwriting.grid_v4(패키지 qualified import)에서, infer_photo.extract_rows_for_job은
+    sys.path 트릭으로 얻은 평면 grid_v4에서 각각 호출한다 — 같은 소스 파일이지만
+    sys.modules 인스턴스가 둘이다(infer_job.py:322-325). 소스 문자열 일치만으로는 두
+    인스턴스가 실행 시점에도 같은 값을 내는지 증명하지 못하므로, 평면 grid_v4를 실제로
+    잡아(grid_v4.py 자체는 cv2/numpy/PIL만 써서 torch 없이도 import 가능) 같은 워프
+    이미지에 두 사본을 각각 호출해 값이 같은지, 그리고 기록값이 그 값과 같은지를 실행으로
+    묶는다.
+    """
+    import ast
+    import re
+
+    from handwriting.grid_v4 import warp as qualified_warp
+    from handwriting.infer_job import infer_job
+
+    src = (Path(__file__).resolve().parents[1] / "handwriting" / "infer_photo.py").read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "extract_rows_for_job"
+    )
+    assert re.search(r"ax0, ax1 = \(amount_crop_left\(w\), AMOUNT_X\[1\]\)", ast.unparse(fn)), (
+        "운영 금액 크롭 좌측 실측 호출을 찾지 못했다"
+    )
+
+    # infer_photo가 sys.path 트릭으로 잡는 평면 grid_v4를 같은 방식으로 직접 잡는다.
+    handwriting_dir = Path(__file__).resolve().parents[1] / "handwriting"
+    sys.path.insert(0, str(handwriting_dir))
+    try:
+        import grid_v4 as flat_grid_v4
+    finally:
+        sys.path.remove(str(handwriting_dir))
+    import handwriting.grid_v4 as qualified_grid_v4
+
+    assert flat_grid_v4 is not qualified_grid_v4  # 전제 확인 — 진짜 별개 sys.modules 인스턴스
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    infer_job("/x.jpg", _models(), tmp_path, 18, 0)
+
+    # infer_job 내부에서 amount_x 기록에 실제로 쓰이는 w — 대역 deskew_angle=0·rotate=항등
+    # 이므로 quad=FULL_QUAD(색 경로 단일 후보)로 워프한 결과와 동일하다.
+    w = qualified_warp(warped, FULL_QUAD)
+    expected_left = qualified_grid_v4.amount_crop_left(w)
+    assert flat_grid_v4.amount_crop_left(w) == expected_left  # 두 사본 등가 실증(현재)
+
+    assert _geometry(tmp_path)["amount_x"] == [int(expected_left), qualified_grid_v4.AMOUNT_X[1]]
