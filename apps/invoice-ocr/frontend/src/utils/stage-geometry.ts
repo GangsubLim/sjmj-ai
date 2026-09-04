@@ -93,18 +93,21 @@ export function itemCropRects(g: StageGeometry): OverlayRect[] {
 }
 
 /**
- * ⑧ 금액 크롭 — 블록에 속한 행(new·cont)만 그린다.
+ * ⑧ 금액 크롭 — 실제로 금액 크롭 창이 열린 행만 그린다.
  *
- * group.form_blocks(group.py:75-77)가 empty·total을 블록에서 제외하므로 이 술어가
- * block is not None과 등가이며, 그 행들에는 금액 크롭 창이 애초에 열리지 않았다. orphan
- * cont(new 없는 cont)는 남긴다 — read_fn이 돌지 않는 이상신호라 진단 패널이 보여줄 값어치가
- * 있다.
+ * group.block_amounts(group.py:281-286)는 `rtype != ROW_NEW or not box`인 행을 건너뛴다 —
+ * box 없는 new는 자기 단독 블록의 유일 멤버라 그 블록의 read_fn이 한 번도 돌지 않는다.
+ * item_box는 실제로 크롭된 행에만 부여되므로(new + box 있음) 그것이 정확히 "금액 크롭이
+ * 열린 행"이다. orphan cont(new 없는 cont)는 과포함으로 남긴다 — read_fn이 돌지 않는
+ * 이상신호라 진단 패널이 보여줄 값어치가 있다(의도적 보존).
  */
 export function amountCropRects(g: StageGeometry): OverlayRect[] {
   const amountX = g.amount_x;
   if (!amountX) return [];
   return (g.rows ?? [])
-    .filter((r) => r.type === "new" || r.type === "cont")
+    .filter(
+      (r) => r.type === "cont" || (r.type === "new" && r.item_box !== null),
+    )
     .map((r) => ({
       x: amountX[0],
       y: r.band[0],

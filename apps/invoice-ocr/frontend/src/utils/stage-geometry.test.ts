@@ -125,6 +125,25 @@ describe("amountCropRects", () => {
       color: "rgb(0, 170, 0)",
     });
   });
+
+  it("box 없는 new 행은 그리지 않는다 — 그 블록의 금액 크롭 창이 연 적이 없다", () => {
+    // group.block_amounts(group.py:281-286)는 `rtype != ROW_NEW or not box`인 행을
+    // 건너뛴다. box 없는 new는 form_blocks에서 자기 단독 블록을 열지만 그 블록의 유일
+    // 멤버가 news 루프에서 걸러지므로 read_fn이 한 번도 돌지 않는다 — 금액 크롭은 실재하지
+    // 않는다(Finding 3, plan-alignment.md Important #3).
+    const withBoxlessNew: StageGeometry = {
+      ...FULL,
+      rows: [
+        ...(FULL.rows ?? []),
+        { band: [858, 940], type: "new", item_box: null, row_index: null },
+      ],
+    };
+
+    const rects = amountCropRects(withBoxlessNew);
+
+    expect(rects).toHaveLength(2); // box 없는 new는 제외 — new(box 있음) + cont만
+    expect(rects.some((r) => r.y === 858)).toBe(false);
+  });
 });
 
 describe("quadPoints", () => {
