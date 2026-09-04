@@ -251,14 +251,26 @@ class CurationRepository:
             return {"id": int(row["id"]), "status": row["status"]} if row else None
 
     def requeue_for_reprocess(self, job_id: int) -> None:
-        """잡을 다시 추론 큐에 넣는다 — result_json은 건드리지 않는다.
+        """잡을 다시 추론 큐에 넣고 논리 세대를 하나 올린다 — result_json은 건드리지 않는다.
 
         초안이 남아 있어야 워커가 이 잡을 재처리로 판별하고(spec §1), 재추론이 실패해도
         옛 초안으로 되돌아갈 수 있다. 지우면 두 성질이 함께 사라진다.
+
+        **세대 증가는 status 전이와 같은 UPDATE 문에서 한다**(spec §6-2). 두 문장으로 나누면
+        그 사이에 워커의 claim_next_pending이 잡을 집어 옛 세대로 geometry.json을 스탬프할
+        창이 생긴다 — 그 파일은 이후 영구히 409(이전 세대 기하)로 닫혀 판정 불가가 된다.
+
+        워커 내부 재시도(ml/worker/db.py의 requeue_for_reprocess·requeue_pending·
+        requeue_stale_running)는 같은 사진·같은 엔진의 멱등 재실행이라 세대를 올리지 않는다 —
+        그쪽 SQL에 이 컬럼을 넣지 말 것.
         """
         with connection() as conn:
             conn.execute(
-                text("UPDATE ocr_jobs SET status = 'pending' WHERE id = :id"), {"id": job_id}
+                text(
+                    "UPDATE ocr_jobs SET status = 'pending', "
+                    "reprocess_seq = reprocess_seq + 1 WHERE id = :id"
+                ),
+                {"id": job_id},
             )
 
     def get_image_path(self, job_id: int) -> str | None:

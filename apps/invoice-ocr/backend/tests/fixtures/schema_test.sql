@@ -160,6 +160,7 @@ CREATE TABLE ocr_jobs (
     invoice_id INT,
     curation_reviewed BOOLEAN NOT NULL DEFAULT FALSE,
     curation_reviewed_at DATETIME NULL DEFAULT NULL,  -- migration_011: 첫 검수 시각(해제해도 유지)
+    reprocess_seq INT NOT NULL DEFAULT 0,  -- migration_014: 재처리 논리 세대(geometry.json generation의 진실원)
     created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
     INDEX idx_ocr_jobs_status (status),
