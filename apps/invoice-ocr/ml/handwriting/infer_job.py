@@ -260,7 +260,7 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int, generation: in
         """단계 기하를 사이드카로 남긴다 — generation이 None(드라이런)이면 아무것도 쓰지 않는다.
 
         **조립·기록 전 구간을 삼킨다.** write_geometry의 삼킴만으로는 build_geometry가
-        상류 좌표 모양 변화에 던지는 갈래가 열려 있고, 그 예외는 worker/poll.py:155의 잡
+        상류 좌표 모양 변화에 던지는 갈래가 열려 있고, 그 예외는 worker/poll.py:156의 잡
         격리 except에 걸려 잡을 통째로 실패시킨다 — 기하는 진단이지 산출물이 아니다(spec §5-2).
         """
         if generation is None:
