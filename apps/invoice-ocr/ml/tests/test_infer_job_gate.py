@@ -6,6 +6,7 @@ cv2·numpy·grid_v4·warp_gate는 진짜를 쓴다 — 게이트 배선 자체�
 
 import sys
 import types
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,15 @@ import handwriting.corner_dl as corner_dl  # noqa: E402
 from handwriting.grid_v4 import WARP_H, WARP_W  # noqa: E402
 
 FULL_QUAD = np.array([[0, 0], [WARP_W, 0], [WARP_W, WARP_H], [0, WARP_H]], np.float32)
+
+
+@dataclass(frozen=True)
+class _FakeRow:
+    """group.Row의 geometry 관련 3필드만 흉내 낸 대역(band/rtype/box)."""
+
+    band: tuple
+    rtype: str
+    box: tuple | None
 
 
 def _install_fake_infer_photo(monkeypatch, warped, calls):
@@ -40,15 +50,18 @@ def _install_fake_infer_photo(monkeypatch, warped, calls):
     def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
         # 반환 arity(8)는 실제 handwriting.infer_photo.extract_rows_for_job 시그니처
         # (news, crops, queries, amounts, prop, ys, P, bands) 그대로다 — 정본은 infer_photo.py.
+        # 뒤 4개는 geometry.json의 입력이라 None이 아니라 실물 모양을 준다.
         calls.append("extract_rows_for_job")
+        row = _FakeRow(band=(612, 694), rtype="new", box=(618, 690))
+        prop = types.SimpleNamespace(rows=(row,))
         return (
-            [object()],
+            [row],
             [np.zeros((10, 10, 3), np.uint8)],
             np.ones((1, 2), np.float32),
             [(364, "364")],
-            None,
-            None,
-            None,
+            prop,
+            [614, 696, 778],
+            82.3,
             None,
         )
 
@@ -585,3 +598,141 @@ def test_gated_warp_returns_all_none_when_no_candidate_exists(monkeypatch, make_
     gw = _gated_warp(warped, None, 9)
 
     assert gw == (None, False, None, None, None)
+
+
+# ── geometry.json 기록 배선(spec §5-2) ─────────────────────────────────────
+
+
+def _geometry(crop_dir):
+    """기록된 기하 문서를 읽는다(없으면 None)."""
+    import json
+
+    path = Path(crop_dir) / "geometry.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def test_quad_missing_writes_no_geometry_file(monkeypatch, tmp_path, make_warped):
+    """후보 전무는 파일을 쓰지 않는다 — 부재 자체가 '어디까지 갔는지'를 말한다."""
+    import handwriting.corner_dl as cdl
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(cdl, "quad_candidates", lambda *a, **k: iter(()))
+
+    infer_job("/x.jpg", _models(), tmp_path, 11, 0)
+
+    assert _geometry(tmp_path) is None
+
+
+def test_demoted_job_writes_a_partial_document(monkeypatch, tmp_path, make_warped):
+    """강등 잡에는 쿼드·deskew까지만 남고 하류 키는 아예 없다(ADR 0012 Consequences)."""
+    from handwriting.infer_job import infer_job
+
+    blank = make_warped(n_lines=0)
+    _install_fake_infer_photo(monkeypatch, blank, [])
+
+    infer_job("/x.jpg", _models(), tmp_path, 12, 5)
+
+    doc = _geometry(tmp_path)
+    assert doc["version"] == 1
+    assert doc["generation"] == 5
+    assert doc["quad"] is not None
+    assert doc["quad_source"] == "color"
+    assert doc["deskew_deg"] is not None
+    assert doc["warp_size"] == [900, 2100]
+    assert "rows" not in doc
+    assert "hlines" not in doc
+
+
+def test_full_path_writes_rows_lines_and_the_crop_windows_actually_used(
+    monkeypatch, tmp_path, make_warped
+):
+    """전체 경로는 행·가로줄·피치·크롭 창을 전량 남긴다 — 템플릿 상수가 아니라 실제 값이다."""
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    calls = []
+    _install_fake_infer_photo(monkeypatch, warped, calls)
+    # 지연 import이므로 호출 시점에 유효한 대역 — grid_v4.amount_crop_left 실측(#50 좌측 경계)
+    monkeypatch.setattr("handwriting.grid_v4.amount_crop_left", lambda w: 630)
+
+    infer_job("/x.jpg", _models(), tmp_path, 13, 2)
+
+    doc = _geometry(tmp_path)
+    assert doc["generation"] == 2
+    assert doc["image_size"] == [warped.shape[1], warped.shape[0]]
+    assert doc["hlines"] and doc["pitch"] > 0
+    assert doc["item_x"] == [96, 396]  # rows.ITEM_X (100, 392) ± 4 — 실제 크롭 폭
+    assert doc["amount_x"] == [630, 896]  # 좌측은 실측 대역, 우측은 grid_v4.AMOUNT_X[1]
+    assert [r["row_index"] for r in doc["rows"]] == [0]
+
+
+def test_geometry_write_failure_does_not_break_inference(monkeypatch, tmp_path, make_warped):
+    """기록 실패는 추론 결과에 영향이 없다 — 기하는 진단이지 산출물이 아니다.
+
+    대역이 함수 자체를 갈아끼우므로 삼킴은 호출부(record)가 소유해야 성립한다.
+    """
+    import handwriting.geometry as geom
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(geom, "write_geometry", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+
+    with pytest.raises(OSError):
+        geom.write_geometry(tmp_path, {})  # 대역이 실제로 던지는지 확인(전제)
+
+    result = infer_job("/x.jpg", _models(), tmp_path, 14, 0)
+
+    assert result["warp_ok"] is True
+    assert len(result["rows"]) == 1
+
+
+def test_dryrun_generation_none_writes_nothing(monkeypatch, tmp_path, make_warped):
+    """generation=None(드라이런)이면 관측 산출물을 남기지 않는다."""
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+
+    infer_job("/x.jpg", _models(), tmp_path, 15, None)
+
+    assert _geometry(tmp_path) is None
+
+
+def test_recorded_item_x_matches_the_crop_baked_into_extract_rows_for_job(
+    monkeypatch, tmp_path, make_warped
+):
+    """기록된 item_x가 실제 크롭식과 갈리면 geometry.json이 조용히 거짓을 말한다(#50).
+
+    헬퍼 승격(item_crop_x())을 쓰지 않는 이유 — tests/test_warp_gate_rows.py:461-472가
+    extract_rows_for_job 소스에 `x1 - 4:x2 + 4` 리터럴이 남아 있을 것을 이미 단언하므로
+    헬퍼로 접으면 그 가드가 RED가 되고 tools/warp_gate_rows.py까지 S2로 끌려온다. 그 파일과
+    같은 소스 대조 관용구로 잇는다.
+    """
+    import ast
+    import re
+
+    from handwriting.infer_job import infer_job
+    from handwriting.rows import ITEM_X
+
+    src = (Path(__file__).resolve().parents[1] / "handwriting" / "infer_photo.py").read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "extract_rows_for_job"
+    )
+    m = re.search(r"x1 - (\d+):x2 \+ (\d+)", ast.unparse(fn))
+    assert m, "운영 품목 크롭 슬라이스를 찾지 못했다"
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    infer_job("/x.jpg", _models(), tmp_path, 16, 0)
+
+    assert _geometry(tmp_path)["item_x"] == [
+        ITEM_X[0] - int(m.group(1)),
+        ITEM_X[1] + int(m.group(2)),
+    ]
