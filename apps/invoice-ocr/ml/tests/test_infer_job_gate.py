@@ -530,3 +530,58 @@ def test_infer_job_warps_once_per_candidate_when_all_are_demoted(
 
     assert out["warp_ok"] is False
     assert len(seen) == 2  # 후보 2개 × 1회
+
+
+# ── _gated_warp 반환 계약(GatedWarp) ────────────────────────────────────────
+
+
+def test_gated_warp_returns_the_geometry_of_the_passing_candidate(monkeypatch, make_warped):
+    """통과한 후보의 quad·공급자·deskew 각을 함께 돌려준다 — 지역변수로 버리지 않는다."""
+    from handwriting.infer_job import _gated_warp
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr("handwriting.infer_photo.deskew_angle", lambda w: 0.42, raising=False)
+
+    gw = _gated_warp(warped, None, 7)
+
+    assert gw.passed is True
+    assert gw.quad_source == "color"
+    assert gw.deskew_deg == pytest.approx(0.42)
+    assert np.asarray(gw.quad).shape == (4, 2)
+
+
+def test_gated_warp_returns_the_last_candidate_geometry_when_all_are_demoted(
+    monkeypatch, make_warped
+):
+    """전량 강등에서도 마지막 후보의 기하를 돌려준다 — warped.png와 같은 규칙(spec §5-2).
+
+    이 기하가 없으면 강등 잡의 부분 문서에 쿼드가 비어, "4점이 전표를 물었나"라는 ② 패널의
+    질문 자체가 화면에서 성립하지 않는다.
+    """
+    from handwriting.infer_job import _gated_warp
+
+    blank = make_warped(n_lines=0)  # 격자 없음 → 게이트 전량 강등
+    _install_fake_infer_photo(monkeypatch, blank, [])
+
+    gw = _gated_warp(blank, None, 8)
+
+    assert gw.passed is False
+    assert gw.warped is not None
+    assert gw.quad is not None
+    assert gw.quad_source == "color"
+    assert gw.deskew_deg is not None
+
+
+def test_gated_warp_returns_all_none_when_no_candidate_exists(monkeypatch, make_warped):
+    """후보 전무는 기하도 없다 — 부재 자체가 신호이고 호출부가 quad_missing으로 닫는다."""
+    import handwriting.corner_dl as cdl
+    from handwriting.infer_job import _gated_warp
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(cdl, "quad_candidates", lambda *a, **k: iter(()))
+
+    gw = _gated_warp(warped, None, 9)
+
+    assert gw == (None, False, None, None, None)

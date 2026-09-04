@@ -10,6 +10,8 @@ assemble_result_json은 순수함수(TDD 대상). infer_job은 warp/embed/ocr �
    import해도 이 규약을 깨지 않는다(tests/test_warp_gate.py의 코어 격리 테스트로 검증됨).
 """
 
+from typing import NamedTuple
+
 from handwriting.warp_gate import (
     ENH_MAX_BLUE_ASYMMETRY,
     ENH_MAX_PITCH_DEV,
@@ -23,6 +25,28 @@ from handwriting.warp_gate import (
     evaluate_warp,
     evaluate_warp_enh,
 )
+
+
+class GatedWarp(NamedTuple):
+    """게이트 인지형 워프 선택의 산출 — 워프 결과와 그 결과를 만든 기하를 함께 든다.
+
+    **속성으로 읽는다**(worker.main.ModelBundle과 같은 규약). 필드가 다섯이라 위치 언패킹은
+    순서 실수가 조용히 통과하는 바로 그 형태다.
+
+    warped: EXIF 정위치 원본을 quad로 워프하고 deskew한 BGR. 후보가 하나도 없으면 None.
+    passed: 정합 게이트 통과 여부(result_json.warp_ok의 입력).
+    quad: 통과한 후보 — 전량 강등이면 마지막 후보 — 의 (4, 2) float32 quad. 후보 전무면 None.
+    quad_source: 그 quad를 낸 공급자("dl" | "color"). corner_dl.quad_candidates가 yield하는
+        문자열을 그대로 싣는다.
+    deskew_deg: 그 후보의 워프에 적용한 deskew 각도(도).
+    """
+
+    warped: object
+    passed: bool
+    quad: object | None
+    quad_source: str | None
+    deskew_deg: float | None
+
 
 # 수기 거래명세서는 천 단위를 생략해 적는다(spec: 단가·금액 100% 천원 배수) → 액면값에 ×1000.
 THOUSAND_MULT = 1000
@@ -152,7 +176,7 @@ def _warp_gate_passes(w, job_id: int) -> bool:
     return False
 
 
-def _gated_warp(bgr, aligner, job_id: int):
+def _gated_warp(bgr, aligner, job_id: int) -> GatedWarp:
     """Quad 후보를 우선순위대로 워프·deskew해 게이트를 통과하는 첫 결과를 고른다.
 
     "쿼드를 찾았다"와 "맞게 찾았다"를 가르는 판정(_warp_gate_passes)을 공급자 **선택**의
@@ -175,21 +199,26 @@ def _gated_warp(bgr, aligner, job_id: int):
         job_id: 로그 태그.
 
     Returns:
-        (warped, passed). 후보가 하나도 없으면 (None, False) — 호출부가 quad_missing 처리.
+        GatedWarp. 후보가 하나도 없으면 전 필드가 None/False다 — 호출부가 quad_missing 처리.
+        전량 강등이면 **마지막 후보**의 워프와 기하를 passed=False와 함께 싣는다(warped.png를
+        현행처럼 남기는 규칙 그대로) — 강등 잡의 geometry.json 부분 문서가 그 기하를 쓴다.
     """
     from handwriting import infer_photo as ip
     from handwriting.corner_dl import log_fallback, quad_candidates
     from handwriting.grid_v4 import warp
 
     w = None
+    quad_used = source_used = deskew_used = None
     for src, quad in quad_candidates(bgr, aligner, job_id=job_id):
         raw = warp(bgr, quad)
-        w = ip.rotate(raw, ip.deskew_angle(raw))
+        angle = ip.deskew_angle(raw)
+        w = ip.rotate(raw, angle)
+        quad_used, source_used, deskew_used = quad, src, float(angle)
         if _warp_gate_passes(w, job_id):
-            return w, True
+            return GatedWarp(w, True, quad_used, source_used, deskew_used)
         if src == "dl":
             log_fallback(job_id, "gate-demoted")
-    return w, False
+    return GatedWarp(w, False, quad_used, source_used, deskew_used)
 
 
 def infer_job(image_path: str, models, crop_out_dir, job_id: int, generation: int | None) -> dict:
@@ -223,13 +252,14 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int, generation: in
     crop_out_dir = Path(crop_out_dir)
     crop_out_dir.mkdir(parents=True, exist_ok=True)
     bgr = ip.load_bgr_path(image_path)
-    w, gate_ok = _gated_warp(bgr, models.aligner, job_id)
+    gw = _gated_warp(bgr, models.aligner, job_id)
+    w = gw.warped
     if w is None:
         print(f"[warp-gate] job={job_id} quad_missing", flush=True)  # 격자 부정합과 구분 가능하게
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
     cv2.imwrite(str(crop_out_dir / "warped.png"), w)  # 큐레이션 단계 시각화용 전표 1장
 
-    if not gate_ok:
+    if not gw.passed:
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
 
     # process_one과 동일한 행검출·crop·retrieval·금액 OCR(단일 경로).
