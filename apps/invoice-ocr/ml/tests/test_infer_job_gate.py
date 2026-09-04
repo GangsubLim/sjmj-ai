@@ -83,7 +83,7 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(n_lines=0), calls)  # 백지 = 격자 없음
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 7)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 7, None)
 
     from handwriting.infer_job import ITEM_CONF_THRESHOLD
 
@@ -124,7 +124,7 @@ def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
     # 후보 0개가 되어 quad_missing 경로가 그대로 성립한다.
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 99, None)
 
     from handwriting.infer_job import ITEM_CONF_THRESHOLD
 
@@ -145,7 +145,7 @@ def test_gate_failure_on_half_width_grid(monkeypatch, tmp_path, make_warped):
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(x_end=450), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 39)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 39, None)
 
     assert out["warp_ok"] is False
     assert out["rows"] == []
@@ -158,7 +158,7 @@ def test_gate_pass_keeps_existing_row_extraction(monkeypatch, tmp_path, make_war
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)  # 정상 격자
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -181,7 +181,7 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_pass_path(
 
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
 
-    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert "retrieval_version" not in out
@@ -194,7 +194,7 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_failure_path(
 
     _install_fake_infer_photo(monkeypatch, make_warped(n_lines=0), [])
 
-    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 7)
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 7, None)
 
     assert out["warp_ok"] is False
     assert "retrieval_version" not in out
@@ -313,7 +313,7 @@ def test_rescued_faint_sheet_reaches_row_extraction_through_infer_job(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(color=FAINT_BLUE), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 59)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 59, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -349,7 +349,7 @@ def test_infer_job_prefers_the_dl_quad_over_the_color_path(monkeypatch, tmp_path
     )
     aligner = _Aligner(FULL_QUAD)
 
-    out = infer_job("ignored.jpg", _models(aligner=aligner), tmp_path, 34)
+    out = infer_job("ignored.jpg", _models(aligner=aligner), tmp_path, 34, None)
 
     assert len(aligner.seen) == 1
     assert aligner.seen[0] is bgr  # 워프 결과가 아니라 EXIF 정위치 원본을 그대로 받는다
@@ -366,7 +366,7 @@ def test_infer_job_falls_back_to_the_color_path_when_the_dl_quad_is_missing(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(None)), tmp_path, 54)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(None)), tmp_path, 54, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -383,7 +383,7 @@ def test_infer_job_retries_with_the_color_quad_when_the_dl_warp_is_gate_demoted(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 41)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 41, None)
 
     assert out["warp_ok"] is True  # 색 재시도로 회수
     assert calls == ["extract_rows_for_job"]
@@ -416,7 +416,7 @@ def test_infer_job_demotes_when_both_quads_fail_the_gate(monkeypatch, tmp_path, 
     _install_fake_infer_photo(monkeypatch, bgr, calls)
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda b: color_band)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(dl_strip)), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(dl_strip)), tmp_path, 99, None)
 
     assert out["warp_ok"] is False
     assert calls == []
@@ -442,7 +442,7 @@ def test_infer_job_keeps_the_demoted_dl_warp_when_the_color_path_finds_nothing(
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 71)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 71, None)
 
     assert out["warp_ok"] is False
     assert calls == []
@@ -461,7 +461,7 @@ def test_infer_job_without_an_aligner_keeps_the_current_color_path(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -510,7 +510,7 @@ def test_infer_job_warps_each_candidate_exactly_once(monkeypatch, tmp_path, make
     seen = _warp_spy(monkeypatch)
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(FULL_QUAD)), tmp_path, 34)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(FULL_QUAD)), tmp_path, 34, None)
 
     assert out["warp_ok"] is True
     assert len(seen) == 1  # DL 후보 채택 — 재워프 0회
@@ -526,7 +526,7 @@ def test_infer_job_warps_once_per_candidate_when_all_are_demoted(
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: top_strip)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99, None)
 
     assert out["warp_ok"] is False
     assert len(seen) == 2  # 후보 2개 × 1회

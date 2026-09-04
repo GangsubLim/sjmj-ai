@@ -21,7 +21,10 @@ from worker.db import WorkerQueue
 
 _SCHEMA = (
     "CREATE TABLE ocr_jobs (id INTEGER PRIMARY KEY, status TEXT, image_path TEXT, "
-    "result_json TEXT, curation_reviewed INTEGER DEFAULT 1)",
+    "result_json TEXT, curation_reviewed INTEGER DEFAULT 1, "
+    # migration_014. 워커 내부 재시도 세 경로는 이 값을 **올리지 않아야** 한다(spec §6-2) —
+    # 실행형 픽스처라야 그 부작위를 실제로 잴 수 있다.
+    "reprocess_seq INTEGER NOT NULL DEFAULT 0)",
     # crop_ref UNIQUE는 운영 스키마 그대로다(migration_008) — 2-pass 순서 제약의 근거라
     # 여기서도 걸어야 순서를 뒤집었을 때 테스트가 실제로 깨진다.
     # draft_supply는 migration_012가 만든 ② 앵커 컬럼 — fetch_pairs가 이 컬럼만 읽는다.
@@ -525,7 +528,7 @@ def test_mark_failed_keep_result_preserves_the_draft():
 
 def test_claim_next_pending_transitions_and_returns():
     """pending 행이 있으면 SELECT(FOR UPDATE) → UPDATE(running) 순서로 2회 execute,
-    {id, image_path, is_reprocess} dict 반환.
+    {id, image_path, is_reprocess, generation} dict 반환.
     """
     engine = MagicMock()
     conn = engine.begin.return_value.__enter__.return_value
@@ -534,6 +537,7 @@ def test_claim_next_pending_transitions_and_returns():
     fake_row.id = 42
     fake_row.image_path = "/data/images/invoice_042.jpg"
     fake_row.is_reprocess = 0
+    fake_row.reprocess_seq = 3
 
     first_result = MagicMock()
     first_result.fetchone.return_value = fake_row
@@ -553,6 +557,7 @@ def test_claim_next_pending_transitions_and_returns():
         "id": 42,
         "image_path": "/data/images/invoice_042.jpg",
         "is_reprocess": False,
+        "generation": 3,
     }
 
 
@@ -881,3 +886,37 @@ def test_fetch_image_path_reads_the_photo_without_changing_the_job():
 
 def test_fetch_image_path_is_none_for_a_missing_job():
     assert WorkerQueue(_live_engine([])).fetch_image_path(999) is None
+
+
+# ---------------------------------------------------------------------------
+# claim_next_pending — 세대(generation)
+# ---------------------------------------------------------------------------
+
+
+def test_claim_next_pending_selects_the_reprocess_generation():
+    """세대는 잡을 점유한 그 시점의 값이어야 한다 — 나중에 다시 읽으면 재처리 요청이 끼어든다."""
+    engine = MagicMock()
+    conn = engine.begin.return_value.__enter__.return_value
+    conn.execute.return_value.fetchone.return_value = None
+
+    WorkerQueue(engine).claim_next_pending()
+
+    select_sql = str(conn.execute.call_args_list[0][0][0])
+    assert "reprocess_seq" in select_sql
+
+
+def test_worker_internal_requeues_do_not_bump_the_generation():
+    """워커 내부 재시도는 같은 논리 세대다(spec §6-2) — 같은 사진·같은 엔진의 멱등 재실행.
+
+    올리면 재실행이 쓴 geometry.json이 자기 잡의 DB 세대보다 뒤처져 영구 409가 된다.
+    """
+    engine = _live_engine([])
+    q = WorkerQueue(engine)
+
+    q.requeue_for_reprocess(5)
+    q.requeue_pending(5)
+    q.requeue_stale_running()
+
+    with engine.begin() as conn:
+        seq = conn.execute(text("SELECT reprocess_seq FROM ocr_jobs WHERE id=5")).scalar()
+    assert seq == 0

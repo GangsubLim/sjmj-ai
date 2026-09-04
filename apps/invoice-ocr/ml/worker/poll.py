@@ -78,7 +78,9 @@ def process_one_job(
 
     Args:
         queue: WorkerQueue(또는 같은 계약의 대역).
-        infer_fn: (image_path, crop_dir, job_id) → result_json.
+        infer_fn: (image_path, crop_dir, job_id, generation) → result_json. generation은
+            claim_next_pending이 점유 시점에 읽은 ocr_jobs.reprocess_seq이며, 추론이
+            crop_dir/geometry.json에 스탬프한다(ADR 0012).
         crops_root: 크롭 루트 디렉터리.
         qwen_jobs_before: **이 프로세스가** 지금까지 Qwen을 부른 잡 수. degenerate가 나면 이
             값으로 그 잡을 은퇴시킬지(0 — mark_failed/rollback_to_done) 재시도 가능 상태로
@@ -114,7 +116,7 @@ def process_one_job(
             # 내용은 판별 근거가 아니다(마커는 존재 자체가 신호다) — 접미사만 옮긴다.
             shutil.rmtree(old_dir, ignore_errors=True)
             tmp_dir.rename(old_dir)
-        result = infer_fn(job["image_path"], tmp_dir, job_id)
+        result = infer_fn(job["image_path"], tmp_dir, job_id, job["generation"])
         if job["is_reprocess"] and not new_rows(result):
             # 새 행 0건 재처리는 커밋 전에 실패로 끊는다(이슈 #92 고려안 1). plan_relink는
             # 이 조합을 전량 미결의 정상 계획으로 취급하므로, 커밋에 닿으면 확정 쌍이

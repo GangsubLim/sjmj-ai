@@ -119,12 +119,15 @@ def test_the_dryrun_forecast_uses_the_same_plan_production_commits(tmp_path, mon
                 )
         return engine
 
-    def infer(image_path, crop_dir, job_id):
+    # generation에 기본값을 두는 것은 이 대역만의 편의다 — 아래에서 4-arity(운영 경로,
+    # process_one_job)와 3-arity(드라이런 경로, forecast_job) 양쪽에 같은 함수를 재사용한다.
+    def infer(image_path, crop_dir, job_id, generation=None):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         return RESULT
 
     production = _CapturingQueue(
-        _seeded(), {"id": 5, "image_path": "/data/up/5.jpeg", "is_reprocess": True}
+        _seeded(),
+        {"id": 5, "image_path": "/data/up/5.jpeg", "is_reprocess": True, "generation": 0},
     )
     process_one_job(production, infer, tmp_path, 1)
 

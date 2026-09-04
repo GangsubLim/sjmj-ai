@@ -624,7 +624,10 @@ def test_the_dryrun_module_keeps_model_and_db_imports_out_of_module_scope():
 
 
 def test_build_infer_fn_passes_models_in_the_slot_infer_job_expects(monkeypatch):
-    """배선은 worker/main.py와 같다 — infer_job(image_path, models, crop_dir, job_id).
+    """배선은 worker/main.py와 같되 세대는 None이다 — 드라이런은 관측 산출물을 남기지 않는다.
+
+    커밋도 크롭 교체도 하지 않는 예측 실행이라 세대를 소비하지 않는다. 0 같은 자리표시자를
+    넘기면 존재한 적 없는 세대의 기하가 남는다.
 
     Fake 모듈 주입은 tests/test_worker_models.py 선례를 따른다(실모델·torch 비의존).
     """
@@ -636,4 +639,4 @@ def test_build_infer_fn_passes_models_in_the_slot_infer_job_expects(monkeypatch)
 
     rd.build_infer_fn()("/data/up/27.jpeg", "/tmp/crops", 27)
 
-    assert calls == [("/data/up/27.jpeg", "MODELS", "/tmp/crops", 27)]
+    assert calls == [("/data/up/27.jpeg", "MODELS", "/tmp/crops", 27, None)]

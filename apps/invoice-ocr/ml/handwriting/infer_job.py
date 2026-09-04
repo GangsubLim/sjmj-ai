@@ -192,16 +192,21 @@ def _gated_warp(bgr, aligner, job_id: int):
     return w, False
 
 
-def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
+def infer_job(image_path: str, models, crop_out_dir, job_id: int, generation: int | None) -> dict:
     """사진 1장 → result_json. crop PNG를 crop_out_dir/row-{i}.png로 저장.
 
     models: worker.main.ModelBundle(worker가 1회 적재). 위치 언패킹이 아니라 속성으로 읽는다.
+    generation: 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq. crop_out_dir/geometry.json의
+        세대 스탬프가 된다(ADR 0012). **None이면 기하를 아예 쓰지 않는다** — 드라이런
+        (tools/reprocess_dryrun.py)은 커밋도 크롭 교체도 하지 않는 예측 실행이라 세대를
+        소비하지 않고, 0 같은 자리표시자를 남기면 존재한 적 없는 세대의 관측이 생긴다.
+        기본값을 두지 않는 것이 의도다 — 워커 배선이 빠지면 TypeError로 즉시 드러난다.
     quad는 corner_dl.quad_candidates를 통해 _gated_warp가 게이트 인지형으로 선택한다 — DL
     워프가 게이트에서 강등되면 색 quad로 1회 재시도. models.aligner가 None이면 현행 색
     경로와 동일하다.
     extract_rows_for_job(process_one과 공유하는 단일 추론 경로)를 재사용해 HTML 조립을 제거하고
-    rows 리스트를 만들어 assemble_result_json으로 직렬화한다. runtime은 Task 17(macmini,
-    worker venv + 실모델)에서 검증한다 — 여기서는 실행하지 않는다.
+    rows 리스트를 만들어 assemble_result_json으로 직렬화한다. runtime은 macmini(worker venv +
+    실모델) 라이브에서 검증한다 — 여기서는 실행하지 않는다.
     """
     import itertools
     import tempfile

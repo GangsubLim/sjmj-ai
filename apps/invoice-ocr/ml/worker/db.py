@@ -42,12 +42,17 @@ class WorkerQueue:
         done + 에러 초안으로 남는다. 워커가 쓴 성공 초안만 rows를 가진다(assemble_result_json).
 
         Returns:
-            {"id", "image_path", "is_reprocess"} 또는 큐가 비었으면 None.
+            {"id", "image_path", "is_reprocess", "generation"} 또는 큐가 비었으면 None.
+            generation은 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq(migration_014)다 —
+            추론 산출인 crop_dir/geometry.json에 그대로 찍혀, 파일과 DB가 같은 세대를
+            가리키는지 백엔드가 대조하는 유일한 근거가 된다(ADR 0012 · spec §6-2).
+            **점유 시점에 함께 읽는 것이 계약이다** — 나중에 다시 읽으면 그 사이 들어온
+            재처리 요청의 증가분을 집어 이번 실행의 산출에 다음 세대를 찍는다.
         """
         with self.engine.begin() as conn:
             row = conn.execute(
                 text(
-                    "SELECT id, image_path, "
+                    "SELECT id, image_path, reprocess_seq, "
                     "(JSON_EXTRACT(result_json, '$.rows') IS NOT NULL) AS is_reprocess "
                     "FROM ocr_jobs WHERE status='pending' "
                     "ORDER BY (JSON_EXTRACT(result_json, '$.rows') IS NOT NULL), id "
@@ -64,6 +69,7 @@ class WorkerQueue:
                 "id": row.id,
                 "image_path": row.image_path,
                 "is_reprocess": bool(row.is_reprocess),
+                "generation": int(row.reprocess_seq),
             }
 
     def fetch_pairs(self, job_id: int) -> list[OldPair]:
