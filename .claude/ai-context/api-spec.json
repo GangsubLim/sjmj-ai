@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "sjmj-ai invoice-ocr API",
-    "version": "0.15.0",
+    "version": "0.16.0",
     "description": "SJMJ 거래명세서 OCR 자동입력 백엔드(FastAPI). REST/JSON API. 에이전트 우선 인덱스 레이어는 x-api-overview. info.version은 루트 VERSION / backend app/config.py:APP_VERSION 과 동기되어야 한다."
   },
   "servers": [

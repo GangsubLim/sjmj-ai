@@ -5,6 +5,22 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.16.0] — 2026-09-06
+
+텔레그램 사진을 hermes agent가 읽어 거래명세서를 바로 생성하는 위임 입력 경로를 열고, 추론 잡의 단계별 기하를 사이드카로 남겨 큐레이션 화면에 겹쳐 보이며, 큐레이션 목록에 행 증감을 노출한 릴리스 ([#155](https://github.com/GangsubLim/sjmj-ai/pull/155), [#157](https://github.com/GangsubLim/sjmj-ai/pull/157), [#158](https://github.com/GangsubLim/sjmj-ai/pull/158)).
+
+### Added
+
+- hermes agent 위임 거래명세서 입력 스킬 — 텔레그램으로 보낸 수기 거래명세서 사진을 LLM 비전으로 읽어 거래명세서를 생성하고 수정 링크를 회신, 사진·초안은 id로 보관 ([#158](https://github.com/GangsubLim/sjmj-ai/pull/158))
+- 위임 입력 초안↔최종본 일치율 리포트 도구 `agent_report.py` — 사람이 링크에서 고친 결과와 조인해 수신처·품목명·금액·합계 일치율과 무수정률을 표로 출력, 불일치 건은 사진과 바로 대조 가능 ([#158](https://github.com/GangsubLim/sjmj-ai/pull/158))
+- 추론 단계 기하 사이드카 `geometry.json` 생산과 조회 API — 각 단계에서 실제로 쓴 좌표·수치를 기록값=실제값으로 보존 ([#157](https://github.com/GangsubLim/sjmj-ai/pull/157))
+- 큐레이션 상세에 기하 오버레이 패널 — 원본·워프 이미지 위에 단계별 좌표를 SVG로 겹쳐 크롭 불량을 그림으로 판정 ([#157](https://github.com/GangsubLim/sjmj-ai/pull/157))
+- 큐레이션 목록에 잡별 행 증감(`rows_added`/`rows_dropped`) 노출과 `row_delta` 필터 — 확정 시 행이 늘거나 준 잡만 골라 검토 ([#155](https://github.com/GangsubLim/sjmj-ai/pull/155))
+
+### Changed
+
+- 큐레이션 이웃 탐색이 `row_delta` 필터를 그대로 이어받아 필터 안에서만 이전·다음 이동 ([#155](https://github.com/GangsubLim/sjmj-ai/pull/155))
+
 ## [v0.15.0] — 2026-09-03
 
 배치 재처리 운영에서 사람이 직접 DB를 고쳐야 했던 워커 실패·좌초 경로 5종을 자동 복구로 전환하고, 검수 화면이 잡 상태를 즉시 알리도록 확장한 릴리스 ([#142](https://github.com/GangsubLim/sjmj-ai/pull/142), [#143](https://github.com/GangsubLim/sjmj-ai/pull/143), [#145](https://github.com/GangsubLim/sjmj-ai/pull/145)).
