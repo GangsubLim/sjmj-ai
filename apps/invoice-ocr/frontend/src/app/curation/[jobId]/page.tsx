@@ -3,9 +3,15 @@ import { ExternalLinkIcon, PencilIcon } from "lucide-react";
 
 import { useCurationJob } from "@/hooks/use-curation-job";
 import { usePageParam } from "@/hooks/use-page-param";
-import { useJobNeighbors, fetchCurationPage } from "@/hooks/use-job-neighbors";
+import { useRowDeltaParam } from "@/hooks/use-row-delta-param";
+import {
+  useJobNeighbors,
+  fetchCurationPage,
+  fetchCurationRowDeltaPage,
+} from "@/hooks/use-job-neighbors";
 import { CurationPairRow } from "@/components/curation/CurationPairRow";
 import { JobImagePanel } from "@/components/curation/JobImagePanel";
+import { StageGeometryPanel } from "@/components/curation/StageGeometryPanel";
 import { JobNavButtons } from "@/components/curation/JobNavButtons";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -20,6 +26,7 @@ export default function CurationJobPage() {
   const { jobId } = useParams();
   const numericId = jobId ? Number(jobId) : undefined;
   const { page } = usePageParam();
+  const { rowDelta } = useRowDeltaParam();
   const { job, loading, error, patchPair, reviewJob } =
     useCurationJob(numericId);
   // numericId가 undefined면 훅이 조회 자체를 하지 않는다.
@@ -30,7 +37,8 @@ export default function CurationJobPage() {
   } = useJobNeighbors({
     jobId: numericId,
     page,
-    fetchPage: fetchCurationPage,
+    // 두 모듈 상수 중 하나를 고른다 — 인라인 조립은 렌더마다 identity가 바뀌어 조회 루프가 된다.
+    fetchPage: rowDelta ? fetchCurationRowDeltaPage : fetchCurationPage,
   });
 
   // 검수 완료 후 목록으로 튕기지 않는다 — reviewJob이 POST 성공 시 curation_reviewed를
@@ -52,6 +60,7 @@ export default function CurationJobPage() {
       prev={prev}
       next={next}
       loading={neighborsLoading}
+      rowDelta={rowDelta}
     />
   );
 
@@ -137,8 +146,11 @@ export default function CurationJobPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-[280px_1fr]">
-        {/* 좌: 단계 이미지 (확정 전 상세와 공유) */}
-        <JobImagePanel jobId={job.job_id} />
+        {/* 좌: 단계 이미지 (확정 전 상세와 공유) + 단계 기하 오버레이(확정 후 전용) */}
+        <div className="space-y-3">
+          <JobImagePanel jobId={job.job_id} />
+          <StageGeometryPanel jobId={job.job_id} />
+        </div>
 
         {/* 우: 행별 학습쌍 */}
         <div>

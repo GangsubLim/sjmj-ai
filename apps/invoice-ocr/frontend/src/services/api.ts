@@ -18,6 +18,7 @@ import type {
   CurationPairPatchBody,
   CurationPairPatchResult,
   CurationImageKind,
+  StageGeometry,
 } from "@/types/curation";
 import type { UnconfirmedJobSummary } from "@/types/observation";
 
@@ -330,9 +331,15 @@ const _realCurationAPI = {
   getJobs: async (params?: {
     page?: number;
     limit?: number;
+    row_delta?: boolean;
   }): Promise<ListResponse<CurationJobSummary>> => {
     const response = await api.get("/curation/jobs", {
-      params: { page: params?.page ?? 1, limit: params?.limit ?? 20 },
+      // row_delta는 켜졌을 때만 싣는다 — 항상 실으면 필터 off 요청이 도입 이전과 달라진다.
+      params: {
+        page: params?.page ?? 1,
+        limit: params?.limit ?? 20,
+        ...(params?.row_delta ? { row_delta: true } : {}),
+      },
     });
     return response.data;
   },
@@ -359,6 +366,13 @@ const _realCurationAPI = {
     const response = await api.post(`/curation/jobs/${jobId}/review`, {
       job_token: jobToken,
     });
+    return response.data;
+  },
+
+  getGeometry: async (
+    jobId: number,
+  ): Promise<SingleResponse<StageGeometry>> => {
+    const response = await api.get(`/curation/jobs/${jobId}/geometry`);
     return response.data;
   },
 };

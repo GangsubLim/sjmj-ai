@@ -145,8 +145,8 @@ def main():
         print(f"[watchdog] 좌초 running 잡 {stale} → pending 재큐잉", file=sys.stderr, flush=True)
     models = load_models()
 
-    def infer_fn(image_path, crop_dir, job_id):
-        return infer_job(image_path, models, crop_dir, job_id)
+    def infer_fn(image_path, crop_dir, job_id, generation):
+        return infer_job(image_path, models, crop_dir, job_id, generation)
 
     qwen_jobs = 0
     # 잡별 크롭 교체 연속 실패 카운터(이슈 #88) — qwen_jobs와 같은 소유 구조로, 프로세스

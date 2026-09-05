@@ -76,6 +76,8 @@ describe("main.tsx 라우트 등록 (/curation, /curation/:jobId)", () => {
       loading: false,
       error: null,
       setPage: vi.fn(),
+      rowDelta: false,
+      setRowDelta: vi.fn(),
       refetch: vi.fn(),
     });
     await bootMainAt("/curation");

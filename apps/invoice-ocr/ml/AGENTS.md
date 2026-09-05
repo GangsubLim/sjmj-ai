@@ -34,6 +34,7 @@ tools/          spike_ppstructure.py — 환경/검출 스파이크 (paddle 필�
                 blank_crop_report.py — 빈 크롭 자동 배제 리포트 + 운영 DB 반영 (report/apply 분리, ADR 0006)
                 blank_crop_calib.py — 위 도구의 캘리브레이션 계층 (상태 어휘·라벨 manifest·마진·렌더, 순수함수만)
                 bank_update.py — 큐레이션 학습쌍 기반 품목 뱅크(bank.npz) 증분 갱신 (멱등 sync, macmini 실행, docs/runbooks/ocr-bank-update.md)
+                agent_report.py — hermes 위임 입력 초안↔최종본 일치율 리포트 (agent_uploads/*.draft.json ⟷ invoices 조인, macmini 실행, DB_* env)
 report/         리포트 산출물 + report/sp2_spike/ (SP2 실험)  ← gitignore
 results/        reviewed_dates.csv 등 중간 산출  ← gitignore
 review/         검수 HTML/몽타주  ← gitignore

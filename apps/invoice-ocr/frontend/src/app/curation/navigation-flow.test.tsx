@@ -13,7 +13,10 @@ import CurationQueuePage from "./page";
 import CurationJobPage from "./[jobId]/page";
 import { curationAPI } from "@/services/api";
 import { useCurationJob } from "@/hooks/use-curation-job";
-import { useJobNeighbors } from "@/hooks/use-job-neighbors";
+import {
+  useJobNeighbors,
+  fetchCurationRowDeltaPage,
+} from "@/hooks/use-job-neighbors";
 import type { CurationJobDetail } from "@/types/curation";
 
 // CurationJobPage가 끌고 오는 모듈들이 named import로 쓰는 것을 모두 채워야 한다 —
@@ -30,6 +33,7 @@ vi.mock("@/hooks/use-items", () => ({ useItems: () => ({ data: [] }) }));
 vi.mock("@/hooks/use-job-neighbors", () => ({
   useJobNeighbors: vi.fn(),
   fetchCurationPage: vi.fn(),
+  fetchCurationRowDeltaPage: vi.fn(),
 }));
 
 const mockGetJobs = vi.mocked(curationAPI.getJobs);
@@ -64,6 +68,8 @@ describe("큐레이션 목록 위치 보존 수용 흐름", () => {
           curation_reviewed_at: null,
           pair_count: 1,
           unreviewed_count: 1,
+          rows_added: null,
+          rows_dropped: null,
           created_at: "2026-06-30T09:00:00",
         },
       ],
@@ -143,5 +149,73 @@ describe("큐레이션 목록 위치 보존 수용 흐름", () => {
 
     await waitFor(() => expect(router.state.location.search).toBe("?page=4"));
     expect(mockGetJobs).toHaveBeenCalledWith({ page: 4, limit: 20 });
+  });
+
+  it("필터 on 목록 → 상세 → 다음 → 목록 복귀까지 row_delta가 유지되고 이웃도 필터된 목록에서 계산된다", async () => {
+    mockGetJobs.mockResolvedValue({
+      success: true,
+      data: [
+        {
+          job_id: 128,
+          invoice_id: 341,
+          curation_reviewed: false,
+          curation_reviewed_at: null,
+          pair_count: 1,
+          unreviewed_count: 1,
+          rows_added: 2,
+          rows_dropped: 0,
+          created_at: "2026-06-30T09:00:00",
+        },
+      ],
+      pagination: { page: 1, limit: 20, total: 1, totalPages: 1 },
+    });
+    mockJob.mockImplementation((jobId) => ({
+      job: jobId === undefined ? null : detail(jobId),
+      loading: false,
+      error: null,
+      patchPair: vi.fn(),
+      reviewJob: vi.fn().mockResolvedValue(true),
+      refetch: vi.fn(),
+    }));
+    mockNeighbors.mockReturnValue({
+      prev: null,
+      next: { jobId: 129, page: 1 },
+      loading: false,
+    });
+
+    const router = createMemoryRouter(
+      [
+        { path: "/curation", element: <CurationQueuePage /> },
+        { path: "/curation/:jobId", element: <CurationJobPage /> },
+      ],
+      { initialEntries: ["/curation?row_delta=true"] },
+    );
+    render(<RouterProvider router={router} />);
+
+    // 목록 → 상세: 필터가 상세 URL로 따라간다.
+    fireEvent.click(
+      await screen.findByRole("button", { name: "잡 #128 상세" }),
+    );
+    await waitFor(() =>
+      expect(router.state.location.search).toBe("?row_delta=true"),
+    );
+    // 이웃 계산도 필터된 목록에서 이뤄져야 큐가 상세에서 끊기지 않는다.
+    expect(mockNeighbors).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fetchPage: fetchCurationRowDeltaPage }),
+    );
+
+    // 상세 → 다음 잡: 필터 유지.
+    fireEvent.click(screen.getByRole("button", { name: "다음 →" }));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/curation/129"),
+    );
+    expect(router.state.location.search).toBe("?row_delta=true");
+
+    // 다음 잡 → 목록 복귀: 필터 유지.
+    fireEvent.click(screen.getByRole("button", { name: "← 목록" }));
+    await waitFor(() =>
+      expect(router.state.location.pathname).toBe("/curation"),
+    );
+    expect(router.state.location.search).toBe("?row_delta=true");
   });
 });

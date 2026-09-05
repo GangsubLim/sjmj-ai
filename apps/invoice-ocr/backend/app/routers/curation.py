@@ -38,11 +38,11 @@ def _service() -> CurationService:
 
 
 @router.get("/curation/jobs")
-def list_jobs(page: int = 1, limit: int = 20):
-    """검수 큐(confirmed 잡) 목록을 페이지 조회한다."""
+def list_jobs(page: int = 1, limit: int = 20, row_delta: bool = False):
+    """검수 큐(confirmed 잡) 목록을 페이지 조회한다(row_delta=true면 행 증감 잡만)."""
     page = max(1, min(_PAGE_MAX, page))
     limit = max(1, min(_LIMIT_MAX, limit))
-    jobs, total = _service().list_jobs(page, limit)
+    jobs, total = _service().list_jobs(page, limit, row_delta=row_delta)
     total_pages = (total + limit - 1) // limit if total else 1
     return envelope.list_response(
         jobs, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
@@ -76,6 +76,12 @@ def review(job_id: int, body: CurationReviewRequest):
 def reprocess(job_id: int):
     """확정 완료된 잡을 현재 엔진으로 다시 판정하도록 큐에 넣는다(초안은 보존)."""
     return envelope.single(_service().request_reprocess(job_id))
+
+
+@router.get("/curation/jobs/{job_id}/geometry")
+def geometry(job_id: int):
+    """단계 기하 사이드카를 조회한다(부재 404 · 손상 500 · 이전 세대 409)."""
+    return envelope.single(_service().stage_geometry(job_id))
 
 
 @router.get("/curation/jobs/{job_id}/image/{kind}")

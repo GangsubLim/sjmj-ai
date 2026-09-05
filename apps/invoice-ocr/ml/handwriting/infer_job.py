@@ -10,6 +10,8 @@ assemble_result_json은 순수함수(TDD 대상). infer_job은 warp/embed/ocr �
    import해도 이 규약을 깨지 않는다(tests/test_warp_gate.py의 코어 격리 테스트로 검증됨).
 """
 
+from typing import NamedTuple
+
 from handwriting.warp_gate import (
     ENH_MAX_BLUE_ASYMMETRY,
     ENH_MAX_PITCH_DEV,
@@ -23,6 +25,28 @@ from handwriting.warp_gate import (
     evaluate_warp,
     evaluate_warp_enh,
 )
+
+
+class GatedWarp(NamedTuple):
+    """게이트 인지형 워프 선택의 산출 — 워프 결과와 그 결과를 만든 기하를 함께 든다.
+
+    **속성으로 읽는다**(worker.main.ModelBundle과 같은 규약). 필드가 다섯이라 위치 언패킹은
+    순서 실수가 조용히 통과하는 바로 그 형태다.
+
+    warped: EXIF 정위치 원본을 quad로 워프하고 deskew한 BGR. 후보가 하나도 없으면 None.
+    passed: 정합 게이트 통과 여부(result_json.warp_ok의 입력).
+    quad: 통과한 후보 — 전량 강등이면 마지막 후보 — 의 (4, 2) float32 quad. 후보 전무면 None.
+    quad_source: 그 quad를 낸 공급자("dl" | "color"). corner_dl.quad_candidates가 yield하는
+        문자열을 그대로 싣는다.
+    deskew_deg: 그 후보의 워프에 적용한 deskew 각도(도).
+    """
+
+    warped: object
+    passed: bool
+    quad: object | None
+    quad_source: str | None
+    deskew_deg: float | None
+
 
 # 수기 거래명세서는 천 단위를 생략해 적는다(spec: 단가·금액 100% 천원 배수) → 액면값에 ×1000.
 THOUSAND_MULT = 1000
@@ -152,7 +176,7 @@ def _warp_gate_passes(w, job_id: int) -> bool:
     return False
 
 
-def _gated_warp(bgr, aligner, job_id: int):
+def _gated_warp(bgr, aligner, job_id: int) -> GatedWarp:
     """Quad 후보를 우선순위대로 워프·deskew해 게이트를 통과하는 첫 결과를 고른다.
 
     "쿼드를 찾았다"와 "맞게 찾았다"를 가르는 판정(_warp_gate_passes)을 공급자 **선택**의
@@ -175,64 +199,111 @@ def _gated_warp(bgr, aligner, job_id: int):
         job_id: 로그 태그.
 
     Returns:
-        (warped, passed). 후보가 하나도 없으면 (None, False) — 호출부가 quad_missing 처리.
+        GatedWarp. 후보가 하나도 없으면 전 필드가 None/False다 — 호출부가 quad_missing 처리.
+        전량 강등이면 **마지막 후보**의 워프와 기하를 passed=False와 함께 싣는다(warped.png를
+        현행처럼 남기는 규칙 그대로) — 강등 잡의 geometry.json 부분 문서가 그 기하를 쓴다.
     """
     from handwriting import infer_photo as ip
     from handwriting.corner_dl import log_fallback, quad_candidates
     from handwriting.grid_v4 import warp
 
     w = None
+    quad_used = source_used = deskew_used = None
     for src, quad in quad_candidates(bgr, aligner, job_id=job_id):
         raw = warp(bgr, quad)
-        w = ip.rotate(raw, ip.deskew_angle(raw))
+        angle = ip.deskew_angle(raw)
+        w = ip.rotate(raw, angle)
+        quad_used, source_used, deskew_used = quad, src, float(angle)
         if _warp_gate_passes(w, job_id):
-            return w, True
+            return GatedWarp(w, True, quad_used, source_used, deskew_used)
         if src == "dl":
             log_fallback(job_id, "gate-demoted")
-    return w, False
+    return GatedWarp(w, False, quad_used, source_used, deskew_used)
 
 
-def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
+def infer_job(image_path: str, models, crop_out_dir, job_id: int, generation: int | None) -> dict:
     """사진 1장 → result_json. crop PNG를 crop_out_dir/row-{i}.png로 저장.
 
     models: worker.main.ModelBundle(worker가 1회 적재). 위치 언패킹이 아니라 속성으로 읽는다.
+    generation: 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq. crop_out_dir/geometry.json의
+        세대 스탬프가 된다(ADR 0012). **None이면 기하를 아예 쓰지 않는다** — 드라이런
+        (tools/reprocess_dryrun.py)은 커밋도 크롭 교체도 하지 않는 예측 실행이라 세대를
+        소비하지 않고, 0 같은 자리표시자를 남기면 존재한 적 없는 세대의 관측이 생긴다.
+        기본값을 두지 않는 것이 의도다 — 워커 배선이 빠지면 TypeError로 즉시 드러난다.
     quad는 corner_dl.quad_candidates를 통해 _gated_warp가 게이트 인지형으로 선택한다 — DL
     워프가 게이트에서 강등되면 색 quad로 1회 재시도. models.aligner가 None이면 현행 색
     경로와 동일하다.
     extract_rows_for_job(process_one과 공유하는 단일 추론 경로)를 재사용해 HTML 조립을 제거하고
-    rows 리스트를 만들어 assemble_result_json으로 직렬화한다. runtime은 Task 17(macmini,
-    worker venv + 실모델)에서 검증한다 — 여기서는 실행하지 않는다.
+    rows 리스트를 만들어 assemble_result_json으로 직렬화한다. runtime은 macmini(worker venv +
+    실모델) 라이브에서 검증한다 — 여기서는 실행하지 않는다.
     """
     import itertools
+    import sys
     import tempfile
     from pathlib import Path
 
     import cv2
     import numpy as np
 
+    from handwriting import geometry as geom
     from handwriting import infer_photo as ip
+    from handwriting.grid_v4 import AMOUNT_X, amount_crop_left
+    from handwriting.rows import ITEM_X
 
     item_model, E, lab = models.item_model, models.emb, models.labs
     qwen, device = models.qwen, models.device
     stamp = models.retrieval_version
     crop_out_dir = Path(crop_out_dir)
     crop_out_dir.mkdir(parents=True, exist_ok=True)
+
+    def record(**stage) -> None:
+        """단계 기하를 사이드카로 남긴다 — generation이 None(드라이런)이면 아무것도 쓰지 않는다.
+
+        **조립·기록 전 구간을 삼킨다.** write_geometry의 삼킴만으로는 build_geometry가
+        상류 좌표 모양 변화에 던지는 갈래가 열려 있고, 그 예외는 worker/poll.py:156의 잡
+        격리 except에 걸려 잡을 통째로 실패시킨다 — 기하는 진단이지 산출물이 아니다(spec §5-2).
+        """
+        if generation is None:
+            return
+        try:
+            geom.write_geometry(crop_out_dir, geom.build_geometry(generation=generation, **stage))
+        except Exception as exc:  # noqa: BLE001 — 진단 기록 격리(추론 생존)
+            print(
+                f"[geometry] 조립 실패 job={job_id}: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+                flush=True,
+            )
+
     bgr = ip.load_bgr_path(image_path)
-    w, gate_ok = _gated_warp(bgr, models.aligner, job_id)
+    gw = _gated_warp(bgr, models.aligner, job_id)
+    w = gw.warped
     if w is None:
+        # 쿼드 미검출은 파일을 쓰지 않는다 — 부재 자체가 '어디까지 갔는지'의 신호다(spec §5-2).
         print(f"[warp-gate] job={job_id} quad_missing", flush=True)  # 격자 부정합과 구분 가능하게
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
     cv2.imwrite(str(crop_out_dir / "warped.png"), w)  # 큐레이션 단계 시각화용 전표 1장
 
-    if not gate_ok:
+    # 좌표계 두 벌 — 쿼드는 원본, 나머지는 워프. 프론트 viewBox가 이 두 값에 의존하므로
+    # 상수를 하드코딩하지 않고 파일이 진실이 된다(ADR 0012).
+    stage_frames = {
+        "image_size": (int(bgr.shape[1]), int(bgr.shape[0])),
+        "warp_size": (int(w.shape[1]), int(w.shape[0])),
+        "quad": gw.quad,
+        "quad_source": gw.quad_source,
+        "deskew_deg": gw.deskew_deg,
+    }
+
+    if not gw.passed:
+        # 살아남는 유일한 부분 문서 — 강등 잡의 쿼드·deskew(ADR 0012 Consequences).
+        record(**stage_frames)
         return assemble_result_json(job_id, [], warp_ok=False, retrieval_version=stamp)
 
     # process_one과 동일한 행검출·crop·retrieval·금액 OCR(단일 경로).
     # extract_rows_for_job는 (news, crops, queries, amounts, prop, ys, P, bands)를 반환하며
-    # 뒤 4개는 데모 HTML 컨텍스트라 여기선 *_로 버린다.
+    # bands는 prop.rows에 이미 반영돼 있어 여기선 버린다.
     tmp_dir = Path(tempfile.mkdtemp())
     counter = itertools.count()
-    news, crops, queries, amounts, *_ = ip.extract_rows_for_job(
+    news, crops, queries, amounts, prop, ys, P, _bands = ip.extract_rows_for_job(
         w, item_model, qwen, tmp_dir, counter, device
     )
     rows = []
@@ -243,4 +314,21 @@ def infer_job(image_path: str, models, crop_out_dir, job_id: int) -> dict:
         amt, raw = amounts[i]
         rows.append({"row_index": i, "item_top5": top5, "supply": amt, "amount_raw": raw})
 
+    # 크롭 창은 템플릿 상수가 아니라 **그 잡에 실제로 쓰인 값**이다(#50) — 품목은 ITEM_X ±4
+    # (infer_photo.py:189), 금액 좌측은 amount_crop_left의 전표별 실측(infer_photo.py:180).
+    # 재호출의 근거는 비용이 아니라 계약이다(grid_v4.py:152-166은 blue_mask+morphologyEx를
+    # DATA_Y 전 구간에 1회 돌린다 — 순수함수라 싼 것이 아니라 Qwen 대비 무시할 수준이다).
+    # 반환 arity를 8→9로 늘리면 데모 경로 process_one까지 함께 고쳐야 해 그쪽을 고르지 않았다.
+    # 또한 여기 쓰는 handwriting.grid_v4는 infer_photo가 sys.path 트릭으로 쓰는 평면
+    # grid_v4와 **다른 모듈 객체**다 — amount_crop_left가 가변 전역 _FAINT(grid_v4.py:62,
+    # 현재는 hline_ys만 읽음)를 참조하지 않는 동안만 두 사본이 등가이며, FaintOn 인지형이
+    # 되면 기록값과 실제 크롭이 갈린다.
+    record(
+        **stage_frames,
+        hlines=ys,
+        pitch=P,
+        item_x=(ITEM_X[0] - 4, ITEM_X[1] + 4),
+        amount_x=(amount_crop_left(w), AMOUNT_X[1]),
+        rows=geom.row_geometry(prop.rows),
+    )
     return assemble_result_json(job_id, rows, warp_ok=True, retrieval_version=stamp)

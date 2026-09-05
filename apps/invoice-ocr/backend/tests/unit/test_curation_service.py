@@ -739,3 +739,56 @@ def test_mark_reviewed_reads_the_job_token_inside_the_transaction():
     reads = [i for i, event in enumerate(timeline) if event == "get_job_token"]
     assert len(reads) == 1
     assert timeline.index("enter") < reads[0] < timeline.index("exit")
+
+
+# ---------------------------------------------------------------------------
+# list_jobs — row_delta 관통 (S1)
+# ---------------------------------------------------------------------------
+
+
+class _ListRepo:
+    """list_jobs만 흉내내는 fake — 정규화 계층을 실 MySQL 없이 고정한다."""
+
+    def __init__(self, rows: list[dict]):
+        self._rows = rows
+        self.calls: list[tuple] = []
+
+    def list_jobs(self, limit, offset, *, row_delta=False):
+        self.calls.append((limit, offset, row_delta))
+        return self._rows, len(self._rows)
+
+
+def _summary_row(**over) -> dict:
+    base = {
+        "job_id": 1,
+        "invoice_id": None,
+        "curation_reviewed": 0,
+        "curation_reviewed_at": None,
+        "pair_count": 1,
+        "unreviewed_count": 1,
+        "rows_added": None,
+        "rows_dropped": None,
+        "created_at": "2026-09-01T09:00:00",
+    }
+    return {**base, **over}
+
+
+def test_list_jobs_keeps_unobserved_row_delta_as_none():
+    # 0으로 접으면 "관측 없음"이 "증감 없음"으로 위장한다.
+    jobs, _total = CurationService(_ListRepo([_summary_row()])).list_jobs(1, 20)
+    assert jobs[0]["rows_added"] is None
+    assert jobs[0]["rows_dropped"] is None
+
+
+def test_list_jobs_keeps_observed_zero_as_zero():
+    repo = _ListRepo([_summary_row(rows_added=0, rows_dropped=0)])
+    jobs, _total = CurationService(repo).list_jobs(1, 20)
+    assert jobs[0]["rows_added"] == 0
+    assert jobs[0]["rows_dropped"] == 0
+
+
+def test_list_jobs_forwards_row_delta_and_offset_to_repository():
+    # limit != offset인 조합 — 같으면 위치인자 뒤바뀜(offset, limit)을 잡지 못한다.
+    repo = _ListRepo([])
+    CurationService(repo).list_jobs(3, 10, row_delta=True)
+    assert repo.calls == [(10, 20, True)]

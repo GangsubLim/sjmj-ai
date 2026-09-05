@@ -68,3 +68,16 @@ export function curationJobBlockedNotice(
     body: "재처리 큐에 든 잡입니다. 지금 수정해도 저장되지 않으니, 처리가 끝난 뒤 검수하세요.",
   };
 }
+
+// 행 증감 표시 — 방향을 갈라 쓴다. 더한 쪽은 행을 놓친 것이고 버린 쪽은 없는 행을 만든
+// 것이라 같은 기준선을 정반대로 움직여야 하므로 합산하지 않는다(CONTEXT.md "행 증감").
+// 원인 라벨("행검출 불량" 등)을 붙이지 않는 것도 계약이다 — 사람이 전표에 없는 항목을
+// 넣은 경우가 같은 수로 섞이므로, 관측된 사실까지만 말한다.
+export function rowDeltaText(
+  job: Pick<CurationJobSummary, "rows_added" | "rows_dropped">,
+): string {
+  if (job.rows_added === null && job.rows_dropped === null) return "—";
+  const added = job.rows_added === null ? "+?" : `+${job.rows_added}`;
+  const dropped = job.rows_dropped === null ? "−?" : `−${job.rows_dropped}`;
+  return `${added} / ${dropped}`;
+}

@@ -18,7 +18,7 @@ DEMOTED = {"rows": [], "supply_sum": 0, "warp_ok": False}  # 게이트 강등 �
 SPAM = "!" * 32
 
 
-def _infer_ok(image_path, crop_dir, job_id):
+def _infer_ok(image_path, crop_dir, job_id, generation):
     """tmp에 크롭을 실제로 쓰는 추론 대역 — 커밋 경로를 끝까지 태운다.
 
     tmp를 만들지 않는 대역을 쓰면 _swap_crop_dir의 rename이 FileNotFoundError로 죽어
@@ -30,7 +30,7 @@ def _infer_ok(image_path, crop_dir, job_id):
     return RESULT
 
 
-def _infer_demoted(image_path, crop_dir, job_id):
+def _infer_demoted(image_path, crop_dir, job_id, generation):
     """게이트 강등(rows=[]) 결과를 내되 tmp는 정상으로 남기는 추론 대역."""
     Path(crop_dir).mkdir(parents=True, exist_ok=True)
     return DEMOTED
@@ -43,8 +43,13 @@ def _queue(job=None, pairs=None):
     return q
 
 
-def _job(job_id=9, *, is_reprocess=False):
-    return {"id": job_id, "image_path": "/x.jpg", "is_reprocess": is_reprocess}
+def _job(job_id=9, *, is_reprocess=False, generation=0):
+    return {
+        "id": job_id,
+        "image_path": "/x.jpg",
+        "is_reprocess": is_reprocess,
+        "generation": generation,
+    }
 
 
 def test_no_pending_returns_false():
@@ -55,7 +60,7 @@ def test_infer_writes_into_a_tmp_directory_not_the_live_one(tmp_path):
     """추론은 tmp에 쓴다 — 커밋 전에는 운영 크롭이 한 픽셀도 바뀌지 않는다(ADR 0010)."""
     seen = {}
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         seen["dir"] = Path(crop_dir)
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
@@ -74,7 +79,7 @@ def test_infer_writes_into_a_tmp_directory_not_the_live_one(tmp_path):
 def test_stale_crops_disappear_when_fewer_rows_are_detected(tmp_path):
     """검출 행이 줄어든 재처리가 남기던 유령 크롭이 구조적으로 사라진다(§9)."""
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -100,7 +105,7 @@ def test_a_reprocess_with_zero_new_rows_fails_without_touching_pairs(tmp_path):
     live.mkdir()
     (live / "row-0.png").write_bytes(b"old")
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         return DEMOTED
 
@@ -180,7 +185,7 @@ def test_inference_failure_of_a_reprocess_rolls_back_to_done(tmp_path):
 def test_failed_run_removes_the_tmp_directory_and_keeps_live_crops(tmp_path):
     """실패한 재처리는 어긋난 상태를 영속시키지 않는다."""
 
-    def half_then_boom(image_path, crop_dir, job_id):
+    def half_then_boom(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"half")
         raise RuntimeError("boom")
@@ -198,7 +203,7 @@ def test_failed_run_removes_the_tmp_directory_and_keeps_live_crops(tmp_path):
 def test_commit_failure_removes_the_tmp_directory_before_rollback(tmp_path):
     """커밋이 실패하면 파일 교체는 일어나지 않는다(교체는 커밋 이후에만)."""
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -219,7 +224,7 @@ def test_commit_failure_removes_the_tmp_directory_before_rollback(tmp_path):
 def test_swap_failure_after_commit_requeues_the_job(tmp_path, monkeypatch):
     """커밋 성공 후 교체 실패는 '새 좌표 + 옛 그림'이므로 재처리 대상으로 되돌린다."""
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         return RESULT
 
@@ -237,7 +242,7 @@ def test_swap_failure_after_commit_requeues_the_job(tmp_path, monkeypatch):
 def test_a_swap_failure_below_the_cap_requeues_and_counts(tmp_path, monkeypatch):
     """상한 전에는 현행 복구(재처리 큐 복귀) 그대로 — 실패 횟수만 잡별로 센다(이슈 #88)."""
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         return RESULT
 
@@ -261,7 +266,7 @@ def test_a_swap_failure_at_the_cap_fails_the_job_and_keeps_the_draft(tmp_path, m
     보이는 유일한 신호다.
     """
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         return RESULT
 
@@ -280,7 +285,7 @@ def test_a_swap_failure_at_the_cap_fails_the_job_and_keeps_the_draft(tmp_path, m
 def test_a_successful_swap_resets_the_failure_counter(tmp_path):
     """중간에 교체가 성공하면 카운터를 지운다 — 상한은 연속 실패에만 건다."""
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -309,7 +314,7 @@ def test_a_failing_rerun_keeps_the_unfinished_swap_marker_alive(tmp_path):
     leftover.mkdir()
     (leftover / "row-0.png").write_bytes(b"committed")
 
-    def failing_infer(image_path, crop_dir, job_id):
+    def failing_infer(image_path, crop_dir, job_id, generation):
         raise RuntimeError("추론 실패")
 
     q = _queue(_job(is_reprocess=True))
@@ -325,7 +330,7 @@ def test_leftover_tmp_directory_from_a_previous_crash_is_cleared(tmp_path):
     stale.mkdir()
     (stale / "row-7.png").write_bytes(b"stale")
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -366,7 +371,7 @@ def test_death_between_commit_and_swap_leaves_the_tmp_marker(tmp_path, monkeypat
     통과한다. 뱅크 오염이 성립하는 유일한 경로이며, 그래서 잔여 마커 가드가 필요하다.
     """
 
-    def infer(image_path, crop_dir, job_id):
+    def infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -411,7 +416,12 @@ class FakeQueue:
     """
 
     def __init__(self, job_id=7, *, is_reprocess=False):
-        self.job = {"id": job_id, "image_path": "/x.jpg", "is_reprocess": is_reprocess}
+        self.job = {
+            "id": job_id,
+            "image_path": "/x.jpg",
+            "is_reprocess": is_reprocess,
+            "generation": 0,
+        }
         self.status = "pending"
         self.committed = []
 
@@ -482,7 +492,7 @@ def test_degenerate_after_the_first_qwen_job_requeues_a_reprocess_job_too_and_ex
 def test_degenerate_removes_the_tmp_crops_before_exiting(tmp_path):
     """되돌린 잡이 반쪽 크롭을 남기면 다음 실행이 새 그림과 섞는다(기존 실패 경로와 동일 처리)."""
 
-    def half_then_spam(image_path, crop_dir, job_id):
+    def half_then_spam(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"half")
         raise DegenerateOutputError(f"raw 표본: {SPAM!r}")
@@ -555,7 +565,7 @@ def test_a_collapse_mid_job_is_still_treated_as_the_first_qwen_job(tmp_path):
 def test_a_requeued_new_job_is_reclaimed_and_completes_on_the_next_process(tmp_path):
     """자가복구 경로 — pending 복귀 → 재점유 → 정상 결과 → done."""
 
-    def good_infer(image_path, crop_dir, job_id):
+    def good_infer(image_path, crop_dir, job_id, generation):
         Path(crop_dir).mkdir(parents=True, exist_ok=True)
         (Path(crop_dir) / "row-0.png").write_bytes(b"new")
         return RESULT
@@ -609,3 +619,18 @@ def test_an_empty_queue_returns_a_no_work_outcome():
     assert process_one_job(_queue(None), lambda *a: RESULT, "/tmp/crops", 3) == PollOutcome(
         worked=False, qwen_called=False
     )
+
+
+def test_claimed_generation_reaches_the_inference_function(tmp_path):
+    """세대는 claim이 집은 값 그대로 추론에 실린다 — 기하 스탬프의 유일한 입력이다."""
+    seen = {}
+
+    def infer(image_path, crop_dir, job_id, generation):
+        seen["generation"] = generation
+        Path(crop_dir).mkdir(parents=True, exist_ok=True)
+        (Path(crop_dir) / "row-0.png").write_bytes(b"new")
+        return RESULT
+
+    process_one_job(_queue(_job(generation=7)), infer, tmp_path, 0)
+
+    assert seen["generation"] == 7

@@ -14,6 +14,11 @@ export interface CurationJobSummary {
   curation_reviewed_at: string | null;
   pair_count: number;
   unreviewed_count: number;
+  // 확정 시 사람이 더한 행 수 / 버린 행 수(백엔드가 ocr_corrections에서 투영).
+  // null은 관측 없음 — 증감 0과 섞지 않는다. 방향별로 움직여야 할 기준선이 정반대라
+  // 합산하지 않고 갈라 센다. 판정이 아니라 어느 잡을 먼저 열지 고르는 힌트다.
+  rows_added: number | null;
+  rows_dropped: number | null;
   created_at: string;
 }
 
@@ -86,3 +91,44 @@ export type CurationPairPatchBody = CurationPairPatch & {
 };
 
 export type CurationImageKind = "original" | "warped";
+
+// ── 단계 기하(ADR 0012) — 생산자는 ml 워커, 계약 정본은 handwriting/geometry.py ──
+// 백엔드는 generation 한 키만 읽고 스키마를 검증하지 않는다. 아래 타입은 api-spec의
+// StageGeometry를 미러하며, 워커가 도달하지 못한 단계의 키는 **부재**한다(null 아님).
+
+// 이 값과 다른 version이 오면 화면은 패널을 렌더하지 않고 안내 문구로 닫는다.
+// 워커의 handwriting/geometry.py:GEOMETRY_VERSION과 같은 값이어야 한다 — 이 동기는
+// tests/test_geometry_version_sync.py가 CI에서 강제한다.
+export const STAGE_GEOMETRY_VERSION = 1;
+
+export type StageGeometryQuadSource = "dl" | "color";
+export type StageGeometryRowType = "new" | "cont" | "empty" | "total";
+
+export interface StageGeometryRow {
+  // 워프 좌표계 행 밴드 [y0, y1].
+  band: [number, number];
+  type: StageGeometryRowType;
+  // 실제로 크롭된 행의 세로 박스 [y0, y1]. 크롭 대상이 아니면 null.
+  item_box: [number, number] | null;
+  // row-{i}.png·crop_ref의 i와 같은 값. 크롭 대상이 아니면 null.
+  row_index: number | null;
+}
+
+export interface StageGeometry {
+  version: number;
+  generation: number;
+  // EXIF 적용 후 원본 [width, height] — 쿼드 오버레이 viewBox의 입력.
+  image_size: [number, number];
+  // 워프 결과 [width, height] — 워프 좌표계 패널 viewBox의 입력(상수 하드코딩 금지).
+  warp_size: [number, number];
+  quad: [number, number][] | null;
+  quad_source: StageGeometryQuadSource | null;
+  deskew_deg: number | null;
+  // 이하는 게이트를 통과한 잡에만 있다. optional로 두는 것이 계약이다 — 강등 잡의
+  // 부분 문서에는 키 자체가 없고, null로 좁히면 "검출했는데 0건"과 구분이 사라진다.
+  hlines?: number[];
+  pitch?: number;
+  item_x?: [number, number];
+  amount_x?: [number, number];
+  rows?: StageGeometryRow[];
+}

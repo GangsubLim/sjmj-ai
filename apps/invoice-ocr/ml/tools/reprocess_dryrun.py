@@ -206,7 +206,8 @@ def forecast_job(queue, infer_fn, job_id: int) -> JobForecast:
 
     Args:
         queue: WorkerQueue(또는 fetch_image_path·fetch_pairs 계약의 대역).
-        infer_fn: (image_path, crop_dir, job_id) → result_json. 운영 워커와 같은 계약.
+        infer_fn: (image_path, crop_dir, job_id) → result_json. 운영 워커의 4-arity에서
+            generation을 뗀 3-arity다 — 드라이런은 세대를 소비하지 않는다(build_infer_fn 참조).
         job_id: 대상 OCR 잡 id.
 
     Returns:
@@ -258,7 +259,9 @@ def build_infer_fn():
     models = load_models()
 
     def infer_fn(image_path, crop_dir, job_id):
-        return infer_job(image_path, models, crop_dir, job_id)
+        # 세대는 None — 드라이런은 커밋도 크롭 교체도 하지 않는 예측 실행이라 관측 산출물
+        # (geometry.json)을 남기지 않는다. 0을 넘기면 존재한 적 없는 세대의 기하가 생긴다.
+        return infer_job(image_path, models, crop_dir, job_id, None)
 
     return infer_fn
 

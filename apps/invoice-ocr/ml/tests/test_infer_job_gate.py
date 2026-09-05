@@ -6,6 +6,7 @@ cv2·numpy·grid_v4·warp_gate는 진짜를 쓴다 — 게이트 배선 자체�
 
 import sys
 import types
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,15 @@ import handwriting.corner_dl as corner_dl  # noqa: E402
 from handwriting.grid_v4 import WARP_H, WARP_W  # noqa: E402
 
 FULL_QUAD = np.array([[0, 0], [WARP_W, 0], [WARP_W, WARP_H], [0, WARP_H]], np.float32)
+
+
+@dataclass(frozen=True)
+class _FakeRow:
+    """group.Row의 geometry 관련 3필드만 흉내 낸 대역(band/rtype/box)."""
+
+    band: tuple
+    rtype: str
+    box: tuple | None
 
 
 def _install_fake_infer_photo(monkeypatch, warped, calls):
@@ -40,15 +50,18 @@ def _install_fake_infer_photo(monkeypatch, warped, calls):
     def extract_rows_for_job(w, model, qwen, tmp_dir, counter, device):
         # 반환 arity(8)는 실제 handwriting.infer_photo.extract_rows_for_job 시그니처
         # (news, crops, queries, amounts, prop, ys, P, bands) 그대로다 — 정본은 infer_photo.py.
+        # 뒤 4개는 geometry.json의 입력이라 None이 아니라 실물 모양을 준다.
         calls.append("extract_rows_for_job")
+        row = _FakeRow(band=(612, 694), rtype="new", box=(618, 690))
+        prop = types.SimpleNamespace(rows=(row,))
         return (
-            [object()],
+            [row],
             [np.zeros((10, 10, 3), np.uint8)],
             np.ones((1, 2), np.float32),
             [(364, "364")],
-            None,
-            None,
-            None,
+            prop,
+            [614, 696, 778],
+            82.3,
             None,
         )
 
@@ -83,7 +96,7 @@ def test_gate_failure_returns_empty_rows_and_skips_extraction(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(n_lines=0), calls)  # 백지 = 격자 없음
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 7)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 7, None)
 
     from handwriting.infer_job import ITEM_CONF_THRESHOLD
 
@@ -124,7 +137,7 @@ def test_gate_quad_missing_logs_marker(monkeypatch, tmp_path, capsys):
     # 후보 0개가 되어 quad_missing 경로가 그대로 성립한다.
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 99, None)
 
     from handwriting.infer_job import ITEM_CONF_THRESHOLD
 
@@ -145,7 +158,7 @@ def test_gate_failure_on_half_width_grid(monkeypatch, tmp_path, make_warped):
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(x_end=450), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 39)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 39, None)
 
     assert out["warp_ok"] is False
     assert out["rows"] == []
@@ -158,7 +171,7 @@ def test_gate_pass_keeps_existing_row_extraction(monkeypatch, tmp_path, make_war
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)  # 정상 격자
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -181,7 +194,7 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_pass_path(
 
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
 
-    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert "retrieval_version" not in out
@@ -194,7 +207,7 @@ def test_bundle_without_a_fingerprint_omits_the_key_on_the_gate_failure_path(
 
     _install_fake_infer_photo(monkeypatch, make_warped(n_lines=0), [])
 
-    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 7)
+    out = infer_job("ignored.jpg", _models(retrieval_version=None), tmp_path, 7, None)
 
     assert out["warp_ok"] is False
     assert "retrieval_version" not in out
@@ -313,7 +326,7 @@ def test_rescued_faint_sheet_reaches_row_extraction_through_infer_job(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(color=FAINT_BLUE), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 59)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 59, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -349,7 +362,7 @@ def test_infer_job_prefers_the_dl_quad_over_the_color_path(monkeypatch, tmp_path
     )
     aligner = _Aligner(FULL_QUAD)
 
-    out = infer_job("ignored.jpg", _models(aligner=aligner), tmp_path, 34)
+    out = infer_job("ignored.jpg", _models(aligner=aligner), tmp_path, 34, None)
 
     assert len(aligner.seen) == 1
     assert aligner.seen[0] is bgr  # 워프 결과가 아니라 EXIF 정위치 원본을 그대로 받는다
@@ -366,7 +379,7 @@ def test_infer_job_falls_back_to_the_color_path_when_the_dl_quad_is_missing(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(None)), tmp_path, 54)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(None)), tmp_path, 54, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -383,7 +396,7 @@ def test_infer_job_retries_with_the_color_quad_when_the_dl_warp_is_gate_demoted(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 41)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 41, None)
 
     assert out["warp_ok"] is True  # 색 재시도로 회수
     assert calls == ["extract_rows_for_job"]
@@ -416,7 +429,7 @@ def test_infer_job_demotes_when_both_quads_fail_the_gate(monkeypatch, tmp_path, 
     _install_fake_infer_photo(monkeypatch, bgr, calls)
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda b: color_band)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(dl_strip)), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(dl_strip)), tmp_path, 99, None)
 
     assert out["warp_ok"] is False
     assert calls == []
@@ -442,7 +455,7 @@ def test_infer_job_keeps_the_demoted_dl_warp_when_the_color_path_finds_nothing(
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: None)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 71)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 71, None)
 
     assert out["warp_ok"] is False
     assert calls == []
@@ -461,7 +474,7 @@ def test_infer_job_without_an_aligner_keeps_the_current_color_path(
     calls = []
     _install_fake_infer_photo(monkeypatch, make_warped(), calls)
 
-    out = infer_job("ignored.jpg", _models(), tmp_path, 42)
+    out = infer_job("ignored.jpg", _models(), tmp_path, 42, None)
 
     assert out["warp_ok"] is True
     assert calls == ["extract_rows_for_job"]
@@ -510,7 +523,7 @@ def test_infer_job_warps_each_candidate_exactly_once(monkeypatch, tmp_path, make
     seen = _warp_spy(monkeypatch)
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(FULL_QUAD)), tmp_path, 34)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(FULL_QUAD)), tmp_path, 34, None)
 
     assert out["warp_ok"] is True
     assert len(seen) == 1  # DL 후보 채택 — 재워프 0회
@@ -526,7 +539,260 @@ def test_infer_job_warps_once_per_candidate_when_all_are_demoted(
     _install_fake_infer_photo(monkeypatch, make_warped(), [])
     monkeypatch.setattr(corner_dl, "form_quad_robust", lambda bgr: top_strip)
 
-    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99)
+    out = infer_job("ignored.jpg", _models(aligner=_Aligner(top_strip)), tmp_path, 99, None)
 
     assert out["warp_ok"] is False
     assert len(seen) == 2  # 후보 2개 × 1회
+
+
+# ── _gated_warp 반환 계약(GatedWarp) ────────────────────────────────────────
+
+
+def test_gated_warp_returns_the_geometry_of_the_passing_candidate(monkeypatch, make_warped):
+    """통과한 후보의 quad·공급자·deskew 각을 함께 돌려준다 — 지역변수로 버리지 않는다."""
+    from handwriting.infer_job import _gated_warp
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr("handwriting.infer_photo.deskew_angle", lambda w: 0.42, raising=False)
+
+    gw = _gated_warp(warped, None, 7)
+
+    assert gw.passed is True
+    assert gw.quad_source == "color"
+    assert gw.deskew_deg == pytest.approx(0.42)
+    assert np.asarray(gw.quad).shape == (4, 2)
+
+
+def test_gated_warp_returns_the_last_candidate_geometry_when_all_are_demoted(
+    monkeypatch, make_warped
+):
+    """전량 강등에서도 마지막 후보의 기하를 돌려준다 — warped.png와 같은 규칙(spec §5-2).
+
+    이 기하가 없으면 강등 잡의 부분 문서에 쿼드가 비어, "4점이 전표를 물었나"라는 ② 패널의
+    질문 자체가 화면에서 성립하지 않는다.
+    """
+    from handwriting.infer_job import _gated_warp
+
+    blank = make_warped(n_lines=0)  # 격자 없음 → 게이트 전량 강등
+    _install_fake_infer_photo(monkeypatch, blank, [])
+
+    gw = _gated_warp(blank, None, 8)
+
+    assert gw.passed is False
+    assert gw.warped is not None
+    assert gw.quad is not None
+    assert gw.quad_source == "color"
+    assert gw.deskew_deg is not None
+
+
+def test_gated_warp_returns_all_none_when_no_candidate_exists(monkeypatch, make_warped):
+    """후보 전무는 기하도 없다 — 부재 자체가 신호이고 호출부가 quad_missing으로 닫는다."""
+    import handwriting.corner_dl as cdl
+    from handwriting.infer_job import _gated_warp
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(cdl, "quad_candidates", lambda *a, **k: iter(()))
+
+    gw = _gated_warp(warped, None, 9)
+
+    assert gw == (None, False, None, None, None)
+
+
+# ── geometry.json 기록 배선(spec §5-2) ─────────────────────────────────────
+
+
+def _geometry(crop_dir):
+    """기록된 기하 문서를 읽는다(없으면 None)."""
+    import json
+
+    path = Path(crop_dir) / "geometry.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def test_quad_missing_writes_no_geometry_file(monkeypatch, tmp_path, make_warped):
+    """후보 전무는 파일을 쓰지 않는다 — 부재 자체가 '어디까지 갔는지'를 말한다."""
+    import handwriting.corner_dl as cdl
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(cdl, "quad_candidates", lambda *a, **k: iter(()))
+
+    infer_job("/x.jpg", _models(), tmp_path, 11, 0)
+
+    assert _geometry(tmp_path) is None
+
+
+def test_demoted_job_writes_a_partial_document(monkeypatch, tmp_path, make_warped):
+    """강등 잡에는 쿼드·deskew까지만 남고 하류 키는 아예 없다(ADR 0012 Consequences)."""
+    from handwriting.infer_job import infer_job
+
+    blank = make_warped(n_lines=0)
+    _install_fake_infer_photo(monkeypatch, blank, [])
+
+    infer_job("/x.jpg", _models(), tmp_path, 12, 5)
+
+    doc = _geometry(tmp_path)
+    assert doc["version"] == 1
+    assert doc["generation"] == 5
+    assert doc["quad"] is not None
+    assert doc["quad_source"] == "color"
+    assert doc["deskew_deg"] is not None
+    assert doc["warp_size"] == [900, 2100]
+    assert "rows" not in doc
+    assert "hlines" not in doc
+
+
+def test_full_path_writes_rows_lines_and_the_crop_windows_actually_used(
+    monkeypatch, tmp_path, make_warped
+):
+    """전체 경로는 행·가로줄·피치·크롭 창을 전량 남긴다 — 템플릿 상수가 아니라 실제 값이다."""
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    calls = []
+    _install_fake_infer_photo(monkeypatch, warped, calls)
+    # 지연 import이므로 호출 시점에 유효한 대역 — grid_v4.amount_crop_left 실측(#50 좌측 경계)
+    monkeypatch.setattr("handwriting.grid_v4.amount_crop_left", lambda w: 630)
+
+    infer_job("/x.jpg", _models(), tmp_path, 13, 2)
+
+    doc = _geometry(tmp_path)
+    assert doc["generation"] == 2
+    assert doc["image_size"] == [warped.shape[1], warped.shape[0]]
+    assert doc["hlines"] and doc["pitch"] > 0
+    assert doc["item_x"] == [96, 396]  # rows.ITEM_X (100, 392) ± 4 — 실제 크롭 폭
+    assert doc["amount_x"] == [630, 896]  # 좌측은 실측 대역, 우측은 grid_v4.AMOUNT_X[1]
+    assert [r["row_index"] for r in doc["rows"]] == [0]
+
+
+def test_geometry_write_failure_does_not_break_inference(monkeypatch, tmp_path, make_warped):
+    """기록 실패는 추론 결과에 영향이 없다 — 기하는 진단이지 산출물이 아니다.
+
+    대역이 함수 자체를 갈아끼우므로 삼킴은 호출부(record)가 소유해야 성립한다.
+    """
+    import handwriting.geometry as geom
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    monkeypatch.setattr(geom, "write_geometry", lambda *a, **k: (_ for _ in ()).throw(OSError("x")))
+
+    with pytest.raises(OSError):
+        geom.write_geometry(tmp_path, {})  # 대역이 실제로 던지는지 확인(전제)
+
+    result = infer_job("/x.jpg", _models(), tmp_path, 14, 0)
+
+    assert result["warp_ok"] is True
+    assert len(result["rows"]) == 1
+
+
+def test_dryrun_generation_none_writes_nothing(monkeypatch, tmp_path, make_warped):
+    """generation=None(드라이런)이면 관측 산출물을 남기지 않는다."""
+    from handwriting.infer_job import infer_job
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+
+    infer_job("/x.jpg", _models(), tmp_path, 15, None)
+
+    assert _geometry(tmp_path) is None
+
+
+def test_recorded_item_x_matches_the_crop_baked_into_extract_rows_for_job(
+    monkeypatch, tmp_path, make_warped
+):
+    """기록된 item_x가 실제 크롭식과 갈리면 geometry.json이 조용히 거짓을 말한다(#50).
+
+    헬퍼 승격(item_crop_x())을 쓰지 않는 이유 — tests/test_warp_gate_rows.py:461-472가
+    extract_rows_for_job 소스에 `x1 - 4:x2 + 4` 리터럴이 남아 있을 것을 이미 단언하므로
+    헬퍼로 접으면 그 가드가 RED가 되고 tools/warp_gate_rows.py까지 S2로 끌려온다. 그 파일과
+    같은 소스 대조 관용구로 잇는다.
+    """
+    import ast
+    import re
+
+    from handwriting.infer_job import infer_job
+    from handwriting.rows import ITEM_X
+
+    src = (Path(__file__).resolve().parents[1] / "handwriting" / "infer_photo.py").read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "extract_rows_for_job"
+    )
+    m = re.search(r"x1 - (\d+):x2 \+ (\d+)", ast.unparse(fn))
+    assert m, "운영 품목 크롭 슬라이스를 찾지 못했다"
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    infer_job("/x.jpg", _models(), tmp_path, 16, 0)
+
+    assert _geometry(tmp_path)["item_x"] == [
+        ITEM_X[0] - int(m.group(1)),
+        ITEM_X[1] + int(m.group(2)),
+    ]
+
+
+def test_recorded_amount_x_matches_the_crop_actually_used_by_extract_rows_for_job(
+    monkeypatch, tmp_path, make_warped
+):
+    """기록된 amount_x가 실제 크롭식과 갈리면 geometry.json이 조용히 거짓을 말한다.
+
+    item_x 가드(test_recorded_item_x_matches_the_crop_baked_into_extract_rows_for_job)와
+    같은 관용구 — extract_rows_for_job 소스에서 실제 크롭 표현을 AST/정규식으로 읽는다.
+
+    amount_x는 item_x와 달리 상수가 아니라 함수(amount_crop_left) 호출이고, infer_job은
+    handwriting.grid_v4(패키지 qualified import)에서, infer_photo.extract_rows_for_job은
+    sys.path 트릭으로 얻은 평면 grid_v4에서 각각 호출한다 — 같은 소스 파일이지만
+    sys.modules 인스턴스가 둘이다(infer_job.py:322-325). 소스 문자열 일치만으로는 두
+    인스턴스가 실행 시점에도 같은 값을 내는지 증명하지 못하므로, 평면 grid_v4를 실제로
+    잡아(grid_v4.py 자체는 cv2/numpy/PIL만 써서 torch 없이도 import 가능) 같은 워프
+    이미지에 두 사본을 각각 호출해 값이 같은지, 그리고 기록값이 그 값과 같은지를 실행으로
+    묶는다.
+    """
+    import ast
+    import re
+
+    from handwriting.grid_v4 import warp as qualified_warp
+    from handwriting.infer_job import infer_job
+
+    src = (Path(__file__).resolve().parents[1] / "handwriting" / "infer_photo.py").read_text(
+        encoding="utf-8"
+    )
+    fn = next(
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.FunctionDef) and n.name == "extract_rows_for_job"
+    )
+    assert re.search(r"ax0, ax1 = \(amount_crop_left\(w\), AMOUNT_X\[1\]\)", ast.unparse(fn)), (
+        "운영 금액 크롭 좌측 실측 호출을 찾지 못했다"
+    )
+
+    # infer_photo가 sys.path 트릭으로 잡는 평면 grid_v4를 같은 방식으로 직접 잡는다.
+    handwriting_dir = Path(__file__).resolve().parents[1] / "handwriting"
+    sys.path.insert(0, str(handwriting_dir))
+    try:
+        import grid_v4 as flat_grid_v4
+    finally:
+        sys.path.remove(str(handwriting_dir))
+        sys.modules.pop("grid_v4", None)
+    import handwriting.grid_v4 as qualified_grid_v4
+
+    assert flat_grid_v4 is not qualified_grid_v4  # 전제 확인 — 진짜 별개 sys.modules 인스턴스
+
+    warped = make_warped()
+    _install_fake_infer_photo(monkeypatch, warped, [])
+    infer_job("/x.jpg", _models(), tmp_path, 18, 0)
+
+    # infer_job 내부에서 amount_x 기록에 실제로 쓰이는 w — 대역 deskew_angle=0·rotate=항등
+    # 이므로 quad=FULL_QUAD(색 경로 단일 후보)로 워프한 결과와 동일하다.
+    w = qualified_warp(warped, FULL_QUAD)
+    expected_left = qualified_grid_v4.amount_crop_left(w)
+    assert flat_grid_v4.amount_crop_left(w) == expected_left  # 두 사본 등가 실증(현재)
+
+    assert _geometry(tmp_path)["amount_x"] == [int(expected_left), qualified_grid_v4.AMOUNT_X[1]]
