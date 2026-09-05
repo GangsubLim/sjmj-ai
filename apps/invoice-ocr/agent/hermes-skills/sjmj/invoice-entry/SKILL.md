@@ -1,6 +1,6 @@
 ---
 name: sjmj-invoice-entry
-description: "텔레그램으로 받은 수기 거래명세서 사진을 읽어 sjmj-ai에 거래명세서를 생성하고 수정 링크을 회신. 거래명세서·명세서·영수증 사진이 오면 사용"
+description: "텔레그램으로 받은 수기 거래명세서 사진을 읽어 sjmj-ai에 거래명세서를 생성하고 수정 링크를 회신. 거래명세서·명세서·영수증 사진이 오면 사용"
 version: 0.1.0
 author: sjmj-ai
 license: MIT
