@@ -3,8 +3,9 @@
 hermes 스킬(apps/invoice-ocr/agent/hermes-skills/sjmj/invoice-entry)이 남긴
 ``$SJMJ_DATA_DIR/agent_uploads/{id}.draft.json``(POST /api/invoices 바디 그대로)을
 운영 DB의 invoices·invoice_items(사람이 /edit/{id}에서 고친 최종본)와 id로 조인해
-수신처·항목 수·품목명·금액·합계 일치율과 무수정률을 마크다운으로 낸다. 불일치 건은
-failures.jsonl로 떨어뜨려 ``agent_uploads/{id}.jpg``와 바로 대조한다.
+수신처·항목 수·품목명·금액·합계 일치율과 무수정률을 마크다운으로 낸다. 삭제된(최종본
+없는) 초안 수도 표에 남긴다. 불일치 건은 failures.jsonl로 떨어뜨려
+``agent_uploads/{id}.jpg``와 바로 대조한다.
 
 코어 규약: 순수 계층(load/norm/compare/summarize/render/failures)은 stdlib 전용이고
 DB 글루(fetch_finals)만 SQLAlchemy를 함수 안에서 끌어온다. macmini에서 직접 실행하며
@@ -107,8 +108,8 @@ def _rate(hit: int, total: int) -> float:
     return hit / total if total else 0.0
 
 
-def summarize(rows: list[tuple[int, Comparison]]) -> dict:
-    """비교 결과 목록을 건수·일치율로 집계한다(분모 0이면 0.0)."""
+def summarize(rows: list[tuple[int, Comparison]], missing: int = 0) -> dict:
+    """비교 결과 목록을 건수·일치율로 집계한다(분모 0이면 0.0). missing은 최종본 없는 초안 수."""
     n = len(rows)
     cs = [c for _, c in rows]
     pairs = sum(c.pairs for c in cs)
@@ -117,6 +118,7 @@ def summarize(rows: list[tuple[int, Comparison]]) -> dict:
     untouched = sum(1 for c in cs if not c.mismatches)
     return {
         "count": n,
+        "missing": missing,
         "edited": sum(1 for c in cs if c.edited),
         "recipient_rate": _rate(sum(c.recipient for c in cs), n),
         "item_count_rate": _rate(sum(c.item_count for c in cs), n),
@@ -144,6 +146,7 @@ def render(s: dict) -> str:
         "| 지표 | 값 |",
         "| --- | --- |",
         f"| 건수 | {n} (사람 수정 {s['edited']}) |",
+        f"| 최종본 없음(삭제) | {s['missing']} |",
         f"| 수신처 일치율 | {pct(s['recipient_rate'], round(s['recipient_rate'] * n), n)} |",
         f"| 항목 수 일치율 | {pct(s['item_count_rate'], round(s['item_count_rate'] * n), n)} |",
         f"| 품목명 일치율 | {pct(s['name_rate'], s['name_hits'], s['pairs'])} |",
@@ -235,7 +238,9 @@ def main(argv: list[str] | None = None) -> None:
     rows = [(d.id, compare(d.body, finals[d.id])) for d in drafts if d.id in finals]
 
     args.out.mkdir(parents=True, exist_ok=True)
-    (args.out / "report.md").write_text(render(summarize(rows)), encoding="utf-8")
+    (args.out / "report.md").write_text(
+        render(summarize(rows, missing=len(missing))), encoding="utf-8"
+    )
     with (args.out / "failures.jsonl").open("w", encoding="utf-8") as f:
         for row in failures(rows):
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

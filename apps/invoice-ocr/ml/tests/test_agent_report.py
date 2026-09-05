@@ -129,12 +129,20 @@ def test_summarize_rates():
 def test_summarize_empty():
     s = summarize([])
     assert s["count"] == 0 and s["recipient_rate"] == 0.0
+    assert s["missing"] == 0
+
+
+def test_summarize_missing_is_passed_through():
+    s = summarize([], missing=3)
+    assert s["missing"] == 3
+    assert "| 최종본 없음(삭제) | 3 |" in render(s)
 
 
 def test_render_markdown_table():
     md = render(summarize([(1, compare(_draft(), _final()))]))
     assert "| 품목명 일치율 | 100.0% (1/1) |" in md
     assert "| 건수 | 1 (사람 수정 0) |" in md
+    assert "| 최종본 없음(삭제) | 0 |" in md
 
 
 def test_failures_jsonl_rows():
@@ -229,3 +237,4 @@ def test_main_skips_drafts_without_final(tmp_path: Path, monkeypatch, capsys):
     monkeypatch.setattr(agent_report, "_engine", lambda: object())
     agent_report.main(["--data-dir", str(tmp_path), "--out", str(tmp_path / "o")])
     assert "최종본 없음(삭제됨): [9]" in capsys.readouterr().out
+    assert "| 최종본 없음(삭제) | 1 |" in (tmp_path / "o" / "report.md").read_text(encoding="utf-8")

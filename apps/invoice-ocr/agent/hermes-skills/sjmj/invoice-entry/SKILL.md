@@ -17,10 +17,10 @@ metadata:
 ## 단위와 트리거
 
 - 사진 1장 = 거래명세서 1건 = `POST /api/invoices` 1회
-- 사진 여러 장이 한 메시지에 오면 장마다 독립 처리, 실패한 장은 건너뛰고 사유만 회신
+- 사진 여러 장이 한 메시지에 오면 장마다 독립 처리, 실패한 장은 건너뛰고 사유만 회신 — 초안 파일도 장마다 별도(`mktemp`)
 - 캡션은 힌트(발행일·거래처 지정 등)로만 사용, 사진 내용과 충돌하면 캡션 우선
 - 거래명세서로 보이지 않는 사진은 생성하지 않고 "거래명세서로 보이지 않음" 한 줄 회신
-- 인바운드 메시지의 `[Image attached at: <경로>]`가 원본 파일 경로 — 3단계에서 그대로 사용. 이 노트가 없으면 `ls -t ~/.hermes/cache/images | head -1`의 파일을 사용
+- 인바운드 메시지의 `[Image attached at: <경로>]`가 원본 파일 경로 — 3단계에서 그대로 사용. 이 노트가 없으면 `ls -t ~/.hermes/cache/images/* | head -1`의 파일을 사용
 
 ## 1단계 — 판독
 
@@ -64,19 +64,20 @@ grand_total  = Σ total
 ## 4단계 — 저장
 
 ```bash
+DRAFT=$(mktemp /tmp/sjmj-draft.XXXXXX.json)
 # 1) 생성
 curl -s -X POST http://127.0.0.1:8400/api/invoices \
   -H 'Content-Type: application/json' \
-  -d @/tmp/sjmj-draft.json
+  -d @"$DRAFT"
 # 응답 {"success":true,"data":{"id":123,...}} → ID=123. success가 false면 error.message를 회신하고 종료(재시도 1회만)
 
 # 2) 보관 — 캐시는 24시간 뒤 삭제되므로 생성 직후 즉시
 mkdir -p /Users/submini/sjmj-ai-data/agent_uploads
 cp "<Image attached at 경로>" /Users/submini/sjmj-ai-data/agent_uploads/${ID}.jpg   # 원본이 png면 .png
-cp /tmp/sjmj-draft.json /Users/submini/sjmj-ai-data/agent_uploads/${ID}.draft.json
+cp "$DRAFT" /Users/submini/sjmj-ai-data/agent_uploads/${ID}.draft.json
 ```
 
-`/tmp/sjmj-draft.json` 형식(요청 바디 그대로):
+초안 파일(`$DRAFT`) 형식(요청 바디 그대로):
 
 ```json
 {
