@@ -64,7 +64,7 @@ grand_total  = Σ total
 ## 4단계 — 저장
 
 ```bash
-DRAFT=$(mktemp /tmp/sjmj-draft.XXXXXX.json)
+DRAFT=$(mktemp /tmp/sjmj-draft.XXXXXX)   # macOS mktemp은 끝의 X만 치환 — 접미사 없이
 # 1) 생성
 curl -s -X POST http://127.0.0.1:8400/api/invoices \
   -H 'Content-Type: application/json' \
