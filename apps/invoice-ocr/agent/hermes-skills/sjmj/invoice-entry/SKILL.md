@@ -29,11 +29,13 @@ metadata:
 | 필드 | 규칙 |
 | --- | --- |
 | `issue_date` | `YYYY-MM-DD`, 사진에 없으면 오늘 |
-| `recipient` | 수신처(거래처명), 100자 이내 |
+| `recipient` | 수신처(거래처명), 100자 이내. 공란·판독 불가면 임시값 `미상` 기재(API 필수 필드) + ⚠️ 줄에 「수신처 미상 — 링크에서 입력」 |
 | `recipient2` | 두 번째 수신처 표기가 있을 때만 |
 | `vehicle_no` | 차량번호가 있을 때만 |
 | `memo` | 비고란이 있을 때만 |
-| `items[]` | 품목 행 — `name`(200자) · `quantity`(정수) · `unit` · `unit_price`(정수) · `deduction`(차감 행이면 true) |
+| `items[]` | 품목 행 — `name`(200자) · `quantity`(정수) · `unit` · `unit_price`(정수) · `deduction`(차감 행이면 true). 품목명 판독 불가면 `판독불가`, 수량·단가 불명이고 금액만 보이면 금액을 `unit_price`·`quantity`=1로 기재 |
+
+**중단하지 않음** — 판독 불가·공란은 중단 사유가 아님. API 필수는 `issue_date`·`recipient`·`items`(1행 이상) 3종뿐이고 `recipient2`·`vehicle_no`·`memo`는 없으면 키 자체를 생략. 불확실한 값은 가장 그럴듯한 값을 기재하고 ⚠️ 줄로 표기 — 사람이 링크에서 고치는 것이 이 절차의 전제. 중단은 「거래명세서로 보이지 않는 사진」과 「품목 행을 한 줄도 읽지 못한 사진」 두 경우뿐이며 그때도 사유 한 줄만 회신
 
 도메인 규칙 2종
 
@@ -111,4 +113,4 @@ cp "$DRAFT" /Users/submini/sjmj-ai-data/agent_uploads/${ID}.draft.json
 - `PUT /api/invoices/*`, `DELETE /api/invoices/*`, `POST /api/invoices/{id}/duplicate` 호출 금지 — 수정은 사람이 링크에서
 - `POST /api/ocr/jobs` 호출 금지 — ML 경로 오염 방지
 - 사진 1장당 invoice 1건, POST 재시도는 비 2xx일 때 1회만
-- 사진 내용을 묻는 되질문 금지 — 불확실은 ⚠️ 줄로 표기하고 생성은 진행
+- 사진 내용을 묻는 되질문 금지, 「필수값 미확정」·「합계 대응 불명」을 이유로 한 중단 금지 — 불확실은 ⚠️ 줄로 표기하고 생성은 진행
