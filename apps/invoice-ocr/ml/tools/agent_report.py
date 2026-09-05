@@ -15,7 +15,9 @@ Usage:
         --out report/agent_report
 """
 
+import argparse
 import json
+import os
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -160,3 +162,87 @@ def failures(rows: list[tuple[int, Comparison]]) -> list[dict]:
         for jid, c in rows
         for f, d, v in c.mismatches
     ]
+
+
+# --- DB 글루 (SQLAlchemy는 함수 안에서만 import — 코어 venv 안전) ---
+
+FINALS_SQL = """
+SELECT i.id, i.recipient, i.grand_total, i.created_at, i.updated_at,
+       t.item_order, t.name, t.supply
+FROM invoices i
+LEFT JOIN invoice_items t ON t.invoice_id = i.id
+WHERE i.id IN :ids
+ORDER BY i.id, t.item_order
+"""
+
+
+def group_rows(rows: list[dict]) -> dict[int, dict]:
+    """조인 행을 invoice id별 최종본(items는 item_order 오름차순)으로 묶는다."""
+    out: dict[int, dict] = {}
+    for r in rows:
+        inv = out.setdefault(
+            r["id"],
+            {
+                "recipient": r["recipient"],
+                "grand_total": r["grand_total"],
+                "created_at": r["created_at"],
+                "updated_at": r["updated_at"],
+                "items": [],
+            },
+        )
+        if r["item_order"] is not None:
+            inv["items"].append(
+                {"item_order": r["item_order"], "name": r["name"], "supply": r["supply"]}
+            )
+    for inv in out.values():
+        inv["items"].sort(key=lambda it: it["item_order"])
+    return out
+
+
+def fetch_finals(engine, ids: list[int]) -> dict[int, dict]:
+    """운영 DB에서 id 목록의 최종본을 읽는다(없는 id는 결과에서 빠진다)."""
+    if not ids:
+        return {}
+    from sqlalchemy import bindparam, text
+
+    stmt = text(FINALS_SQL).bindparams(bindparam("ids", expanding=True))
+    with engine.connect() as conn:
+        rows = [dict(r._mapping) for r in conn.execute(stmt, {"ids": ids})]
+    return group_rows(rows)
+
+
+def _engine():
+    from worker.db import build_engine
+
+    return build_engine()
+
+
+def main(argv: list[str] | None = None) -> None:
+    """초안 디렉토리와 운영 DB를 조인해 report.md·failures.jsonl을 쓴다."""
+    ap = argparse.ArgumentParser(prog="agent_report", description=__doc__)
+    ap.add_argument(
+        "--data-dir",
+        type=Path,
+        default=Path(os.environ.get("SJMJ_DATA_DIR", "")),
+        help="SJMJ_DATA_DIR (agent_uploads/의 부모). 기본값 env",
+    )
+    ap.add_argument("--out", type=Path, default=Path("report/agent_report"))
+    args = ap.parse_args(argv)
+
+    drafts = load_drafts(args.data_dir / "agent_uploads")
+    finals = fetch_finals(_engine(), [d.id for d in drafts])
+    missing = [d.id for d in drafts if d.id not in finals]
+    rows = [(d.id, compare(d.body, finals[d.id])) for d in drafts if d.id in finals]
+
+    args.out.mkdir(parents=True, exist_ok=True)
+    (args.out / "report.md").write_text(render(summarize(rows)), encoding="utf-8")
+    with (args.out / "failures.jsonl").open("w", encoding="utf-8") as f:
+        for row in failures(rows):
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    print(f"초안 {len(drafts)}건 · 조인 {len(rows)}건 → {args.out / 'report.md'}")
+    if missing:
+        print(f"최종본 없음(삭제됨): {missing}")
+
+
+if __name__ == "__main__":
+    main()

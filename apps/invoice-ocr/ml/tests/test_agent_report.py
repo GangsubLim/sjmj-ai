@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from tools.agent_report import (
+    FINALS_SQL,
     Comparison,
     compare,
     failures,
@@ -140,3 +141,91 @@ def test_failures_jsonl_rows():
     rows = [(5, compare(_draft(), _final(recipient="x")))]
     out = failures(rows)
     assert out == [{"id": 5, "field": "recipient", "draft": "○○상사", "final": "x"}]
+
+
+# --- DB 글루 ---
+
+
+def test_finals_sql_selects_required_columns():
+    for col in (
+        "i.recipient",
+        "i.grand_total",
+        "i.created_at",
+        "i.updated_at",
+        "t.item_order",
+        "t.name",
+        "t.supply",
+    ):
+        assert col in FINALS_SQL
+    assert ":ids" in FINALS_SQL
+
+
+def test_group_rows_builds_final_per_invoice():
+    from tools.agent_report import group_rows
+
+    rows = [
+        {
+            "id": 5,
+            "recipient": "x",
+            "grand_total": 10,
+            "created_at": "c",
+            "updated_at": "u",
+            "item_order": 2,
+            "name": "b",
+            "supply": 2,
+        },
+        {
+            "id": 5,
+            "recipient": "x",
+            "grand_total": 10,
+            "created_at": "c",
+            "updated_at": "u",
+            "item_order": 1,
+            "name": "a",
+            "supply": 1,
+        },
+        {
+            "id": 6,
+            "recipient": "y",
+            "grand_total": 0,
+            "created_at": "c",
+            "updated_at": "c",
+            "item_order": None,
+            "name": None,
+            "supply": None,
+        },
+    ]
+    g = group_rows(rows)
+    assert g[5]["recipient"] == "x"
+    assert [it["name"] for it in g[5]["items"]] == ["a", "b"]
+    assert g[6]["items"] == []
+
+
+def test_main_writes_report_and_failures(tmp_path: Path, monkeypatch):
+    from tools import agent_report
+
+    agent_uploads = tmp_path / "agent_uploads"
+    agent_uploads.mkdir()
+    (agent_uploads / "5.draft.json").write_text(json.dumps(_draft()), encoding="utf-8")
+    monkeypatch.setattr(
+        agent_report, "fetch_finals", lambda engine, ids: {5: _final(recipient="x")}
+    )
+    monkeypatch.setattr(agent_report, "_engine", lambda: object())
+    out = tmp_path / "out"
+    agent_report.main(["--data-dir", str(tmp_path), "--out", str(out)])
+    md = (out / "report.md").read_text(encoding="utf-8")
+    assert "| 건수 | 1 (사람 수정 0) |" in md
+    lines = (out / "failures.jsonl").read_text(encoding="utf-8").splitlines()
+    assert json.loads(lines[0]) == {"id": 5, "field": "recipient", "draft": "○○상사", "final": "x"}
+
+
+def test_main_skips_drafts_without_final(tmp_path: Path, monkeypatch, capsys):
+    from tools import agent_report
+
+    agent_uploads = tmp_path / "agent_uploads"
+    agent_uploads.mkdir()
+    (agent_uploads / "9.draft.json").write_text(json.dumps(_draft()), encoding="utf-8")
+    monkeypatch.setattr(agent_report, "fetch_finals", lambda engine, ids: {})
+    monkeypatch.setattr(agent_report, "_engine", lambda: object())
+    agent_report.main(["--data-dir", str(tmp_path), "--out", str(tmp_path / "o")])
+    assert "최종본 없음(삭제됨): [9]" in capsys.readouterr().out
