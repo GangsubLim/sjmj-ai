@@ -434,12 +434,22 @@ def test_scheduled_pins_the_same_gitleaks_binary() -> None:
 
     두 계층이 다른 버전을 쓰면 PR에서 통과한 룰셋과 baseline 룰셋이 갈려
     baseline 이슈가 PR 게이트로 재현되지 않는다.
+
+    curl < sha256sum -c - < tar -xzf 순서도 PR 게이트(Task 1,
+    `test_gitleaks_job_pins_binary_by_version_and_checksum`)와 동일하게 고정한다 —
+    존재·부재만 보면 `tar -xzf`를 검증 앞으로 옮겨 미검증 바이너리를 푸는 회귀를
+    잡지 못한다. 이 워크플로는 `issues: write`와 `GH_TOKEN`을 들고 도는 잡이라
+    영향이 PR 게이트보다 작지 않다.
     """
     text = _GITLEAKS_WORKFLOW.read_text(encoding="utf-8")
     assert _env_values(text, "GITLEAKS_VERSION") == [_GITLEAKS_VERSION]
     assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
     assert "sha256sum -c -" in _strip_comments(text)
     assert "releases/latest" not in text
+    download = _strip_comments(
+        _step(_scheduled()["jobs"]["scan"]["steps"], "Download and verify gitleaks")["run"]
+    )
+    assert download.index("curl") < download.index("sha256sum -c -") < download.index("tar -xzf")
 
 
 def test_scheduled_run_blocks_take_no_template_interpolation() -> None:
