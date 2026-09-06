@@ -5,6 +5,21 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.17.1] — 2026-09-06
+
+CI와 macmini 배포에 공급망·시크릿 보안 게이트 4종을 얹어 취약 의존성·갓 퍼블리시된 패키지·시크릿의 신규 유입을 설치 이전에 차단하는 릴리스 ([#181](https://github.com/GangsubLim/sjmj-ai/pull/181)).
+
+### Added
+
+- 워크플로 공급망 하드닝 — 서드파티 액션 SHA 핀·최소 권한·credential 비잔류·run 블록 보간 제거에 더해 zizmor 회귀 게이트와 Dependabot version update 도입 ([#176](https://github.com/GangsubLim/sjmj-ai/pull/176))
+- lockfile freshness 게이트 — backend·ml `uv.lock`과 frontend `package-lock.json` 3축에서 registry publish 7일 미만·출처 이상·검증 불가 의존성을 PR CI와 macmini 배포 양쪽에서 설치 이전에 차단 ([#177](https://github.com/GangsubLim/sjmj-ai/pull/177))
+- osv-scan PR diff 게이트 — 알려진 취약점의 신규 유입만 차단하고 기존 부채는 매일 도는 공급망 audit 워크플로가 `needs-triage` 이슈로 별도 관측 ([#179](https://github.com/GangsubLim/sjmj-ai/pull/179))
+- gitleaks 2-tier 시크릿 게이트 — PR diff 차단·전체 히스토리 주기 관측·pre-commit 로컬 훅 세 계층 구성, 검출 이슈에는 시크릿 원문·좌표 없이 rotate 선행 지시만 노출 ([#180](https://github.com/GangsubLim/sjmj-ai/pull/180))
+
+### Changed
+
+- 배포 실패·취소 시 롤백 범위 분리 — 설치 진입 이전이면 운영 체크아웃 복원만 수행하고 구동 중인 backend·ml-worker는 재시작하지 않음 ([#177](https://github.com/GangsubLim/sjmj-ai/pull/177))
+
 ## [v0.17.0] — 2026-09-06
 
 hermes 위임 입력에서 사람이 고친 최종본을 매일 밤 회수해 판독 지식으로 누적하고, 다음 판독이 그 지식을 먼저 읽도록 이어 붙인 릴리스 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161)).
