@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import import_scopes
 from tools.agent_learn import (
     DET_HEADINGS,
     FORBIDDEN,
@@ -15,6 +16,9 @@ from tools.agent_learn import (
     PublishResult,
     append_corrections,
     assemble,
+    cmd_extract,
+    cmd_publish,
+    cmd_report,
     current_version,
     diff_new,
     digit_class,
@@ -23,12 +27,15 @@ from tools.agent_learn import (
     load_corrections,
     load_ledger,
     load_versions,
+    main,
     publish,
     records_from,
+    render_by_version,
     render_deterministic,
     save_ledger,
     split_sections,
     validate_proposed,
+    version_for,
 )
 from tools.agent_report import Draft, compare
 
@@ -330,3 +337,150 @@ def test_publish_rejection_keeps_active(tmp_path: Path):
 
 def test_publish_without_proposed(tmp_path: Path):
     assert publish(tmp_path, _det(), set(), 0, "t").version is None
+
+
+# --- 버전 매핑·리포트 ---
+
+VERSIONS = [
+    {"version": 1, "published_at": "2026-09-07T03:00:00"},
+    {"version": 1, "published_at": "2026-09-08T03:00:00", "rejected": "x"},
+    {"version": 2, "published_at": "2026-09-09T03:00:00"},
+]
+
+
+def test_version_for_picks_latest_published_before_created_at():
+    assert version_for("2026-09-06 10:00:00", VERSIONS) == "none"
+    assert version_for("2026-09-07 03:00:00", VERSIONS) == "v1"
+    assert version_for("2026-09-08 12:00:00", VERSIONS) == "v1"
+    assert version_for("2026-09-10 00:00:00", VERSIONS) == "v2"
+
+
+def test_render_by_version_table_orders_none_first():
+    from tools.agent_report import summarize
+
+    rows_v1 = [(1, compare(_draft(), _final()))]
+    rows_none = [(2, compare(_draft(), _final(items=[{"name": "킹핀교환", "supply": 150000}])))]
+    md = render_by_version({"v1": summarize(rows_v1), "none": summarize(rows_none)})
+    lines = md.splitlines()
+    assert lines[0] == "## 지식 버전별 일치율"
+    assert lines[2] == "| 버전 | 건수 | 품목명 | 금액 | 무수정률 |"
+    assert lines[4].startswith("| none | 1 | 100.0% (1/1) | 100.0% (1/1) | 100.0% (1/1) |")
+    assert lines[5].startswith("| v1 | 1 | 0.0% (0/1) | 100.0% (1/1) | 0.0% (0/1) |")
+
+
+# --- CLI ---
+
+
+def _seed(data_dir: Path) -> None:
+    up = data_dir / "agent_uploads"
+    up.mkdir(parents=True)
+    (up / "573.draft.json").write_text(json.dumps(_draft()), encoding="utf-8")
+    (up / "574.draft.json").write_text(json.dumps(_draft()), encoding="utf-8")
+
+
+FINALS = {573: _final(), 574: _final(items=[{"name": "킹핀교환", "supply": 150000}])}
+
+
+def _finals(ids):
+    return {i: FINALS[i] for i in ids}
+
+
+def test_cmd_extract_writes_artifacts_and_summary(tmp_path: Path):
+    _seed(tmp_path)
+    s = cmd_extract(tmp_path, _finals, lambda: VOCAB, "2026-09-07T03:00:00")
+    kdir = tmp_path / "agent_knowledge"
+    assert s == {
+        "new": 1,
+        "by_kind": {"name": 1},
+        "proposed": str(kdir / "proposed.md"),
+        "active_version": 0,
+    }
+    assert load_corrections(kdir / "corrections.jsonl")[0].final == "히타"
+    assert set(load_ledger(kdir / "ledger.json")) == {573, 574}
+    assert json.loads((kdir / "vocab_snapshot.json").read_text(encoding="utf-8")) == VOCAB
+    proposed = split_sections((kdir / "proposed.md").read_text(encoding="utf-8"))
+    assert "| 킹핀교환 | 히타 | 1 | #573 |" in proposed[HEADINGS[0]]
+    assert proposed[HEADINGS[5]] == "(없음)"
+    assert not (kdir / "active.md").exists()
+
+
+def test_cmd_extract_preserves_llm_sections_from_active(tmp_path: Path):
+    _seed(tmp_path)
+    kdir = tmp_path / "agent_knowledge"
+    kdir.mkdir()
+    md = assemble(render_deterministic([], VOCAB, 0), {HEADINGS[5]: "- 기존 규칙 (#573)"})
+    (kdir / "active.md").write_text(md, encoding="utf-8")
+    cmd_extract(tmp_path, _finals, lambda: VOCAB, "t")
+    proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
+    assert split_sections(proposed)[HEADINGS[5]] == "- 기존 규칙 (#573)"
+
+
+def test_cmd_extract_without_uploads_dir(tmp_path: Path):
+    s = cmd_extract(tmp_path, lambda ids: {}, lambda: VOCAB, "t")
+    assert s["new"] == 0 and s["active_version"] == 0
+
+
+def test_cmd_publish_and_report_roundtrip(tmp_path: Path):
+    _seed(tmp_path)
+    cmd_extract(tmp_path, _finals, lambda: VOCAB, "2026-09-07T03:00:00")
+    assert cmd_publish(tmp_path, "2026-09-07T03:01:00") == PublishResult(1, "published")
+    md = cmd_report(tmp_path, tmp_path / "rep", _finals)
+    assert "## 지식 버전별 일치율" in md
+    assert "| none | 2 |" in md
+    assert (tmp_path / "rep" / "failures.jsonl").exists()
+
+
+def test_main_extract_wake_gate_and_publish_report(tmp_path: Path, capsys, monkeypatch):
+    _seed(tmp_path)
+    import tools.agent_learn as al
+
+    monkeypatch.setattr(al, "_engine", lambda: object())
+    monkeypatch.setattr(al, "fetch_finals", lambda engine, ids: _finals(ids))
+    monkeypatch.setattr(al, "fetch_vocab", lambda engine: VOCAB)
+
+    main(["--data-dir", str(tmp_path), "extract"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(out[0])["new"] == 1
+    assert len(out) == 1
+
+    main(["--data-dir", str(tmp_path), "extract"])
+    out = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(out[-1]) == {"wakeAgent": False}
+
+    kdir = tmp_path / "agent_knowledge"
+    md = (kdir / "proposed.md").read_text(encoding="utf-8")
+    edited = md.replace("## 일반화 규칙\n\n(없음)", "## 일반화 규칙\n\n- 킹핀교환→히타 (#573)")
+    (kdir / "proposed.md").write_text(edited, encoding="utf-8")
+    main(["--data-dir", str(tmp_path), "publish"])
+    assert capsys.readouterr().out.strip() == "published v1 · 교정 사전 1쌍 · 규칙 1줄"
+    assert (kdir / "active.md").exists()
+
+    (kdir / "proposed.md").write_text(md.replace("## 일반화 규칙", "## 규칙"), encoding="utf-8")
+    main(["--data-dir", str(tmp_path), "publish"])
+    assert capsys.readouterr().out.startswith("rejected: 헤딩 불일치")
+
+    main(["--data-dir", str(tmp_path), "report", "--out", str(tmp_path / "rep")])
+    rep = (tmp_path / "rep" / "report.md").read_text(encoding="utf-8")
+    assert "# hermes 위임 입력 초안↔최종본 일치율" in rep
+    assert "| none | 2 |" in rep
+
+
+def test_main_extract_db_failure_is_silent_wake_gate(tmp_path: Path, capsys, monkeypatch):
+    import tools.agent_learn as al
+
+    def boom():
+        raise RuntimeError("no db")
+
+    monkeypatch.setattr(al, "_engine", boom)
+    main(["--data-dir", str(tmp_path), "extract"])
+    captured = capsys.readouterr()
+    assert json.loads(captured.out.strip().splitlines()[-1]) == {"wakeAgent": False}
+    assert "no db" in captured.err
+
+
+def test_agent_learn_keeps_heavy_imports_lazy():
+    src = Path(__file__).resolve().parents[1] / "tools" / "agent_learn.py"
+    module_level, in_functions = import_scopes(src)
+    forbidden = {"sqlalchemy", "worker.db", "worker.main", "cv2", "numpy", "torch"}
+    assert not (module_level & forbidden), module_level & forbidden
+    assert {"worker.db", "sqlalchemy"} & in_functions
