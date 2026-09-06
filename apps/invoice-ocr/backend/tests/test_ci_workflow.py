@@ -1,4 +1,4 @@
-"""CI 워크플로 불변식 — freshness 게이트가 설치 잡보다 앞서고 skip이 통과로 세지 않는다."""
+"""CI 워크플로 불변식 — freshness 선행·osv-scan fail-closed·gitleaks 3계층 고정."""
 
 from pathlib import Path
 
@@ -235,6 +235,31 @@ def _assert_guard_exits(run: str, error_message: str) -> None:
     assert len(tail) > 1 and tail[1].strip() == "exit 1", error_message
 
 
+def _assert_status_capture(run: str, invocation: str) -> None:
+    """gitleaks 종료 상태가 그대로 잡히고 그 뒤로 덮어써지지 않는지 확인한다.
+
+    `continue-on-error`·step `if` 부재만 보면 셸 수준의 소프트 실패를 놓친다 —
+    호출 뒤에 `|| true`를 붙이거나 `scan_status=$?`를 상수로 바꾸기만 해도 게이트가
+    통째로 no-op이 되면서 계약 테스트는 전부 통과한다(2026-09-06 뮤테이션 실측).
+
+    Args:
+        run: 주석을 제거한 step의 `run` 텍스트.
+        invocation: 종료 상태를 캡처해야 하는 명령의 앞부분.
+
+    Raises:
+        AssertionError: 호출이 유일하지 않거나, 단축 평가로 상태를 삼키거나,
+            바로 다음 줄이 `scan_status=$?`가 아니거나, 뒤에서 재대입될 때.
+    """
+    logical = [line.strip() for line in run.replace("\\\n", " ").splitlines() if line.strip()]
+    calls = [i for i, line in enumerate(logical) if line.startswith(invocation)]
+    assert len(calls) == 1, logical
+    call = logical[calls[0]]
+    for swallow in ("||", "&&", ";"):
+        assert swallow not in call, f"{swallow} swallows the gitleaks exit status: {call}"
+    assert logical[calls[0] + 1] == "scan_status=$?", logical[calls[0] + 1]
+    assert [line for line in logical if line.startswith("scan_status=")] == ["scan_status=$?"]
+
+
 def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
     """gitleaks 잡은 무조건 실행되고 PR 커밋 범위를 merge 커밋까지 포함해 스캔해야 한다.
 
@@ -295,7 +320,13 @@ def test_gitleaks_job_rejects_repo_controlled_suppressors() -> None:
 
 
 def test_gitleaks_job_steps_cannot_be_soft_failed() -> None:
-    """잡·step 어느 수준에도 실패를 삼키는 스위치가 없어야 한다."""
+    """잡·step·셸 어느 수준에도 실패를 삼키는 스위치가 없어야 한다.
+
+    YAML 키(`continue-on-error`·step `if`) 부재만으로는 부족하다 — 금지는 셸 수준
+    (gitleaks 종료 상태 캡처)까지 미친다. 호출에 `|| true`를 덧붙이거나
+    `scan_status=$?`를 상수로 바꾸면 step은 그대로 exit 0으로 끝나 시크릿이 든 PR의
+    required check가 초록이 되므로, 상태 캡처의 무결성을 같은 축으로 고정한다.
+    """
     job = _jobs()["gitleaks"]
     assert "continue-on-error" not in job
     soft = [
@@ -304,6 +335,8 @@ def test_gitleaks_job_steps_cannot_be_soft_failed() -> None:
         if "if" in step or "continue-on-error" in step
     ]
     assert not soft, soft
+    run = _strip_comments(_step(job["steps"], "Scan PR commit range")["run"])
+    _assert_status_capture(run, "./gitleaks git")
 
 
 def test_gitleaks_job_pins_binary_by_version_and_checksum() -> None:
@@ -398,6 +431,7 @@ def test_scheduled_incomplete_scan_fails_the_job() -> None:
     assert "*) scan_ok=false ;;" in scan
     assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in scan
     assert "[ ! -f gitleaks-report.json ]" in scan
+    assert "--report-path gitleaks-report.json" in scan
     guard = _step(steps, "Fail when the scan did not complete")
     assert guard["if"] == "steps.scan.outputs.scan_ok != 'true'"
     assert "exit 1" in _strip_comments(guard["run"])
@@ -414,12 +448,18 @@ def test_scheduled_steps_cannot_be_soft_failed() -> None:
     계속 진행해 `Close tracking issue when clean`(`exit_code == '0'`)에 도달하고,
     스캔이 깨져 exit 0을 낸 런이 실재 findings 이슈를 "clean"으로 닫는다 —
     이 워크플로가 막으려는 silent-close가 그대로 되살아난다.
+
+    금지 범위는 YAML 키에서 끝나지 않고 셸 수준(gitleaks 종료 상태 캡처)까지다.
+    호출에 `|| true`를 붙이거나 `scan_status=$?`를 상수로 바꾸면 `exit_code=0`이
+    출력돼 같은 close 경로가 그대로 열리므로, 상태 캡처의 무결성을 함께 고정한다.
     """
     job = _scheduled()["jobs"]["scan"]
     assert job["timeout-minutes"] == 30, "히스토리 성장에 따라 전체 스캔에 상한이 필요하다"
     assert "continue-on-error" not in job
     soft = [step.get("name", "?") for step in job["steps"] if "continue-on-error" in step]
     assert not soft, soft
+    run = _strip_comments(_step(job["steps"], "Scan full history")["run"])
+    _assert_status_capture(run, "./gitleaks git")
 
 
 def test_scheduled_rejects_repo_controlled_suppressors() -> None:
