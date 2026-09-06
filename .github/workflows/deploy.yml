@@ -6,6 +6,10 @@ on:
       - "v*"
   workflow_dispatch:
 
+# self-hosted 러너의 토큰 스코프를 최소화한다 — 배포는 git fetch와 로컬 실행만 한다.
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: [self-hosted, macmini]
@@ -117,9 +121,11 @@ jobs:
 
       - name: Rollback on failure
         if: failure()
+        env:
+          # run 블록 안의 ${{ }} 보간은 zizmor template-injection 대상 — env로 넘긴다.
+          PREV: ${{ steps.previous.outputs.sha }}
         run: |
           set -euo pipefail
-          PREV="${{ steps.previous.outputs.sha }}"
           [[ -n "$PREV" ]] || { echo "missing previous sha; cannot rollback" >&2; exit 1; }
           git checkout --force "$PREV"
           cd "$BACKEND_DIR" && uv sync --frozen && uv run python -c "from app.main import app; assert app"

@@ -42,3 +42,17 @@ def test_frontend_build_preserves_old_chunks() -> None:
     assert len(builds) == 2, f"expected 2 npm run build lines (forward+rollback), got {builds}"
     missing = [item for item in builds if not _BUILD_WITH_FLAG.search(item[1])]
     assert not missing, "; ".join(f"deploy.yml:{num}: {line}" for num, line in missing)
+
+
+def test_rollback_uses_env_for_previous_sha() -> None:
+    """롤백 step이 PREV를 run 블록 보간이 아니라 env로 받아야 한다(template-injection 회귀 방지).
+
+    PREV가 비어 있으면 즉시 실패해야 한다 — 빈 값으로 `git checkout --force`가
+    실행되면 워킹 디렉터리가 예측 불가능한 상태가 된다.
+    """
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    rollback = text.split("- name: Rollback on failure", 1)[1]
+    env_block, run_block = rollback.split("run:", 1)
+    assert "PREV: ${{ steps.previous.outputs.sha }}" in env_block
+    assert "${{ steps.previous.outputs.sha }}" not in run_block
+    assert '[[ -n "$PREV" ]]' in run_block
