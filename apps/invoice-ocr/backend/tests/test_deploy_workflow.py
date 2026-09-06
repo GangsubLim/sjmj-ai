@@ -52,6 +52,9 @@ def test_rollback_uses_env_for_previous_sha() -> None:
     """
     text = _WORKFLOW.read_text(encoding="utf-8")
     rollback = text.split("- name: Rollback on failure", 1)[1]
+    rollback = rollback.split("\n      - name:", 1)[
+        0
+    ]  # 다음 step 앞에서 자른다 — 이후에 붙는 무관한 step이 run_block으로 새어 들어가는 것을 막는다
     env_block, run_block = rollback.split("run:", 1)
     assert "PREV: ${{ steps.previous.outputs.sha }}" in env_block
     assert "${{ steps.previous.outputs.sha }}" not in run_block
