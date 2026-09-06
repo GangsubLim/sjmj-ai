@@ -89,6 +89,12 @@ jobs:
           # git 순회 중단·리포트 부재는 "검출 0"과 구별해야 한다 — 구별하지 않으면
           # 오류로 인한 exit 0이 close 경로를 태워 실재 findings 이슈를 닫는다.
           scan_ok=true
+          # gitleaks가 의미를 부여한 종료 코드는 0(clean)·1(검출)뿐이다 — 그 밖의 코드는
+          # 부분 결과를 남겼더라도 "검출됨"이 아니라 미완주로 다룬다.
+          case "$scan_status" in
+            0 | 1) ;;
+            *) scan_ok=false ;;
+          esac
           if grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log; then
             scan_ok=false
           fi

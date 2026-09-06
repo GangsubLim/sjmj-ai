@@ -217,6 +217,24 @@ def _env_values(text: str, key: str) -> list[str]:
     ]
 
 
+def _assert_guard_exits(run: str, error_message: str) -> None:
+    """`::error::` 진단 바로 다음 줄이 `exit 1`인지 확인한다.
+
+    한 `run` 블록에 독립된 가드가 여럿이면 `"exit 1" in run` 단언은 어느 한 가드의
+    `exit 1`이 지워져도 다른 가드 덕분에 통과한다 — 가드별로 좁혀야 락이 실효한다.
+
+    Args:
+        run: 주석을 제거한 step의 `run` 텍스트.
+        error_message: 가드를 특정하는 `::error::` 진단의 앞부분.
+
+    Raises:
+        AssertionError: 진단이 없거나 그 다음 줄이 `exit 1`이 아닐 때.
+    """
+    assert error_message in run, error_message
+    tail = run.split(error_message, 1)[1].splitlines()
+    assert len(tail) > 1 and tail[1].strip() == "exit 1", error_message
+
+
 def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
     """gitleaks 잡은 무조건 실행되고 PR 커밋 범위를 merge 커밋까지 포함해 스캔해야 한다.
 
@@ -229,6 +247,9 @@ def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
     job = _jobs()["gitleaks"]
     assert "needs" not in job
     assert "if" not in job
+    assert job["timeout-minutes"] == 10, (
+        "required check가 상한 없이 pending으로 매달리면 머지가 막힌다"
+    )
     checkout = job["steps"][0]
     assert checkout["with"]["fetch-depth"] == 0, "BASE..HEAD 접근에 전체 히스토리 필요"
     assert checkout["with"]["persist-credentials"] is False
@@ -236,7 +257,7 @@ def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
     assert scan["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
     run = _strip_comments(scan["run"])
     assert '[ -z "${BASE_SHA:-}" ]' in run
-    assert "exit 1" in run
+    _assert_guard_exits(run, "::error::BASE_SHA is empty")
     assert '--log-opts="${BASE_SHA}..HEAD --diff-merges=first-parent"' in run
     assert "--exit-code 1" in run, "기본값과 같으나 설정 드리프트 방지를 위해 명시 고정"
     assert "--redact" in run
@@ -252,8 +273,10 @@ def test_gitleaks_job_fails_closed_when_git_traversal_breaks() -> None:
     """
     run = _strip_comments(_step(_jobs()["gitleaks"]["steps"], "Scan PR commit range")["run"])
     assert 'git rev-parse --verify --quiet "${rev}^{commit}"' in run
+    _assert_guard_exits(run, "::error::${rev} is not a resolvable commit")
     assert "2> gitleaks-stderr.log" in run
     assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in run
+    _assert_guard_exits(run, "::error::gitleaks aborted git traversal")
     assert 'exit "$scan_status"' in run
 
 
@@ -294,8 +317,9 @@ def test_gitleaks_job_pins_binary_by_version_and_checksum() -> None:
     assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
     stripped_text = _strip_comments(text)
     assert "sha256sum -c -" in stripped_text
+    assert 'tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"' in stripped_text
     assert "releases/download/v${GITLEAKS_VERSION}/${tarball}" in stripped_text
-    assert "releases/latest" not in stripped_text
+    assert "releases/latest" not in text
     download = _strip_comments(
         _step(_jobs()["gitleaks"]["steps"], "Download and verify gitleaks")["run"]
     )
@@ -362,10 +386,16 @@ def test_scheduled_incomplete_scan_fails_the_job() -> None:
 
     구별하지 않으면 git 오류로 인한 exit 0이 close 경로를 태워 실재 findings 이슈에
     "clean"이라 코멘트하고 닫는다 — baseline 알림의 silent 소실이다.
+
+    gitleaks가 의미를 부여한 종료 코드는 0(clean)·1(검출) 둘뿐이라, 그 밖의 코드로 끝나면서
+    리포트 파일을 남기고 stderr가 두 패턴에 걸리지 않는 런은 미완주의 부분 결과를
+    "검출됨"으로 이슈에 올리는 경로 — 종료 코드 제약도 같은 축으로 함께 고정
     """
     steps = _scheduled()["jobs"]["scan"]["steps"]
     scan = _strip_comments(_step(steps, "Scan full history")["run"])
     assert 'echo "scan_ok=$scan_ok"' in scan
+    assert 'case "$scan_status" in' in scan, "gitleaks 종료 코드 {0,1} 밖은 미완주로 다룬다"
+    assert "*) scan_ok=false ;;" in scan
     assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in scan
     assert "[ ! -f gitleaks-report.json ]" in scan
     guard = _step(steps, "Fail when the scan did not complete")
@@ -375,6 +405,21 @@ def test_scheduled_incomplete_scan_fails_the_job() -> None:
     assert names.index("Fail when the scan did not complete") < names.index(
         "Close tracking issue when clean"
     )
+
+
+def test_scheduled_steps_cannot_be_soft_failed() -> None:
+    """실패를 삼키는 스위치가 잡·step 어느 수준에도 없어야 한다.
+
+    `Fail when the scan did not complete`에 `continue-on-error: true`가 붙으면 잡이
+    계속 진행해 `Close tracking issue when clean`(`exit_code == '0'`)에 도달하고,
+    스캔이 깨져 exit 0을 낸 런이 실재 findings 이슈를 "clean"으로 닫는다 —
+    이 워크플로가 막으려는 silent-close가 그대로 되살아난다.
+    """
+    job = _scheduled()["jobs"]["scan"]
+    assert job["timeout-minutes"] == 30, "히스토리 성장에 따라 전체 스캔에 상한이 필요하다"
+    assert "continue-on-error" not in job
+    soft = [step.get("name", "?") for step in job["steps"] if "continue-on-error" in step]
+    assert not soft, soft
 
 
 def test_scheduled_rejects_repo_controlled_suppressors() -> None:
@@ -440,16 +485,27 @@ def test_scheduled_pins_the_same_gitleaks_binary() -> None:
     존재·부재만 보면 `tar -xzf`를 검증 앞으로 옮겨 미검증 바이너리를 푸는 회귀를
     잡지 못한다. 이 워크플로는 `issues: write`와 `GH_TOKEN`을 들고 도는 잡이라
     영향이 PR 게이트보다 작지 않다.
+
+    두 계층의 download 블록 전문 대조는 존재 단언이 놓치는 드리프트까지 차단 — env 상수만
+    같은 버전으로 남고 tarball 이름·다운로드 URL이 다른 버전으로 갈려도 개별 존재 단언은
+    통과하므로, 블록 자체의 동일성을 마지막 앵커로 고정
     """
     text = _GITLEAKS_WORKFLOW.read_text(encoding="utf-8")
     assert _env_values(text, "GITLEAKS_VERSION") == [_GITLEAKS_VERSION]
     assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
-    assert "sha256sum -c -" in _strip_comments(text)
+    stripped_text = _strip_comments(text)
+    assert 'tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"' in stripped_text
+    assert "releases/download/v${GITLEAKS_VERSION}/${tarball}" in stripped_text
+    assert "sha256sum -c -" in stripped_text
     assert "releases/latest" not in text
     download = _strip_comments(
         _step(_scheduled()["jobs"]["scan"]["steps"], "Download and verify gitleaks")["run"]
     )
     assert download.index("curl") < download.index("sha256sum -c -") < download.index("tar -xzf")
+    ci_download = _strip_comments(
+        _step(_jobs()["gitleaks"]["steps"], "Download and verify gitleaks")["run"]
+    )
+    assert download == ci_download, "두 계층의 download 블록이 드리프트하면 버전·검증이 갈린다"
 
 
 def test_scheduled_run_blocks_take_no_template_interpolation() -> None:
