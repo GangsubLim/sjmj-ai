@@ -915,8 +915,15 @@ def read_base_lockfile(root: Path, base_ref: str, path: str) -> str:
         lockfile 전문.
 
     Raises:
-        LockfileFormatError: base에 해당 lockfile이 없을 때(전량 신규로 넘기지 않는다).
+        LockfileFormatError: base_ref가 `-`로 시작하거나(git이 리비전이 아니라 옵션으로
+            파싱한다 — CWE-88), base에 해당 lockfile이 없을 때(전량 신규로 넘기지 않는다).
     """
+    if base_ref.startswith("-"):
+        # 정상 git refname은 `-`로 시작할 수 없다. 허용하면 `git show`가 이를 옵션으로
+        # 파싱해(예: `--output=<file>`) 임의 인자 주입으로 이어진다.
+        raise LockfileFormatError(
+            f"base_ref가 '-'로 시작합니다(옵션 주입 방지): {base_ref!r}"
+        )
     completed = subprocess.run(  # noqa: S603
         ["git", "show", f"{base_ref}:{path}"],  # noqa: S607
         cwd=str(root),

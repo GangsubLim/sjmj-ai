@@ -16,6 +16,21 @@ def _jobs() -> dict:
     return yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]
 
 
+def _strip_comments(run: str) -> str:
+    """`run:` 블록의 각 줄에서 `#` 주석을 잘라내고 이어붙인 명령 텍스트를 돌려준다.
+
+    원시 텍스트로 매칭하면 설명 주석에 마커 문자열이 등장해 거짓 실패하거나, 반대로
+    실제 마커를 주석으로 가려 검사를 피해가는 거짓 통과가 될 수 있다.
+
+    Args:
+        run: step의 `run:` 원문.
+
+    Returns:
+        주석을 제거한 명령 텍스트.
+    """
+    return "\n".join(line.split("#", 1)[0] for line in run.splitlines())
+
+
 def test_install_jobs_are_chained_to_freshness_gate() -> None:
     """frontend·backend·ml은 freshness에 체인되고 첫 step에서 그 결과를 명시 검증해야 한다.
 
@@ -36,7 +51,7 @@ def test_install_jobs_are_chained_to_freshness_gate() -> None:
         installs = [
             i
             for i, step in enumerate(job["steps"])
-            if any(marker in step.get("run", "") for marker in _INSTALL_MARKERS)
+            if any(marker in _strip_comments(step.get("run", "")) for marker in _INSTALL_MARKERS)
         ]
         assert installs and min(installs) > 0, name
 
@@ -51,7 +66,7 @@ def test_freshness_job_installs_nothing() -> None:
     offenders = [
         step.get("name", step.get("uses", "?"))
         for step in steps
-        if any(marker in step.get("run", "") for marker in _INSTALL_MARKERS)
+        if any(marker in _strip_comments(step.get("run", "")) for marker in _INSTALL_MARKERS)
     ]
     assert not offenders, offenders
 

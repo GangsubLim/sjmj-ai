@@ -1470,6 +1470,23 @@ def test_read_base_lockfile_returns_content_for_existing_ref():
     assert text.startswith("version = 1")
 
 
+# --- CWE-88: `-`로 시작하는 base_ref는 git이 리비전이 아니라 옵션으로 파싱한다
+# (예: `--output=<file>`). subprocess.run에 도달하기 전에 막혀야 한다. ---
+def test_read_base_lockfile_rejects_dash_prefixed_base_ref_without_subprocess_call(monkeypatch):
+    def _boom(*args, **kwargs):
+        raise AssertionError("subprocess.run이 호출되면 안 된다")
+
+    monkeypatch.setattr("subprocess.run", _boom)
+    with pytest.raises(mod.LockfileFormatError, match="-"):
+        mod.read_base_lockfile(_REPO_ROOT, "--output=/tmp/evil", mod.BACKEND_UV_LOCK_PATH)
+
+
+# --- CWE-88 회귀 방지: `-`로 시작하지 않는 정상 ref는 가드에 막히지 않고 그대로 동작한다 ---
+def test_read_base_lockfile_accepts_ref_not_starting_with_dash():
+    text = mod.read_base_lockfile(_REPO_ROOT, "HEAD", mod.BACKEND_UV_LOCK_PATH)
+    assert text.startswith("version = 1")
+
+
 # --- L2: head 경로가 디렉토리면 IsADirectoryError가 아니라 fail-closed 에러 ---
 def test_read_head_lockfile_rejects_directory_path(tmp_path):
     (tmp_path / mod.BACKEND_UV_LOCK_PATH).mkdir(parents=True)
