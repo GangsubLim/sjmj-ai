@@ -246,6 +246,12 @@ def parse_uv_lock(text: str) -> dict[str, str]:
             continue
         if not in_package:
             continue
+        # 이 디스패치는 name·version·source 세 줄만 소비하고 `sdist`/`wheels`의 `url`·`hash`는
+        # 읽지 않는다. 그래서 name·version·source가 동일한 채 아티팩트 URL만 교체되는 변조는
+        # 검사 대상에 들어오지 않는다. npm 축은 `_normalize_npm_source`가 정본 tarball 경로와
+        # 정확 일치를 요구해 같은 조작을 exotic으로 막지만, `integrity`만 바꾸는 변조는 두 축
+        # 모두 검출하지 못한다. 따라서 이 한계는 npm 패리티만으로 닫히지 않고 양축 공통 설계가
+        # 필요한 후속 과제다(#178).
         if line.startswith("name = "):
             current["name"] = _unquote(line.split("=", 1)[1])
         elif line.startswith("version = "):

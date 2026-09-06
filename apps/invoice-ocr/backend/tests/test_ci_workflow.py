@@ -78,6 +78,11 @@ def test_release_promotion_exemption_is_shell_not_step_if() -> None:
     같은 브랜치까지 면제에 들어오므로, 면제를 step `if`로 옮기면 이 회귀가 조용히
     되살아난다. hotfix/*는 면제 대상이 아니므로 셸 조건에 등장하면 면제 범위가
     부주의하게 넓어진 것이다.
+
+    원시 텍스트를 그대로 매칭하면 유지보수자가 실제 셸 조건에서 절을 지우고 같은
+    줄의 인라인 `#` 주석에만 남겨도 이 검증이 계속 통과해 보호가 사라진 채 거짓
+    GREEN이 된다. 그중 `"$HEAD_REPO" == "$THIS_REPO"` 절은 fork 브랜치명 위조를
+    막는 가장 무거운 조건이라 손실이 가장 크다.
     """
     gate = next(
         step
@@ -85,7 +90,7 @@ def test_release_promotion_exemption_is_shell_not_step_if() -> None:
         if step.get("name") == "Lockfile freshness gate (7d, pre-install)"
     )
     assert "if" not in gate
-    run = gate["run"]
+    run = _strip_comments(gate["run"])
     assert '"$BASE_REF" == "main"' in run
     assert '"$HEAD_REPO" == "$THIS_REPO"' in run
     assert '"$HEAD_REF" == release/*' in run
