@@ -234,7 +234,7 @@ def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
     assert checkout["with"]["persist-credentials"] is False
     scan = _step(job["steps"], "Scan PR commit range")
     assert scan["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
-    run = scan["run"]
+    run = _strip_comments(scan["run"])
     assert '[ -z "${BASE_SHA:-}" ]' in run
     assert "exit 1" in run
     assert '--log-opts="${BASE_SHA}..HEAD --diff-merges=first-parent"' in run
@@ -250,7 +250,7 @@ def test_gitleaks_job_fails_closed_when_git_traversal_breaks() -> None:
     낸다(v8.30.1 실측). base 강제푸시·객체 미fetch가 게이트를 조용히 무력화하므로
     범위 양 끝을 선검증하고, gitleaks stderr에 git 오류가 남으면 fail-closed다.
     """
-    run = _step(_jobs()["gitleaks"]["steps"], "Scan PR commit range")["run"]
+    run = _strip_comments(_step(_jobs()["gitleaks"]["steps"], "Scan PR commit range")["run"])
     assert 'git rev-parse --verify --quiet "${rev}^{commit}"' in run
     assert "2> gitleaks-stderr.log" in run
     assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in run
@@ -264,7 +264,9 @@ def test_gitleaks_job_rejects_repo_controlled_suppressors() -> None:
     같은 PR이 둘 중 하나를 얹으면 게이트가 통째로 무력화되고(실측 exit 1 → 0),
     `--config`로 레포 밖 설정을 강제해도 `.gitleaksignore`는 계속 적용된다(실측).
     """
-    run = _step(_jobs()["gitleaks"]["steps"], "Reject repo-controlled gitleaks suppression")["run"]
+    run = _strip_comments(
+        _step(_jobs()["gitleaks"]["steps"], "Reject repo-controlled gitleaks suppression")["run"]
+    )
     assert ".gitleaks.toml .gitleaksignore" in run
     assert "exit 1" in run
 
@@ -290,10 +292,13 @@ def test_gitleaks_job_pins_binary_by_version_and_checksum() -> None:
     text = _WORKFLOW.read_text(encoding="utf-8")
     assert _env_values(text, "GITLEAKS_VERSION") == [_GITLEAKS_VERSION]
     assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
-    assert "sha256sum -c -" in text
-    assert "releases/download/v${GITLEAKS_VERSION}/${tarball}" in text
-    assert "releases/latest" not in text
-    download = _step(_jobs()["gitleaks"]["steps"], "Download and verify gitleaks")["run"]
+    stripped_text = _strip_comments(text)
+    assert "sha256sum -c -" in stripped_text
+    assert "releases/download/v${GITLEAKS_VERSION}/${tarball}" in stripped_text
+    assert "releases/latest" not in stripped_text
+    download = _strip_comments(
+        _step(_jobs()["gitleaks"]["steps"], "Download and verify gitleaks")["run"]
+    )
     assert download.index("curl") < download.index("sha256sum -c -") < download.index("tar -xzf")
 
 
