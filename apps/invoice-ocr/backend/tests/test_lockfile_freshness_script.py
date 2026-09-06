@@ -1604,3 +1604,115 @@ def test_ml_axis_does_not_mask_backend_registry_with_local(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "pypi:sharedpkg@1.0.0" in out
     assert "fresh" in out
+
+
+_BUNDLE_PARENT = (
+    "node_modules/@tailwindcss/oxide-wasm32-wasi",
+    {
+        "version": "4.2.0",
+        "resolved": (
+            "https://registry.npmjs.org/@tailwindcss/oxide-wasm32-wasi/-/"
+            "oxide-wasm32-wasi-4.2.0.tgz"
+        ),
+    },
+)
+_TSLIB_REGISTRY = (
+    "node_modules/tslib",
+    {"version": "2.8.1", "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.8.1.tgz"},
+)
+_TSLIB_BUNDLED = (
+    "node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/tslib",
+    {"version": "2.8.1", "inBundle": True},
+)
+
+
+def _npm_lock(*entries):
+    return json.dumps({"lockfileVersion": 3, "packages": dict((("", {}),) + entries)})
+
+
+# --- B①: 번들 항목(inBundle + resolved 없음)은 결과에 아예 들어오지 않는다.
+# npm은 번들 의존성을 별도 fetch하지 않고 부모 tarball 내용물로 설치하므로 install-time
+# 공급망 벡터는 부모(정상 검사 대상)에 귀속된다. ---
+def test_parse_npm_lock_skips_bundled_entry_without_resolved():
+    parsed = mod.parse_npm_lock(
+        _npm_lock(
+            _BUNDLE_PARENT,
+            (
+                "node_modules/@tailwindcss/oxide-wasm32-wasi/node_modules/@emnapi/core",
+                {"version": "1.8.1", "inBundle": True},
+            ),
+        )
+    )
+    assert "npm:@emnapi/core@1.8.1" not in parsed
+    assert parsed["npm:@tailwindcss/oxide-wasm32-wasi@4.2.0"] == mod.REGISTRY_SOURCE
+
+
+# --- B②: inBundle 표식 없이 resolved만 없는 entry는 기존대로 unknown(→ exotic 차단)이다.
+# 제외 규칙이 resolved 부재 전반으로 번지면 게이트에 구멍이 생긴다. ---
+def test_parse_npm_lock_keeps_unknown_for_missing_resolved_without_bundle_flag():
+    parsed = mod.parse_npm_lock(_npm_lock(("node_modules/mystery", {"version": "1.0.0"})))
+    assert parsed == {"npm:mystery@1.0.0": mod.UNKNOWN_SOURCE}
+
+
+# --- B③: inBundle이 있어도 resolved가 있으면 resolved 기준으로 판정한다
+# (번들 표식이 registry 검사를 우회하는 경로를 막는다). ---
+def test_parse_npm_lock_judges_bundled_entry_with_resolved_by_resolved():
+    parsed = mod.parse_npm_lock(
+        _npm_lock(
+            (
+                "node_modules/bundled-fetched",
+                {
+                    "version": "1.0.0",
+                    "inBundle": True,
+                    "resolved": (
+                        "https://registry.npmjs.org/bundled-fetched/-/bundled-fetched-1.0.0.tgz"
+                    ),
+                },
+            ),
+            (
+                "node_modules/bundled-git",
+                {
+                    "version": "2.0.0",
+                    "inBundle": True,
+                    "resolved": "git+https://github.com/x/bundled-git.git#abc",
+                },
+            ),
+        )
+    )
+    assert parsed["npm:bundled-fetched@1.0.0"] == mod.REGISTRY_SOURCE
+    assert parsed["npm:bundled-git@2.0.0"] == "git:https://github.com/x/bundled-git.git#abc"
+
+
+# --- B④: 번들 항목과 registry 설치가 같은 name@version 키로 충돌해도(실 lockfile의
+# tslib@2.8.1) registry가 보존된다. 삽입 순서 양방향 모두 고정한다 — 출처 값 bundled를
+# 도입했다면 _merge_npm_source가 registry를 덮어 검사에서 빠졌을 자리다. ---
+@pytest.mark.parametrize("bundle_first", [True, False])
+def test_parse_npm_lock_keeps_registry_when_bundled_entry_shares_key(bundle_first):
+    ordered = (
+        (_TSLIB_BUNDLED, _TSLIB_REGISTRY) if bundle_first else (_TSLIB_REGISTRY, _TSLIB_BUNDLED)
+    )
+    parsed = mod.parse_npm_lock(_npm_lock(_BUNDLE_PARENT, *ordered))
+    assert parsed["npm:tslib@2.8.1"] == mod.REGISTRY_SOURCE
+
+
+# --- B⑤: 그 충돌 키가 신규이고 publish 7일 미만이면 fresh로 차단된다.
+# 번들 항목이 키를 덮어 unknown이 되면 exotic으로 새고, 검사 자체가 빠지면 조용히 통과한다. ---
+def test_new_registry_key_shadowed_by_bundle_is_still_blocked_when_fresh():
+    base = mod.parse_npm_lock(_npm_lock(_BUNDLE_PARENT))
+    head = mod.parse_npm_lock(_npm_lock(_BUNDLE_PARENT, _TSLIB_BUNDLED, _TSLIB_REGISTRY))
+    changed = mod.diff_changed_packages(base, head)
+    assert changed == {"npm:tslib@2.8.1": (None, mod.REGISTRY_SOURCE)}
+    findings = mod.classify(changed, {}, _fetch_at(NOW - timedelta(days=1)), NOW)
+    assert [(f.key, f.reason) for f in findings] == [("npm:tslib@2.8.1", mod.REASON_FRESH)]
+
+
+# --- SC-3: 실 lockfile 3축이 전부 registry/local로만 파싱된다(오차단 0 확인). ---
+def test_real_lockfiles_parse_into_registry_or_local_sources_only():
+    for path, parse in mod.LOCKFILES:
+        parsed = parse((_REPO_ROOT / path).read_text(encoding="utf-8"))
+        assert parsed, path
+        unexpected = {source for source in parsed.values()} - {
+            mod.REGISTRY_SOURCE,
+            mod.LOCAL_SOURCE,
+        }
+        assert not unexpected, (path, unexpected)

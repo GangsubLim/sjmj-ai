@@ -336,7 +336,8 @@ def parse_npm_lock(text: str) -> dict[str, str]:
     경로에 `node_modules/`가 포함된 entry를 대상으로 하고, 마지막 `node_modules/` 이후를
     이름으로 취한다 — `packages/<workspace>/node_modules/<dep>` 같은 workspace 중첩 경로도
     prefix 매칭과 달리 놓치지 않는다. 같은 키가 서로 다른 경로에서 다른 출처로 중복되면
-    `_merge_npm_source`로 병합한다(비-registry 우선).
+    `_merge_npm_source`로 병합한다(비-registry 우선). 단 `resolved`가 없는 `inBundle`
+    entry는 부모 tarball의 내용물이라 삽입하지 않는다(spec §7.2).
 
     Args:
         text: package-lock.json 전문.
@@ -372,6 +373,15 @@ def parse_npm_lock(text: str) -> dict[str, str]:
         name = path.rsplit("node_modules/", 1)[1]
         if not name:
             # "node_modules/"로 끝나는 경로는 이름이 비어 npm:@<version> 유령 키가 된다.
+            continue
+        if entry.get("inBundle") is True and "resolved" not in entry:
+            # npm은 번들 의존성을 별도 fetch하지 않고 부모 tarball 내용물로 설치하므로
+            # install-time 공급망 벡터는 부모(정상 검사 대상)에 귀속된다.
+            # 출처 값 `bundled`를 두는 대신 삽입 자체를 건너뛰는 이유 — 파서는 설치 경로별
+            # entry를 name@version 키로 합치고 `_merge_npm_source`가 비-registry를 남기므로,
+            # 값을 두면 같은 키의 registry 설치가 덮여 검사에서 빠진다(실 lockfile의
+            # tslib@2.8.1이 번들 내부와 최상위 양쪽에 존재해 이 충돌이 실재).
+            # `inBundle` 없이 `resolved`만 없는 entry는 기존대로 unknown → exotic 차단이다.
             continue
         version = entry.get("version", "")
         # 화이트리스트는 "@"(키 경계 모호)와 URL 특수문자·경로 traversal을 함께 막는다.
