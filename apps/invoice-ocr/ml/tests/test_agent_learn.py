@@ -3,9 +3,15 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from tools.agent_learn import (
+    DET_HEADINGS,
+    HEADINGS,
+    LLM_HEADINGS,
     Correction,
     append_corrections,
+    assemble,
     diff_new,
     digit_class,
     final_hash,
@@ -13,7 +19,9 @@ from tools.agent_learn import (
     load_corrections,
     load_ledger,
     records_from,
+    render_deterministic,
     save_ledger,
+    split_sections,
 )
 from tools.agent_report import Draft, compare
 
@@ -125,3 +133,93 @@ def test_corrections_append_and_load(tmp_path: Path):
     append_corrections(p, [r1])
     append_corrections(p, [r2])
     assert load_corrections(p) == [r1, r2]
+
+
+# --- 결정적 절 렌더 ---
+
+
+def _corr(iid, field, kind, d, f, dc=None, t="2026-09-06T03:00:00") -> Correction:
+    return Correction(iid, field, kind, d, f, dc, t)
+
+
+VOCAB = {
+    "items": [
+        {"item_name": "히타", "default_unit": "EA"},
+        {"item_name": "센터보도", "default_unit": None},
+    ],
+    "companies": ["테스트"],
+}
+
+
+def test_render_deterministic_lexicon_counts_and_sorts():
+    cs = [
+        _corr(573, "items[2].name", "name", "킹핀교환", "히타"),
+        _corr(574, "items[2].name", "name", "킹핀교환", "히타"),
+        _corr(572, "items[0].name", "name", "번호등", "보조물통"),
+        _corr(570, "recipient", "recipient", "테스트 ", "테스트상사"),
+    ]
+    det = render_deterministic(cs, VOCAB, 5)
+    lex = det[HEADINGS[0]].splitlines()
+    assert lex[0] == "| 오독 | 정답 | 횟수 | 근거 id |"
+    assert lex[2] == "| 킹핀교환 | 히타 | 2 | #573 #574 |"
+    assert lex[3] == "| 번호등 | 보조물통 | 1 | #572 |"
+    assert lex[4] == "| 테스트 | 테스트상사 | 1 | #570 |"
+
+
+def test_render_deterministic_vocab_amount_status():
+    cs = [
+        _corr(570, "items[0].supply", "supply", 98000, 18400, "other"),
+        _corr(571, "items[1].supply", "supply", 560000, 60000, "prefix_drop"),
+    ]
+    det = render_deterministic(cs, VOCAB, 5)
+    assert "- 히타 (EA)" in det[HEADINGS[1]]
+    assert "- 센터보도\n" in det[HEADINGS[1]] + "\n"
+    assert "- 테스트" in det[HEADINGS[1]]
+    assert "- 앞자리 누락(prefix_drop): 1" in det[HEADINGS[2]]
+    assert "- #571 items[1].supply: 560000 → 60000 (prefix_drop)" in det[HEADINGS[2]]
+    assert det[HEADINGS[3]] == (
+        "- 누적 교정: 2건\n- 초안(원장): 5건\n- 마지막 교정 관측: 2026-09-06T03:00:00"
+    )
+
+
+def test_render_deterministic_empty_inputs():
+    det = render_deterministic([], {"items": [], "companies": []}, 0)
+    assert det[HEADINGS[0]] == "(없음)"
+    assert "(없음)" in det[HEADINGS[1]]
+    assert det[HEADINGS[3]].endswith("- 마지막 교정 관측: -")
+    assert list(det) == list(DET_HEADINGS)
+
+
+def test_render_deterministic_is_deterministic_and_escapes_pipe():
+    cs = [_corr(1, "items[0].name", "name", "a|b", "c")]
+    assert render_deterministic(cs, VOCAB, 1) == render_deterministic(cs, VOCAB, 1)
+    assert "| a\\|b | c | 1 | #1 |" in render_deterministic(cs, VOCAB, 1)[HEADINGS[0]]
+
+
+# --- 절 분리·조립 ---
+
+
+def test_assemble_then_split_roundtrip():
+    det = render_deterministic([], VOCAB, 0)
+    llm = {
+        HEADINGS[4]: "- 테스트: 자동차 부품 (#573)",
+        HEADINGS[5]: "- 오일은 스프링일 수 있음 (#574)",
+    }
+    md = assemble(det, llm)
+    assert md.startswith("# sjmj 판독 지식\n")
+    sections = split_sections(md)
+    assert list(sections) == list(HEADINGS)
+    for h in DET_HEADINGS:
+        assert sections[h] == det[h]
+    for h in LLM_HEADINGS:
+        assert sections[h] == llm[h]
+
+
+def test_assemble_fills_missing_llm_sections():
+    md = assemble(render_deterministic([], VOCAB, 0), {})
+    assert split_sections(md)[HEADINGS[5]] == "(없음)"
+
+
+def test_split_sections_rejects_duplicate_heading():
+    with pytest.raises(ValueError):
+        split_sections("## 교정 사전\nx\n## 교정 사전\ny\n")
