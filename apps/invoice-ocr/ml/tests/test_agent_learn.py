@@ -180,6 +180,17 @@ def test_render_deterministic_lexicon_counts_and_sorts():
     assert lex[4] == "| 테스트 | 테스트상사 | 1 | #570 |"
 
 
+def test_render_deterministic_lexicon_skips_placeholder_x():
+    cs = [
+        _corr(575, "recipient", "recipient", "X", "케이상사"),
+        _corr(575, "items[0].name", "name", "X", "히타"),
+        _corr(573, "items[2].name", "name", "킹핀교환", "히타"),
+    ]
+    lex = render_deterministic(cs, VOCAB, 1)[HEADINGS[0]]
+    assert "| X |" not in lex
+    assert "| 킹핀교환 | 히타 | 1 | #573 |" in lex
+
+
 def test_render_deterministic_vocab_amount_status():
     cs = [
         _corr(570, "items[0].supply", "supply", 98000, 18400, "other"),

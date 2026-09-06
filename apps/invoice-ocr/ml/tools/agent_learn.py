@@ -40,6 +40,7 @@ from tools.agent_report import (
 )
 
 KNOWLEDGE_DIRNAME = "agent_knowledge"
+PLACEHOLDER = "X"  # 스킬이 수신처 후보 없음에 쓰는 자리표시 — 오독이 아니므로 교정 사전 제외
 TITLE = "# sjmj 판독 지식"
 HEADINGS = (
     "## 교정 사전",
@@ -188,7 +189,7 @@ def _cell(v: object) -> str:
 def _lexicon(corrections: list[Correction]) -> str:
     pairs: dict[tuple[str, str], list[int]] = {}
     for c in corrections:
-        if c.kind in ("name", "recipient"):
+        if c.kind in ("name", "recipient") and _cell(c.draft) != PLACEHOLDER:
             pairs.setdefault((_cell(c.draft), _cell(c.final)), []).append(c.invoice_id)
     if not pairs:
         return "(없음)"
