@@ -4,36 +4,103 @@ on:
   pull_request:
     branches: [main, devel]
 
+# 최소 권한 기본값 — 모든 잡이 checkout·registry 조회만 한다.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # 의존성을 설치하지 않는 것이 이 잡의 존재 이유다 — 게이트 통과 전에 lockfile 의존성을
+  # fetch하면 npm lifecycle script와 sdist setup.py가 이미 실행되어 게이트가 무의미해진다.
+  freshness:
+    name: freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # base.sha 객체가 필요하다 — 기본 depth 1에서는 git show가 실패한다.
+          fetch-depth: 0
+          persist-credentials: false
+      # 릴리스 승격(devel→main, release/*→main)만 면제한다. fork가 브랜치명만 위조해 면제를
+      # 훔치는 경로는 HEAD_REPO == THIS_REPO 절이 막고, hotfix/*는 면제 대상이 아니다.
+      # 판정을 step `if`가 아니라 셸에 두는 이유 — GitHub Actions 표현식의 `==`·`startsWith`는
+      # 대소문자를 무시해 `DEVEL`·`Release/x` 같은 브랜치까지 면제에 들어온다.
+      # 면제해도 `exit 0`이라 잡은 success로 끝나고 needs 체인이 살아 있다.
+      - name: Lockfile freshness gate (7d, pre-install)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_REF" == "main" && "$HEAD_REPO" == "$THIS_REPO" ]]; then
+            if [[ "$HEAD_REF" == "devel" || "$HEAD_REF" == release/* ]]; then
+              echo "release promotion PR — freshness gate exempt ($HEAD_REF -> $BASE_REF)"
+              exit 0
+            fi
+          fi
+          python3 scripts/lockfile_freshness.py --base "$BASE_SHA"
+
+  # macmini 러너의 시스템 python3가 3.9.6이라 배포 게이트가 3.9에서 돈다. py_compile만으로는
+  # 3.11 전용 stdlib API(datetime.UTC 등)가 통과하므로 오프라인 실행까지 함께 검사한다.
+  py39-compat:
+    name: py39-compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.9"
+      - name: Compile check
+        run: python -m py_compile scripts/lockfile_freshness.py
+      # --base HEAD는 검사 대상 0건이라 registry를 조회하지 않는다 → 네트워크 없이
+      # 파싱·diff 경로 전체를 3.9에서 실행한다.
+      - name: Offline run on Python 3.9
+        run: python scripts/lockfile_freshness.py --base HEAD
+
   lint:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # 워크플로 자체의 공급망 회귀 차단 — 가변 태그·과도 권한·credential 잔류·보간 재유입을
+      # lint red로 막는다. lint는 devel·main 양쪽 ruleset의 required check라 별도 등록이 필요 없고,
+      # paths 필터 없이 항상 돈다(필터를 걸면 required에서 빠져 회귀를 막지 못한다).
+      # --offline: unpinned-uses는 오프라인 감사라 GITHUB_TOKEN 불필요. pipx는 ubuntu-latest 기본.
+      - name: Zizmor (workflow security)
+        timeout-minutes: 5
+        run: pipx run zizmor==1.30.0 --offline --no-progress --config .github/zizmor.yml .github/workflows
       - name: Ruff lint
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: check --output-format=github
           src: apps/invoice-ocr/backend
       - name: Ruff format check
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: format --check
           src: apps/invoice-ocr/backend
       - name: Ruff lint (ml)
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: check --output-format=github
           src: apps/invoice-ocr/ml
       - name: Ruff format check (ml)
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: format --check
@@ -42,12 +109,26 @@ jobs:
   frontend:
     name: frontend
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -66,6 +147,10 @@ jobs:
   backend:
     name: backend
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/backend
@@ -83,8 +168,18 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           cache-suffix: backend
@@ -103,12 +198,26 @@ jobs:
   ml:
     name: ml
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/ml
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           cache-suffix: ml
@@ -120,3 +229,205 @@ jobs:
         run: uv sync --frozen --extra worker --extra cv
       - name: Pytest
         run: uv run pytest -q
+
+  # 호출 대상 reusable workflow가 잡 레벨(jobs.osv-scan.permissions)에 security-events: write를 정적 선언하므로,
+  # caller가 동일 권한을 grant하지 않으면 GitHub가 startup 단계에서 거부한다
+  # (upload-sarif: false여도 정적 검증은 그 전에 수행된다).
+  #
+  # frontend·backend·ml의 선행 조건으로 걸지 않는다(spec §3): OSV는 알려진 CVE 탐지이지
+  # install-time RCE 방어가 아니다. 악성 패키지는 설치 그 자체가 침해 시점이지만, CVE를 가진
+  # 패키지가 일회용 ubuntu 러너에 설치되는 것은 침해가 아니라 체인은 직렬화 비용만 남긴다.
+  # 강제력은 ruleset required 등록(spec §11 2단계)에서 나온다.
+  #
+  # check run context는 `osv-scan / osv-scan`으로 도출된다(caller 잡 id + upstream 잡 id,
+  # 양쪽 다 name 없음). 미검증 도출값이므로 머지 후 실제 이름을 확인한 뒤 등록한다 —
+  # 추측 문자열로 등록하면 조용히 강제되지 않는다.
+  #
+  # 이 잡은 PR diff 스캔이라 base에 이미 있던 취약점은 red를 만들지 않는다(설계 의도).
+  # 선존 취약점(npm 18건)은 supply-chain-audit.yml의 주기 audit이 담당한다.
+  #
+  # SHA 고정은 부분적이다: 고정되는 건 이 reusable workflow YAML까지고, 내부
+  # osv-scanner-action은 `image: docker://ghcr.io/google/osv-scanner-action:v2.5.1`
+  # (digest가 아닌 가변 태그)로 실행돼 실제 실행 코드는 고정되지 않는다. upstream checkout은
+  # credential을 유지하므로 GITHUB_TOKEN이 담긴 workspace가 third-party 컨테이너에 mount되고
+  # 이 잡은 security-events: write를 갖는다(fork PR에서는 토큰이 read-only로 강등).
+  # caller가 vendoring 없이 해소할 수 없다.
+  osv-scan:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      upload-sarif: false
+      # 고정 SHA 참조라 upstream이 기본값을 바꿔도 전파되지 않지만(v2.5.1 default: true 실측),
+      # fail-closed 결정을 전부 명시하는 원칙에 맞추고 향후 SHA bump 시의 회귀를 계약 테스트로
+      # 잡기 위해 못 박는다.
+      fail-on-vuln: true
+      # upstream 기본값 `-r ./`만으로는 커버리지 하한이 없다: 디렉토리 재귀 스캔은 개별 매니페스트
+      # 추출이 깨져도 계속 돌고 축소된 결과 JSON을 정상 출력하므로, 한 축이 통째로 건너뛰어진 채
+      # 게이트가 green이 된다. lockfile 3축을 명시하면 그 경로의 부재·해석 불가가 hard error가 되고
+      # (v2.5.1 소스 실측 — pathToRootMap의 os.Stat 실패, "extraction failed on specified lockfile",
+      # ErrExtractorNotFound가 모두 PrintResult 이전에 return돼 결과 JSON 자체가 생성되지 않는다),
+      # new-results.json 부재 → artifact 부재 → 아래 osv-scan-assert의 download step이 red다.
+      # `--format`·`--output`은 upstream이 앞에 붙이므로 여기서 주지 않는다(상류가 금지 명시).
+      # `--recursive ./`는 남겨 신규 매니페스트도 계속 잡는다 — 두 인자를 함께 줘도 같은 파일이
+      # 중복 추출되지 않는다(donboksa 실측: 결과 JSON이 `--recursive ./` 단독과 바이트 동일).
+      # base에 없는 lockfile을 추가하는 PR은 old 스캔이 죽어 전량 신규로 보고돼 거짓 red가 되지만,
+      # 3축이 base·head 양쪽에 이미 존재하므로 발동 조건은 축 목록 자체를 바꾸는 PR로 한정된다.
+      scan-args: |-
+        --recursive
+        --lockfile=apps/invoice-ocr/backend/uv.lock
+        --lockfile=apps/invoice-ocr/ml/uv.lock
+        --lockfile=apps/invoice-ocr/frontend/package-lock.json
+        ./
+
+  # osv-scan의 new-code 스캔은 조용히 green이 될 수 있다: upstream의 "Run scanner on new code"
+  # step이 continue-on-error: true이고(v2.5.1 실측), osv-reporter는 new-results.json을 못 읽으면
+  # 경고만 남기고 취약점 0건으로 간주해 diff를 공집합으로 만든다 → exit 0. docker pull 실패·OSV
+  # API 장애는 물론 PR이 통제하는 lockfile로 extractor를 크래시시키는 경로까지 통과한다
+  # (--old 실패는 반대로 모든 취약점을 신규로 보고해 fail-closed다).
+  # upload-sarif: false라 upstream의 "Error troubleshooter" step은 skipped여서 신호도 없다.
+  # 이 잡이 caller 쪽에서 그 fail-open을 닫는다 — 스캔이 실제 산출물을 냈는지 검증한다.
+  # `uses:` 잡에는 timeout-minutes를 걸 수 없어(caller 통제 밖) 상한은 이 잡에만 둔다.
+  #
+  # 한계 2가지: (1) 이 잡이 결과 JSON만 보고 3축 스캔 여부를 판정할 수는 없다 — osv-scanner는
+  # 취약점 0건인 source를 결과에서 통째로 제거하므로(v2.5.1 filterResults 실측) clean lockfile은
+  # 애초에 등장하지 않는다. 그 하한은 위 osv-scan의 명시 --lockfile이 hard error로 대신 세운다
+  # (스캔 실패 → 결과 JSON 부재 → artifact 부재 → 아래 download step이 red).
+  # (2) 실효를 가지려면 이 잡의 context도 required로 등록해야 한다(spec §11 2단계).
+  osv-scan-assert:
+    name: osv-scan-assert
+    runs-on: ubuntu-latest
+    needs: [osv-scan]
+    # osv-scan 실패 시 이 잡이 skip되면 GitHub가 skipped required check를 success로 인정한다.
+    # !cancelled()로 반드시 실행시킨 뒤 첫 step에서 명시적으로 red를 만든다.
+    if: ${{ !cancelled() }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify prerequisite gates
+        env:
+          OSV_RESULT: ${{ needs.osv-scan.result }}
+        run: |
+          [ "$OSV_RESULT" = "success" ] \
+            || { echo "::error::osv-scan gate failed"; exit 1; }
+      # 결과 JSON을 needs.osv-scan.outputs.new-results로 받지 않는다. 그 출력은 스캔 결과
+      # 전체를 담은 단일 문자열이라 env로 넘기면 Linux의 단일 인자·환경변수 한계
+      # (MAX_ARG_STRLEN = 131,072 B)를 넘긴다 — donboksa 실측 205,283 B에서 execve가 E2BIG으로
+      # 실패해 bash가 뜨지도 못하고 잡이 4초 만에 죽었다("Argument list too long"). 이 값은
+      # advisory 공개에 비례해 커지므로 exec 경계를 통과시키는 방식은 언젠가 반드시 다시 깨진다.
+      # v2.5.1은 export-results 기본값이 false라 그 출력 자체가 비어 있기도 하다.
+      #
+      # 대신 upstream이 같은 run에 업로드하는 new-json-results artifact를 파일로 받아 검증한다
+      # (caller가 matrix-property를 주지 않아 이름은 접두사 없이 고정이고, upstream이 SHA
+      # 고정이라 계약이 불변이다 — SHA를 bump할 때 이 이름을 재확인한다). 셸에는 고정 경로만
+      # 들어가고 PR이 통제하는 문자열(패키지 이름 등)은 run 스크립트에도 env에도 닿지 않는다.
+      # 같은 run의 artifact라 추가 permissions는 필요 없다(download-artifact 기본 스코프).
+      #
+      # fail-closed 3경로:
+      #   (1) osv-scan 실패·skip → 위 step이 red
+      #   (2) 스캐너가 new-results.json을 못 만들면 upstream upload-artifact가
+      #       if-no-files-found: warn(기본값)으로 artifact를 만들지 않는다 →
+      #       download-artifact가 "Artifact not found"로 red
+      #   (3) 받은 파일이 비었거나 results 배열을 가진 osv-scanner 리포트가 아니면 아래 jq가 red
+      - name: Download new-code scan results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: new-json-results
+          path: osv-assert
+      - name: Assert new-code scan produced results
+        run: |
+          RESULTS=osv-assert/new-results.json
+          # 부재는 artifact 내부 파일명 계약 위반, 빈 파일은 스캐너 fail-open — 조치가 달라 메시지 분리
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::osv-scan artifact has no new-results.json — the upstream artifact file contract changed"
+            exit 1
+          fi
+          [ -s "$RESULTS" ] \
+            || { echo "::error::osv-scan produced no new-code results — the scanner step failed silently"; exit 1; }
+          # 크기는 재발 감시용 관측값이다. 내용은 로그에 남기지 않는다.
+          echo "new-results.json: $(wc -c < "$RESULTS") bytes"
+          jq -e '.results | type == "array"' "$RESULTS" > /dev/null \
+            || { echo "::error::osv-scan new-code results are not a valid osv-scanner JSON report"; exit 1; }
+
+  # per-PR diff-relative 시크릿 게이트 — PR이 새로 추가한 커밋 범위(BASE..HEAD)만
+  # 스캔한다. 이미 유입된 시크릿은 gitleaks-scheduled.yml baseline이 담당한다.
+  # 바이너리는 pinned action이 아니라 버전 + 하드코딩 SHA256 상수로 공급망 무결성 확보.
+  gitleaks:
+    name: gitleaks
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # gitleaks가 BASE..HEAD 커밋 범위에 접근하려면 전체 히스토리가 필요하다.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Reject repo-controlled gitleaks suppression files
+        run: |
+          set -euo pipefail
+          # gitleaks는 스캔 대상 루트의 .gitleaks.toml(설정)과 .gitleaksignore(지문
+          # 무시)를 자동 발견한다 — 같은 PR이 둘 중 하나를 얹으면 이 게이트가 통째로
+          # 무력화된다(실측: 무의미 룰만 담은 .gitleaks.toml 추가로 exit 1 → 0).
+          # --config로 레포 밖 설정을 강제해도 .gitleaksignore는 계속 읽히므로
+          # (실측: -i를 레포 밖으로 돌려도 루트 .gitleaksignore가 적용됨) 존재 자체를 막는다.
+          for suppressor in .gitleaks.toml .gitleaksignore; do
+            if [ -e "$suppressor" ]; then
+              echo "::error::${suppressor} is present — gitleaks gate config must not be repo-controlled"
+              exit 1
+            fi
+          done
+
+      - name: Download and verify gitleaks (v8.30.1, pinned SHA256)
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          # 신뢰 앵커 — 릴리스 checksums.txt와의 상호 대조가 아니라 이 상수 하나가 기준.
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          curl -fsSL --retry 3 -o "$tarball" "$url"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks version
+
+      - name: Scan PR commit range (diff-relative)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # BASE_SHA 부재 등 예외 → 방어적 fail(스캔 범위 계산 불가).
+          if [ -z "${BASE_SHA:-}" ]; then
+            echo "::error::BASE_SHA is empty — cannot compute diff-relative scan range"
+            exit 1
+          fi
+          # 범위 양 끝을 선검증한다 — 객체가 없으면(base 강제푸시·미fetch) gitleaks는
+          # `fatal: Invalid revision range` 뒤에도 `no leaks found` + exit 0을 낸다(실측).
+          for rev in "${BASE_SHA}" HEAD; do
+            if ! git rev-parse --verify --quiet "${rev}^{commit}" > /dev/null; then
+              echo "::error::${rev} is not a resolvable commit — scan range unavailable"
+              exit 1
+            fi
+          done
+          # log-opts는 git log에 전달 → 2-dot(BASE..HEAD)=HEAD에서 도달 가능하되 BASE의
+          # 조상은 제외. PR merge ref 위상에서는 3-dot도 같은 집합이라 표기 차이는 무해하다.
+          # --diff-merges=first-parent: git log는 merge 커밋의 patch를 기본 생략하므로
+          # 충돌 해소 과정에서 들어간 시크릿이 통째로 새어나간다(실측: no leaks found).
+          # --ignore-gitleaks-allow: PR이 시크릿 옆에 `gitleaks:allow` 주석만 달아
+          # 게이트를 무력화하는 우회를 차단한다(주석은 --config로는 못 막는다).
+          set +e
+          ./gitleaks git --log-opts="${BASE_SHA}..HEAD --diff-merges=first-parent" \
+            --exit-code 1 --redact --no-banner --ignore-gitleaks-allow 2> gitleaks-stderr.log
+          scan_status=$?
+          set -e
+          cat gitleaks-stderr.log >&2
+          # git 순회가 중단되면 gitleaks는 빈 결과로 exit 0을 내므로 로그로 완주를 확인한다.
+          if grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log; then
+            echo "::error::gitleaks aborted git traversal — scan incomplete, failing closed"
+            exit 1
+          fi
+          exit "$scan_status"

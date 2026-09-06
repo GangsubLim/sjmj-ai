@@ -58,6 +58,19 @@ repos:
       - id: ruff
         args: ["--fix"]
 
+  # ============================ gitleaks (시크릿 스캐닝) ============================
+  # 공식 gitleaks 원격 훅 — pre-commit이 격리 Go 환경에서 이 커밋을 소스 빌드한다
+  # (`language: golang`, 첫 실행 20초~수 분). CI 두 계층은 릴리스 tarball + SHA256
+  # 대조라 공급망 보증의 성격이 다르다 — 이 계층의 앵커는 커밋 SHA 하나다.
+  # CI `gitleaks` 잡(PR diff)·gitleaks-scheduled(전체 히스토리)의 1차 로컬 차단이며
+  # 세 계층 모두 v8.30.1로 고정한다.
+  # --ignore-gitleaks-allow: 시크릿 옆 `gitleaks:allow` 주석만으로 훅을 무력화하는 우회 차단.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # frozen: v8.30.1
+    hooks:
+      - id: gitleaks
+        args: ["--ignore-gitleaks-allow"]
+
   # ============================ ESLint (local, 프로젝트 의존성 사용) ============================
   # 활성화 조건: package.json + eslint.config.js(.mjs) 존재
   # 주석 해제하여 사용:

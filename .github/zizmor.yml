@@ -1,0 +1,8 @@
+# zizmor 워크플로 보안 감사 — 전 액션 hash-pin 필수 (spec §6.3)
+# 목적: @vN 가변 태그·과도 권한·credential 잔류·템플릿 보간의 재유입 차단.
+# 완화가 필요하면 룰·파일 단위 ignore에 사유를 주석으로 남긴다. 전역 완화 금지.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        "*": hash-pin

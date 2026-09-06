@@ -5,6 +5,15 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      skip_supply_chain_gate:
+        description: "공급망 freshness 게이트 우회(registry 장애 등 긴급용)"
+        type: boolean
+        default: false
+
+# self-hosted 러너의 토큰 스코프를 최소화한다 — 배포는 git fetch와 로컬 실행만 한다.
+permissions:
+  contents: read
 
 jobs:
   deploy:
@@ -20,6 +29,7 @@ jobs:
       FRONTEND_DIR: apps/invoice-ocr/frontend
       ML_WORKER_ENV_FILE: /Users/submini/.sjmj-ai/ml-worker.env
       ML_WORKER_LABEL: ai.sjmj.ml-worker
+      SJMJ_PENDING_BASE_FILE: /Users/submini/.sjmj-ai/supply-chain-pending-base
 
     steps:
       - name: Record previous commit
@@ -37,6 +47,53 @@ jobs:
           else
             git checkout --force "${GITHUB_SHA}"
           fi
+
+      # 설치 이전 차단이 이 step의 존재 이유다 — uv sync의 sdist setup.py와 npm ci의
+      # lifecycle script는 실행 그 자체가 침해 시점이라 설치 후 차단은 방어가 아니다.
+      # base는 직전 배포 커밋이라 릴리스 사이클 동안 쌓인 정상 bump는 fresh로 잡히지 않고,
+      # 사실상 exotic·unverifiable만 재확인하는 형태가 된다(구조적 오검출 없음).
+      # skip 입력을 not/and로 비교하면 문자열 "false"도 참으로 평가돼 게이트가 스킵될 수
+      # 있어, 불리언 리터럴과의 명시 비교(!= true / == true)로 fail-closed를 보장한다.
+      - name: Supply-chain freshness gate (pre-install)
+        id: gate
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_supply_chain_gate != true }}
+        timeout-minutes: 10
+        env:
+          PREV: ${{ steps.previous.outputs.sha }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PREV" ]] || { echo "missing previous sha; cannot gate" >&2; exit 1; }
+          BASE="$PREV"
+          if [[ -s "$SJMJ_PENDING_BASE_FILE" ]]; then
+            # 직전 우회 배포가 남긴 base로 소급 검사한다 — 우회 구간 전체가 검사에 포함된다.
+            BASE="$(head -n 1 "$SJMJ_PENDING_BASE_FILE")"
+            echo "pending base 소급 검사: $BASE"
+          fi
+          python3 scripts/lockfile_freshness.py --base "$BASE"
+          # pending 삭제는 여기서 하지 않는다 — 게이트 통과 뒤 설치·헬스에서 실패해 이전 SHA로
+          # 롤백되면 검사되지 않은 우회 구간이 운영에 남은 채 기록만 사라진다.
+          echo "checked=true" >> "$GITHUB_OUTPUT"
+
+      - name: Record bypassed gate base
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_supply_chain_gate == true }}
+        env:
+          PREV: ${{ steps.previous.outputs.sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$(dirname "$SJMJ_PENDING_BASE_FILE")"
+          if [[ -s "$SJMJ_PENDING_BASE_FILE" ]]; then
+            # 연속 우회에서는 가장 오래된 base를 유지한다 — 덮으면 우회 구간이 검사에서 빠진다.
+            echo "pending base 유지: $(head -n 1 "$SJMJ_PENDING_BASE_FILE")"
+          else
+            printf '%s\n' "$PREV" > "$SJMJ_PENDING_BASE_FILE"
+            echo "게이트 우회 — 다음 정상 배포가 소급 검사할 base 기록: $PREV"
+          fi
+
+      # 롤백 범위 분리의 기준점 — 이 마커 이전 실패(게이트·체크아웃)는 작업트리 복원만 하고
+      # 실행 중인 backend·ml-worker를 건드리지 않는다.
+      - name: Mark install phase entered
+        id: phase
+        run: echo "entered=true" >> "$GITHUB_OUTPUT"
 
       - name: Backup operational DB
         run: |
@@ -115,11 +172,31 @@ jobs:
             || { echo "ml-worker unstable (pid $pid1 -> $pid2, state=$st2) — likely crash loop" >&2; status | grep -E "state|pid|last exit" >&2 || true; exit 1; }
           echo "ml-worker healthy: pid $pid2 stable, state running"
 
-      - name: Rollback on failure
-        if: failure()
+      - name: Clear pending gate base
+        # 소급 검사 의무 해제는 배포가 실제로 끝난 뒤다. 우회 배포는 게이트가 skip돼
+        # steps.gate.outputs.checked가 비므로 방금 기록한 pending이 지워지지 않는다.
+        if: ${{ success() && steps.gate.outputs.checked == 'true' }}
+        run: rm -f "$SJMJ_PENDING_BASE_FILE"
+
+      - name: Restore checkout on pre-install failure
+        # failure()는 취소 상태를 포함하지 않는다 — 취소로 빠지면 운영 체크아웃에 미검증
+        # target SHA가 남고 다음 배포가 그 SHA를 base로 기록해 그 사이 유입분이 영구 누락된다.
+        if: ${{ (failure() || cancelled()) && steps.phase.outputs.entered != 'true' }}
+        env:
+          PREV: ${{ steps.previous.outputs.sha }}
         run: |
           set -euo pipefail
-          PREV="${{ steps.previous.outputs.sha }}"
+          [[ -n "$PREV" ]] || { echo "missing previous sha; cannot restore" >&2; exit 1; }
+          git checkout --force "$PREV"
+
+      - name: Rollback on failure
+        # 설치·빌드·재시작에 진입한 뒤의 실패만 전체 롤백을 돈다.
+        if: ${{ failure() && steps.phase.outputs.entered == 'true' }}
+        env:
+          # run 블록 안의 ${{ }} 보간은 zizmor template-injection 대상 — env로 넘긴다.
+          PREV: ${{ steps.previous.outputs.sha }}
+        run: |
+          set -euo pipefail
           [[ -n "$PREV" ]] || { echo "missing previous sha; cannot rollback" >&2; exit 1; }
           git checkout --force "$PREV"
           cd "$BACKEND_DIR" && uv sync --frozen && uv run python -c "from app.main import app; assert app"
