@@ -7,21 +7,28 @@ import pytest
 
 from tools.agent_learn import (
     DET_HEADINGS,
+    FORBIDDEN,
     HEADINGS,
     LLM_HEADINGS,
+    MAX_RULE_LINES,
     Correction,
+    PublishResult,
     append_corrections,
     assemble,
+    current_version,
     diff_new,
     digit_class,
     final_hash,
     kind_of,
     load_corrections,
     load_ledger,
+    load_versions,
+    publish,
     records_from,
     render_deterministic,
     save_ledger,
     split_sections,
+    validate_proposed,
 )
 from tools.agent_report import Draft, compare
 
@@ -223,3 +230,103 @@ def test_assemble_fills_missing_llm_sections():
 def test_split_sections_rejects_duplicate_heading():
     with pytest.raises(ValueError):
         split_sections("## 교정 사전\nx\n## 교정 사전\ny\n")
+
+
+# --- 검증·발행 ---
+
+
+def _det() -> dict:
+    return render_deterministic([_corr(573, "items[2].name", "name", "킹핀교환", "히타")], VOCAB, 1)
+
+
+def _good_md() -> str:
+    return assemble(
+        _det(),
+        {
+            HEADINGS[4]: "- 테스트: 자동차 부품 위주 (#573)",
+            HEADINGS[5]: "- 킹핀교환으로 읽히면 히타 우선 검토 (#573)",
+        },
+    )
+
+
+def test_validate_accepts_good_document():
+    assert validate_proposed(_good_md(), _det(), {573}) == []
+
+
+def test_validate_rejects_missing_or_reordered_heading():
+    md = _good_md().replace("## 일반화 규칙", "## 규칙")
+    assert any("헤딩" in e for e in validate_proposed(md, _det(), {573}))
+    parts = _good_md().split("## 거래처 프로필")
+    swapped = parts[0].replace("## 데이터 현황", "## 거래처 프로필", 1)
+    assert validate_proposed(swapped + "## 데이터 현황" + parts[1], _det(), {573})
+
+
+def test_validate_rejects_tampered_deterministic_section():
+    md = _good_md().replace("| 킹핀교환 | 히타 | 1 | #573 |", "| 킹핀교환 | 히터 | 1 | #573 |")
+    assert any("결정적 절 변조" in e for e in validate_proposed(md, _det(), {573}))
+
+
+def test_validate_rejects_rule_without_or_with_unknown_id():
+    md = assemble(_det(), {HEADINGS[5]: "- 근거 없는 규칙"})
+    assert any("근거 id 없음" in e for e in validate_proposed(md, _det(), {573}))
+    md = assemble(_det(), {HEADINGS[5]: "- 규칙 (#999)"})
+    assert any("미지의 근거 id" in e for e in validate_proposed(md, _det(), {573}))
+
+
+def test_validate_rejects_line_cap_and_forbidden_and_size():
+    rules = "\n".join(f"- 규칙 {i} (#573)" for i in range(MAX_RULE_LINES + 1))
+    errs = validate_proposed(assemble(_det(), {HEADINGS[5]: rules}), _det(), {573})
+    assert any("줄" in e for e in errs)
+    for w in FORBIDDEN:
+        md = assemble(_det(), {HEADINGS[5]: f"- {w} 써라 (#573)"})
+        assert any("금지어" in e for e in validate_proposed(md, _det(), {573})), w
+    big = assemble(_det(), {HEADINGS[4]: "x" * 12000})
+    assert any("자" in e for e in validate_proposed(big, _det(), {573}))
+
+
+def test_validate_allows_placeholder_and_non_bullet_lines():
+    md = assemble(_det(), {})
+    assert validate_proposed(md, _det(), {573}) == []
+
+
+def test_publish_writes_version_active_and_log(tmp_path: Path):
+    kdir = tmp_path
+    (kdir / "proposed.md").write_text(_good_md(), encoding="utf-8")
+    r = publish(kdir, _det(), {573}, 1, "2026-09-07T03:00:00")
+    assert r == PublishResult(1, "published")
+    assert (kdir / "knowledge" / "v1.md").read_text(encoding="utf-8") == _good_md()
+    assert (kdir / "active.md").read_text(encoding="utf-8") == _good_md()
+    vs = load_versions(kdir / "versions.jsonl")
+    assert vs == [
+        {
+            "version": 1,
+            "published_at": "2026-09-07T03:00:00",
+            "corrections_through": 1,
+            "added_pairs": 1,
+        }
+    ]
+    assert current_version(vs) == 1
+
+    (kdir / "proposed.md").write_text(_good_md(), encoding="utf-8")
+    r2 = publish(kdir, _det(), {573}, 1, "2026-09-08T03:00:00")
+    assert r2.version == 2
+    assert load_versions(kdir / "versions.jsonl")[-1]["added_pairs"] == 0
+
+
+def test_publish_rejection_keeps_active(tmp_path: Path):
+    kdir = tmp_path
+    (kdir / "proposed.md").write_text(_good_md(), encoding="utf-8")
+    publish(kdir, _det(), {573}, 1, "t1")
+    broken = _good_md().replace("## 일반화 규칙", "## 규칙")
+    (kdir / "proposed.md").write_text(broken, encoding="utf-8")
+    r = publish(kdir, _det(), {573}, 1, "t2")
+    assert r.version is None and "헤딩" in r.reason
+    assert (kdir / "active.md").read_text(encoding="utf-8") == _good_md()
+    vs = load_versions(kdir / "versions.jsonl")
+    assert vs[-1]["version"] == 1 and "헤딩" in vs[-1]["rejected"]
+    assert current_version(vs) == 1
+    assert not (kdir / "knowledge" / "v2.md").exists()
+
+
+def test_publish_without_proposed(tmp_path: Path):
+    assert publish(tmp_path, _det(), set(), 0, "t").version is None

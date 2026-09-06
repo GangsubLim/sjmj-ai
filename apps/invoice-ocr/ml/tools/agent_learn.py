@@ -19,6 +19,7 @@ Usage:
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -37,6 +38,11 @@ HEADINGS = (
 )
 DET_HEADINGS = HEADINGS[:4]
 LLM_HEADINGS = HEADINGS[4:]
+MAX_CHARS = 12000
+MAX_PROFILE_LINES = 30
+MAX_RULE_LINES = 20
+FORBIDDEN = ("curl", "POST", "DELETE", "http://")
+_ID_RE = re.compile(r"#(\d+)")
 DIGIT_CLASSES = (
     ("prefix_drop", "앞자리 누락"),
     ("single_digit", "한 자리 혼동"),
@@ -253,3 +259,107 @@ def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
         body = (det.get(h) if h in DET_HEADINGS else llm.get(h, "")) or ""
         parts += [h, "", body.strip() or "(없음)", ""]
     return "\n".join(parts)
+
+
+# --- 검증·발행 ---
+
+
+def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]) -> list[str]:
+    """proposed.md 검증 — 위반 사유 목록(비어 있으면 통과).
+
+    헤딩 6개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
+    """
+    errors: list[str] = []
+    if len(md) > MAX_CHARS:
+        errors.append(f"전체 {len(md)}자 > {MAX_CHARS}자")
+    try:
+        sections = split_sections(md)
+    except ValueError as exc:
+        return [str(exc)]
+    heads = [line for line in md.splitlines() if line.startswith("## ")]
+    if heads != list(HEADINGS):
+        errors.append(f"헤딩 불일치: {heads}")
+    for h in DET_HEADINGS:
+        if sections.get(h, "") != det_expected[h].strip():
+            errors.append(f"결정적 절 변조: {h}")
+    for h, cap in ((HEADINGS[4], MAX_PROFILE_LINES), (HEADINGS[5], MAX_RULE_LINES)):
+        lines = [line for line in sections.get(h, "").splitlines() if line.strip()]
+        if len(lines) > cap:
+            errors.append(f"{h} {len(lines)}줄 > {cap}줄")
+        for line in lines:
+            if not line.lstrip().startswith("- "):
+                continue
+            ids = {int(x) for x in _ID_RE.findall(line)}
+            if not ids:
+                errors.append(f"{h} 근거 id 없음: {line[:40]}")
+            elif not ids <= known_ids:
+                errors.append(f"{h} 미지의 근거 id {sorted(ids - known_ids)}: {line[:40]}")
+    llm_text = "\n".join(sections.get(h, "") for h in LLM_HEADINGS)
+    errors.extend(f"금지어 {w!r}" for w in FORBIDDEN if w in llm_text)
+    return errors
+
+
+class PublishResult(NamedTuple):
+    """발행 결과 — version이 None이면 거부(reason에 사유)."""
+
+    version: int | None
+    reason: str
+
+
+def load_versions(path: Path) -> list[dict]:
+    """versions.jsonl 전량(발행·거부 기록 모두)."""
+    if not path.exists():
+        return []
+    return [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+
+
+def current_version(versions: list[dict]) -> int:
+    """거부 기록을 제외한 최신 발행 버전(없으면 0)."""
+    return max((v["version"] for v in versions if "rejected" not in v), default=0)
+
+
+def _append_jsonl(path: Path, record: dict) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _lexicon_rows(md: str) -> int:
+    body = split_sections(md).get(HEADINGS[0], "")
+    return max(0, sum(1 for line in body.splitlines() if line.startswith("| ")) - 2)
+
+
+def publish(
+    kdir: Path, det_expected: dict[str, str], known_ids: set[int], corrections_count: int, now: str
+) -> PublishResult:
+    """proposed.md를 검증해 v{N+1}.md·active.md로 발행한다. 거부 시 active 무변경 + 사유 기록."""
+    proposed = kdir / "proposed.md"
+    if not proposed.exists():
+        return PublishResult(None, "proposed.md 없음")
+    md = proposed.read_text(encoding="utf-8")
+    versions_path = kdir / "versions.jsonl"
+    cur = current_version(load_versions(versions_path))
+    errors = validate_proposed(md, det_expected, known_ids)
+    if errors:
+        reason = "; ".join(errors)
+        _append_jsonl(versions_path, {"version": cur, "published_at": now, "rejected": reason})
+        return PublishResult(None, reason)
+    active = kdir / "active.md"
+    before = _lexicon_rows(active.read_text(encoding="utf-8")) if active.exists() else 0
+    n = cur + 1
+    (kdir / "knowledge").mkdir(exist_ok=True)
+    (kdir / "knowledge" / f"v{n}.md").write_text(md, encoding="utf-8")
+    tmp = kdir / "active.md.tmp"
+    tmp.write_text(md, encoding="utf-8")
+    os.replace(tmp, active)
+    _append_jsonl(
+        versions_path,
+        {
+            "version": n,
+            "published_at": now,
+            "corrections_through": corrections_count,
+            "added_pairs": _lexicon_rows(md) - before,
+        },
+    )
+    return PublishResult(n, "published")
