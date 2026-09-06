@@ -13,6 +13,60 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 의존성을 설치하지 않는 것이 이 잡의 존재 이유다 — 게이트 통과 전에 lockfile 의존성을
+  # fetch하면 npm lifecycle script와 sdist setup.py가 이미 실행되어 게이트가 무의미해진다.
+  freshness:
+    name: freshness
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # base.sha 객체가 필요하다 — 기본 depth 1에서는 git show가 실패한다.
+          fetch-depth: 0
+          persist-credentials: false
+      # 릴리스 승격(devel→main, release/*→main)만 면제한다. fork가 브랜치명만 위조해 면제를
+      # 훔치는 경로는 HEAD_REPO == THIS_REPO 절이 막고, hotfix/*는 면제 대상이 아니다.
+      # 판정을 step `if`가 아니라 셸에 두는 이유 — GitHub Actions 표현식의 `==`·`startsWith`는
+      # 대소문자를 무시해 `DEVEL`·`Release/x` 같은 브랜치까지 면제에 들어온다.
+      # 면제해도 `exit 0`이라 잡은 success로 끝나고 needs 체인이 살아 있다.
+      - name: Lockfile freshness gate (7d, pre-install)
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          THIS_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$BASE_REF" == "main" && "$HEAD_REPO" == "$THIS_REPO" ]]; then
+            if [[ "$HEAD_REF" == "devel" || "$HEAD_REF" == release/* ]]; then
+              echo "release promotion PR — freshness gate exempt ($HEAD_REF -> $BASE_REF)"
+              exit 0
+            fi
+          fi
+          python3 scripts/lockfile_freshness.py --base "$BASE_SHA"
+
+  # macmini 러너의 시스템 python3가 3.9.6이라 배포 게이트가 3.9에서 돈다. py_compile만으로는
+  # 3.11 전용 stdlib API(datetime.UTC 등)가 통과하므로 오프라인 실행까지 함께 검사한다.
+  py39-compat:
+    name: py39-compat
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.9"
+      - name: Compile check
+        run: python -m py_compile scripts/lockfile_freshness.py
+      # --base HEAD는 검사 대상 0건이라 registry를 조회하지 않는다 → 네트워크 없이
+      # 파싱·diff 경로 전체를 3.9에서 실행한다.
+      - name: Offline run on Python 3.9
+        run: python scripts/lockfile_freshness.py --base HEAD
+
   lint:
     name: lint
     runs-on: ubuntu-latest
@@ -55,10 +109,22 @@ jobs:
   frontend:
     name: frontend
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/frontend
     steps:
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -81,6 +147,10 @@ jobs:
   backend:
     name: backend
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/backend
@@ -98,6 +168,14 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
@@ -120,10 +198,22 @@ jobs:
   ml:
     name: ml
     runs-on: ubuntu-latest
+    needs: [freshness]
+    # freshness 실패 시 잡이 skip되면 GitHub가 skipped required check를 success로
+    # 인정해 우회로가 열린다. !cancelled()로 실행시킨 뒤 첫 step에서 red를 만든다.
+    if: ${{ !cancelled() }}
     defaults:
       run:
         working-directory: apps/invoice-ocr/ml
     steps:
+      # checkout 이전이라 defaults의 working-directory가 아직 없다 → workspace 루트로 고정.
+      - name: Verify prerequisite gates
+        working-directory: ${{ github.workspace }}
+        env:
+          FRESHNESS_RESULT: ${{ needs.freshness.result }}
+        run: |
+          [ "$FRESHNESS_RESULT" = "success" ] \
+            || { echo "::error::freshness gate failed"; exit 1; }
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false

@@ -1,7 +1,9 @@
-"""배포 워크플로우 불변식 — 프론트 빌드가 옛 콘텐츠 해시 청크를 지우지 않는다."""
+"""배포 워크플로우 불변식 — 프론트 빌드 청크 보존·공급망 게이트 순서·롤백 범위 분리·pending 생애주기."""
 
 import re
 from pathlib import Path
+
+import yaml
 
 # 백엔드 tests 기준 레포 루트: tests → backend → invoice-ocr → apps → repo
 _REPO_ROOT = Path(__file__).resolve().parents[4]
@@ -21,6 +23,22 @@ def _command(line: str) -> str:
     검사가 통과하는데도 실제 배포는 dist를 비운다(막으려던 회귀가 녹색으로 통과).
     """
     return line.split("#", 1)[0].strip()
+
+
+def _strip_run_comments(run: str) -> str:
+    """`run:` 블록 전체에 `_command`의 줄 단위 주석 제거를 적용해 이어붙인다.
+
+    `_command`를 블록 전체에 한 번에 적용하면(`line.split("#", 1)[0]`) 첫 `#` 이후
+    전부가 잘려나가, 여러 줄 중 한 줄에만 있는 주석이 그 뒤 실제 명령까지 지워버린다.
+    줄 단위로 나눠 각 줄에 `_command`를 적용해야 그 오탐/누락을 피한다.
+
+    Args:
+        run: step의 `run:` 원문.
+
+    Returns:
+        줄 단위로 주석을 제거해 이어붙인 명령 텍스트.
+    """
+    return "\n".join(_command(line) for line in run.splitlines())
 
 
 def test_frontend_build_preserves_old_chunks() -> None:
@@ -59,3 +77,90 @@ def test_rollback_uses_env_for_previous_sha() -> None:
     assert "PREV: ${{ steps.previous.outputs.sha }}" in env_block
     assert "${{ steps.previous.outputs.sha }}" not in run_block
     assert '[[ -n "$PREV" ]]' in run_block
+
+
+def _deploy_steps() -> tuple[list[dict], dict[str, int]]:
+    """deploy 잡의 step 목록과 이름→인덱스 맵을 돌려준다."""
+    job = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"]
+    steps = job["steps"]
+    return steps, {step.get("name", ""): i for i, step in enumerate(steps)}
+
+
+def test_supply_chain_gate_precedes_db_and_install_steps() -> None:
+    """게이트는 체크아웃 직후·DB 백업과 설치 이전에 있어야 한다.
+
+    uv sync의 sdist setup.py와 npm ci의 lifecycle script는 실행 그 자체가 침해 시점이라
+    설치 이후 차단은 방어가 아니다. 게이트가 막히면 운영 DB 백업·마이그레이션에도
+    진입하지 않는다.
+    """
+    steps, order = _deploy_steps()
+    gate = "Supply-chain freshness gate (pre-install)"
+    assert order["Checkout target"] < order[gate]
+    assert order[gate] < order["Mark install phase entered"]
+    assert order["Mark install phase entered"] < order["Backup operational DB"]
+    assert order["Mark install phase entered"] < order["Backend deps + import smoke"]
+    assert steps[order[gate]]["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || inputs.skip_supply_chain_gate != true }}"
+    )
+
+
+def test_bypass_record_step_pins_condition_order_and_oldest_base_retention() -> None:
+    """우회 입력의 `== true` 절반과 최고참 base 보존이 미고정이면 `!inputs.x` 회귀·덮어쓰기
+    회귀가 무경보로 통과한다.
+
+    `test_supply_chain_gate_precedes_db_and_install_steps`는 게이트 step의 `if`
+    (`!= true` 절반)만 고정하고 있어, 우회 기록 step의 `if`(`== true` 절반)가 반전돼도
+    (예: `!inputs.skip_supply_chain_gate`) 걸리지 않는다. 또한 연속 우회 시 가장 오래된
+    base를 유지해야 하는데(덮으면 우회 구간이 검사에서 빠진다), 그 else 분기 전용 쓰기도
+    지금까지 어떤 테스트도 고정하지 않았다.
+    """
+    steps, order = _deploy_steps()
+    record = steps[order["Record bypassed gate base"]]
+    assert record["if"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.skip_supply_chain_gate == true }}"
+    )
+    assert order["Record previous commit"] < order["Record bypassed gate base"]
+    assert order["Record bypassed gate base"] < order["Mark install phase entered"]
+
+    run = _strip_run_comments(record["run"])
+    before_else, has_else, after_else = run.partition("\nelse\n")
+    assert has_else, run
+    # 기존 pending이 있는 분기(가장 오래된 base 보존)는 쓰기를 하지 않아야 한다.
+    assert "printf" not in before_else
+    assert '> "$SJMJ_PENDING_BASE_FILE"' not in before_else
+    # 쓰기는 pending이 없던 else 분기에만 있어야 한다.
+    assert "printf" in after_else
+    assert '> "$SJMJ_PENDING_BASE_FILE"' in after_else
+
+
+def test_rollback_scope_is_split_by_install_phase_marker() -> None:
+    """게이트·체크아웃 실패는 작업트리만 복원하고 실행 중인 서비스를 건드리지 않아야 한다.
+
+    취소도 함께 잡는다 — `failure()`는 취소 상태를 포함하지 않아, 게이트 도중 취소되면
+    운영 체크아웃에 미검증 target SHA가 남고 다음 배포가 그 SHA를 base로 삼는다.
+    """
+    steps, order = _deploy_steps()
+    restore = steps[order["Restore checkout on pre-install failure"]]
+    assert restore["if"] == (
+        "${{ (failure() || cancelled()) && steps.phase.outputs.entered != 'true' }}"
+    )
+    assert "npm ci" not in _strip_run_comments(restore["run"])
+    assert "install-launchagent" not in _strip_run_comments(restore["run"])
+    rollback = steps[order["Rollback on failure"]]
+    assert rollback["if"] == "${{ failure() && steps.phase.outputs.entered == 'true' }}"
+
+
+def test_pending_gate_base_is_cleared_only_after_deploy_success() -> None:
+    """우회 구간의 소급 검사 의무는 배포가 실제로 성공한 뒤에만 해제돼야 한다.
+
+    게이트 통과 직후 지우면, 뒤 단계 실패로 이전 SHA로 롤백됐을 때 검사되지 않은
+    우회 구간이 운영에 남은 채 기록만 사라진다.
+    """
+    steps, order = _deploy_steps()
+    gate = steps[order["Supply-chain freshness gate (pre-install)"]]
+    assert gate["id"] == "gate"
+    assert "rm -f" not in _strip_run_comments(gate["run"])
+    clear = "Clear pending gate base"
+    assert order[clear] > order["ml-worker liveness"]
+    assert steps[order[clear]]["if"] == "${{ success() && steps.gate.outputs.checked == 'true' }}"
+    assert "rm -f" in _strip_run_comments(steps[order[clear]]["run"])
