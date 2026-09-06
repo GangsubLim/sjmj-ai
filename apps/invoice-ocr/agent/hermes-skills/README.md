@@ -56,8 +56,8 @@ exec "$PYTHON_BIN" -m tools.agent_learn extract --data-dir "$SJMJ_DATA_DIR"
 ### cron 등록
 
 ```bash
-hermes cron create "0 3 * * *" --name "sjmj agent learn" --script sjmj_agent_learn.sh \
-  --deliver telegram --reasoning-effort medium "$(cat <<'EOF'
+# prompt는 schedule 바로 뒤에 — 옵션 뒤에 두면 최상위 파서가 unrecognized arguments로 거부(v0.21.0 실측)
+hermes cron create "0 3 * * *" "$(cat <<'EOF'
 sjmj 판독 지식 야간 갱신. 무인 실행 — 질문 금지, HTTP API 호출 금지, 초안·DB 수정 금지.
 1. 위에 주입된 extract 요약 JSON의 proposed 경로 파일을 읽는다(/Users/submini/sjmj-ai-data/agent_knowledge/proposed.md).
 2. 같은 디렉토리의 corrections.jsonl에서 요약의 new 건수만큼 마지막 레코드를 읽어 근거로 삼는다.
@@ -66,9 +66,9 @@ sjmj 판독 지식 야간 갱신. 무인 실행 — 질문 금지, HTTP API 호�
 5. 실행: 같은 환경에서 python -m tools.agent_learn report --data-dir "$SJMJ_DATA_DIR" --out /tmp/agent_report 후 /tmp/agent_report/report.md의 `## 지식 버전별 일치율` 표를 읽는다.
 6. 회신 1건(한국어, 5줄 이내): publish 출력 1줄 그대로 · 추가 교정 n건(kind별) · 버전별 일치율 표의 마지막 두 행. rejected면 사유를 그대로 인용한다.
 EOF
-)"
+)" --name "sjmj agent learn" --script sjmj_agent_learn.sh --deliver telegram --reasoning-effort medium
 hermes cron list | grep -A6 "sjmj agent learn"     # id·다음 실행 확인
-hermes cron run <id>                                # 즉시 1회 실행(다음 tick)
+hermes cron run <id>                                # 즉시 1회 실행(동기 — 완료까지 대기)
 ```
 
 잡별 toolsets는 지정하지 않는다 — CLI 생성 잡은 플랫폼 기본 toolset(terminal·file 포함)을 쓴다. 4·5의 `cd` 경로도 래퍼의 `ML_DIR`과 같이 릴리스 전엔 워크트리로 바꿔 등록
