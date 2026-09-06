@@ -165,23 +165,25 @@ def test_osv_scan_assert_closes_the_scanner_fail_open() -> None:
     gate = steps["Verify prerequisite gates"]
     download = steps["Download new-code scan results"]
     verify = steps["Assert new-code scan produced results"]
+    # 원시 텍스트로 매칭하면 실제 조건을 지우고 `#` 주석으로만 남겨도 통과하므로 한 번 정규화해 쓴다.
+    gate_run = _strip_comments(gate["run"])
+    verify_run = _strip_comments(verify["run"])
     # 조건이 붙으면 그 자리에서 게이트가 무력화되므로 무조건 실행을 함께 고정한다.
     assert "if" not in gate
     assert gate["env"]["OSV_RESULT"] == "${{ needs.osv-scan.result }}"
-    assert '"$OSV_RESULT" = "success"' in gate["run"]
+    assert '"$OSV_RESULT" = "success"' in gate_run
 
     assert download["uses"] == _DOWNLOAD_ARTIFACT
     # upstream이 같은 run에 올리는 이름. 스캔이 산출물을 못 만들면 upload-artifact가
     # if-no-files-found: warn 기본값으로 artifact를 만들지 않아 여기가 red가 된다.
     assert download["with"]["name"] == "new-json-results"
 
-    assert '[ -s "$RESULTS" ]' in verify["run"]
-    assert '.results | type == "array"' in verify["run"]
+    assert '[ -s "$RESULTS" ]' in verify_run
+    assert '.results | type == "array"' in verify_run
 
     # 다운로드 위치와 검증 경로의 연결. 리터럴을 두 번 적으면 한쪽만 바뀌어도 green이 되므로
     # 기대 문자열을 download의 path에서 만들어 대조한다.
     download_path = download["with"]["path"]
-    verify_run = _strip_comments(verify["run"])
     assert f"RESULTS={download_path}/new-results.json" in verify_run
     assert download_path == "osv-assert"
     # 파일 부재(artifact 내부 파일명 계약 위반)와 빈 파일(스캐너 fail-open)을 가르는 분기.
