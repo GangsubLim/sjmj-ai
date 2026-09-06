@@ -229,3 +229,123 @@ jobs:
         run: uv sync --frozen --extra worker --extra cv
       - name: Pytest
         run: uv run pytest -q
+
+  # 호출 대상 reusable workflow가 잡 레벨(jobs.osv-scan.permissions)에 security-events: write를 정적 선언하므로,
+  # caller가 동일 권한을 grant하지 않으면 GitHub가 startup 단계에서 거부한다
+  # (upload-sarif: false여도 정적 검증은 그 전에 수행된다).
+  #
+  # frontend·backend·ml의 선행 조건으로 걸지 않는다(spec §3): OSV는 알려진 CVE 탐지이지
+  # install-time RCE 방어가 아니다. 악성 패키지는 설치 그 자체가 침해 시점이지만, CVE를 가진
+  # 패키지가 일회용 ubuntu 러너에 설치되는 것은 침해가 아니라 체인은 직렬화 비용만 남긴다.
+  # 강제력은 ruleset required 등록(spec §11 2단계)에서 나온다.
+  #
+  # check run context는 `osv-scan / osv-scan`으로 도출된다(caller 잡 id + upstream 잡 id,
+  # 양쪽 다 name 없음). 미검증 도출값이므로 머지 후 실제 이름을 확인한 뒤 등록한다 —
+  # 추측 문자열로 등록하면 조용히 강제되지 않는다.
+  #
+  # 이 잡은 PR diff 스캔이라 base에 이미 있던 취약점은 red를 만들지 않는다(설계 의도).
+  # 선존 취약점(npm 18건)은 supply-chain-audit.yml의 주기 audit이 담당한다.
+  #
+  # SHA 고정은 부분적이다: 고정되는 건 이 reusable workflow YAML까지고, 내부
+  # osv-scanner-action은 `image: docker://ghcr.io/google/osv-scanner-action:v2.5.1`
+  # (digest가 아닌 가변 태그)로 실행돼 실제 실행 코드는 고정되지 않는다. upstream checkout은
+  # credential을 유지하므로 GITHUB_TOKEN이 담긴 workspace가 third-party 컨테이너에 mount되고
+  # 이 잡은 security-events: write를 갖는다(fork PR에서는 토큰이 read-only로 강등).
+  # caller가 vendoring 없이 해소할 수 없다.
+  osv-scan:
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+    with:
+      upload-sarif: false
+      # 고정 SHA 참조라 upstream이 기본값을 바꿔도 전파되지 않지만(v2.5.1 default: true 실측),
+      # fail-closed 결정을 전부 명시하는 원칙에 맞추고 향후 SHA bump 시의 회귀를 계약 테스트로
+      # 잡기 위해 못 박는다.
+      fail-on-vuln: true
+      # upstream 기본값 `-r ./`만으로는 커버리지 하한이 없다: 디렉토리 재귀 스캔은 개별 매니페스트
+      # 추출이 깨져도 계속 돌고 축소된 결과 JSON을 정상 출력하므로, 한 축이 통째로 건너뛰어진 채
+      # 게이트가 green이 된다. lockfile 3축을 명시하면 그 경로의 부재·해석 불가가 hard error가 되고
+      # (v2.5.1 소스 실측 — pathToRootMap의 os.Stat 실패, "extraction failed on specified lockfile",
+      # ErrExtractorNotFound가 모두 PrintResult 이전에 return돼 결과 JSON 자체가 생성되지 않는다),
+      # new-results.json 부재 → artifact 부재 → 아래 osv-scan-assert의 download step이 red다.
+      # `--format`·`--output`은 upstream이 앞에 붙이므로 여기서 주지 않는다(상류가 금지 명시).
+      # `--recursive ./`는 남겨 신규 매니페스트도 계속 잡는다 — 두 인자를 함께 줘도 같은 파일이
+      # 중복 추출되지 않는다(donboksa 실측: 결과 JSON이 `--recursive ./` 단독과 바이트 동일).
+      # base에 없는 lockfile을 추가하는 PR은 old 스캔이 죽어 전량 신규로 보고돼 거짓 red가 되지만,
+      # 3축이 base·head 양쪽에 이미 존재하므로 발동 조건은 축 목록 자체를 바꾸는 PR로 한정된다.
+      scan-args: |-
+        --recursive
+        --lockfile=apps/invoice-ocr/backend/uv.lock
+        --lockfile=apps/invoice-ocr/ml/uv.lock
+        --lockfile=apps/invoice-ocr/frontend/package-lock.json
+        ./
+
+  # osv-scan의 new-code 스캔은 조용히 green이 될 수 있다: upstream의 "Run scanner on new code"
+  # step이 continue-on-error: true이고(v2.5.1 실측), osv-reporter는 new-results.json을 못 읽으면
+  # 경고만 남기고 취약점 0건으로 간주해 diff를 공집합으로 만든다 → exit 0. docker pull 실패·OSV
+  # API 장애는 물론 PR이 통제하는 lockfile로 extractor를 크래시시키는 경로까지 통과한다
+  # (--old 실패는 반대로 모든 취약점을 신규로 보고해 fail-closed다).
+  # upload-sarif: false라 upstream의 "Error troubleshooter" step은 skipped여서 신호도 없다.
+  # 이 잡이 caller 쪽에서 그 fail-open을 닫는다 — 스캔이 실제 산출물을 냈는지 검증한다.
+  # `uses:` 잡에는 timeout-minutes를 걸 수 없어(caller 통제 밖) 상한은 이 잡에만 둔다.
+  #
+  # 한계 2가지: (1) 이 잡이 결과 JSON만 보고 3축 스캔 여부를 판정할 수는 없다 — osv-scanner는
+  # 취약점 0건인 source를 결과에서 통째로 제거하므로(v2.5.1 filterResults 실측) clean lockfile은
+  # 애초에 등장하지 않는다. 그 하한은 위 osv-scan의 명시 --lockfile이 hard error로 대신 세운다
+  # (스캔 실패 → 결과 JSON 부재 → artifact 부재 → 아래 download step이 red).
+  # (2) 실효를 가지려면 이 잡의 context도 required로 등록해야 한다(spec §11 2단계).
+  osv-scan-assert:
+    name: osv-scan-assert
+    runs-on: ubuntu-latest
+    needs: [osv-scan]
+    # osv-scan 실패 시 이 잡이 skip되면 GitHub가 skipped required check를 success로 인정한다.
+    # !cancelled()로 반드시 실행시킨 뒤 첫 step에서 명시적으로 red를 만든다.
+    if: ${{ !cancelled() }}
+    timeout-minutes: 5
+    steps:
+      - name: Verify prerequisite gates
+        env:
+          OSV_RESULT: ${{ needs.osv-scan.result }}
+        run: |
+          [ "$OSV_RESULT" = "success" ] \
+            || { echo "::error::osv-scan gate failed"; exit 1; }
+      # 결과 JSON을 needs.osv-scan.outputs.new-results로 받지 않는다. 그 출력은 스캔 결과
+      # 전체를 담은 단일 문자열이라 env로 넘기면 Linux의 단일 인자·환경변수 한계
+      # (MAX_ARG_STRLEN = 131,072 B)를 넘긴다 — donboksa 실측 205,283 B에서 execve가 E2BIG으로
+      # 실패해 bash가 뜨지도 못하고 잡이 4초 만에 죽었다("Argument list too long"). 이 값은
+      # advisory 공개에 비례해 커지므로 exec 경계를 통과시키는 방식은 언젠가 반드시 다시 깨진다.
+      # v2.5.1은 export-results 기본값이 false라 그 출력 자체가 비어 있기도 하다.
+      #
+      # 대신 upstream이 같은 run에 업로드하는 new-json-results artifact를 파일로 받아 검증한다
+      # (caller가 matrix-property를 주지 않아 이름은 접두사 없이 고정이고, upstream이 SHA
+      # 고정이라 계약이 불변이다 — SHA를 bump할 때 이 이름을 재확인한다). 셸에는 고정 경로만
+      # 들어가고 PR이 통제하는 문자열(패키지 이름 등)은 run 스크립트에도 env에도 닿지 않는다.
+      # 같은 run의 artifact라 추가 permissions는 필요 없다(download-artifact 기본 스코프).
+      #
+      # fail-closed 3경로:
+      #   (1) osv-scan 실패·skip → 위 step이 red
+      #   (2) 스캐너가 new-results.json을 못 만들면 upstream upload-artifact가
+      #       if-no-files-found: warn(기본값)으로 artifact를 만들지 않는다 →
+      #       download-artifact가 "Artifact not found"로 red
+      #   (3) 받은 파일이 비었거나 results 배열을 가진 osv-scanner 리포트가 아니면 아래 jq가 red
+      - name: Download new-code scan results
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: new-json-results
+          path: osv-assert
+      - name: Assert new-code scan produced results
+        run: |
+          RESULTS=osv-assert/new-results.json
+          # 부재는 artifact 내부 파일명 계약 위반, 빈 파일은 스캐너 fail-open — 조치가 달라 메시지 분리
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::osv-scan artifact has no new-results.json — the upstream artifact file contract changed"
+            exit 1
+          fi
+          [ -s "$RESULTS" ] \
+            || { echo "::error::osv-scan produced no new-code results — the scanner step failed silently"; exit 1; }
+          # 크기는 재발 감시용 관측값이다. 내용은 로그에 남기지 않는다.
+          echo "new-results.json: $(wc -c < "$RESULTS") bytes"
+          jq -e '.results | type == "array"' "$RESULTS" > /dev/null \
+            || { echo "::error::osv-scan new-code results are not a valid osv-scanner JSON report"; exit 1; }

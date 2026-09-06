@@ -1,0 +1,336 @@
+name: Supply-chain audit
+
+on:
+  schedule:
+    # 매일 00:00 UTC = 09:00 KST
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+# schedule과 workflow_dispatch가 겹치면 두 실행이 모두 "동일 제목 이슈 없음"을 보고 각각
+# create해 이슈가 중복된다. 취소는 하지 않는다 — 관측 트랙이라 한 번은 끝까지 돌려야 한다.
+concurrency:
+  group: supply-chain-audit-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  osv-baseline:
+    name: osv-baseline
+    runs-on: ubuntu-latest
+    # 이 잡은 caller 소유라(`uses:` 잡이 아니라) 기본 360분 대신 상한을 걸 수 있다.
+    timeout-minutes: 30
+    env:
+      AUDIT_REF: ${{ github.ref_name }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # 기존 부채(npm 18건 — critical 2·high 10·moderate 4·low 2)를 관측하는
+      # 트랙이므로 잡을 실패시키지 않는다.
+      # 다만 continue-on-error가 삼키는 종료코드에는 "결과 JSON을 쓴 뒤" 나오는 127
+      # (디렉토리 스캔에서 개별 매니페스트 추출이 깨져도 스캔은 계속되고, 축소된 결과가
+      # 정상 출력된 뒤 logHandler.HasErrored()로 127)이 섞여 있다. 그대로 두면 한쪽
+      # lockfile만 깨지고 다른 쪽이 clean일 때 "취약점 0건 → 자동 close"로 오독한다.
+      # 그래서 outcome을 후속 step에 넘겨 분기한다:
+      #   - clean 스캔만 exit 0 = outcome success
+      #   - 취약점이 있으면 exit 1 = outcome failure지만 그때는 COUNT > 0
+      # 따라서 (outcome != success && COUNT == 0)은 오직 degrade 신호다.
+      - name: Run OSV-Scanner
+        id: scan
+        continue-on-error: true
+        uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67 # v2.5.1
+        with:
+          # `--recursive ./`만으로는 커버리지 하한이 없다. lockfile이 옮겨지거나 이름이 바뀌거나
+          # upstream extractor가 빠지면 스캐너는 에러 없이 "그 파일을 못 찾을" 뿐이고, 나머지
+          # 한쪽이 clean이면 exit 0 → 0건 → 기존 이슈가 "취약점 0건"으로 자동 close된다.
+          # 세 lockfile을 명시하면 부재·해석 불가가 hard error가 된다(실측: 존재하지 않는 경로를
+          # `--lockfile`로 주면 exit 127이고 결과 JSON 자체가 생성되지 않아 다음 step이 잡는다).
+          # 재귀 탐색은 그대로 둬서 새 매니페스트도 계속 잡는다. 두 인자를 함께 주면 같은 파일이
+          # 중복 추출되지 않는다(실측: 결과 JSON이 `--recursive ./` 단독과 바이트 동일).
+          scan-args: |-
+            --recursive
+            --lockfile=apps/invoice-ocr/backend/uv.lock
+            --lockfile=apps/invoice-ocr/ml/uv.lock
+            --lockfile=apps/invoice-ocr/frontend/package-lock.json
+            --format=json
+            --output=osv-results.json
+            ./
+
+      - name: Summarize scan result
+        env:
+          SCAN_OUTCOME: ${{ steps.scan.outcome }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          set -euo pipefail
+          if [ ! -f osv-results.json ]; then
+            echo "::error::osv-results.json이 생성되지 않았다 — 스캔 step 로그를 확인한다"
+            exit 1
+          fi
+          # 스캐너 버전은 이슈 본문에 감사 기록으로 남는다. `uses:`는 env 컨텍스트를 받지 못해
+          # 핀을 한 곳에서 파생시킬 수 없으므로, 워크플로 파일에서 핀 자체를 읽는다. 문자열을
+          # 따로 적어두면 SHA를 bump할 때 조용히 어긋나 거짓 버전이 영구 기록된다.
+          SCANNER_VERSION="$(sed -n 's#^ *uses: \(google/osv-scanner-action/osv-scanner-action@.*\)$#\1#p' \
+            .github/workflows/supply-chain-audit.yml | head -n 1)"
+          if [ -z "$SCANNER_VERSION" ]; then
+            echo "::error::워크플로 파일에서 osv-scanner 핀을 읽지 못했다 — 감사 기록의 버전을 신뢰할 수 없다"
+            exit 1
+          fi
+          export SCANNER_VERSION
+          python3 - <<'PY'
+          import collections
+          import datetime
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import re
+
+          # GitHub 이슈 본문 한도는 65,536자다. 표가 길어지면 gh issue edit이 422로 떨어져
+          # 매일 잡이 red가 되므로 안전 마진을 두고 절단한다.
+          BODY_LIMIT = 60000
+          CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+          LABEL_ORDER = ("critical", "high", "medium", "low", "unknown")
+
+
+          def cell(value):
+              """외부 유래 문자열을 마크다운 표 셀로 안전하게 만든다.
+
+              패키지명·버전·source path는 스캔 대상 저장소가 통제하는 값이라
+              `|`·개행이 들어오면 표가 깨지고 스코프 npm 이름은 @mention으로 렌더된다.
+              """
+              text = CONTROL_CHARS.sub(" ", str(value)).strip()
+              text = text.replace("`", "'").replace("|", "\\|")
+              return "`{}`".format(text or "-")
+
+
+          def severity_score(raw):
+              """max_severity는 CVSS 점수 문자열("9.8")이거나 빈 문자열이다.
+
+              사전순으로 다루면 "10.0" < "2.5"가 되어 정렬·집계가 모두 어긋난다.
+              파싱 불가는 -1.0(점수 미상)으로 떨어뜨린다 — degrade-only.
+              """
+              try:
+                  return float(raw)
+              except (TypeError, ValueError):
+                  return -1.0
+
+
+          def severity_label(score):
+              """CVSS v3 구간으로 버킷팅한다. 음수는 점수 미상 표식이다."""
+              if score < 0:
+                  return "unknown"
+              if score >= 9.0:
+                  return "critical"
+              if score >= 7.0:
+                  return "high"
+              if score >= 4.0:
+                  return "medium"
+              return "low"
+
+
+          data = json.loads(pathlib.Path("osv-results.json").read_text(encoding="utf-8"))
+          rows = []
+          for result in data.get("results") or []:
+              source = (result.get("source") or {}).get("path", "")
+              for package in result.get("packages") or []:
+                  info = package.get("package") or {}
+                  # osv-scanner의 severity는 groups[].max_severity에 실린다. 이 파서의
+                  # 내성은 "키 부재"에 한한다 — 키가 없으면 unknown으로 강등하지만, 최상위가
+                  # 배열이거나 groups 원소가 문자열인 식의 형태 변형은 예외로 step을
+                  # 실패시킨다(fail-closed).
+                  score_by_id = {}
+                  for group in package.get("groups") or []:
+                      for vuln_id in group.get("ids") or []:
+                          score_by_id[vuln_id] = severity_score(group.get("max_severity"))
+                  for vuln in package.get("vulnerabilities") or []:
+                      vuln_id = vuln.get("id", "")
+                      score = score_by_id.get(vuln_id, -1.0)
+                      rows.append(
+                          {
+                              "source": source,
+                              "ecosystem": info.get("ecosystem", ""),
+                              "name": info.get("name", ""),
+                              "version": info.get("version", ""),
+                              "id": vuln_id,
+                              "score": score,
+                              "severity": severity_label(score),
+                          }
+                      )
+
+          # 점수 내림차순(미상은 맨 뒤) → 나머지는 결정론적 오름차순.
+          rows.sort(key=lambda r: (-r["score"], r["ecosystem"], r["name"], r["id"]))
+
+          # osv-scanner는 취약점을 찾으면 exit 1을 내므로 정상 탐지 실행도 outcome=failure다.
+          # 즉 outcome 하나로는 "부분 degrade"와 "정상 탐지"를 구분할 수 없다. 그래서 outcome은
+          # (a) 결과 0건 + 비정상 종료의 fail-closed 판정과 (b) footer의 사실 기록에만 쓰고,
+          # 본문 경고 배너로는 쓰지 않는다 — 본문은 COUNT > 0(= exit 1 = failure)일 때만 쓰이므로
+          # outcome 기반 배너는 모든 이슈에 무조건 붙어 degrade 신호가 소음이 된다.
+          outcome = os.environ.get("SCAN_OUTCOME", "")
+          if outcome != "success" and not rows:
+              print(
+                  "::error::스캐너가 정상 종료하지 않았는데(outcome={}) 결과가 0건이다 — "
+                  "부분 degrade를 clean으로 볼 수 없어 실패시킨다. 이슈는 close하지 않는다".format(
+                      outcome or "unknown"
+                  )
+              )
+              raise SystemExit(1)
+
+          lines = [
+              "OSV-Scanner baseline 스캔 결과입니다. 이 이슈는 워크플로가 자동 갱신하며,",
+              "취약점 0건이 되면 자동으로 close됩니다.",
+              "",
+              "- 총 {}건".format(len(rows)),
+          ]
+          counts = collections.Counter(r["severity"] for r in rows)
+          for label in LABEL_ORDER:
+              if counts.get(label):
+                  lines.append("  - `{}`: {}건".format(label, counts[label]))
+          lines += [
+              "",
+              "| severity | ecosystem | package | version | id | source |",
+              "| --- | --- | --- | --- | --- | --- |",
+          ]
+
+          scanned_at = datetime.datetime.now(datetime.timezone.utc).strftime(
+              "%Y-%m-%d %H:%M:%S UTC"
+          )
+          footer = [
+              "",
+              "---",
+              "- scanner: `{}`".format(os.environ.get("SCANNER_VERSION", "unknown")),
+              "- scan outcome: `{}` (취약점을 찾으면 exit 1이므로 `failure`가 정상값이다)".format(
+                  outcome or "unknown"
+              ),
+              "- scanned at: {}".format(scanned_at),
+              "- run: {}".format(os.environ.get("RUN_URL", "unknown")),
+          ]
+
+          # provenance는 매 실행마다 바뀌므로 예산·digest에서 분리한다.
+          budget = BODY_LIMIT - len("\n".join(footer)) - 200
+          used = len("\n".join(lines))
+          rendered = 0
+          for r in rows:
+              line = "| {} |".format(
+                  " | ".join(
+                      cell(r[key])
+                      for key in ("severity", "ecosystem", "name", "version", "id", "source")
+                  )
+              )
+              if used + len(line) + 1 > budget:
+                  break
+              lines.append(line)
+              used += len(line) + 1
+              rendered += 1
+          if rendered < len(rows):
+              lines += [
+                  "",
+                  "…외 {}건은 이슈 본문 길이 한도로 생략했습니다 — 전체 목록은 run 로그를 확인하세요.".format(
+                      len(rows) - rendered
+                  ),
+              ]
+
+          # 본문 내용(provenance 제외)의 digest. upsert step이 이걸로 무변경 edit을 건너뛴다.
+          digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:16]
+          body = "\n".join(lines + footer + ["<!-- audit-digest: {} -->".format(digest)])
+          pathlib.Path("audit-body.md").write_text(body + "\n", encoding="utf-8")
+          pathlib.Path("audit-count.txt").write_text(str(len(rows)), encoding="utf-8")
+          print(
+              "vulnerabilities: {} (outcome={}, rendered={})".format(
+                  len(rows), outcome or "unknown", rendered
+              )
+          )
+          PY
+
+      - name: Upsert baseline issue
+        env:
+          # issues: write 권한 선언만으로 gh가 인증되지 않는다 — 토큰을 env로 넘겨야 한다.
+          # 잡 레벨이 아니라 이 step에만 둔다: 잡 env는 third-party docker 컨테이너 액션
+          # (가변 태그 이미지를 쓰는 osv-scanner-action)에도 주입되기 때문이다.
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 참조: docs/work/2026-09/2026-09-06-security-audit-gates/spec.md §8.3·§13
+          COUNT="$(cat audit-count.txt)"
+          if [ -z "${DEFAULT_BRANCH:-}" ]; then
+            echo "::error::default branch를 확인할 수 없다 — 이슈 upsert를 중단한다"
+            exit 1
+          fi
+          # schedule은 default branch에서만 돈다. 다른 ref에서 dispatch하면 그 ref 전용
+          # 제목의 이슈가 생기지만 그 ref에는 스케줄이 없어 자동 close되지 않는다(영구 orphan).
+          # 따라서 비-default ref는 요약만 남기고 이슈를 만들지 않는다.
+          if [ "$AUDIT_REF" != "$DEFAULT_BRANCH" ]; then
+            echo "non-default ref($AUDIT_REF) — 이슈를 만들지 않고 요약만 남긴다 (취약점 ${COUNT}건)"
+            {
+              echo "### Supply-chain audit — ${AUDIT_REF} (이슈 미생성)"
+              echo
+              cat audit-body.md
+            } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+            exit 0
+          fi
+          # ref별로 제목 키를 분리한다 — 한 브랜치의 clean이 다른 브랜치의 이슈를 닫아버리는
+          # silent 소실을 막는다.
+          TITLE="[audit] baseline vulnerabilities (${AUDIT_REF})"
+          # --limit 페이지를 훑으면 이슈 수가 한도를 넘는 순간 기존 이슈를 못 찾아 매일 새
+          # 이슈가 쌓인다. 제목 검색으로 페이지를 좁힌다. 검색어는 토크나이저에 안전한 고정
+          # 구절만 쓰고(ref·괄호는 제외), 정확 일치는 아래 jq가 전체 제목으로 다시 판정한다.
+          gh issue list --state all --search "in:title \"baseline vulnerabilities\"" --limit 100 \
+            --json number,title,state,labels > audit-issues.json
+          # OPEN을 우선 고른다. 첫 원소(최신)를 집으면 OPEN #10과 CLOSED #20이 공존할 때
+          # #20을 reopen하고 #10은 열린 채 방치돼 매일 flap한다.
+          MATCH="$(jq -r --arg t "$TITLE" '
+            [ .[] | select(.title == $t) ] as $m
+            | ((($m | map(select(.state == "OPEN")) | first) // ($m | first)) // empty)
+            | "\(.number)\t\(.state)\t\((.labels // []) | map(.name) | join(","))"
+          ' audit-issues.json)"
+          EXISTING="$(printf '%s' "$MATCH" | cut -f1)"
+          EXISTING_STATE="$(printf '%s' "$MATCH" | cut -f2)"
+          EXISTING_LABELS="$(printf '%s' "$MATCH" | cut -f3)"
+          if [ "$COUNT" = "0" ]; then
+            # 여기 도달한 0건은 정상 종료한 스캔의 0건뿐이다 — degrade + 0건은 앞 step이
+            # 이미 잡을 실패시켜 close 경로에 닿지 않는다.
+            if [ -n "$EXISTING" ] && [ "$EXISTING_STATE" = "OPEN" ]; then
+              gh issue comment "$EXISTING" --body "스캔 결과 취약점 0건 — 자동 close합니다."
+              gh issue close "$EXISTING"
+            fi
+            echo "clean: 취약점 0건"
+            exit 0
+          fi
+          # 라벨 생성은 "이미 있음"만 무시한다 — 권한 오류까지 삼키면 라벨 없는 이슈가
+          # 조용히 쌓여 triage 규약(docs/agents/triage-labels.md)이 깨진다.
+          if ! LABEL_ERR="$(gh label create needs-triage \
+              --description "Maintainer needs to evaluate this issue" --color e4e669 2>&1)"; then
+            case "$LABEL_ERR" in
+              *"already exists"*) ;;
+              *)
+                echo "::error::needs-triage 라벨 생성 실패: $LABEL_ERR"
+                exit 1
+                ;;
+            esac
+          fi
+          if [ -z "$EXISTING" ]; then
+            gh issue create --title "$TITLE" --body-file audit-body.md --label needs-triage
+            exit 0
+          fi
+          # 닫힌 동일 제목 이슈가 있으면 재개한다. --state open만 보면 0건→재발생 사이클마다
+          # 새 이슈가 쌓여 spec §13의 "누적되지 않는다"가 깨진다.
+          if [ "$EXISTING_STATE" != "OPEN" ]; then
+            gh issue reopen "$EXISTING"
+          fi
+          # 내용이 같은 날은 edit을 건너뛴다 — 매일 updated_at만 흔드는 churn 방지.
+          DIGEST="$(grep -o 'audit-digest: [0-9a-f]*' audit-body.md | head -n 1 || true)"
+          REMOTE_BODY="$(gh issue view "$EXISTING" --json body -q .body || true)"
+          if [ -n "$DIGEST" ] && printf '%s' "$REMOTE_BODY" | grep -qF "$DIGEST"; then
+            echo "unchanged: 본문 digest 동일 — edit 생략"
+          else
+            gh issue edit "$EXISTING" --body-file audit-body.md
+          fi
+          # reopen·edit 경로는 라벨을 재확인하지 않는다. 누락된 경우에만 다시 붙인다.
+          case ",$EXISTING_LABELS," in
+            *,needs-triage,*) ;;
+            *) gh issue edit "$EXISTING" --add-label needs-triage ;;
+          esac
