@@ -95,3 +95,82 @@ def test_release_promotion_exemption_is_shell_not_step_if() -> None:
     assert '"$HEAD_REPO" == "$THIS_REPO"' in run
     assert '"$HEAD_REF" == release/*' in run
     assert "hotfix/" not in run
+
+
+# --- osv-scan 트랙(PR ③) -------------------------------------------------------
+# 위 freshness 불변식과 달리 osv-scan은 설치 잡의 선행 조건이 아니다(알려진 CVE 탐지이지
+# install-time RCE 방어가 아니라서, 일회용 러너에 CVE 보유 패키지가 설치되는 것은 침해가
+# 아니다). 강제력은 ruleset required 등록에서 나오고, 여기서는 그 잡이 실제로 무엇을
+# 강제하도록 구성됐는지를 고정한다.
+
+_OSV_REUSABLE = (
+    "google/osv-scanner-action/.github/workflows/osv-scanner-reusable-pr.yml"
+    "@6e4298ebc4db23e847df9b2e2de2939d6f066c67"
+)
+_DOWNLOAD_ARTIFACT = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
+
+
+def test_osv_scan_calls_pinned_reusable_workflow_with_fail_closed_inputs() -> None:
+    """osv-scan은 SHA 핀 reusable workflow를 fail-on-vuln으로 호출해야 한다.
+
+    fail-on-vuln이 빠지면 upstream 기본값에 의존하게 되어 SHA bump 한 번에 게이트가
+    조용히 관측 트랙으로 강등된다. permissions 블록은 선택이 아니다 — 호출 대상이
+    잡 레벨(jobs.osv-scan.permissions)에 security-events: write를 정적 선언하므로 caller가 같은 권한을 주지
+    않으면 워크플로가 startup에서 거부된다(upload-sarif: false여도 정적 검증이 먼저다).
+
+    scan-args의 명시 --lockfile 3축은 PR 게이트의 커버리지 하한이다. 이 인자가 빠지면 upstream
+    기본값 `-r ./`로 되돌아가 한 축이 통째로 건너뛰어져도 게이트가 green이 되므로, 경로가
+    실재하는지까지 여기서 고정한다.
+    """
+    job = _jobs()["osv-scan"]
+    assert job["uses"] == _OSV_REUSABLE
+    assert job["with"]["fail-on-vuln"] is True
+    assert job["with"]["upload-sarif"] is False
+    assert job["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+        "security-events": "write",
+    }
+    args = job["with"]["scan-args"].split()
+    assert "--recursive" in args
+    lockfiles = [a.split("=", 1)[1] for a in args if a.startswith("--lockfile=")]
+    assert sorted(lockfiles) == [
+        "apps/invoice-ocr/backend/uv.lock",
+        "apps/invoice-ocr/frontend/package-lock.json",
+        "apps/invoice-ocr/ml/uv.lock",
+    ]
+    missing = [path for path in lockfiles if not (_REPO_ROOT / path).is_file()]
+    assert not missing, missing
+    # 설치 잡 체인 금지(spec §3) — 체인은 CI 직렬화 비용만 남긴다.
+    assert "needs" not in job
+
+
+def test_osv_scan_assert_closes_the_scanner_fail_open() -> None:
+    """스캐너가 조용히 green이 되는 경로를 caller 쪽에서 닫아야 한다.
+
+    upstream의 "Run scanner on new code" step은 continue-on-error: true이고, 리포터는
+    new-results.json을 못 읽으면 취약점 0건으로 간주해 diff를 공집합으로 만든다 → exit 0.
+    needs + if: !cancelled() + 첫 step 명시 검증 + artifact 실물 검증 넷 중 하나라도
+    빠지면 그 fail-open이 되살아나므로 함께 고정한다.
+    """
+    job = _jobs()["osv-scan-assert"]
+    assert job["needs"] == ["osv-scan"]
+    assert job["if"] == "${{ !cancelled() }}"
+    assert job["timeout-minutes"] == 5
+
+    steps = {step.get("name"): step for step in job["steps"]}
+    gate = steps["Verify prerequisite gates"]
+    download = steps["Download new-code scan results"]
+    verify = steps["Assert new-code scan produced results"]
+    # 조건이 붙으면 그 자리에서 게이트가 무력화되므로 무조건 실행을 함께 고정한다.
+    assert "if" not in gate
+    assert gate["env"]["OSV_RESULT"] == "${{ needs.osv-scan.result }}"
+    assert '"$OSV_RESULT" = "success"' in gate["run"]
+
+    assert download["uses"] == _DOWNLOAD_ARTIFACT
+    # upstream이 같은 run에 올리는 이름. 스캔이 산출물을 못 만들면 upload-artifact가
+    # if-no-files-found: warn 기본값으로 artifact를 만들지 않아 여기가 red가 된다.
+    assert download["with"]["name"] == "new-json-results"
+
+    assert '[ -s "$RESULTS" ]' in verify["run"]
+    assert '.results | type == "array"' in verify["run"]
