@@ -54,3 +54,24 @@ def test_freshness_job_installs_nothing() -> None:
         if any(marker in step.get("run", "") for marker in _INSTALL_MARKERS)
     ]
     assert not offenders, offenders
+
+
+def test_release_promotion_exemption_is_shell_not_step_if() -> None:
+    """릴리스 승격 면제는 step `if`가 아니라 셸의 대소문자 구분 비교로만 판정돼야 한다.
+
+    GitHub Actions 표현식의 `==`·`startsWith`는 대소문자를 무시해 `DEVEL`·`Release/x`
+    같은 브랜치까지 면제에 들어오므로, 면제를 step `if`로 옮기면 이 회귀가 조용히
+    되살아난다. hotfix/*는 면제 대상이 아니므로 셸 조건에 등장하면 면제 범위가
+    부주의하게 넓어진 것이다.
+    """
+    gate = next(
+        step
+        for step in _jobs()["freshness"]["steps"]
+        if step.get("name") == "Lockfile freshness gate (7d, pre-install)"
+    )
+    assert "if" not in gate
+    run = gate["run"]
+    assert '"$BASE_REF" == "main"' in run
+    assert '"$HEAD_REPO" == "$THIS_REPO"' in run
+    assert '"$HEAD_REF" == release/*' in run
+    assert "hotfix/" not in run

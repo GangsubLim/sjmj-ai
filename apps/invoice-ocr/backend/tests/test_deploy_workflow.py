@@ -1,4 +1,4 @@
-"""배포 워크플로우 불변식 — 프론트 빌드가 옛 콘텐츠 해시 청크를 지우지 않는다."""
+"""배포 워크플로우 불변식 — 프론트 빌드 청크 보존·공급망 게이트 순서·롤백 범위 분리·pending 생애주기."""
 
 import re
 from pathlib import Path
@@ -84,7 +84,7 @@ def test_supply_chain_gate_precedes_db_and_install_steps() -> None:
     assert order["Mark install phase entered"] < order["Backup operational DB"]
     assert order["Mark install phase entered"] < order["Backend deps + import smoke"]
     assert steps[order[gate]]["if"] == (
-        "${{ github.event_name != 'workflow_dispatch' || !inputs.skip_supply_chain_gate }}"
+        "${{ github.event_name != 'workflow_dispatch' || inputs.skip_supply_chain_gate != true }}"
     )
 
 

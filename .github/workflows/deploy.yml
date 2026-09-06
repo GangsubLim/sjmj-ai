@@ -52,9 +52,11 @@ jobs:
       # lifecycle script는 실행 그 자체가 침해 시점이라 설치 후 차단은 방어가 아니다.
       # base는 직전 배포 커밋이라 릴리스 사이클 동안 쌓인 정상 bump는 fresh로 잡히지 않고,
       # 사실상 exotic·unverifiable만 재확인하는 형태가 된다(구조적 오검출 없음).
+      # skip 입력을 not/and로 비교하면 문자열 "false"도 참으로 평가돼 게이트가 스킵될 수
+      # 있어, 불리언 리터럴과의 명시 비교(!= true / == true)로 fail-closed를 보장한다.
       - name: Supply-chain freshness gate (pre-install)
         id: gate
-        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.skip_supply_chain_gate }}
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.skip_supply_chain_gate != true }}
         timeout-minutes: 10
         env:
           PREV: ${{ steps.previous.outputs.sha }}
@@ -73,7 +75,7 @@ jobs:
           echo "checked=true" >> "$GITHUB_OUTPUT"
 
       - name: Record bypassed gate base
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_supply_chain_gate }}
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.skip_supply_chain_gate == true }}
         env:
           PREV: ${{ steps.previous.outputs.sha }}
         run: |
