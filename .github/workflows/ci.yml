@@ -338,6 +338,11 @@ jobs:
       - name: Assert new-code scan produced results
         run: |
           RESULTS=osv-assert/new-results.json
+          # 부재는 artifact 내부 파일명 계약 위반, 빈 파일은 스캐너 fail-open — 조치가 달라 메시지 분리
+          if [ ! -f "$RESULTS" ]; then
+            echo "::error::osv-scan artifact has no new-results.json — the upstream artifact file contract changed"
+            exit 1
+          fi
           [ -s "$RESULTS" ] \
             || { echo "::error::osv-scan produced no new-code results — the scanner step failed silently"; exit 1; }
           # 크기는 재발 감시용 관측값이다. 내용은 로그에 남기지 않는다.

@@ -152,6 +152,9 @@ def test_osv_scan_assert_closes_the_scanner_fail_open() -> None:
     new-results.json을 못 읽으면 취약점 0건으로 간주해 diff를 공집합으로 만든다 → exit 0.
     needs + if: !cancelled() + 첫 step 명시 검증 + artifact 실물 검증 넷 중 하나라도
     빠지면 그 fail-open이 되살아나므로 함께 고정한다.
+
+    다운로드 경로와 검증 경로의 연결, 그리고 파일 부재 분기의 존속도 같은 축으로 고정 — 한쪽만
+    바뀌면 실제 CI만 깨지고 계약 테스트는 통과하는 거짓 green이 열림
     """
     job = _jobs()["osv-scan-assert"]
     assert job["needs"] == ["osv-scan"]
@@ -174,3 +177,13 @@ def test_osv_scan_assert_closes_the_scanner_fail_open() -> None:
 
     assert '[ -s "$RESULTS" ]' in verify["run"]
     assert '.results | type == "array"' in verify["run"]
+
+    # 다운로드 위치와 검증 경로의 연결. 리터럴을 두 번 적으면 한쪽만 바뀌어도 green이 되므로
+    # 기대 문자열을 download의 path에서 만들어 대조한다.
+    download_path = download["with"]["path"]
+    verify_run = _strip_comments(verify["run"])
+    assert f"RESULTS={download_path}/new-results.json" in verify_run
+    assert download_path == "osv-assert"
+    # 파일 부재(artifact 내부 파일명 계약 위반)와 빈 파일(스캐너 fail-open)을 가르는 분기.
+    # 조치가 다른 두 원인이 다시 한 메시지로 뭉개지지 않게 부재 분기의 존속을 고정한다.
+    assert '[ ! -f "$RESULTS" ]' in verify_run
