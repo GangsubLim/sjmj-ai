@@ -55,7 +55,7 @@ dl = [
 train = [
     "torch>=2.12,<2.13",
     "torchvision>=0.27,<0.28",
-    "transformers>=5.12,<5.13",
+    "transformers>=5.12,<5.17",
 ]
 
 [dependency-groups]
