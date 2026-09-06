@@ -4,6 +4,10 @@ on:
   pull_request:
     branches: [main, devel]
 
+# 최소 권한 기본값 — 모든 잡이 checkout·registry 조회만 한다.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -13,27 +17,36 @@ jobs:
     name: lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # 워크플로 자체의 공급망 회귀 차단 — 가변 태그·과도 권한·credential 잔류·보간 재유입을
+      # lint red로 막는다. lint는 devel·main 양쪽 ruleset의 required check라 별도 등록이 필요 없고,
+      # paths 필터 없이 항상 돈다(필터를 걸면 required에서 빠져 회귀를 막지 못한다).
+      # --offline: unpinned-uses는 오프라인 감사라 GITHUB_TOKEN 불필요. pipx는 ubuntu-latest 기본.
+      - name: Zizmor (workflow security)
+        timeout-minutes: 5
+        run: pipx run zizmor==1.30.0 --offline --no-progress --config .github/zizmor.yml .github/workflows
       - name: Ruff lint
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: check --output-format=github
           src: apps/invoice-ocr/backend
       - name: Ruff format check
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: format --check
           src: apps/invoice-ocr/backend
       - name: Ruff lint (ml)
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: check --output-format=github
           src: apps/invoice-ocr/ml
       - name: Ruff format check (ml)
-        uses: astral-sh/ruff-action@v3
+        uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
           version: 0.15.12
           args: format --check
@@ -46,8 +59,10 @@ jobs:
       run:
         working-directory: apps/invoice-ocr/frontend
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: "20"
           cache: npm
@@ -83,8 +98,10 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           cache-suffix: backend
@@ -107,8 +124,10 @@ jobs:
       run:
         working-directory: apps/invoice-ocr/ml
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
         with:
           enable-cache: true
           cache-suffix: ml
