@@ -3,6 +3,8 @@
 import re
 from pathlib import Path
 
+import yaml
+
 # 백엔드 tests 기준 레포 루트: tests → backend → invoice-ocr → apps → repo
 _REPO_ROOT = Path(__file__).resolve().parents[4]
 _WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "deploy.yml"
@@ -59,3 +61,61 @@ def test_rollback_uses_env_for_previous_sha() -> None:
     assert "PREV: ${{ steps.previous.outputs.sha }}" in env_block
     assert "${{ steps.previous.outputs.sha }}" not in run_block
     assert '[[ -n "$PREV" ]]' in run_block
+
+
+def _deploy_steps() -> tuple[list[dict], dict[str, int]]:
+    """deploy 잡의 step 목록과 이름→인덱스 맵을 돌려준다."""
+    job = yaml.safe_load(_WORKFLOW.read_text(encoding="utf-8"))["jobs"]["deploy"]
+    steps = job["steps"]
+    return steps, {step.get("name", ""): i for i, step in enumerate(steps)}
+
+
+def test_supply_chain_gate_precedes_db_and_install_steps() -> None:
+    """게이트는 체크아웃 직후·DB 백업과 설치 이전에 있어야 한다.
+
+    uv sync의 sdist setup.py와 npm ci의 lifecycle script는 실행 그 자체가 침해 시점이라
+    설치 이후 차단은 방어가 아니다. 게이트가 막히면 운영 DB 백업·마이그레이션에도
+    진입하지 않는다.
+    """
+    steps, order = _deploy_steps()
+    gate = "Supply-chain freshness gate (pre-install)"
+    assert order["Checkout target"] < order[gate]
+    assert order[gate] < order["Mark install phase entered"]
+    assert order["Mark install phase entered"] < order["Backup operational DB"]
+    assert order["Mark install phase entered"] < order["Backend deps + import smoke"]
+    assert steps[order[gate]]["if"] == (
+        "${{ github.event_name != 'workflow_dispatch' || !inputs.skip_supply_chain_gate }}"
+    )
+
+
+def test_rollback_scope_is_split_by_install_phase_marker() -> None:
+    """게이트·체크아웃 실패는 작업트리만 복원하고 실행 중인 서비스를 건드리지 않아야 한다.
+
+    취소도 함께 잡는다 — `failure()`는 취소 상태를 포함하지 않아, 게이트 도중 취소되면
+    운영 체크아웃에 미검증 target SHA가 남고 다음 배포가 그 SHA를 base로 삼는다.
+    """
+    steps, order = _deploy_steps()
+    restore = steps[order["Restore checkout on pre-install failure"]]
+    assert restore["if"] == (
+        "${{ (failure() || cancelled()) && steps.phase.outputs.entered != 'true' }}"
+    )
+    assert "npm ci" not in restore["run"]
+    assert "install-launchagent" not in restore["run"]
+    rollback = steps[order["Rollback on failure"]]
+    assert rollback["if"] == "${{ failure() && steps.phase.outputs.entered == 'true' }}"
+
+
+def test_pending_gate_base_is_cleared_only_after_deploy_success() -> None:
+    """우회 구간의 소급 검사 의무는 배포가 실제로 성공한 뒤에만 해제돼야 한다.
+
+    게이트 통과 직후 지우면, 뒤 단계 실패로 이전 SHA로 롤백됐을 때 검사되지 않은
+    우회 구간이 운영에 남은 채 기록만 사라진다.
+    """
+    steps, order = _deploy_steps()
+    gate = steps[order["Supply-chain freshness gate (pre-install)"]]
+    assert gate["id"] == "gate"
+    assert "rm -f" not in gate["run"]
+    clear = "Clear pending gate base"
+    assert order[clear] > order["ml-worker liveness"]
+    assert steps[order[clear]]["if"] == "${{ success() && steps.gate.outputs.checked == 'true' }}"
+    assert "rm -f" in steps[order[clear]]["run"]
