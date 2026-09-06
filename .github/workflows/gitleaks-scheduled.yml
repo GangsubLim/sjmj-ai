@@ -1,0 +1,157 @@
+name: Scheduled Secret Scan
+
+on:
+  schedule:
+    - cron: "0 1 * * *" # 매일 01:00 UTC (supply-chain-audit 00:00과 시간 분리)
+  push:
+    branches: [devel, main]
+  workflow_dispatch:
+
+# 최소 권한 + 이슈 upsert에 필요한 issues: write만 추가 (supply-chain-audit.yml과 동일).
+permissions:
+  contents: read
+  issues: write
+
+# 이슈 키가 레포 단일이라 동시 실행이 같은 이슈를 두고 경합한다 — ref별로 나누지 않고
+# 직렬화하며, 진행 중 실행을 취소하면 upsert·close가 중간 상태로 남으므로 취소하지 않는다.
+concurrency:
+  group: gitleaks-scheduled
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITLEAKS_VERSION: 8.30.1
+      GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+      # 트리거 ref와 무관하게 레포 단일 키 — `gitleaks git`은 특정 브랜치가 아니라
+      # 전 ref를 순회하므로(실측: main 체크아웃에서 feat 브랜치 시크릿 검출) devel·main
+      # 런이 같은 findings를 본다. 브랜치별 제목으로 나누면 같은 내용의 이슈가 둘 열린다.
+      ISSUE_TITLE: "[gitleaks] baseline secret findings"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # 전체 히스토리 스캔의 전제 — supply-chain-audit.yml의 shallow 패턴을 복사하면 안 된다.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Verify full history (not shallow)
+        shell: bash
+        run: |
+          set -euo pipefail
+          shallow="$(git rev-parse --is-shallow-repository)"
+          if [ "$shallow" != "false" ]; then
+            echo "::error::repository is shallow — full-history scan impossible"
+            exit 1
+          fi
+
+      - name: Reject repo-controlled gitleaks suppression files
+        shell: bash
+        run: |
+          set -euo pipefail
+          # PR 게이트와 동일 정책 — 루트의 .gitleaks.toml·.gitleaksignore가 baseline까지
+          # 무력화하므로 존재 자체를 실패로 다룬다.
+          for suppressor in .gitleaks.toml .gitleaksignore; do
+            if [ -e "$suppressor" ]; then
+              echo "::error::${suppressor} is present — gitleaks gate config must not be repo-controlled"
+              exit 1
+            fi
+          done
+
+      - name: Download and verify gitleaks (v8.30.1, pinned SHA256)
+        shell: bash
+        run: |
+          set -euo pipefail
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          curl -fsSL --retry 3 -o "$tarball" "$url"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks version
+
+      - name: Scan full history (capture exit, do not fail job)
+        id: scan
+        shell: bash
+        run: |
+          set +e
+          # --all은 gitleaks 기본 순회(전 ref)와 동일하고, --diff-merges=first-parent가
+          # 기본 생략되는 merge 커밋 patch까지 덮는다(실측: 미지정 시 merge 해소분 미검출).
+          # --ignore-gitleaks-allow: `gitleaks:allow` 주석으로 baseline 스캔을
+          # 무력화하는 우회를 차단한다(per-PR 게이트와 동일 정책).
+          ./gitleaks git --log-opts="--all --diff-merges=first-parent" \
+            --exit-code 1 --redact --no-banner --ignore-gitleaks-allow \
+            --report-format json --report-path gitleaks-report.json 2> gitleaks-stderr.log
+          scan_status=$?
+          set -e
+          cat gitleaks-stderr.log >&2
+          # git 순회 중단·리포트 부재는 "검출 0"과 구별해야 한다 — 구별하지 않으면
+          # 오류로 인한 exit 0이 close 경로를 태워 실재 findings 이슈를 닫는다.
+          scan_ok=true
+          # gitleaks가 의미를 부여한 종료 코드는 0(clean)·1(검출)뿐이다 — 그 밖의 코드는
+          # 부분 결과를 남겼더라도 "검출됨"이 아니라 미완주로 다룬다.
+          case "$scan_status" in
+            0 | 1) ;;
+            *) scan_ok=false ;;
+          esac
+          if grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log; then
+            scan_ok=false
+          fi
+          if [ ! -f gitleaks-report.json ]; then
+            scan_ok=false
+          fi
+          {
+            echo "exit_code=$scan_status"
+            echo "scan_ok=$scan_ok"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Fail when the scan did not complete
+        if: steps.scan.outputs.scan_ok != 'true'
+        shell: bash
+        run: |
+          echo "::error::gitleaks baseline scan did not complete — findings state unknown"
+          exit 1
+
+      - name: Open or update tracking issue on findings (no secret disclosure)
+        if: steps.scan.outputs.exit_code != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # --report-path JSON에서 secret 원문(Secret/Match)과 라인 좌표(Fingerprint)는
+          # 제외하고 룰·파일·커밋만 추출한다 — public 레포의 공개 이슈다.
+          count="$(jq 'length' gitleaks-report.json)"
+          summary="$(jq -r '.[] | "- rule=\(.RuleID) file=\(.File) commit=\(.Commit[0:12])"' gitleaks-report.json)"
+          {
+            printf 'gitleaks baseline 전체 히스토리 스캔에서 %s건 검출 — commit %s (run %s).\n\n' \
+              "$count" "$GITHUB_SHA" "$GITHUB_RUN_ID"
+            printf '**이슈를 읽기 전에 해당 자격증명을 먼저 회수(rotate)한다.** 공개 레포의 공개 이슈다.\n\n'
+            printf '```\n%s\n```\n\n' "$summary"
+            printf 'Actions run: %s/%s/actions/runs/%s\n\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf '> secret 원문·라인 좌표는 본문에 포함하지 않는다(--redact). 상세는 run 로그로 대조.\n'
+          } > issue-body.txt
+          # 검색은 안정 prefix로 넓게 → jq 정확 일치로 트래킹 이슈만 선택.
+          num="$(gh issue list --state open --limit 100 \
+            --search 'in:title "baseline secret findings"' --json number,title \
+            | jq -r --arg title "$ISSUE_TITLE" 'map(select(.title == $title)) | .[0].number // empty')"
+          if [ -z "$num" ]; then
+            gh issue create --title "$ISSUE_TITLE" --label needs-triage --body-file issue-body.txt
+          else
+            gh issue comment "$num" --body-file issue-body.txt
+          fi
+
+      - name: Close tracking issue when clean
+        if: steps.scan.outputs.exit_code == '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 조회를 대입문으로 분리한다 — `for n in $(gh …)` 형태는 set -e 아래서도
+          # 조회 실패를 삼켜 API 장애가 "닫을 이슈 없음"으로 둔갑한다.
+          nums="$(gh issue list --state open --limit 100 \
+            --search 'in:title "baseline secret findings"' --json number,title \
+            | jq -r --arg title "$ISSUE_TITLE" '.[] | select(.title == $title) | .number')"
+          for num in $nums; do
+            gh issue comment "$num" --body "gitleaks baseline clean — commit $GITHUB_SHA. closing."
+            gh issue close "$num"
+          done
