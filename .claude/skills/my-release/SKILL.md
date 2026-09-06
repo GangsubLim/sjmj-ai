@@ -83,13 +83,28 @@ cat VERSION
 
 ## Step 3: release.sh 실행
 
+`release.sh`는 **브랜치명을 보지 않고 `HEAD == origin/main`만 검사**하므로 detached HEAD에서도 실행 가능. macmini는 워크트리를 여러 개 쓰고 그중 하나가 `main`을 점유하고 있을 수 있으므로(운영 체크아웃 `/Users/submini/sjmj-ai`는 항상 detached라 무관), **점유자를 찾아 비켜줄 것 없이 detached 임시 워크트리를 띄워 수행**:
+
 ```bash
+git fetch origin main
+git worktree add --detach /tmp/rel origin/main
+cd /tmp/rel
 scripts/release.sh <patch|minor|major|x.y.z>
 ```
 
+Step 5의 push·PR까지 이 워크트리에서 진행하고, 릴리스가 끝나면 원래 워크트리로 돌아가 제거:
+
+```bash
+git worktree remove /tmp/rel
+```
+
+> 임시 워크트리에는 `node_modules`가 없어 아래 3번 frontend 검증이 `npm ci`를 먼저 돌린다(1~3분). 매번 버리는 대신 고정 경로 하나를 재사용하면 이 비용이 사라진다. backend 검증은 `uvx` 격리 실행이라 영향 없다.
+>
+> `main`을 점유한 워크트리가 있어도 detached는 브랜치를 점유하지 않으므로 충돌하지 않는다. 점유자 확인이 필요하면 `git worktree list --porcelain | grep -B2 'branch refs/heads/main'`.
+
 스크립트 동작:
 
-1. main 브랜치 + 워킹트리 클린 + origin/main 동기 검증
+1. `HEAD == origin/main` + 워킹트리 클린 검증 (브랜치명 무관 — detached 가능)
 2. VERSION 읽어 다음 버전 계산 + 태그/브랜치 중복 선검사
 3. **로컬 검증 — PR CI 게이트 미러**: `uvx ruff format --check . && uvx ruff check .` (backend) + `npm run lint && npm run format:check` (frontend)
 4. `scripts/sync-version.sh`로 루트 `VERSION` + `apps/invoice-ocr/backend/app/config.py:APP_VERSION` 동기 + `CHANGELOG.md`에 `## [vX.Y.Z] — YYYY-MM-DD` 헤더 prepend
@@ -181,10 +196,12 @@ gh pr checks $PR_NUM --watch --interval 10
 > ⚡ `git push origin vX.Y.Z` 실행 즉시 `deploy.yml`이 돌며 **배포가 시작된다**. 다음 단계는 그 결과를 지켜보는 것이다.
 
 ```bash
-git checkout main && git pull origin main
-git tag vX.Y.Z "$(git rev-parse HEAD)"
+git fetch origin main
+git tag vX.Y.Z FETCH_HEAD
 git push origin vX.Y.Z   # ← 이 시점에 deploy.yml 자동 실행
 ```
+
+> `git checkout main`을 거치지 않는다 — Step 3의 detached 임시 워크트리에서 그대로 이어가기 위해서이고, 태그가 붙어야 할 대상은 로컬 main이 아니라 **release PR이 merge된 `origin/main`**이므로 `FETCH_HEAD`가 더 정확하다.
 
 ## Step 7: 배포 확인
 
@@ -244,11 +261,17 @@ gh pr checks $PR_NUM --watch --interval 10   # devel required check 8종
 gh pr merge $PR_NUM --merge
 ```
 
-merge 후 로컬 devel을 원격에 맞춤:
+merge 후 로컬 devel을 원격에 맞춤 — **평소 devel을 쓰던 작업 워크트리에서** 수행(Step 3의 임시 워크트리가 아니라):
 
 ```bash
 git fetch origin --prune
 git checkout -B devel origin/devel
+```
+
+임시 워크트리는 여기서 제거:
+
+```bash
+git worktree remove /tmp/rel
 ```
 
 > **가드 ①에 결과가 나오면** 그 커밋은 릴리스에 포함되지 않은 로컬 작업. 덮어쓰지 말고 별도 브랜치로 옮겨(`git branch wip/<slug> devel`) 다음 사이클의 devel→main PR로 정식 반영. 옮긴 뒤 가드를 다시 통과시키고 진행.
