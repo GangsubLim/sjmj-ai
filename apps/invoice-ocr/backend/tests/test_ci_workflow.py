@@ -310,3 +310,148 @@ def test_gitleaks_ci_run_blocks_take_no_template_interpolation() -> None:
         if "${{" in step.get("run", "")
     ]
     assert not offenders, offenders
+
+
+# 이 상수는 Task 2에서 처음 필요해 이 지점에 둔다(모듈 상단 import 블록과 무관 — ruff E402 대상 아님).
+_GITLEAKS_WORKFLOW = _REPO_ROOT / ".github" / "workflows" / "gitleaks-scheduled.yml"
+
+
+def _scheduled() -> dict:
+    """주기 스캔 워크플로를 파싱한다."""
+    return yaml.safe_load(_GITLEAKS_WORKFLOW.read_text(encoding="utf-8"))
+
+
+def test_scheduled_scan_covers_full_history_and_stays_non_blocking() -> None:
+    """주기 스캔은 전체 히스토리를 보고, 검출돼도 잡을 실패시키지 않아야 한다.
+
+    shallow clone에서 돌면 과거 커밋의 시크릿이 조용히 안 잡힌다 — baseline의 존재
+    이유가 사라지므로 shallow면 명시적 fail이다. 반대로 검출 시 잡을 red로 만들면
+    devel·main push마다 실패 알림만 쌓이고 이슈 upsert step에 도달하지 못한다.
+    `--all`은 gitleaks 기본 순회(전 ref)와 동일하고 `--diff-merges=first-parent`가
+    기본 생략되는 merge 커밋 patch를 덮는다.
+    트리거 맵의 키가 `"on"`이 아니라 `True`인 것은 YAML 1.1이 `on`을 불리언으로 읽기 때문이다.
+    """
+    workflow = _scheduled()
+    triggers = workflow[True]
+    assert triggers["schedule"] == [{"cron": "0 1 * * *"}], "audit(00:00 UTC)와 시간 분리"
+    assert triggers["push"]["branches"] == ["devel", "main"]
+    assert "workflow_dispatch" in triggers
+    assert workflow["permissions"] == {"contents": "read", "issues": "write"}
+    steps = workflow["jobs"]["scan"]["steps"]
+    assert steps[0]["with"]["fetch-depth"] == 0
+    assert steps[0]["with"]["persist-credentials"] is False
+    # 원문 substring 단언은 대상 줄을 `#` 주석으로 강등해도 통과하는 거짓 green을 낳는다
+    # (이 결함이 PR ② `3361f05`·PR ③ `113f0c5`·Task 1 `f016758`에서 세 번 검출됐다) —
+    # positive 단언은 전부 `_strip_comments()` 통과 문자열에 대해 한다.
+    shallow = _strip_comments(_step(steps, "Verify full history")["run"])
+    assert "git rev-parse --is-shallow-repository" in shallow
+    assert "exit 1" in shallow
+    scan_step = _step(steps, "Scan full history")
+    assert scan_step["id"] == "scan"
+    scan = _strip_comments(scan_step["run"])
+    assert "set +e" in scan
+    assert 'echo "exit_code=$scan_status"' in scan
+    assert "--report-format json" in scan
+    assert "--exit-code 1" in scan
+    assert "--ignore-gitleaks-allow" in scan, "per-PR 게이트와 동일 우회 차단 정책"
+    assert '--log-opts="--all --diff-merges=first-parent"' in scan
+
+
+def test_scheduled_incomplete_scan_fails_the_job() -> None:
+    """스캔 미완주는 "검출 0"과 구별돼 잡을 실패시켜야 한다.
+
+    구별하지 않으면 git 오류로 인한 exit 0이 close 경로를 태워 실재 findings 이슈에
+    "clean"이라 코멘트하고 닫는다 — baseline 알림의 silent 소실이다.
+    """
+    steps = _scheduled()["jobs"]["scan"]["steps"]
+    scan = _strip_comments(_step(steps, "Scan full history")["run"])
+    assert 'echo "scan_ok=$scan_ok"' in scan
+    assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in scan
+    assert "[ ! -f gitleaks-report.json ]" in scan
+    guard = _step(steps, "Fail when the scan did not complete")
+    assert guard["if"] == "steps.scan.outputs.scan_ok != 'true'"
+    assert "exit 1" in _strip_comments(guard["run"])
+    names = [step.get("name", "") for step in steps]
+    assert names.index("Fail when the scan did not complete") < names.index(
+        "Close tracking issue when clean"
+    )
+
+
+def test_scheduled_rejects_repo_controlled_suppressors() -> None:
+    """baseline도 PR 게이트와 같은 억제 파일 정책을 적용해야 한다."""
+    steps = _scheduled()["jobs"]["scan"]["steps"]
+    run = _strip_comments(_step(steps, "Reject repo-controlled gitleaks suppression")["run"])
+    assert ".gitleaks.toml .gitleaksignore" in run
+    assert "exit 1" in run
+
+
+def test_scheduled_issue_upsert_uses_repo_label_and_hides_secrets() -> None:
+    """이슈 본문에 시크릿 원문·라인 좌표가 실리면 안 되고, 라벨은 이 레포에 실존해야 한다.
+
+    fs-web 원문의 `security` 라벨은 sjmj-ai에 없어 `gh issue create`가 실패한다
+    (spec D12 → `needs-triage`). 요약은 RuleID/File/Commit만 담고 `.Secret`·`.Match`·
+    `.Fingerprint`는 어디에서도 참조하지 않는다 — public 레포의 공개 이슈다.
+    제목은 ref를 담지 않는 레포 단일 키다(`gitleaks git`이 전 ref를 순회하므로
+    devel·main 런이 같은 findings를 본다).
+
+    부재(negative) 단언(`--label security`·`.Secret`·`.Match`·`.Fingerprint`)은 원문
+    그대로 본다 — 주석 안에 등장해도 실제 유출 표면이 되므로 stripped 텍스트로 완화하면
+    안 된다.
+    """
+    workflow = _scheduled()
+    text = _GITLEAKS_WORKFLOW.read_text(encoding="utf-8")
+    env = workflow["jobs"]["scan"]["env"]
+    assert env["ISSUE_TITLE"] == "[gitleaks] baseline secret findings"
+    steps = workflow["jobs"]["scan"]["steps"]
+    upsert = _step(steps, "Open or update tracking issue")
+    assert upsert["if"] == "steps.scan.outputs.exit_code != '0'"
+    upsert_run = _strip_comments(upsert["run"])
+    assert "--label needs-triage" in upsert_run
+    assert "--label security" not in text
+    assert ".Secret" not in text
+    assert ".Match" not in text
+    assert ".Fingerprint" not in text
+    assert "--limit 100" in upsert_run, "기본 30건 창 밖이면 중복 생성"
+    assert 'jq -r --arg title "$ISSUE_TITLE"' in upsert_run, "제목을 jq 식에 보간하지 않음"
+    assert "--redact" in _strip_comments(_step(steps, "Scan full history")["run"])
+    close = _step(steps, "Close tracking issue when clean")
+    assert close["if"] == "steps.scan.outputs.exit_code == '0'"
+    close_run = _strip_comments(close["run"])
+    assert 'nums="$(gh issue list' in close_run, "조회 실패를 삼키지 않게 대입문으로 분리"
+    assert "for num in $nums" in close_run
+
+
+def test_scheduled_runs_are_serialized_not_cancelled() -> None:
+    """이슈 키가 레포 단일이므로 동시 실행은 취소가 아니라 직렬화여야 한다."""
+    assert _scheduled()["concurrency"] == {
+        "group": "gitleaks-scheduled",
+        "cancel-in-progress": False,
+    }
+
+
+def test_scheduled_pins_the_same_gitleaks_binary() -> None:
+    """주기 스캔도 PR 게이트와 같은 릴리스·같은 체크섬으로 고정돼야 한다.
+
+    두 계층이 다른 버전을 쓰면 PR에서 통과한 룰셋과 baseline 룰셋이 갈려
+    baseline 이슈가 PR 게이트로 재현되지 않는다.
+    """
+    text = _GITLEAKS_WORKFLOW.read_text(encoding="utf-8")
+    assert _env_values(text, "GITLEAKS_VERSION") == [_GITLEAKS_VERSION]
+    assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
+    assert "sha256sum -c -" in _strip_comments(text)
+    assert "releases/latest" not in text
+
+
+def test_scheduled_run_blocks_take_no_template_interpolation() -> None:
+    """주기 스캔의 run 블록도 `${{ }}`를 직접 담지 않는다(보간은 env로만).
+
+    이 부재 단언은 원문(unstripped) 그대로 본다 — GitHub Actions는 `run:` 블록 안의
+    `${{ }}`를 셸 실행 전에 치환하며 그 치환은 `#` 주석 라인 안에서도 일어나므로,
+    `_strip_comments()`를 거치면 주석에 숨은 보간을 놓친다.
+    """
+    offenders = [
+        step.get("name", "?")
+        for step in _scheduled()["jobs"]["scan"]["steps"]
+        if "${{" in step.get("run", "")
+    ]
+    assert not offenders, offenders
