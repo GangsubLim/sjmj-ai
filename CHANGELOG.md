@@ -5,6 +5,23 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.17.0] — 2026-09-06
+
+hermes 위임 입력에서 사람이 고친 최종본을 매일 밤 회수해 판독 지식으로 누적하고, 다음 판독이 그 지식을 먼저 읽도록 이어 붙인 릴리스 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161)).
+
+### Added
+
+- 위임 입력 교정 회수·지식 발행 배치 `agent_learn.py` 신설 — 초안과 최종본의 차이를 최종본 해시 원장으로 멱등 추출해 교정 사전·확정 어휘·금액 오류 통계로 재구성, 신규 교정이 없으면 후속 에이전트 기동을 스스로 닫음 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+- 판독 지식의 버전 발행 경로 — 헤딩 구성·근거 id·금지어·길이를 검증한 뒤에만 `knowledge/v{N}.md`와 `active.md`를 원자 교체, 검증 미달 지식이 운영 판독에 들어가는 경로 차단 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+- 위임 입력 일치율 리포트에 지식 버전 축 추가 — 어느 지식 버전에서 만든 명세서인지로 나눠 학습 효과를 버전별로 비교 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+
+### Changed
+
+- 위임 입력 스킬이 판독에 앞서 누적된 교정 사전·확정 어휘를 먼저 읽고 후보군으로 사용 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+- 총액이 행 합계와 어긋나면 각 행 금액을 자릿수 기준으로 1회 재판독 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+- 발행일은 사진·캡션과 무관하게 항상 오늘로 기재하고, 수신처는 등록 거래처 후보가 있을 때만 채우며 없으면 `X`와 읽은 글자를 함께 남겨 사람이 확인 ([#161](https://github.com/GangsubLim/sjmj-ai/pull/161))
+- 프론트 의존성 dependabot PR 10건 일괄 갱신 — axios·brace-expansion·esbuild·vite 보안 갱신 포함 ([#162](https://github.com/GangsubLim/sjmj-ai/pull/162), [#168](https://github.com/GangsubLim/sjmj-ai/pull/168))
+
 ## [v0.16.0] — 2026-09-06
 
 텔레그램 사진을 hermes agent가 읽어 거래명세서를 바로 생성하는 위임 입력 경로를 열고, 추론 잡의 단계별 기하를 사이드카로 남겨 큐레이션 화면에 겹쳐 보이며, 큐레이션 목록에 행 증감을 노출한 릴리스 ([#155](https://github.com/GangsubLim/sjmj-ai/pull/155), [#157](https://github.com/GangsubLim/sjmj-ai/pull/157), [#158](https://github.com/GangsubLim/sjmj-ai/pull/158)).
