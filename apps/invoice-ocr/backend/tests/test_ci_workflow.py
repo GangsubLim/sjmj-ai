@@ -455,3 +455,28 @@ def test_scheduled_run_blocks_take_no_template_interpolation() -> None:
         if "${{" in step.get("run", "")
     ]
     assert not offenders, offenders
+
+
+# pre-commit 계층은 Task 3에서 합류한다.
+_PRE_COMMIT_CONFIG = _REPO_ROOT / ".pre-commit-config.yaml"
+# pre-commit은 태그가 아니라 커밋 SHA로 고정한다 — v8.30.1이 가리키는 커밋.
+_GITLEAKS_PRE_COMMIT_REV = "83d9cd684c87d95d656c1458ef04895a7f1cbd8e"
+
+
+def test_pre_commit_hook_pins_the_same_gitleaks_release() -> None:
+    """로컬 1차 차단 계층도 CI 두 계층과 같은 v8.30.1에 고정돼야 한다.
+
+    태그(`v8.30.1`)는 옮겨 달 수 있으므로 rev는 커밋 SHA이고, 사람이 읽는
+    `# frozen: vX` 주석이 그 SHA가 어느 릴리스인지 남긴다. `--ignore-gitleaks-allow`가
+    빠지면 개발자가 `gitleaks:allow` 주석만으로 로컬 훅을 무력화할 수 있다.
+    """
+    text = _PRE_COMMIT_CONFIG.read_text(encoding="utf-8")
+    config = yaml.safe_load(text)
+    entries = [
+        repo for repo in config["repos"] if repo["repo"] == "https://github.com/gitleaks/gitleaks"
+    ]
+    assert len(entries) == 1, [repo["repo"] for repo in config["repos"]]
+    entry = entries[0]
+    assert entry["rev"] == _GITLEAKS_PRE_COMMIT_REV
+    assert entry["hooks"] == [{"id": "gitleaks", "args": ["--ignore-gitleaks-allow"]}]
+    assert f"{_GITLEAKS_PRE_COMMIT_REV} # frozen: v{_GITLEAKS_VERSION}" in text
