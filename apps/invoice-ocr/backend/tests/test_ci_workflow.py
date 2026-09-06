@@ -189,3 +189,119 @@ def test_osv_scan_assert_closes_the_scanner_fail_open() -> None:
     # 파일 부재(artifact 내부 파일명 계약 위반)와 빈 파일(스캐너 fail-open)을 가르는 분기.
     # 조치가 다른 두 원인이 다시 한 메시지로 뭉개지지 않게 부재 분기의 존속을 고정한다.
     assert '[ ! -f "$RESULTS" ]' in verify_run
+
+
+# ==================== gitleaks 2-tier (PR ④) ====================
+# 세 계층(pre-commit·PR 게이트·주기 baseline)이 같은 릴리스에 고정돼야 한다.
+_GITLEAKS_VERSION = "8.30.1"
+_GITLEAKS_SHA256 = "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+
+
+def _step(steps: list, name_fragment: str) -> dict:
+    """step 목록에서 이름에 조각이 든 step 하나를 고른다(0건·2건 이상은 실패)."""
+    matches = [step for step in steps if name_fragment in step.get("name", "")]
+    assert len(matches) == 1, f"{name_fragment}: {[step.get('name') for step in steps]}"
+    return matches[0]
+
+
+def _env_values(text: str, key: str) -> list[str]:
+    """워크플로 원문에서 `KEY: value` 형태 env 지정값을 등장 순서대로 모은다.
+
+    잡·step 어느 수준에 놓였든 잡히도록 파싱 결과가 아니라 원문을 훑는다.
+    """
+    prefix = f"{key}:"
+    return [
+        line.strip()[len(prefix) :].strip()
+        for line in text.splitlines()
+        if line.strip().startswith(prefix)
+    ]
+
+
+def test_gitleaks_job_runs_unconditionally_and_scans_pr_range() -> None:
+    """gitleaks 잡은 무조건 실행되고 PR 커밋 범위를 merge 커밋까지 포함해 스캔해야 한다.
+
+    `needs`·`if`가 붙으면 선행 잡 실패 시 이 잡이 skipped가 되고, GitHub는 skipped
+    required check를 success로 인정해 시크릿이 든 PR의 머지 버튼이 열린다.
+    BASE_SHA가 비면 스캔 범위 계산이 불가능하므로 조용한 통과가 아니라 fail이어야 한다.
+    `--diff-merges=first-parent`가 빠지면 `git log`가 merge 커밋 patch를 생략해
+    충돌 해소 과정에 들어간 시크릿이 통째로 새어나간다(2026-09-06 실측).
+    """
+    job = _jobs()["gitleaks"]
+    assert "needs" not in job
+    assert "if" not in job
+    checkout = job["steps"][0]
+    assert checkout["with"]["fetch-depth"] == 0, "BASE..HEAD 접근에 전체 히스토리 필요"
+    assert checkout["with"]["persist-credentials"] is False
+    scan = _step(job["steps"], "Scan PR commit range")
+    assert scan["env"]["BASE_SHA"] == "${{ github.event.pull_request.base.sha }}"
+    run = scan["run"]
+    assert '[ -z "${BASE_SHA:-}" ]' in run
+    assert "exit 1" in run
+    assert '--log-opts="${BASE_SHA}..HEAD --diff-merges=first-parent"' in run
+    assert "--exit-code 1" in run, "기본값과 같으나 설정 드리프트 방지를 위해 명시 고정"
+    assert "--redact" in run
+    assert "--ignore-gitleaks-allow" in run, "`gitleaks:allow` 주석 우회 차단"
+
+
+def test_gitleaks_job_fails_closed_when_git_traversal_breaks() -> None:
+    """git 순회가 깨지면 초록이 아니라 빨강이어야 한다.
+
+    gitleaks는 `fatal: Invalid revision range` 뒤에도 `no leaks found` + exit 0을
+    낸다(v8.30.1 실측). base 강제푸시·객체 미fetch가 게이트를 조용히 무력화하므로
+    범위 양 끝을 선검증하고, gitleaks stderr에 git 오류가 남으면 fail-closed다.
+    """
+    run = _step(_jobs()["gitleaks"]["steps"], "Scan PR commit range")["run"]
+    assert 'git rev-parse --verify --quiet "${rev}^{commit}"' in run
+    assert "2> gitleaks-stderr.log" in run
+    assert "grep -qE 'fatal:|stderr is not empty' gitleaks-stderr.log" in run
+    assert 'exit "$scan_status"' in run
+
+
+def test_gitleaks_job_rejects_repo_controlled_suppressors() -> None:
+    """스캔 대상 루트의 억제 파일은 존재 자체가 실패여야 한다.
+
+    gitleaks는 `(target)/.gitleaks.toml`과 루트 `.gitleaksignore`를 자동 발견한다.
+    같은 PR이 둘 중 하나를 얹으면 게이트가 통째로 무력화되고(실측 exit 1 → 0),
+    `--config`로 레포 밖 설정을 강제해도 `.gitleaksignore`는 계속 적용된다(실측).
+    """
+    run = _step(_jobs()["gitleaks"]["steps"], "Reject repo-controlled gitleaks suppression")["run"]
+    assert ".gitleaks.toml .gitleaksignore" in run
+    assert "exit 1" in run
+
+
+def test_gitleaks_job_steps_cannot_be_soft_failed() -> None:
+    """잡·step 어느 수준에도 실패를 삼키는 스위치가 없어야 한다."""
+    job = _jobs()["gitleaks"]
+    assert "continue-on-error" not in job
+    soft = [
+        step.get("name", "?")
+        for step in job["steps"]
+        if "if" in step or "continue-on-error" in step
+    ]
+    assert not soft, soft
+
+
+def test_gitleaks_job_pins_binary_by_version_and_checksum() -> None:
+    """바이너리는 고정 버전 + 하드코딩 SHA256으로만 들어와야 한다.
+
+    액션이 아니라 릴리스 tarball을 받으므로 SHA 핀 정책의 대체물이 이 체크섬 하나다.
+    `releases/latest`로 흘러가거나 검증 전에 압축을 풀면 공급망 앵커가 사라진다.
+    """
+    text = _WORKFLOW.read_text(encoding="utf-8")
+    assert _env_values(text, "GITLEAKS_VERSION") == [_GITLEAKS_VERSION]
+    assert _env_values(text, "GITLEAKS_SHA256") == [_GITLEAKS_SHA256]
+    assert "sha256sum -c -" in text
+    assert "releases/download/v${GITLEAKS_VERSION}/${tarball}" in text
+    assert "releases/latest" not in text
+    download = _step(_jobs()["gitleaks"]["steps"], "Download and verify gitleaks")["run"]
+    assert download.index("curl") < download.index("sha256sum -c -") < download.index("tar -xzf")
+
+
+def test_gitleaks_ci_run_blocks_take_no_template_interpolation() -> None:
+    """gitleaks 잡의 run 블록은 `${{ }}` 보간을 직접 담지 않는다(PR ① 정책 회귀 방지)."""
+    offenders = [
+        step.get("name", "?")
+        for step in _jobs()["gitleaks"]["steps"]
+        if "${{" in step.get("run", "")
+    ]
+    assert not offenders, offenders
