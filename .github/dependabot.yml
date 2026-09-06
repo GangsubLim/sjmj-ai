@@ -1,0 +1,50 @@
+# Dependabot version updates — devel 타깃·cooldown 7일·major 제외 (spec §6.4)
+#
+# security update는 GitHub 고정 동작으로 항상 default branch(main) 대상이며 target-branch가
+# 지정된 entry의 옵션(cooldown 포함)이 적용되지 않는다. 그 경로의 방어는 PR CI의 freshness
+# 게이트(scripts/lockfile_freshness.py)가 담당한다.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    target-branch: "devel"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "npm"
+    directory: "/apps/invoice-ocr/frontend"
+    schedule:
+      interval: "weekly"
+    target-branch: "devel"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "uv"
+    directory: "/apps/invoice-ocr/backend"
+    schedule:
+      interval: "weekly"
+    target-branch: "devel"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "uv"
+    directory: "/apps/invoice-ocr/ml"
+    schedule:
+      interval: "weekly"
+    target-branch: "devel"
+    cooldown:
+      default-days: 7
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
