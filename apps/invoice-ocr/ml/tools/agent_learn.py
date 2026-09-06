@@ -545,16 +545,21 @@ def main(argv: list[str] | None = None) -> None:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    ap.add_argument(
+    common = argparse.ArgumentParser(add_help=False)
+    common.add_argument(
         "--data-dir",
         type=Path,
         default=Path(os.environ.get("SJMJ_DATA_DIR", "")),
         help="SJMJ_DATA_DIR (agent_uploads/·agent_knowledge/의 부모). 기본값 env",
     )
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("extract", help="초안↔최종본 diff → corrections·proposed.md (wake-gate stdout)")
-    sub.add_parser("publish", help="proposed.md 검증·발행")
-    rp = sub.add_parser("report", help="버전별 일치율 리포트")
+    sub.add_parser(
+        "extract",
+        parents=[common],
+        help="초안↔최종본 diff → corrections·proposed.md (wake-gate stdout)",
+    )
+    sub.add_parser("publish", parents=[common], help="proposed.md 검증·발행")
+    rp = sub.add_parser("report", parents=[common], help="버전별 일치율 리포트")
     rp.add_argument("--out", type=Path, default=Path("report/agent_report"))
     args = ap.parse_args(argv)
 

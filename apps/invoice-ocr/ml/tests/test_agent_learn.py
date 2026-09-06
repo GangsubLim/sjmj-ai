@@ -438,12 +438,12 @@ def test_main_extract_wake_gate_and_publish_report(tmp_path: Path, capsys, monke
     monkeypatch.setattr(al, "fetch_finals", lambda engine, ids: _finals(ids))
     monkeypatch.setattr(al, "fetch_vocab", lambda engine: VOCAB)
 
-    main(["--data-dir", str(tmp_path), "extract"])
+    main(["extract", "--data-dir", str(tmp_path)])
     out = capsys.readouterr().out.strip().splitlines()
     assert json.loads(out[0])["new"] == 1
     assert len(out) == 1
 
-    main(["--data-dir", str(tmp_path), "extract"])
+    main(["extract", "--data-dir", str(tmp_path)])
     out = capsys.readouterr().out.strip().splitlines()
     assert json.loads(out[-1]) == {"wakeAgent": False}
 
@@ -451,15 +451,15 @@ def test_main_extract_wake_gate_and_publish_report(tmp_path: Path, capsys, monke
     md = (kdir / "proposed.md").read_text(encoding="utf-8")
     edited = md.replace("## 일반화 규칙\n\n(없음)", "## 일반화 규칙\n\n- 킹핀교환→히타 (#573)")
     (kdir / "proposed.md").write_text(edited, encoding="utf-8")
-    main(["--data-dir", str(tmp_path), "publish"])
+    main(["publish", "--data-dir", str(tmp_path)])
     assert capsys.readouterr().out.strip() == "published v1 · 교정 사전 1쌍 · 규칙 1줄"
     assert (kdir / "active.md").exists()
 
     (kdir / "proposed.md").write_text(md.replace("## 일반화 규칙", "## 규칙"), encoding="utf-8")
-    main(["--data-dir", str(tmp_path), "publish"])
+    main(["publish", "--data-dir", str(tmp_path)])
     assert capsys.readouterr().out.startswith("rejected: 헤딩 불일치")
 
-    main(["--data-dir", str(tmp_path), "report", "--out", str(tmp_path / "rep")])
+    main(["report", "--data-dir", str(tmp_path), "--out", str(tmp_path / "rep")])
     rep = (tmp_path / "rep" / "report.md").read_text(encoding="utf-8")
     assert "# hermes 위임 입력 초안↔최종본 일치율" in rep
     assert "| none | 2 |" in rep
@@ -472,7 +472,7 @@ def test_main_extract_db_failure_is_silent_wake_gate(tmp_path: Path, capsys, mon
         raise RuntimeError("no db")
 
     monkeypatch.setattr(al, "_engine", boom)
-    main(["--data-dir", str(tmp_path), "extract"])
+    main(["extract", "--data-dir", str(tmp_path)])
     captured = capsys.readouterr()
     assert json.loads(captured.out.strip().splitlines()[-1]) == {"wakeAgent": False}
     assert "no db" in captured.err
