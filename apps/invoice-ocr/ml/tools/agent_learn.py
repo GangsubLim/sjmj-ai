@@ -60,6 +60,7 @@ DIGIT_CLASSES = (
     ("single_digit", "한 자리 혼동"),
     ("other", "기타"),
 )
+GRADES = (("자주(10회 이상)", 10), ("보통(3~9회)", 3), ("가끔(2회)", 0))
 
 
 class Correction(NamedTuple):
@@ -180,13 +181,24 @@ def append_corrections(path: Path, records: list[Correction]) -> None:
 # --- 결정적 절 렌더 · 절 분리/조립 ---
 
 
+def _grade(cnt: int) -> str:
+    return next(label for label, floor in GRADES if cnt >= floor)
+
+
 def _vocab_body(vocab: dict) -> str:
-    items = [
-        f"- {it['item_name']}" + (f" ({it['default_unit']})" if it.get("default_unit") else "")
-        for it in vocab.get("items", [])
-    ]
+    """품목은 등급 3단(등급 안 가나다순)·거래처는 목록. 빈도 숫자를 싣지 않아 집합이 바뀔 때만 절이 변한다."""
+    by_grade: dict[str, list[str]] = {label: [] for label, _ in GRADES}
+    for it in sorted(vocab.get("items", []), key=lambda x: x["item_name"]):
+        unit = f" ({it['default_unit']})" if it.get("default_unit") else ""
+        by_grade[_grade(it["cnt"])].append(f"- {it['item_name']}{unit}")
+    lines = ["품목 — 최근 12개월 등장 등급"]
+    if vocab.get("items"):
+        for label, _ in GRADES:
+            lines += [label, *(by_grade[label] or ["(없음)"])]
+    else:
+        lines.append("(없음)")
     comps = [f"- {c}" for c in vocab.get("companies", [])]
-    return "\n".join(["품목", *(items or ["(없음)"]), "", "거래처", *(comps or ["(없음)"])])
+    return "\n".join([*lines, "", "거래처", *(comps or ["(없음)"])])
 
 
 def _amount_stats(corrections: list[Correction]) -> str:
@@ -474,17 +486,26 @@ def cmd_report(data_dir: Path, out: Path, finals_fn) -> str:
 
 # --- DB 글루 (SQLAlchemy는 함수 안에서만 import — 코어 venv 안전) ---
 
-ITEMS_SQL = "SELECT item_name, default_unit FROM item_suggestions ORDER BY item_name"
+ITEMS_SQL = """
+SELECT TRIM(ii.name) AS item_name, COUNT(*) AS cnt, MAX(s.default_unit) AS default_unit
+FROM invoice_items ii
+JOIN invoices i ON i.id = ii.invoice_id
+LEFT JOIN item_suggestions s ON s.item_name = TRIM(ii.name)
+WHERE i.issue_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND TRIM(ii.name) <> ''
+GROUP BY TRIM(ii.name)
+HAVING cnt >= 2
+ORDER BY item_name
+"""
 COMPANIES_SQL = "SELECT company_name FROM company_suggestions ORDER BY company_name"
 
 
 def fetch_vocab(engine) -> dict:
-    """자동완성 사전 전량(품목명+기본단위, 거래처명)을 읽는다."""
+    """품목은 최근 12개월 invoice_items 빈도(2회 이상)+기본단위, 거래처는 자동완성 사전 전량."""
     from sqlalchemy import text
 
     with engine.connect() as conn:
         items = [
-            {"item_name": r.item_name, "default_unit": r.default_unit}
+            {"item_name": r.item_name, "cnt": int(r.cnt), "default_unit": r.default_unit}
             for r in conn.execute(text(ITEMS_SQL))
         ]
         companies = [r.company_name for r in conn.execute(text(COMPANIES_SQL))]

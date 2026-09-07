@@ -158,8 +158,8 @@ def _corr(iid, field, kind, d, f, dc=None, t="2026-09-06T03:00:00") -> Correctio
 
 VOCAB = {
     "items": [
-        {"item_name": "히타", "default_unit": "EA"},
-        {"item_name": "센터보도", "default_unit": None},
+        {"item_name": "히타", "cnt": 5, "default_unit": "EA"},
+        {"item_name": "센터보도", "cnt": 2, "default_unit": None},
     ],
     "companies": ["테스트"],
 }
@@ -186,6 +186,51 @@ def test_render_deterministic_empty_inputs():
     assert "(없음)" in det[HEADINGS[0]]
     assert det[HEADINGS[2]].endswith("- 마지막 교정 관측: -")
     assert list(det) == list(DET_HEADINGS)
+
+
+def test_vocab_body_grades_by_cnt_and_sorts_within_grade():
+    vocab = {
+        "items": [
+            {"item_name": "타이어", "cnt": 10, "default_unit": "EA"},
+            {"item_name": "공임", "cnt": 12, "default_unit": None},
+            {"item_name": "히타", "cnt": 9, "default_unit": "EA"},
+            {"item_name": "구리스", "cnt": 3, "default_unit": None},
+            {"item_name": "센터보도", "cnt": 2, "default_unit": None},
+        ],
+        "companies": ["테스트"],
+    }
+    body = render_deterministic([], vocab, 0)[HEADINGS[0]]
+    assert body == "\n".join(
+        [
+            "품목 — 최근 12개월 등장 등급",
+            "자주(10회 이상)",
+            "- 공임",
+            "- 타이어 (EA)",
+            "보통(3~9회)",
+            "- 구리스",
+            "- 히타 (EA)",
+            "가끔(2회)",
+            "- 센터보도",
+            "",
+            "거래처",
+            "- 테스트",
+        ]
+    )
+
+
+def test_vocab_body_empty_grade_and_empty_items():
+    one = {"items": [{"item_name": "히타", "cnt": 2, "default_unit": None}], "companies": []}
+    body = render_deterministic([], one, 0)[HEADINGS[0]]
+    assert "자주(10회 이상)\n(없음)\n보통(3~9회)\n(없음)\n가끔(2회)\n- 히타" in body
+    assert body.endswith("거래처\n(없음)")
+    empty = render_deterministic([], {"items": [], "companies": []}, 0)[HEADINGS[0]]
+    assert empty == "품목 — 최근 12개월 등장 등급\n(없음)\n\n거래처\n(없음)"
+
+
+def test_vocab_body_same_membership_renders_identically():
+    a = {"items": [{"item_name": "히타", "cnt": 4, "default_unit": None}], "companies": []}
+    b = {"items": [{"item_name": "히타", "cnt": 8, "default_unit": None}], "companies": []}
+    assert render_deterministic([], a, 0) == render_deterministic([], b, 0)
 
 
 def test_render_deterministic_is_deterministic_and_has_no_lexicon():
@@ -461,6 +506,33 @@ def test_main_extract_db_failure_is_silent_wake_gate(tmp_path: Path, capsys, mon
     captured = capsys.readouterr()
     assert json.loads(captured.out.strip().splitlines()[-1]) == {"wakeAgent": False}
     assert "no db" in captured.err
+
+
+def test_fetch_vocab_maps_cnt_and_companies():
+    pytest.importorskip("sqlalchemy")
+    from types import SimpleNamespace
+
+    from tools.agent_learn import COMPANIES_SQL, ITEMS_SQL, fetch_vocab
+
+    class _Conn:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def execute(self, stmt):
+            sql = str(stmt)
+            if sql == ITEMS_SQL:
+                return [SimpleNamespace(item_name="히타", cnt=5, default_unit=None)]
+            assert sql == COMPANIES_SQL
+            return [SimpleNamespace(company_name="테스트")]
+
+    engine = SimpleNamespace(connect=lambda: _Conn())
+    assert fetch_vocab(engine) == {
+        "items": [{"item_name": "히타", "cnt": 5, "default_unit": None}],
+        "companies": ["테스트"],
+    }
 
 
 def test_agent_learn_keeps_heavy_imports_lazy():
