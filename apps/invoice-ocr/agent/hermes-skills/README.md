@@ -61,7 +61,7 @@ hermes cron create "0 3 * * *" "$(cat <<'EOF'
 sjmj 판독 지식 야간 갱신. 무인 실행 — 질문 금지, HTTP API 호출 금지, 초안·DB 수정 금지.
 1. 위에 주입된 extract 요약 JSON의 proposed 경로 파일을 읽는다(/Users/submini/sjmj-ai-data/agent_knowledge/proposed.md).
 2. 같은 디렉토리의 corrections.jsonl에서 요약의 new 건수만큼 마지막 레코드를 읽어 근거로 삼는다.
-3. proposed.md에서 `## 거래처 프로필`과 `## 일반화 규칙` 두 절만 갱신한다. 다른 절·헤딩·제목은 한 글자도 바꾸지 않는다. 각 불릿은 `- 내용 (#invoice_id)` 형식으로 근거 id를 반드시 단다. 확신 없는 규칙은 쓰지 않는다. 거래처 프로필 30줄·일반화 규칙 20줄 이하. 비어 있으면 `(없음)` 한 줄.
+3. proposed.md에서 `## 거래처 프로필`과 `## 일반화 규칙` 두 절만 갱신한다. 다른 절·헤딩·제목은 한 글자도 바꾸지 않는다. 각 불릿은 `- 내용 (#invoice_id)` 형식으로 근거 id를 반드시 단다. 확신 없는 규칙은 쓰지 않는다. 거래처 프로필 30줄·일반화 규칙 20줄 이하. 비어 있으면 `(없음)` 한 줄. 오독→정답 쌍이나 특정 품목명 치환을 규칙으로 쓰지 않는다 — 규칙은 판독 절차·검산·서식 관행에 한정하며 `→`·`->` 문자가 있으면 발행이 거부된다.
 4. 실행: cd /Users/submini/sjmj-ai/apps/invoice-ocr/ml && set -a && . ~/.sjmj-ai/backend.env && set +a && /Users/submini/sjmj-ai/apps/invoice-ocr/ml/.venv/bin/python -m tools.agent_learn publish --data-dir "$SJMJ_DATA_DIR"
 5. 실행: 같은 환경에서 python -m tools.agent_learn report --data-dir "$SJMJ_DATA_DIR" --out /tmp/agent_report 후 /tmp/agent_report/report.md의 `## 지식 버전별 일치율` 표를 읽는다.
 6. 회신 1건(한국어, 5줄 이내): publish 출력 1줄 그대로 · 추가 교정 n건(kind별) · 버전별 일치율 표의 마지막 두 행. rejected면 사유를 그대로 인용한다.

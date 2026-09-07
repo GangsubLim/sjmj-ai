@@ -282,7 +282,7 @@ def _good_md() -> str:
         _det(),
         {
             HEADINGS[3]: "- 테스트: 자동차 부품 위주 (#573)",
-            HEADINGS[4]: "- 킹핀교환으로 읽히면 히타 우선 검토 (#573)",
+            HEADINGS[4]: "- 합계가 안 맞으면 각 행 자릿수 재판독 (#573)",
         },
     )
 
@@ -325,6 +325,17 @@ def test_validate_rejects_line_cap_and_forbidden_and_size():
 def test_validate_allows_placeholder_and_non_bullet_lines():
     md = assemble(_det(), {})
     assert validate_proposed(md, _det(), {573}) == []
+
+
+def test_validate_rejects_arrow_in_llm_sections_only():
+    sup = [_corr(571, "items[1].supply", "supply", 560000, 60000, "prefix_drop")]
+    det = render_deterministic(sup, VOCAB, 1)
+    assert "560000 → 60000" in det[HEADINGS[1]]
+    assert validate_proposed(assemble(det, {}), det, {571}) == []
+    for arrow in ("→", "->"):
+        md = assemble(det, {HEADINGS[4]: f"- 킹핀교환{arrow}히타 우선 검토 (#571)"})
+        errs = validate_proposed(md, det, {571})
+        assert any(e == f"금지어 {arrow!r}" for e in errs), (arrow, errs)
 
 
 def test_publish_writes_version_active_and_log(tmp_path: Path):

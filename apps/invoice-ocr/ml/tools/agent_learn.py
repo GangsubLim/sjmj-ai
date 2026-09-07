@@ -53,7 +53,7 @@ LLM_HEADINGS = HEADINGS[3:]
 MAX_CHARS = 12000
 MAX_PROFILE_LINES = 30
 MAX_RULE_LINES = 20
-FORBIDDEN = ("curl", "POST", "DELETE", "http://")
+FORBIDDEN = ("curl", "POST", "DELETE", "http://", "→", "->")
 _ID_RE = re.compile(r"#(\d+)")
 DIGIT_CLASSES = (
     ("prefix_drop", "앞자리 누락"),
