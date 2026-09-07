@@ -29,14 +29,14 @@ config.yaml에서 해당 줄 삭제 후 게이트웨이 재시작. hermes 설치
 
 ## 자기개선 루프(야간 배치)
 
-spec `docs/work/2026-09/2026-09-06-hermes-self-improvement-pipeline/spec.md`(로컬 전용). 사용자가 `/edit/{id}`에서 고친 최종본을 매일 03:00 회수해 `/Users/submini/sjmj-ai-data/agent_knowledge/active.md`로 누적 — SKILL.md 0단계가 읽는다. 스크립트는 `apps/invoice-ocr/ml/tools/agent_learn.py`(extract·publish·report)
+spec `docs/work/2026-09/2026-09-06-hermes-self-improvement-pipeline/spec.md`(로컬 전용). 사용자가 `/edit/{id}`에서 고친 최종본을 매일 03:00 회수해 `/Users/submini/sjmj-ai-data/agent_knowledge/active.md`로 누적 — SKILL.md 0단계가 읽는다. 스크립트는 `apps/invoice-ocr/ml/tools/agent_learn.py`(extract·publish·report). 신규 교정이 없어도 결정적 절(확정 어휘 등급·금액 통계·현황)이 바뀌면 extract가 LLM 턴 없이 바로 발행한다(무인 발행 — versions.jsonl에서 직전 레코드와 corrections_through가 같은 발행)
 
 | 파일(`agent_knowledge/`) | 소유 | 내용 |
 | --- | --- | --- |
 | `corrections.jsonl` | extract | 교정 1건 1줄(append-only) |
 | `ledger.json` | extract | `{invoice_id: 최종본 해시}` — 멱등·재수정 감지 |
-| `vocab_snapshot.json` | extract | 사전 스냅샷(publish 재생성용) |
-| `proposed.md` | extract 작성 · LLM 편집 | 다음 버전 스테이징 — LLM은 `## 거래처 프로필`·`## 일반화 규칙`만 편집 |
+| `vocab_snapshot.json` | extract | 어휘 스냅샷 — 품목은 최근 12개월 invoice 빈도(`cnt`, 2회 이상)·거래처는 자동완성 사전(publish 재생성용) |
+| `proposed.md` | extract 작성 · LLM 편집 | 다음 버전 스테이징(5절: 확정 어휘·금액 오류 통계·데이터 현황 + 거래처 프로필·일반화 규칙) — LLM은 뒤 두 절만 편집, `→`·`->` 포함 시 거부 |
 | `knowledge/v{N}.md` · `active.md` · `versions.jsonl` | publish | 버전 보관 · 현재본 · 발행/거부 기록 |
 
 ### 래퍼 스크립트 `~/.hermes/scripts/sjmj_agent_learn.sh`
@@ -84,4 +84,4 @@ hermes cron run <id>                                # 즉시 1회 실행(동기 
 - 등록 경로가 **워크트리**면 워크트리 삭제 시 스킬 소실 — 승격 시 배포 체크아웃(`/Users/submini/sjmj-ai`, 배포 후) 경로로 이전
 - SKILL.md 수정 후에는 게이트웨이 재시작으로 반영 확인(스캔 시그니처는 디렉토리 mtime 기반)
 - 게이트웨이 cwd가 `/Users/submini`라 repo-local `.hermes/skills` + `hermes skills trust` 방식은 부적합
-- 보관 파일: `/Users/submini/sjmj-ai-data/agent_uploads/{invoice_id}.{jpg|png}` + `{invoice_id}.draft.json`. 리포트는 `apps/invoice-ocr/ml/tools/agent_report.py`
+- 보관 파일: `/Users/submini/sjmj-ai-data/agent_uploads/{invoice_id}.{jpg|png}` + `{invoice_id}.draft.json` + `{invoice_id}.raw.json`(1단계 패스 1 전사값·확신 등급, 집계는 후속). 리포트는 `apps/invoice-ocr/ml/tools/agent_report.py`
