@@ -165,60 +165,35 @@ VOCAB = {
 }
 
 
-def test_render_deterministic_lexicon_counts_and_sorts():
-    cs = [
-        _corr(573, "items[2].name", "name", "킹핀교환", "히타"),
-        _corr(574, "items[2].name", "name", "킹핀교환", "히타"),
-        _corr(572, "items[0].name", "name", "번호등", "보조물통"),
-        _corr(570, "recipient", "recipient", "테스트 ", "테스트상사"),
-    ]
-    det = render_deterministic(cs, VOCAB, 5)
-    lex = det[HEADINGS[0]].splitlines()
-    assert lex[0] == "| 오독 | 정답 | 횟수 | 근거 id |"
-    assert lex[2] == "| 킹핀교환 | 히타 | 2 | #573 #574 |"
-    assert lex[3] == "| 번호등 | 보조물통 | 1 | #572 |"
-    assert lex[4] == "| 테스트 | 테스트상사 | 1 | #570 |"
-
-
-def test_render_deterministic_lexicon_skips_placeholder_x():
-    cs = [
-        _corr(575, "recipient", "recipient", "X", "케이상사"),
-        _corr(575, "items[0].name", "name", "X", "히타"),
-        _corr(573, "items[2].name", "name", "킹핀교환", "히타"),
-    ]
-    lex = render_deterministic(cs, VOCAB, 1)[HEADINGS[0]]
-    assert "| X |" not in lex
-    assert "| 킹핀교환 | 히타 | 1 | #573 |" in lex
-
-
 def test_render_deterministic_vocab_amount_status():
     cs = [
         _corr(570, "items[0].supply", "supply", 98000, 18400, "other"),
         _corr(571, "items[1].supply", "supply", 560000, 60000, "prefix_drop"),
     ]
     det = render_deterministic(cs, VOCAB, 5)
-    assert "- 히타 (EA)" in det[HEADINGS[1]]
-    assert "- 센터보도\n" in det[HEADINGS[1]] + "\n"
-    assert "- 테스트" in det[HEADINGS[1]]
-    assert "- 앞자리 누락(prefix_drop): 1" in det[HEADINGS[2]]
-    assert "- #571 items[1].supply: 560000 → 60000 (prefix_drop)" in det[HEADINGS[2]]
-    assert det[HEADINGS[3]] == (
+    assert "- 히타 (EA)" in det[HEADINGS[0]]
+    assert "- 센터보도\n" in det[HEADINGS[0]] + "\n"
+    assert "- 테스트" in det[HEADINGS[0]]
+    assert "- 앞자리 누락(prefix_drop): 1" in det[HEADINGS[1]]
+    assert "- #571 items[1].supply: 560000 → 60000 (prefix_drop)" in det[HEADINGS[1]]
+    assert det[HEADINGS[2]] == (
         "- 누적 교정: 2건\n- 초안(원장): 5건\n- 마지막 교정 관측: 2026-09-06T03:00:00"
     )
 
 
 def test_render_deterministic_empty_inputs():
     det = render_deterministic([], {"items": [], "companies": []}, 0)
-    assert det[HEADINGS[0]] == "(없음)"
-    assert "(없음)" in det[HEADINGS[1]]
-    assert det[HEADINGS[3]].endswith("- 마지막 교정 관측: -")
+    assert "(없음)" in det[HEADINGS[0]]
+    assert det[HEADINGS[2]].endswith("- 마지막 교정 관측: -")
     assert list(det) == list(DET_HEADINGS)
 
 
-def test_render_deterministic_is_deterministic_and_escapes_pipe():
-    cs = [_corr(1, "items[0].name", "name", "a|b", "c")]
-    assert render_deterministic(cs, VOCAB, 1) == render_deterministic(cs, VOCAB, 1)
-    assert "| a\\|b | c | 1 | #1 |" in render_deterministic(cs, VOCAB, 1)[HEADINGS[0]]
+def test_render_deterministic_is_deterministic_and_has_no_lexicon():
+    cs = [_corr(1, "items[0].name", "name", "킹핀교환", "히타")]
+    det = render_deterministic(cs, VOCAB, 1)
+    assert det == render_deterministic(cs, VOCAB, 1)
+    assert list(det) == ["## 확정 어휘", "## 금액 오류 통계", "## 데이터 현황"]
+    assert "킹핀교환" not in "\n".join(det.values())
 
 
 # --- 절 분리·조립 ---
@@ -227,8 +202,8 @@ def test_render_deterministic_is_deterministic_and_escapes_pipe():
 def test_assemble_then_split_roundtrip():
     det = render_deterministic([], VOCAB, 0)
     llm = {
-        HEADINGS[4]: "- 테스트: 자동차 부품 (#573)",
-        HEADINGS[5]: "- 오일은 스프링일 수 있음 (#574)",
+        HEADINGS[3]: "- 테스트: 자동차 부품 (#573)",
+        HEADINGS[4]: "- 오일은 스프링일 수 있음 (#574)",
     }
     md = assemble(det, llm)
     assert md.startswith("# sjmj 판독 지식\n")
@@ -242,12 +217,12 @@ def test_assemble_then_split_roundtrip():
 
 def test_assemble_fills_missing_llm_sections():
     md = assemble(render_deterministic([], VOCAB, 0), {})
-    assert split_sections(md)[HEADINGS[5]] == "(없음)"
+    assert split_sections(md)[HEADINGS[4]] == "(없음)"
 
 
 def test_split_sections_rejects_duplicate_heading():
     with pytest.raises(ValueError):
-        split_sections("## 교정 사전\nx\n## 교정 사전\ny\n")
+        split_sections("## 확정 어휘\nx\n## 확정 어휘\ny\n")
 
 
 # --- 검증·발행 ---
@@ -261,8 +236,8 @@ def _good_md() -> str:
     return assemble(
         _det(),
         {
-            HEADINGS[4]: "- 테스트: 자동차 부품 위주 (#573)",
-            HEADINGS[5]: "- 킹핀교환으로 읽히면 히타 우선 검토 (#573)",
+            HEADINGS[3]: "- 테스트: 자동차 부품 위주 (#573)",
+            HEADINGS[4]: "- 킹핀교환으로 읽히면 히타 우선 검토 (#573)",
         },
     )
 
@@ -280,25 +255,25 @@ def test_validate_rejects_missing_or_reordered_heading():
 
 
 def test_validate_rejects_tampered_deterministic_section():
-    md = _good_md().replace("| 킹핀교환 | 히타 | 1 | #573 |", "| 킹핀교환 | 히터 | 1 | #573 |")
+    md = _good_md().replace("- 히타 (EA)", "- 히터 (EA)")
     assert any("결정적 절 변조" in e for e in validate_proposed(md, _det(), {573}))
 
 
 def test_validate_rejects_rule_without_or_with_unknown_id():
-    md = assemble(_det(), {HEADINGS[5]: "- 근거 없는 규칙"})
+    md = assemble(_det(), {HEADINGS[4]: "- 근거 없는 규칙"})
     assert any("근거 id 없음" in e for e in validate_proposed(md, _det(), {573}))
-    md = assemble(_det(), {HEADINGS[5]: "- 규칙 (#999)"})
+    md = assemble(_det(), {HEADINGS[4]: "- 규칙 (#999)"})
     assert any("미지의 근거 id" in e for e in validate_proposed(md, _det(), {573}))
 
 
 def test_validate_rejects_line_cap_and_forbidden_and_size():
     rules = "\n".join(f"- 규칙 {i} (#573)" for i in range(MAX_RULE_LINES + 1))
-    errs = validate_proposed(assemble(_det(), {HEADINGS[5]: rules}), _det(), {573})
+    errs = validate_proposed(assemble(_det(), {HEADINGS[4]: rules}), _det(), {573})
     assert any("줄" in e for e in errs)
     for w in FORBIDDEN:
-        md = assemble(_det(), {HEADINGS[5]: f"- {w} 써라 (#573)"})
+        md = assemble(_det(), {HEADINGS[4]: f"- {w} 써라 (#573)"})
         assert any("금지어" in e for e in validate_proposed(md, _det(), {573})), w
-    big = assemble(_det(), {HEADINGS[4]: "x" * 12000})
+    big = assemble(_det(), {HEADINGS[3]: "x" * 12000})
     assert any("자" in e for e in validate_proposed(big, _det(), {573}))
 
 
@@ -315,20 +290,17 @@ def test_publish_writes_version_active_and_log(tmp_path: Path):
     assert (kdir / "knowledge" / "v1.md").read_text(encoding="utf-8") == _good_md()
     assert (kdir / "active.md").read_text(encoding="utf-8") == _good_md()
     vs = load_versions(kdir / "versions.jsonl")
-    assert vs == [
-        {
-            "version": 1,
-            "published_at": "2026-09-07T03:00:00",
-            "corrections_through": 1,
-            "added_pairs": 1,
-        }
-    ]
+    assert vs == [{"version": 1, "published_at": "2026-09-07T03:00:00", "corrections_through": 1}]
     assert current_version(vs) == 1
 
     (kdir / "proposed.md").write_text(_good_md(), encoding="utf-8")
     r2 = publish(kdir, _det(), {573}, 1, "2026-09-08T03:00:00")
     assert r2.version == 2
-    assert load_versions(kdir / "versions.jsonl")[-1]["added_pairs"] == 0
+    assert load_versions(kdir / "versions.jsonl")[-1] == {
+        "version": 2,
+        "published_at": "2026-09-08T03:00:00",
+        "corrections_through": 1,
+    }
 
 
 def test_publish_rejection_keeps_active(tmp_path: Path):
@@ -410,8 +382,8 @@ def test_cmd_extract_writes_artifacts_and_summary(tmp_path: Path):
     assert set(load_ledger(kdir / "ledger.json")) == {573, 574}
     assert json.loads((kdir / "vocab_snapshot.json").read_text(encoding="utf-8")) == VOCAB
     proposed = split_sections((kdir / "proposed.md").read_text(encoding="utf-8"))
-    assert "| 킹핀교환 | 히타 | 1 | #573 |" in proposed[HEADINGS[0]]
-    assert proposed[HEADINGS[5]] == "(없음)"
+    assert "- 히타 (EA)" in proposed[HEADINGS[0]]
+    assert proposed[HEADINGS[4]] == "(없음)"
     assert not (kdir / "active.md").exists()
 
 
@@ -419,11 +391,11 @@ def test_cmd_extract_preserves_llm_sections_from_active(tmp_path: Path):
     _seed(tmp_path)
     kdir = tmp_path / "agent_knowledge"
     kdir.mkdir()
-    md = assemble(render_deterministic([], VOCAB, 0), {HEADINGS[5]: "- 기존 규칙 (#573)"})
+    md = assemble(render_deterministic([], VOCAB, 0), {HEADINGS[4]: "- 기존 규칙 (#573)"})
     (kdir / "active.md").write_text(md, encoding="utf-8")
     cmd_extract(tmp_path, _finals, lambda: VOCAB, "t")
     proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
-    assert split_sections(proposed)[HEADINGS[5]] == "- 기존 규칙 (#573)"
+    assert split_sections(proposed)[HEADINGS[4]] == "- 기존 규칙 (#573)"
 
 
 def test_cmd_extract_without_uploads_dir(tmp_path: Path):
@@ -460,10 +432,12 @@ def test_main_extract_wake_gate_and_publish_report(tmp_path: Path, capsys, monke
 
     kdir = tmp_path / "agent_knowledge"
     md = (kdir / "proposed.md").read_text(encoding="utf-8")
-    edited = md.replace("## 일반화 규칙\n\n(없음)", "## 일반화 규칙\n\n- 킹핀교환→히타 (#573)")
+    edited = md.replace(
+        "## 일반화 규칙\n\n(없음)", "## 일반화 규칙\n\n- 합계 불일치 시 자릿수 재판독 (#573)"
+    )
     (kdir / "proposed.md").write_text(edited, encoding="utf-8")
     main(["publish", "--data-dir", str(tmp_path)])
-    assert capsys.readouterr().out.strip() == "published v1 · 교정 사전 1쌍 · 규칙 1줄"
+    assert capsys.readouterr().out.strip() == "published v1 · 어휘 2종 · 규칙 1줄"
     assert (kdir / "active.md").exists()
 
     (kdir / "proposed.md").write_text(md.replace("## 일반화 규칙", "## 규칙"), encoding="utf-8")

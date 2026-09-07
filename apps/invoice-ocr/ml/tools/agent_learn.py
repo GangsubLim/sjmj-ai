@@ -1,9 +1,9 @@
 """hermes 위임 입력의 사용자 교정을 회수해 판독 지식(active.md)으로 누적하는 야간 배치 DAG.
 
 extract: ``agent_uploads/{id}.draft.json`` ↔ 운영 DB 최종본 diff → ``corrections.jsonl``
-         append(원장 해시로 멱등) → 결정적 절(1~4) 재생성 + 현재 LLM 절(5~6) 유지 → ``proposed.md``.
+         append(원장 해시로 멱등) → 결정적 절(1~3) 재생성 + 현재 LLM 절(4~5) 유지 → ``proposed.md``.
          신규 0건이면 stdout 마지막 줄 ``{"wakeAgent": false}``(hermes cron wake-gate).
-publish: ``proposed.md`` 검증(헤딩 6개·결정적 절 무변조·상한·근거 id·금지어) →
+publish: ``proposed.md`` 검증(헤딩 5개·결정적 절 무변조·상한·근거 id·금지어) →
          ``knowledge/v{N}.md`` + ``active.md`` 교체 + ``versions.jsonl`` 기록.
 report:  ``tools.agent_report``에 지식 버전 축을 더해 버전별 일치율 표.
 
@@ -40,18 +40,16 @@ from tools.agent_report import (
 )
 
 KNOWLEDGE_DIRNAME = "agent_knowledge"
-PLACEHOLDER = "X"  # 스킬이 수신처 후보 없음에 쓰는 자리표시 — 오독이 아니므로 교정 사전 제외
 TITLE = "# sjmj 판독 지식"
 HEADINGS = (
-    "## 교정 사전",
     "## 확정 어휘",
     "## 금액 오류 통계",
     "## 데이터 현황",
     "## 거래처 프로필",
     "## 일반화 규칙",
 )
-DET_HEADINGS = HEADINGS[:4]
-LLM_HEADINGS = HEADINGS[4:]
+DET_HEADINGS = HEADINGS[:3]
+LLM_HEADINGS = HEADINGS[3:]
 MAX_CHARS = 12000
 MAX_PROFILE_LINES = 30
 MAX_RULE_LINES = 20
@@ -182,25 +180,6 @@ def append_corrections(path: Path, records: list[Correction]) -> None:
 # --- 결정적 절 렌더 · 절 분리/조립 ---
 
 
-def _cell(v: object) -> str:
-    return _text(v).replace("|", "\\|")
-
-
-def _lexicon(corrections: list[Correction]) -> str:
-    pairs: dict[tuple[str, str], list[int]] = {}
-    for c in corrections:
-        if c.kind in ("name", "recipient") and _cell(c.draft) != PLACEHOLDER:
-            pairs.setdefault((_cell(c.draft), _cell(c.final)), []).append(c.invoice_id)
-    if not pairs:
-        return "(없음)"
-    rows = sorted(pairs.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    lines = ["| 오독 | 정답 | 횟수 | 근거 id |", "| --- | --- | --- | --- |"]
-    for (d, f), ids in rows:
-        refs = " ".join(f"#{i}" for i in sorted(set(ids)))
-        lines.append(f"| {d} | {f} | {len(ids)} | {refs} |")
-    return "\n".join(lines)
-
-
 def _vocab_body(vocab: dict) -> str:
     items = [
         f"- {it['item_name']}" + (f" ({it['default_unit']})" if it.get("default_unit") else "")
@@ -238,12 +217,11 @@ def _status(corrections: list[Correction], ledger_size: int) -> str:
 def render_deterministic(
     corrections: list[Correction], vocab: dict, ledger_size: int
 ) -> dict[str, str]:
-    """1~4절(교정 사전·확정 어휘·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
+    """1~3절(확정 어휘·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
     return {
-        HEADINGS[0]: _lexicon(corrections),
-        HEADINGS[1]: _vocab_body(vocab),
-        HEADINGS[2]: _amount_stats(corrections),
-        HEADINGS[3]: _status(corrections, ledger_size),
+        HEADINGS[0]: _vocab_body(vocab),
+        HEADINGS[1]: _amount_stats(corrections),
+        HEADINGS[2]: _status(corrections, ledger_size),
     }
 
 
@@ -267,7 +245,7 @@ def split_sections(md: str) -> dict[str, str]:
 
 
 def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
-    """제목 + 6절을 고정 순서로 조립한다. 비어 있는 절은 ``(없음)``."""
+    """제목 + 5절을 고정 순서로 조립한다. 비어 있는 절은 ``(없음)``."""
     parts = [TITLE, ""]
     for h in HEADINGS:
         body = (det.get(h) if h in DET_HEADINGS else llm.get(h, "")) or ""
@@ -281,7 +259,7 @@ def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
 def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]) -> list[str]:
     """proposed.md 검증 — 위반 사유 목록(비어 있으면 통과).
 
-    헤딩 6개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
+    헤딩 5개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
     """
     errors: list[str] = []
     if len(md) > MAX_CHARS:
@@ -296,7 +274,7 @@ def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]
     for h in DET_HEADINGS:
         if sections.get(h, "") != det_expected[h].strip():
             errors.append(f"결정적 절 변조: {h}")
-    for h, cap in ((HEADINGS[4], MAX_PROFILE_LINES), (HEADINGS[5], MAX_RULE_LINES)):
+    for h, cap in ((HEADINGS[3], MAX_PROFILE_LINES), (HEADINGS[4], MAX_RULE_LINES)):
         lines = [line for line in sections.get(h, "").splitlines() if line.strip()]
         if len(lines) > cap:
             errors.append(f"{h} {len(lines)}줄 > {cap}줄")
@@ -339,9 +317,11 @@ def _append_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _lexicon_rows(md: str) -> int:
+def _vocab_items(md: str) -> int:
+    """``## 확정 어휘``의 품목 불릿 수(``거래처`` 소제목 앞까지)."""
     body = split_sections(md).get(HEADINGS[0], "")
-    return max(0, sum(1 for line in body.splitlines() if line.startswith("| ")) - 2)
+    items_part = body.split("\n거래처", 1)[0]
+    return sum(1 for line in items_part.splitlines() if line.startswith("- "))
 
 
 def publish(
@@ -360,7 +340,6 @@ def publish(
         _append_jsonl(versions_path, {"version": cur, "published_at": now, "rejected": reason})
         return PublishResult(None, reason)
     active = kdir / "active.md"
-    before = _lexicon_rows(active.read_text(encoding="utf-8")) if active.exists() else 0
     n = cur + 1
     (kdir / "knowledge").mkdir(exist_ok=True)
     (kdir / "knowledge" / f"v{n}.md").write_text(md, encoding="utf-8")
@@ -369,12 +348,7 @@ def publish(
     os.replace(tmp, active)
     _append_jsonl(
         versions_path,
-        {
-            "version": n,
-            "published_at": now,
-            "corrections_through": corrections_count,
-            "added_pairs": _lexicon_rows(md) - before,
-        },
+        {"version": n, "published_at": now, "corrections_through": corrections_count},
     )
     return PublishResult(n, "published")
 
@@ -533,10 +507,10 @@ def _publish_line(r: PublishResult, kdir: Path) -> str:
     md = (kdir / "active.md").read_text(encoding="utf-8")
     rules = [
         line
-        for line in split_sections(md).get(HEADINGS[5], "").splitlines()
+        for line in split_sections(md).get(HEADINGS[4], "").splitlines()
         if line.lstrip().startswith("- ")
     ]
-    return f"published v{r.version} · 교정 사전 {_lexicon_rows(md)}쌍 · 규칙 {len(rules)}줄"
+    return f"published v{r.version} · 어휘 {_vocab_items(md)}종 · 규칙 {len(rules)}줄"
 
 
 def main(argv: list[str] | None = None) -> None:
