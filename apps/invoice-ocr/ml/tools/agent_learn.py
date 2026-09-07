@@ -1,9 +1,9 @@
 """hermes 위임 입력의 사용자 교정을 회수해 판독 지식(active.md)으로 누적하는 야간 배치 DAG.
 
 extract: ``agent_uploads/{id}.draft.json`` ↔ 운영 DB 최종본 diff → ``corrections.jsonl``
-         append(원장 해시로 멱등) → 결정적 절(1~4) 재생성 + 현재 LLM 절(5~6) 유지 → ``proposed.md``.
+         append(원장 해시로 멱등) → 결정적 절(1~3) 재생성 + 현재 LLM 절(4~5) 유지 → ``proposed.md``.
          신규 0건이면 stdout 마지막 줄 ``{"wakeAgent": false}``(hermes cron wake-gate).
-publish: ``proposed.md`` 검증(헤딩 6개·결정적 절 무변조·상한·근거 id·금지어) →
+publish: ``proposed.md`` 검증(헤딩 5개·결정적 절 무변조·상한·근거 id·금지어) →
          ``knowledge/v{N}.md`` + ``active.md`` 교체 + ``versions.jsonl`` 기록.
 report:  ``tools.agent_report``에 지식 버전 축을 더해 버전별 일치율 표.
 
@@ -40,28 +40,28 @@ from tools.agent_report import (
 )
 
 KNOWLEDGE_DIRNAME = "agent_knowledge"
-PLACEHOLDER = "X"  # 스킬이 수신처 후보 없음에 쓰는 자리표시 — 오독이 아니므로 교정 사전 제외
 TITLE = "# sjmj 판독 지식"
 HEADINGS = (
-    "## 교정 사전",
     "## 확정 어휘",
     "## 금액 오류 통계",
     "## 데이터 현황",
     "## 거래처 프로필",
     "## 일반화 규칙",
 )
-DET_HEADINGS = HEADINGS[:4]
-LLM_HEADINGS = HEADINGS[4:]
+DET_HEADINGS = HEADINGS[:3]
+LLM_HEADINGS = HEADINGS[3:]
 MAX_CHARS = 12000
 MAX_PROFILE_LINES = 30
 MAX_RULE_LINES = 20
-FORBIDDEN = ("curl", "POST", "DELETE", "http://")
+FORBIDDEN = ("curl", "POST", "DELETE", "http://", "→", "->")
 _ID_RE = re.compile(r"#(\d+)")
+_PHOTO_RE = re.compile(r"^(\d+)\.(jpg|jpeg|png)$")
 DIGIT_CLASSES = (
     ("prefix_drop", "앞자리 누락"),
     ("single_digit", "한 자리 혼동"),
     ("other", "기타"),
 )
+GRADES = (("자주(10회 이상)", 10), ("보통(3~9회)", 3), ("가끔(2회)", 0))
 
 
 class Correction(NamedTuple):
@@ -182,32 +182,24 @@ def append_corrections(path: Path, records: list[Correction]) -> None:
 # --- 결정적 절 렌더 · 절 분리/조립 ---
 
 
-def _cell(v: object) -> str:
-    return _text(v).replace("|", "\\|")
-
-
-def _lexicon(corrections: list[Correction]) -> str:
-    pairs: dict[tuple[str, str], list[int]] = {}
-    for c in corrections:
-        if c.kind in ("name", "recipient") and _cell(c.draft) != PLACEHOLDER:
-            pairs.setdefault((_cell(c.draft), _cell(c.final)), []).append(c.invoice_id)
-    if not pairs:
-        return "(없음)"
-    rows = sorted(pairs.items(), key=lambda kv: (-len(kv[1]), kv[0]))
-    lines = ["| 오독 | 정답 | 횟수 | 근거 id |", "| --- | --- | --- | --- |"]
-    for (d, f), ids in rows:
-        refs = " ".join(f"#{i}" for i in sorted(set(ids)))
-        lines.append(f"| {d} | {f} | {len(ids)} | {refs} |")
-    return "\n".join(lines)
+def _grade(cnt: int) -> str:
+    return next(label for label, floor in GRADES if cnt >= floor)
 
 
 def _vocab_body(vocab: dict) -> str:
-    items = [
-        f"- {it['item_name']}" + (f" ({it['default_unit']})" if it.get("default_unit") else "")
-        for it in vocab.get("items", [])
-    ]
+    """품목은 등급 3단(등급 안 가나다순)·거래처는 목록. 빈도 숫자를 싣지 않아 집합이 바뀔 때만 절이 변한다."""
+    by_grade: dict[str, list[str]] = {label: [] for label, _ in GRADES}
+    for it in sorted(vocab.get("items", []), key=lambda x: x["item_name"]):
+        unit = f" ({it['default_unit']})" if it.get("default_unit") else ""
+        by_grade[_grade(it.get("cnt", 2))].append(f"- {it['item_name']}{unit}")
+    lines = ["품목 — 최근 12개월 등장 등급"]
+    if vocab.get("items"):
+        for label, _ in GRADES:
+            lines += [label, *(by_grade[label] or ["(없음)"])]
+    else:
+        lines.append("(없음)")
     comps = [f"- {c}" for c in vocab.get("companies", [])]
-    return "\n".join(["품목", *(items or ["(없음)"]), "", "거래처", *(comps or ["(없음)"])])
+    return "\n".join([*lines, "", "거래처", *(comps or ["(없음)"])])
 
 
 def _amount_stats(corrections: list[Correction]) -> str:
@@ -238,12 +230,11 @@ def _status(corrections: list[Correction], ledger_size: int) -> str:
 def render_deterministic(
     corrections: list[Correction], vocab: dict, ledger_size: int
 ) -> dict[str, str]:
-    """1~4절(교정 사전·확정 어휘·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
+    """1~3절(확정 어휘·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
     return {
-        HEADINGS[0]: _lexicon(corrections),
-        HEADINGS[1]: _vocab_body(vocab),
-        HEADINGS[2]: _amount_stats(corrections),
-        HEADINGS[3]: _status(corrections, ledger_size),
+        HEADINGS[0]: _vocab_body(vocab),
+        HEADINGS[1]: _amount_stats(corrections),
+        HEADINGS[2]: _status(corrections, ledger_size),
     }
 
 
@@ -267,7 +258,7 @@ def split_sections(md: str) -> dict[str, str]:
 
 
 def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
-    """제목 + 6절을 고정 순서로 조립한다. 비어 있는 절은 ``(없음)``."""
+    """제목 + 5절을 고정 순서로 조립한다. 비어 있는 절은 ``(없음)``."""
     parts = [TITLE, ""]
     for h in HEADINGS:
         body = (det.get(h) if h in DET_HEADINGS else llm.get(h, "")) or ""
@@ -281,7 +272,7 @@ def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
 def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]) -> list[str]:
     """proposed.md 검증 — 위반 사유 목록(비어 있으면 통과).
 
-    헤딩 6개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
+    헤딩 5개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
     """
     errors: list[str] = []
     if len(md) > MAX_CHARS:
@@ -296,7 +287,7 @@ def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]
     for h in DET_HEADINGS:
         if sections.get(h, "") != det_expected[h].strip():
             errors.append(f"결정적 절 변조: {h}")
-    for h, cap in ((HEADINGS[4], MAX_PROFILE_LINES), (HEADINGS[5], MAX_RULE_LINES)):
+    for h, cap in ((HEADINGS[3], MAX_PROFILE_LINES), (HEADINGS[4], MAX_RULE_LINES)):
         lines = [line for line in sections.get(h, "").splitlines() if line.strip()]
         if len(lines) > cap:
             errors.append(f"{h} {len(lines)}줄 > {cap}줄")
@@ -339,9 +330,11 @@ def _append_jsonl(path: Path, record: dict) -> None:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def _lexicon_rows(md: str) -> int:
+def _vocab_items(md: str) -> int:
+    """``## 확정 어휘``의 품목 불릿 수(``거래처`` 소제목 앞까지)."""
     body = split_sections(md).get(HEADINGS[0], "")
-    return max(0, sum(1 for line in body.splitlines() if line.startswith("| ")) - 2)
+    items_part = body.split("\n거래처", 1)[0]
+    return sum(1 for line in items_part.splitlines() if line.startswith("- "))
 
 
 def publish(
@@ -360,7 +353,6 @@ def publish(
         _append_jsonl(versions_path, {"version": cur, "published_at": now, "rejected": reason})
         return PublishResult(None, reason)
     active = kdir / "active.md"
-    before = _lexicon_rows(active.read_text(encoding="utf-8")) if active.exists() else 0
     n = cur + 1
     (kdir / "knowledge").mkdir(exist_ok=True)
     (kdir / "knowledge" / f"v{n}.md").write_text(md, encoding="utf-8")
@@ -369,12 +361,7 @@ def publish(
     os.replace(tmp, active)
     _append_jsonl(
         versions_path,
-        {
-            "version": n,
-            "published_at": now,
-            "corrections_through": corrections_count,
-            "added_pairs": _lexicon_rows(md) - before,
-        },
+        {"version": n, "published_at": now, "corrections_through": corrections_count},
     )
     return PublishResult(n, "published")
 
@@ -416,6 +403,28 @@ def render_by_version(groups: dict[str, dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def duplicate_photos(upload_dir: Path) -> list[list[int]]:
+    """같은 바이트 지문의 사진 id 묶음(2건 이상)만 — 묶음 안·묶음 간 id 오름차순. 재촬영은 못 잡는다."""
+    if not upload_dir.is_dir():
+        return []
+    by_hash: dict[str, list[int]] = {}
+    for p in upload_dir.iterdir():
+        m = _PHOTO_RE.match(p.name)
+        if m:
+            digest = hashlib.sha1(p.read_bytes()).hexdigest()
+            by_hash.setdefault(digest, []).append(int(m.group(1)))
+    return sorted(sorted(ids) for ids in by_hash.values() if len(ids) > 1)
+
+
+def render_duplicates(groups: list[list[int]]) -> str:
+    """중복 사진 묶음을 ``## 동일 사진`` 절로(묶음 없으면 빈 문자열)."""
+    if not groups:
+        return ""
+    lines = ["## 동일 사진", ""]
+    lines += ["- 동일 사진: " + " ".join(f"#{i}" for i in ids) for ids in groups]
+    return "\n".join(lines) + "\n"
+
+
 # --- 명령 ---
 
 
@@ -431,7 +440,11 @@ def _drafts(data_dir: Path) -> list[Draft]:
 
 
 def cmd_extract(data_dir: Path, finals_fn, vocab_fn, now: str) -> dict:
-    """초안↔최종본 diff → corrections.jsonl·ledger.json·vocab_snapshot.json·proposed.md. 요약 dict 반환."""
+    """초안↔최종본 diff → corrections.jsonl·ledger.json·vocab_snapshot.json·proposed.md. 요약 dict 반환.
+
+    신규 교정 0건이어도 결정적 절이 active.md와 다르면(strip 비교, LLM 절 무관) 그 자리에서
+    publish까지 수행한다 — 어휘 등급 이동처럼 LLM 판단이 필요 없는 변경을 LLM 턴 없이 반영.
+    """
     kdir = _kdir(data_dir)
     drafts = _drafts(data_dir)
     finals = finals_fn([d.id for d in drafts]) if drafts else {}
@@ -445,17 +458,21 @@ def cmd_extract(data_dir: Path, finals_fn, vocab_fn, now: str) -> dict:
     corrections = load_corrections(kdir / "corrections.jsonl")
     det = render_deterministic(corrections, vocab, len(ledger))
     active = kdir / "active.md"
-    llm = split_sections(active.read_text(encoding="utf-8")) if active.exists() else {}
-    (kdir / "proposed.md").write_text(assemble(det, llm), encoding="utf-8")
+    current = split_sections(active.read_text(encoding="utf-8")) if active.exists() else None
+    (kdir / "proposed.md").write_text(assemble(det, current or {}), encoding="utf-8")
     by_kind: dict[str, int] = {}
     for c in new:
         by_kind[c.kind] = by_kind.get(c.kind, 0) + 1
-    return {
-        "new": len(new),
-        "by_kind": by_kind,
-        "proposed": str(kdir / "proposed.md"),
-        "active_version": current_version(load_versions(kdir / "versions.jsonl")),
-    }
+    summary: dict = {"new": len(new), "by_kind": by_kind, "proposed": str(kdir / "proposed.md")}
+    if (
+        not new
+        and current is not None
+        and any(current.get(h, "") != det[h].strip() for h in DET_HEADINGS)
+    ):
+        r = publish(kdir, det, {c.invoice_id for c in corrections}, len(corrections), now)
+        summary["auto_publish"] = r._asdict()
+    summary["active_version"] = current_version(load_versions(kdir / "versions.jsonl"))
+    return summary
 
 
 def _det_from_disk(kdir: Path) -> tuple[dict[str, str], list[Correction]]:
@@ -490,6 +507,9 @@ def cmd_report(data_dir: Path, out: Path, finals_fn) -> str:
         groups.setdefault(version_for(finals[jid]["created_at"], versions), []).append((jid, c))
     md = render(summarize(rows, missing=missing)) + "\n"
     md += render_by_version({ver: summarize(rs) for ver, rs in groups.items()})
+    dup = render_duplicates(duplicate_photos(data_dir / "agent_uploads"))
+    if dup:
+        md += "\n" + dup
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(md, encoding="utf-8")
     with (out / "failures.jsonl").open("w", encoding="utf-8") as f:
@@ -500,17 +520,26 @@ def cmd_report(data_dir: Path, out: Path, finals_fn) -> str:
 
 # --- DB 글루 (SQLAlchemy는 함수 안에서만 import — 코어 venv 안전) ---
 
-ITEMS_SQL = "SELECT item_name, default_unit FROM item_suggestions ORDER BY item_name"
+ITEMS_SQL = """
+SELECT TRIM(ii.name) AS item_name, COUNT(*) AS cnt, MAX(s.default_unit) AS default_unit
+FROM invoice_items ii
+JOIN invoices i ON i.id = ii.invoice_id
+LEFT JOIN item_suggestions s ON s.item_name = TRIM(ii.name) COLLATE utf8mb4_0900_ai_ci
+WHERE i.issue_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND TRIM(ii.name) <> ''
+GROUP BY TRIM(ii.name)
+HAVING cnt >= 2
+ORDER BY item_name
+"""
 COMPANIES_SQL = "SELECT company_name FROM company_suggestions ORDER BY company_name"
 
 
 def fetch_vocab(engine) -> dict:
-    """자동완성 사전 전량(품목명+기본단위, 거래처명)을 읽는다."""
+    """품목은 최근 12개월 invoice_items 빈도(2회 이상)+기본단위, 거래처는 자동완성 사전 전량."""
     from sqlalchemy import text
 
     with engine.connect() as conn:
         items = [
-            {"item_name": r.item_name, "default_unit": r.default_unit}
+            {"item_name": r.item_name, "cnt": int(r.cnt), "default_unit": r.default_unit}
             for r in conn.execute(text(ITEMS_SQL))
         ]
         companies = [r.company_name for r in conn.execute(text(COMPANIES_SQL))]
@@ -533,10 +562,10 @@ def _publish_line(r: PublishResult, kdir: Path) -> str:
     md = (kdir / "active.md").read_text(encoding="utf-8")
     rules = [
         line
-        for line in split_sections(md).get(HEADINGS[5], "").splitlines()
+        for line in split_sections(md).get(HEADINGS[4], "").splitlines()
         if line.lstrip().startswith("- ")
     ]
-    return f"published v{r.version} · 교정 사전 {_lexicon_rows(md)}쌍 · 규칙 {len(rules)}줄"
+    return f"published v{r.version} · 어휘 {_vocab_items(md)}종 · 규칙 {len(rules)}줄"
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -578,6 +607,9 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps({"wakeAgent": False}))
             return
         print(json.dumps(summary, ensure_ascii=False))
+        auto = summary.get("auto_publish")
+        if auto and auto["version"] is None:
+            print(f"무인 발행 거부: {auto['reason']}", file=sys.stderr)
         if summary["new"] == 0:
             print(json.dumps({"wakeAgent": False}))
     elif args.cmd == "publish":
