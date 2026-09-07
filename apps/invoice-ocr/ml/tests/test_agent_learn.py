@@ -22,6 +22,7 @@ from tools.agent_learn import (
     current_version,
     diff_new,
     digit_class,
+    duplicate_photos,
     final_hash,
     kind_of,
     load_corrections,
@@ -32,6 +33,7 @@ from tools.agent_learn import (
     records_from,
     render_by_version,
     render_deterministic,
+    render_duplicates,
     save_ledger,
     split_sections,
     validate_proposed,
@@ -532,7 +534,37 @@ def test_cmd_publish_and_report_roundtrip(tmp_path: Path):
     md = cmd_report(tmp_path, tmp_path / "rep", _finals)
     assert "## 지식 버전별 일치율" in md
     assert "| none | 2 |" in md
+    assert "동일 사진" not in md
     assert (tmp_path / "rep" / "failures.jsonl").exists()
+
+
+def test_duplicate_photos_groups_same_bytes_across_extensions(tmp_path: Path):
+    up = tmp_path / "agent_uploads"
+    up.mkdir()
+    (up / "574.jpeg").write_bytes(b"same")
+    (up / "573.jpg").write_bytes(b"same")
+    (up / "575.png").write_bytes(b"same")
+    (up / "576.jpg").write_bytes(b"other")
+    (up / "580.jpg").write_bytes(b"pair")
+    (up / "578.jpg").write_bytes(b"pair")
+    (up / "577.draft.json").write_bytes(b"same")
+    assert duplicate_photos(up) == [[573, 574, 575], [578, 580]]
+    assert duplicate_photos(tmp_path / "missing") == []
+
+
+def test_render_duplicates_section_or_empty():
+    assert render_duplicates([[573, 574, 575]]) == "## 동일 사진\n\n- 동일 사진: #573 #574 #575\n"
+    assert render_duplicates([]) == ""
+
+
+def test_cmd_report_marks_duplicate_photos(tmp_path: Path):
+    _seed(tmp_path)
+    up = tmp_path / "agent_uploads"
+    (up / "573.jpg").write_bytes(b"same")
+    (up / "574.jpg").write_bytes(b"same")
+    md = cmd_report(tmp_path, tmp_path / "rep", _finals)
+    assert md.endswith("## 동일 사진\n\n- 동일 사진: #573 #574\n")
+    assert (tmp_path / "rep" / "report.md").read_text(encoding="utf-8") == md
 
 
 def test_main_extract_wake_gate_and_publish_report(tmp_path: Path, capsys, monkeypatch):

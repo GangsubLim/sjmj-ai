@@ -55,6 +55,7 @@ MAX_PROFILE_LINES = 30
 MAX_RULE_LINES = 20
 FORBIDDEN = ("curl", "POST", "DELETE", "http://", "→", "->")
 _ID_RE = re.compile(r"#(\d+)")
+_PHOTO_RE = re.compile(r"^(\d+)\.(jpg|jpeg|png)$")
 DIGIT_CLASSES = (
     ("prefix_drop", "앞자리 누락"),
     ("single_digit", "한 자리 혼동"),
@@ -402,6 +403,28 @@ def render_by_version(groups: dict[str, dict]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def duplicate_photos(upload_dir: Path) -> list[list[int]]:
+    """같은 바이트 지문의 사진 id 묶음(2건 이상)만 — 묶음 안·묶음 간 id 오름차순. 재촬영은 못 잡는다."""
+    if not upload_dir.is_dir():
+        return []
+    by_hash: dict[str, list[int]] = {}
+    for p in upload_dir.iterdir():
+        m = _PHOTO_RE.match(p.name)
+        if m:
+            digest = hashlib.sha1(p.read_bytes()).hexdigest()
+            by_hash.setdefault(digest, []).append(int(m.group(1)))
+    return sorted(sorted(ids) for ids in by_hash.values() if len(ids) > 1)
+
+
+def render_duplicates(groups: list[list[int]]) -> str:
+    """중복 사진 묶음을 ``## 동일 사진`` 절로(묶음 없으면 빈 문자열)."""
+    if not groups:
+        return ""
+    lines = ["## 동일 사진", ""]
+    lines += ["- 동일 사진: " + " ".join(f"#{i}" for i in ids) for ids in groups]
+    return "\n".join(lines) + "\n"
+
+
 # --- 명령 ---
 
 
@@ -484,6 +507,9 @@ def cmd_report(data_dir: Path, out: Path, finals_fn) -> str:
         groups.setdefault(version_for(finals[jid]["created_at"], versions), []).append((jid, c))
     md = render(summarize(rows, missing=missing)) + "\n"
     md += render_by_version({ver: summarize(rs) for ver, rs in groups.items()})
+    dup = render_duplicates(duplicate_photos(data_dir / "agent_uploads"))
+    if dup:
+        md += "\n" + dup
     out.mkdir(parents=True, exist_ok=True)
     (out / "report.md").write_text(md, encoding="utf-8")
     with (out / "failures.jsonl").open("w", encoding="utf-8") as f:
