@@ -5,6 +5,27 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.18.0] — 2026-09-07
+
+hermes 판독 지식을 재설계해 환각 오독 쌍이 담기던 교정 사전을 폐기하고, 확정 어휘를 실거래 빈도 등급으로 제공하며 결정적 변경은 LLM 없이 무인 발행하는 릴리스 ([#202](https://github.com/GangsubLim/sjmj-ai/pull/202)).
+
+### Added
+
+- 확정 어휘를 최근 12개월 거래명세서 품목 빈도 등급(자주·보통·가끔)으로 렌더 — 2회 미만 품목은 제외 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+- 신규 교정이 없어도 결정적 절(어휘·금액 통계·현황)이 바뀌면 extract가 LLM 턴 없이 즉시 발행 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+- LLM 절 금지 패턴에 화살표(`→`·`->`) 추가 — 오독→정답 쌍이 일반화 규칙으로 새는 경로 차단 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+- 리포트에 동일 사진 중복 업로드 id 묶음 표기 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+- invoice-entry 스킬 0.3.0 — 원문 전사와 정규화를 2패스로 분리하고 `{id}.raw.json` 사이드카 보관, 회신 ⚠️ 줄에 확신 중·하 행 표기 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+
+### Changed
+
+- 판독 지식 문서를 5절 구조(확정 어휘·금액 오류 통계·데이터 현황·거래처 프로필·일반화 규칙)로 재편, 기존 6절 문서는 다음 extract에서 자동 이행 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+- 릴리스 스크립트가 브랜치명 대신 `origin/main` 일치만 검사해 detached HEAD 임시 워크트리에서 실행 가능 ([#199](https://github.com/GangsubLim/sjmj-ai/pull/199))
+
+### Removed
+
+- 판독 지식의 교정 사전 절 폐기 — 교정 이력은 `corrections.jsonl`에만 남기고 SKILL.md가 더 이상 치환 규칙으로 적용하지 않음 ([#201](https://github.com/GangsubLim/sjmj-ai/pull/201))
+
 ## [v0.17.1] — 2026-09-06
 
 CI와 macmini 배포에 공급망·시크릿 보안 게이트 4종을 얹어 취약 의존성·갓 퍼블리시된 패키지·시크릿의 신규 유입을 설치 이전에 차단하는 릴리스 ([#181](https://github.com/GangsubLim/sjmj-ai/pull/181)).
