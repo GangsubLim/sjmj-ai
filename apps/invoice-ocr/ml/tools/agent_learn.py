@@ -191,7 +191,7 @@ def _vocab_body(vocab: dict) -> str:
     by_grade: dict[str, list[str]] = {label: [] for label, _ in GRADES}
     for it in sorted(vocab.get("items", []), key=lambda x: x["item_name"]):
         unit = f" ({it['default_unit']})" if it.get("default_unit") else ""
-        by_grade[_grade(it["cnt"])].append(f"- {it['item_name']}{unit}")
+        by_grade[_grade(it.get("cnt", 2))].append(f"- {it['item_name']}{unit}")
     lines = ["품목 — 최근 12개월 등장 등급"]
     if vocab.get("items"):
         for label, _ in GRADES:
@@ -524,7 +524,7 @@ ITEMS_SQL = """
 SELECT TRIM(ii.name) AS item_name, COUNT(*) AS cnt, MAX(s.default_unit) AS default_unit
 FROM invoice_items ii
 JOIN invoices i ON i.id = ii.invoice_id
-LEFT JOIN item_suggestions s ON s.item_name = TRIM(ii.name)
+LEFT JOIN item_suggestions s ON s.item_name = TRIM(ii.name) COLLATE utf8mb4_0900_ai_ci
 WHERE i.issue_date >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH) AND TRIM(ii.name) <> ''
 GROUP BY TRIM(ii.name)
 HAVING cnt >= 2

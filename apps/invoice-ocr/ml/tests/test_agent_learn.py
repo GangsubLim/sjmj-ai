@@ -235,6 +235,12 @@ def test_vocab_body_same_membership_renders_identically():
     assert render_deterministic([], a, 0) == render_deterministic([], b, 0)
 
 
+def test_vocab_body_tolerates_legacy_snapshot_without_cnt():
+    vocab = {"items": [{"item_name": "히타", "default_unit": "EA"}], "companies": []}
+    body = render_deterministic([], vocab, 0)[HEADINGS[0]]
+    assert "가끔(2회)\n- 히타 (EA)" in body
+
+
 def test_render_deterministic_is_deterministic_and_has_no_lexicon():
     cs = [_corr(1, "items[0].name", "name", "킹핀교환", "히타")]
     det = render_deterministic(cs, VOCAB, 1)
@@ -454,6 +460,56 @@ def test_cmd_extract_preserves_llm_sections_from_active(tmp_path: Path):
     cmd_extract(tmp_path, _finals, lambda: VOCAB, "t")
     proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
     assert split_sections(proposed)[HEADINGS[4]] == "- 기존 규칙 (#573)"
+
+
+def test_cmd_extract_migrates_legacy_six_section_active(tmp_path: Path):
+    _seed(tmp_path)
+    kdir = tmp_path / "agent_knowledge"
+    kdir.mkdir()
+    legacy = (
+        "# sjmj 판독 지식\n"
+        "\n"
+        "## 교정 사전\n"
+        "\n"
+        "| 오독 | 정답 | 횟수 | 근거 id |\n"
+        "| --- | --- | --- | --- |\n"
+        "| 킹핀교환 | 히타 | 1 | #573 |\n"
+        "\n"
+        "## 확정 어휘\n"
+        "\n"
+        "품목\n"
+        "- 히타 (EA)\n"
+        "\n"
+        "거래처\n"
+        "- 테스트\n"
+        "\n"
+        "## 금액 오류 통계\n"
+        "\n"
+        "## 데이터 현황\n"
+        "\n"
+        "## 거래처 프로필\n"
+        "\n"
+        "- 테스트: 자동차 부품 위주 (#573)\n"
+        "\n"
+        "## 일반화 규칙\n"
+        "\n"
+        "- 합계 불일치 시 자릿수 재판독 (#573)\n"
+    )
+    (kdir / "active.md").write_text(legacy, encoding="utf-8")
+
+    first = cmd_extract(tmp_path, _finals, lambda: VOCAB, "t1")
+    assert first["new"] == 1 and "auto_publish" not in first
+
+    s = cmd_extract(tmp_path, _finals, lambda: VOCAB, "2026-09-08T03:00:00")
+    proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
+    assert [line for line in proposed.splitlines() if line.startswith("## ")] == list(HEADINGS)
+    sections = split_sections(proposed)
+    assert sections[HEADINGS[3]] == "- 테스트: 자동차 부품 위주 (#573)"
+    assert sections[HEADINGS[4]] == "- 합계 불일치 시 자릿수 재판독 (#573)"
+    assert s["auto_publish"] == {"version": 1, "reason": "published"}
+    active = split_sections((kdir / "active.md").read_text(encoding="utf-8"))
+    assert list(active) == list(HEADINGS)
+    assert "- 히타 (EA)" in active[HEADINGS[0]]
 
 
 def test_cmd_extract_without_uploads_dir(tmp_path: Path):
