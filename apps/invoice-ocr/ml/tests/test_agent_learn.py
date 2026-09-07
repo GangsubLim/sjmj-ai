@@ -459,6 +459,72 @@ def test_cmd_extract_without_uploads_dir(tmp_path: Path):
     assert s["new"] == 0 and s["active_version"] == 0
 
 
+def _stale_active(kdir: Path, rules: str) -> str:
+    """corrections는 현재 것, 어휘는 비어 있는 구버전 active.md를 쓰고 그 원문을 돌려준다."""
+    corrections = load_corrections(kdir / "corrections.jsonl")
+    md = assemble(
+        render_deterministic(corrections, {"items": [], "companies": []}, 2),
+        {HEADINGS[4]: rules},
+    )
+    (kdir / "active.md").write_text(md, encoding="utf-8")
+    return md
+
+
+def test_cmd_extract_auto_publishes_when_det_changed_without_new(tmp_path: Path):
+    _seed(tmp_path)
+    kdir = tmp_path / "agent_knowledge"
+    first = cmd_extract(tmp_path, _finals, lambda: VOCAB, "t1")
+    assert first["new"] == 1 and "auto_publish" not in first
+    _stale_active(kdir, "- 기존 규칙 (#573)")
+
+    s = cmd_extract(tmp_path, _finals, lambda: VOCAB, "2026-09-08T03:00:00")
+    assert s["new"] == 0
+    assert s["auto_publish"] == {"version": 1, "reason": "published"}
+    assert s["active_version"] == 1
+    active = split_sections((kdir / "active.md").read_text(encoding="utf-8"))
+    assert "- 히타 (EA)" in active[HEADINGS[0]]
+    assert active[HEADINGS[4]] == "- 기존 규칙 (#573)"
+    assert load_versions(kdir / "versions.jsonl") == [
+        {"version": 1, "published_at": "2026-09-08T03:00:00", "corrections_through": 1}
+    ]
+    assert (kdir / "knowledge" / "v1.md").read_text(encoding="utf-8") == (
+        kdir / "active.md"
+    ).read_text(encoding="utf-8")
+
+
+def test_cmd_extract_skips_publish_when_only_llm_whitespace_differs(tmp_path: Path):
+    _seed(tmp_path)
+    kdir = tmp_path / "agent_knowledge"
+    cmd_extract(tmp_path, _finals, lambda: VOCAB, "t1")
+    assert cmd_publish(tmp_path, "t1") == PublishResult(1, "published")
+    active = kdir / "active.md"
+    md = active.read_text(encoding="utf-8")
+    active.write_text(
+        md.replace("## 일반화 규칙\n\n(없음)", "## 일반화 규칙\n\n\n(없음)   \n"), encoding="utf-8"
+    )
+
+    s = cmd_extract(tmp_path, _finals, lambda: VOCAB, "t2")
+    assert s["new"] == 0 and "auto_publish" not in s and s["active_version"] == 1
+    assert len(load_versions(kdir / "versions.jsonl")) == 1
+    assert not (kdir / "knowledge" / "v2.md").exists()
+
+
+def test_cmd_extract_auto_publish_rejected_keeps_active(tmp_path: Path):
+    _seed(tmp_path)
+    kdir = tmp_path / "agent_knowledge"
+    cmd_extract(tmp_path, _finals, lambda: VOCAB, "t1")
+    stale = _stale_active(kdir, "- 킹핀교환→히타 (#573)")
+
+    s = cmd_extract(tmp_path, _finals, lambda: VOCAB, "t2")
+    assert s["auto_publish"]["version"] is None
+    assert "금지어" in s["auto_publish"]["reason"]
+    assert s["active_version"] == 0
+    assert (kdir / "active.md").read_text(encoding="utf-8") == stale
+    vs = load_versions(kdir / "versions.jsonl")
+    assert vs[-1]["version"] == 0 and "금지어" in vs[-1]["rejected"]
+    assert not (kdir / "knowledge").exists()
+
+
 def test_cmd_publish_and_report_roundtrip(tmp_path: Path):
     _seed(tmp_path)
     cmd_extract(tmp_path, _finals, lambda: VOCAB, "2026-09-07T03:00:00")
@@ -517,6 +583,23 @@ def test_main_extract_db_failure_is_silent_wake_gate(tmp_path: Path, capsys, mon
     captured = capsys.readouterr()
     assert json.loads(captured.out.strip().splitlines()[-1]) == {"wakeAgent": False}
     assert "no db" in captured.err
+
+
+def test_main_extract_auto_publish_rejection_goes_to_stderr(tmp_path: Path, capsys, monkeypatch):
+    _seed(tmp_path)
+    import tools.agent_learn as al
+
+    monkeypatch.setattr(al, "_engine", lambda: object())
+    monkeypatch.setattr(al, "fetch_finals", lambda engine, ids: _finals(ids))
+    monkeypatch.setattr(al, "fetch_vocab", lambda engine: VOCAB)
+    main(["extract", "--data-dir", str(tmp_path)])
+    capsys.readouterr()
+    _stale_active(tmp_path / "agent_knowledge", "- 킹핀교환->히타 (#573)")
+
+    main(["extract", "--data-dir", str(tmp_path)])
+    captured = capsys.readouterr()
+    assert json.loads(captured.out.strip().splitlines()[-1]) == {"wakeAgent": False}
+    assert "무인 발행 거부" in captured.err and "금지어" in captured.err
 
 
 def test_fetch_vocab_maps_cnt_and_companies():

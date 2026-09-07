@@ -417,7 +417,11 @@ def _drafts(data_dir: Path) -> list[Draft]:
 
 
 def cmd_extract(data_dir: Path, finals_fn, vocab_fn, now: str) -> dict:
-    """초안↔최종본 diff → corrections.jsonl·ledger.json·vocab_snapshot.json·proposed.md. 요약 dict 반환."""
+    """초안↔최종본 diff → corrections.jsonl·ledger.json·vocab_snapshot.json·proposed.md. 요약 dict 반환.
+
+    신규 교정 0건이어도 결정적 절이 active.md와 다르면(strip 비교, LLM 절 무관) 그 자리에서
+    publish까지 수행한다 — 어휘 등급 이동처럼 LLM 판단이 필요 없는 변경을 LLM 턴 없이 반영.
+    """
     kdir = _kdir(data_dir)
     drafts = _drafts(data_dir)
     finals = finals_fn([d.id for d in drafts]) if drafts else {}
@@ -431,17 +435,21 @@ def cmd_extract(data_dir: Path, finals_fn, vocab_fn, now: str) -> dict:
     corrections = load_corrections(kdir / "corrections.jsonl")
     det = render_deterministic(corrections, vocab, len(ledger))
     active = kdir / "active.md"
-    llm = split_sections(active.read_text(encoding="utf-8")) if active.exists() else {}
-    (kdir / "proposed.md").write_text(assemble(det, llm), encoding="utf-8")
+    current = split_sections(active.read_text(encoding="utf-8")) if active.exists() else None
+    (kdir / "proposed.md").write_text(assemble(det, current or {}), encoding="utf-8")
     by_kind: dict[str, int] = {}
     for c in new:
         by_kind[c.kind] = by_kind.get(c.kind, 0) + 1
-    return {
-        "new": len(new),
-        "by_kind": by_kind,
-        "proposed": str(kdir / "proposed.md"),
-        "active_version": current_version(load_versions(kdir / "versions.jsonl")),
-    }
+    summary: dict = {"new": len(new), "by_kind": by_kind, "proposed": str(kdir / "proposed.md")}
+    if (
+        not new
+        and current is not None
+        and any(current.get(h, "") != det[h].strip() for h in DET_HEADINGS)
+    ):
+        r = publish(kdir, det, {c.invoice_id for c in corrections}, len(corrections), now)
+        summary["auto_publish"] = r._asdict()
+    summary["active_version"] = current_version(load_versions(kdir / "versions.jsonl"))
+    return summary
 
 
 def _det_from_disk(kdir: Path) -> tuple[dict[str, str], list[Correction]]:
@@ -573,6 +581,9 @@ def main(argv: list[str] | None = None) -> None:
             print(json.dumps({"wakeAgent": False}))
             return
         print(json.dumps(summary, ensure_ascii=False))
+        auto = summary.get("auto_publish")
+        if auto and auto["version"] is None:
+            print(f"무인 발행 거부: {auto['reason']}", file=sys.stderr)
         if summary["new"] == 0:
             print(json.dumps({"wakeAgent": False}))
     elif args.cmd == "publish":
