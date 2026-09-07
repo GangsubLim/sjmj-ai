@@ -5,7 +5,7 @@
 # 사용: scripts/release.sh <patch|minor|major|x.y.z> [--skip-verify] [--dry-run]
 #
 # 동작:
-#   1. main 브랜치 + 워킹트리 클린 + origin/main 동기 검증
+#   1. HEAD == origin/main + 워킹트리 클린 검증 (브랜치명 무관 — detached 가능)
 #   2. VERSION 읽어 다음 버전 계산 + 태그/브랜치(로컬·원격) 중복 선검사
 #   3. 로컬 검증 — PR CI 게이트 미러(ruff backend + eslint/format:check frontend)
 #   4. sync-version.sh 로 VERSION + config.py:APP_VERSION 갱신 + CHANGELOG 헤더 prepend
@@ -37,13 +37,10 @@ for a in "$@"; do
 done
 [ -n "$BUMP" ] || { echo "ERROR: bump 인자 필요 (patch|minor|major|x.y.z). -h 로 도움말." >&2; exit 1; }
 
-# 1. 브랜치 / 워킹트리 / origin 동기 검증
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [ "$BRANCH" != "main" ]; then
-  echo "ERROR: main 브랜치에서 실행해야 함 (현재: $BRANCH)." >&2
-  echo "       'git checkout main && git pull origin main' 후 재실행." >&2
-  exit 1
-fi
+# 1. HEAD 커밋 / 워킹트리 검증
+#    브랜치명은 검사하지 않는다 — 요구의 실체는 "origin/main 커밋에서 만들어라"이고
+#    그것은 아래 커밋 동일성 검사가 정확히 보장한다. worktree 환경에서 main 이 다른
+#    워크트리에 점유돼 있어도 detached 로 같은 커밋에 서면 릴리스 결과물은 동일하다.
 if [ -n "$(git status --porcelain)" ]; then
   echo "ERROR: 워킹 트리에 커밋되지 않은 변경이 있음. 정리 후 재실행." >&2
   exit 1
@@ -53,7 +50,10 @@ if ! git fetch --quiet origin main 2>/dev/null; then
   exit 1
 fi
 if [ "$(git rev-parse HEAD)" != "$(git rev-parse FETCH_HEAD)" ]; then
-  echo "ERROR: 로컬 main 이 origin/main 과 불일치. 'git pull origin main' 후 재실행." >&2
+  echo "ERROR: HEAD 가 origin/main 과 불일치 — 릴리스는 origin/main 커밋에서 만들어야 함." >&2
+  echo "       현재 $(git rev-parse --abbrev-ref HEAD) $(git rev-parse --short HEAD) / origin/main $(git rev-parse --short FETCH_HEAD)" >&2
+  echo "       main 이 다른 워크트리에 점유돼 있으면 detached 임시 워크트리에서 실행한다:" >&2
+  echo "         git worktree add --detach /tmp/rel origin/main && cd /tmp/rel" >&2
   exit 1
 fi
 
@@ -122,7 +122,8 @@ release/$TAG 브랜치 생성 + 커밋 완료.
   2) git push origin release/$TAG
   3) gh pr create --base main --head release/$TAG --title "release: $TAG"
   4) CI 통과 후 merge
-  5) git checkout main && git pull && git tag $TAG && git push origin $TAG   # ← 배포 트리거
-  6) git checkout devel && git merge main && git push
+  5) git fetch origin main && git tag $TAG FETCH_HEAD && git push origin $TAG   # ← 배포 트리거
+  6) main→devel 동기 PR (devel 은 ruleset 으로 직접 push 불가):
+     gh pr create --base devel --head main --title "chore: devel을 $TAG(main)과 동기화"
   7) gh release create $TAG --title "$TAG" --generate-notes
 EOF
