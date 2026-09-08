@@ -310,3 +310,113 @@ def test_entries_empty_when_uploads_dir_absent(client, data_root_only):
     assert res.json()["data"] == []
     assert res.json()["pagination"]["total"] == 0
     assert not (data_root_only / "agent_uploads").exists()
+
+
+# --- 대조 상세 ---
+
+
+def test_entry_detail_returns_three_way_rows(client, uploads, db_conn):
+    invoice_id = _seed_invoice(db_conn, items=[("히터", 150000)])
+    _write_draft(
+        uploads,
+        invoice_id,
+        _draft(
+            items=[
+                {
+                    "name": "히타",
+                    "quantity": 10,
+                    "unit": "EA",
+                    "unit_price": 15000,
+                    "supply": 150000,
+                    "deduction": False,
+                }
+            ]
+        ),
+    )
+    (uploads / f"{invoice_id}.raw.json").write_text(
+        json.dumps({"rows": [{"raw": "히타", "conf": "중"}]}, ensure_ascii=False), encoding="utf-8"
+    )
+    res = client.get(f"/api/hermes/entries/{invoice_id}")
+    assert res.status_code == 200
+    data = res.json()["data"]
+    assert data["id"] == invoice_id
+    assert data["status"] == "mismatch"
+    assert data["final"]["recipient"] == "○○상사"
+    assert data["has_photo"] is False
+    row = data["rows"][0]
+    assert row["index"] == 0
+    assert row["raw"] == {"text": "히타", "conf": "중"}
+    assert row["draft"]["name"] == "히타"
+    assert row["draft"]["unit_price"] == 15000
+    assert row["final"]["name"] == "히터"
+    assert row["mismatch"] == ["name"]
+
+
+def test_entry_detail_raw_is_null_when_file_absent(client, uploads, db_conn):
+    """raw.json 부재는 200 + 해당 행 raw = null(spec §4.2)."""
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    data = client.get(f"/api/hermes/entries/{invoice_id}").json()["data"]
+    assert data["rows"][0]["raw"] is None
+
+
+def test_entry_detail_deleted_has_null_final_and_rows(client, uploads):
+    _write_draft(uploads, 999_004)
+    data = client.get("/api/hermes/entries/999004").json()["data"]
+    assert data["status"] == "deleted"
+    assert data["final"] is None
+    assert data["rows"][0]["final"] is None
+    assert data["rows"][0]["mismatch"] == []
+
+
+def test_entry_detail_keeps_rows_the_human_added(client, uploads, db_conn):
+    """사람이 더한 행은 draft=null로 남긴다 — 여기서 잘라내면 항목 수 불일치의 실물이 사라진다."""
+    invoice_id = _seed_invoice(db_conn, items=[("각파이프 50x50", 150000), ("용접봉", 60000)])
+    _write_draft(uploads, invoice_id)  # 초안은 1행
+    data = client.get(f"/api/hermes/entries/{invoice_id}").json()["data"]
+    assert len(data["rows"]) == 2
+    assert data["rows"][1]["draft"] is None
+    assert data["rows"][1]["final"]["name"] == "용접봉"
+    # 짝이 없는 행은 셀 강조 대상이 아니다 — 항목 수 불일치로 이미 드러난다.
+    assert data["rows"][1]["mismatch"] == []
+
+
+def test_entry_detail_404_when_draft_absent(client, uploads):
+    res = client.get("/api/hermes/entries/424242")
+    assert res.status_code == 404
+    assert res.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_entry_detail_500_when_raw_json_is_corrupt(client, uploads, db_conn):
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    (uploads / f"{invoice_id}.raw.json").write_text("{ not json", encoding="utf-8")
+    res = client.get(f"/api/hermes/entries/{invoice_id}")
+    assert res.status_code == 500
+    assert res.json()["error"]["code"] == "SERVER_ERROR"
+
+
+# --- 원본 사진 ---
+
+
+def test_photo_returns_raw_bytes(client, uploads, db_conn):
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    (uploads / f"{invoice_id}.jpg").write_bytes(b"\xff\xd8\xffbytes")
+    res = client.get(f"/api/hermes/entries/{invoice_id}/photo")
+    assert res.status_code == 200
+    assert res.content == b"\xff\xd8\xffbytes"
+    # envelope 예외 — JSON이 아니다.
+    assert res.headers["content-type"].startswith("image/")
+
+
+def test_photo_404_when_file_absent(client, uploads, db_conn):
+    """목록·상세는 has_photo=false로 살아 있고, 사진 직접 호출만 404다(spec §4.2)."""
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    assert client.get(f"/api/hermes/entries/{invoice_id}").status_code == 200
+    assert client.get(f"/api/hermes/entries/{invoice_id}/photo").status_code == 404
+
+
+def test_photo_404_when_draft_absent(client, uploads):
+    assert client.get("/api/hermes/entries/424242/photo").status_code == 404

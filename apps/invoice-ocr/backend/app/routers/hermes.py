@@ -5,6 +5,7 @@
 """
 
 from fastapi import APIRouter
+from fastapi.responses import FileResponse
 
 from app.core import envelope
 from app.core.errors import bad_request
@@ -48,3 +49,19 @@ def list_entries(page: int = 1, limit: int = 20, status: str | None = None):
     return envelope.list_response(
         entries, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
     )
+
+
+@router.get("/hermes/entries/{invoice_id}")
+def entry_detail(invoice_id: int):
+    """초안 1건의 전사값·초안·최종본 3단 대조를 조회한다(초안 부재 404)."""
+    return envelope.single(_service().get_entry(invoice_id))
+
+
+@router.get("/hermes/entries/{invoice_id}/photo")
+def entry_photo(invoice_id: int):
+    """원본 사진을 raw 바이트로 반환한다(envelope 예외 · 부재 404).
+
+    media_type을 지정하지 않는다 — 업로드 포맷이 jpg/png 둘 다라 FileResponse의 확장자
+    추론에 맡긴다(curation image/{kind}의 original과 같은 취급).
+    """
+    return FileResponse(_service().photo_path(invoice_id))

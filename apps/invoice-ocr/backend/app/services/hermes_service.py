@@ -11,12 +11,14 @@ import re
 from pathlib import Path
 
 from app.config import data_root
-from app.core.errors import AppError
+from app.core.errors import AppError, not_found
 from app.repositories.hermes_repository import HermesRepository
+from app.repositories.invoice_repository import InvoiceRepository
 from app.services.hermes_diff import (
     Comparison,
     compare,
     mismatch_fields,
+    norm,
     status_of,
     summarize,
     version_for,
@@ -44,9 +46,15 @@ def _read_json(path: Path) -> dict:
 class HermesService:
     """hermes 위임 입력 현황 도메인 서비스(읽기 전용)."""
 
-    def __init__(self, repo=None):
-        """저장소를 주입받아 초기화한다(미지정 시 기본 구현)."""
+    def __init__(self, repo=None, invoice_repo=None):
+        """저장소를 주입받아 초기화한다(미지정 시 기본 구현).
+
+        상세는 건 1개라 N+1이 성립하지 않으므로 bulk 저장소가 아니라 InvoiceRepository의
+        find_by_id/find_items를 재사용한다 — 그 둘이 SELECT *라 상세가 요구하는
+        quantity·unit·unit_price·deduction이 신규 SQL 없이 그대로 들어온다(spec §5).
+        """
         self.repo = repo or HermesRepository()
+        self.invoice_repo = invoice_repo or InvoiceRepository()
 
     # --- 경로 ---
 
@@ -209,7 +217,112 @@ class HermesService:
             "has_raw": (self._uploads() / f"{invoice_id}.raw.json").is_file(),
         }
 
+    def get_entry(self, invoice_id: int) -> dict:
+        """초안 1건의 전사값·초안·최종본 3단 대조를 조회한다.
+
+        Args:
+            invoice_id: 초안 파일명의 id.
+
+        Returns:
+            {id, status, draft, final|None, rows[], has_photo}.
+
+        Raises:
+            AppError: 초안 파일 부재 404, 초안·raw.json 파싱 실패 500.
+        """
+        draft_path = self._uploads() / f"{invoice_id}.draft.json"
+        if not draft_path.is_file():
+            not_found("hermes 초안을 찾을 수 없습니다.")
+        draft = _read_json(draft_path)
+
+        header = self.invoice_repo.find_by_id(invoice_id)
+        final_items = self.invoice_repo.find_items(invoice_id) if header else []
+        comparison = (
+            compare(draft, {**header, "items": final_items}) if header is not None else None
+        )
+        return {
+            "id": invoice_id,
+            "status": status_of(comparison),
+            "draft": draft,
+            "final": header,
+            "rows": _build_rows(draft.get("items") or [], final_items, self._load_raw(invoice_id)),
+            "has_photo": self._photo(invoice_id) is not None,
+        }
+
+    def _load_raw(self, invoice_id: int) -> list[dict] | None:
+        """1단계 패스1 전사값. 파일 부재는 None(열 자체를 숨기는 신호)."""
+        path = self._uploads() / f"{invoice_id}.raw.json"
+        if not path.is_file():
+            return None
+        return _read_json(path).get("rows") or []
+
+    def photo_path(self, invoice_id: int) -> str:
+        """원본 사진의 절대경로를 반환한다.
+
+        Raises:
+            AppError: 초안 부재 또는 사진 파일 부재 404.
+        """
+        if not (self._uploads() / f"{invoice_id}.draft.json").is_file():
+            not_found("hermes 초안을 찾을 수 없습니다.")
+        path = self._photo(invoice_id)
+        if path is None:
+            not_found("원본 사진이 없습니다.")
+        return str(path)
+
 
 def _without_edited(s: dict) -> dict:
     """집계에서 edited를 떼어낸다 — 계산은 픽스처 동치용이고 노출은 하지 않는다(spec §3.2)."""
     return {k: v for k, v in s.items() if k != "edited"}
+
+
+def _item(row: dict | None) -> dict | None:
+    """행 1개를 대조 표에 실을 6열로 좁힌다(짝이 없는 쪽은 None)."""
+    if row is None:
+        return None
+    return {
+        "name": row.get("name"),
+        "quantity": row.get("quantity"),
+        "unit": row.get("unit"),
+        "unit_price": row.get("unit_price"),
+        "supply": row.get("supply"),
+        # MySQL BOOLEAN은 0/1 정수로 돌아온다 — 초안의 bool과 같은 타입으로 맞춘다.
+        "deduction": bool(row.get("deduction")),
+    }
+
+
+def _row_mismatch(draft_item: dict | None, final_item: dict | None) -> list[str]:
+    """행 1개의 셀 강조 축. 짝이 없으면 빈 목록 — 항목 수 불일치로 이미 드러난다."""
+    if draft_item is None or final_item is None:
+        return []
+    out = []
+    if norm(draft_item.get("name")) != norm(final_item.get("name")):
+        out.append("name")
+    if int(draft_item.get("supply") or 0) != int(final_item.get("supply") or 0):
+        out.append("supply")
+    return out
+
+
+def _build_rows(
+    draft_items: list[dict], final_items: list[dict], raw_rows: list[dict] | None
+) -> list[dict]:
+    """전사값·초안·최종본을 index로 짝지어 행별 3열을 만든다.
+
+    길이는 max(초안, 최종본)이다 — 초안 길이로 자르면 사람이 **추가한** 행이 통째로
+    사라져, 항목 수 불일치를 1급 상태로 두는 화면이 그 불일치의 실물을 못 보여준다.
+    raw_rows는 SKILL.md 계약상 초안 items와 순서·개수 1:1이지만 길이가 어긋나도
+    죽지 않고 없는 쪽을 None으로 남긴다(보관 전용 산출물이라 백엔드 검증 대상이 아니다).
+    """
+    rows = []
+    for i in range(max(len(draft_items), len(final_items))):
+        d = draft_items[i] if i < len(draft_items) else None
+        f = final_items[i] if i < len(final_items) else None
+        r = raw_rows[i] if raw_rows is not None and i < len(raw_rows) else None
+        rows.append(
+            {
+                "index": i,
+                "raw": {"text": r.get("raw"), "conf": r.get("conf")} if r else None,
+                "draft": _item(d),
+                "final": _item(f),
+                "mismatch": _row_mismatch(d, f),
+            }
+        )
+    return rows
