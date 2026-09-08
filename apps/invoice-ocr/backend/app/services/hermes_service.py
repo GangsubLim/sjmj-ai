@@ -224,7 +224,7 @@ class HermesService:
             invoice_id: 초안 파일명의 id.
 
         Returns:
-            {id, status, draft, final|None, rows[], has_photo}.
+            {id, status, draft, final|None, rows[], has_photo, mismatch_fields}.
 
         Raises:
             AppError: 초안 파일 부재 404, 초안·raw.json 파싱 실패 500.
@@ -246,6 +246,7 @@ class HermesService:
             "final": header,
             "rows": _build_rows(draft.get("items") or [], final_items, self._load_raw(invoice_id)),
             "has_photo": self._photo(invoice_id) is not None,
+            "mismatch_fields": mismatch_fields(comparison) if comparison else [],
         }
 
     def _load_raw(self, invoice_id: int) -> list[dict] | None:

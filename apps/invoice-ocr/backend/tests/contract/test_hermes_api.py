@@ -381,6 +381,28 @@ def test_entry_detail_keeps_rows_the_human_added(client, uploads, db_conn):
     assert data["rows"][1]["mismatch"] == []
 
 
+def test_entry_detail_includes_mismatch_fields(client, uploads, db_conn):
+    """상세도 목록과 같은 mismatch_fields 축을 싣는다 — 프론트가 값 재비교 없이 서버
+    판정만으로 강조를 그리게 하기 위함(get_entry가 이미 계산해 두던 comparison 재사용)."""
+    invoice_id = _seed_invoice(db_conn, items=[("히터", 150000)])
+    _write_draft(uploads, invoice_id, _draft(items=[{"name": "히타", "supply": 150000}]))
+    data = client.get(f"/api/hermes/entries/{invoice_id}").json()["data"]
+    assert data["mismatch_fields"] == ["name"]
+
+
+def test_entry_detail_whitespace_only_recipient_is_match(client, uploads, db_conn):
+    """수신처가 공백 차이뿐이면 norm() 정규화로 match — 목록과 상세가 같은 판정을 낸다.
+
+    프론트가 원문 문자열 항등 비교로 강조를 재도출하면 이 건에서만 목록·상세가 갈리는
+    회귀를 이 테스트가 백엔드 쪽에서 못 박는다.
+    """
+    invoice_id = _seed_invoice(db_conn, recipient="○○상사")
+    _write_draft(uploads, invoice_id, _draft(recipient="  ○○상사 "))
+    data = client.get(f"/api/hermes/entries/{invoice_id}").json()["data"]
+    assert data["status"] == "match"
+    assert data["mismatch_fields"] == []
+
+
 def test_entry_detail_404_when_draft_absent(client, uploads):
     res = client.get("/api/hermes/entries/424242")
     assert res.status_code == 404
