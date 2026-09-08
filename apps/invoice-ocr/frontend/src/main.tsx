@@ -20,6 +20,7 @@ const UnconfirmedJobsPage = lazy(() => import("@/app/curation/pending/page"));
 const UnconfirmedJobDetailPage = lazy(
   () => import("@/app/curation/pending/[jobId]/page"),
 );
+const HermesStatusPage = lazy(() => import("@/app/hermes/page"));
 
 const LazyFallback = (
   <div className="flex min-h-dvh items-center justify-center text-sm text-gray-400">
@@ -96,6 +97,14 @@ const router = createBrowserRouter([
         element: (
           <Suspense fallback={LazyFallback}>
             <CurationJobPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "/hermes",
+        element: (
+          <Suspense fallback={LazyFallback}>
+            <HermesStatusPage />
           </Suspense>
         ),
       },
