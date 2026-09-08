@@ -21,6 +21,12 @@ import type {
   StageGeometry,
 } from "@/types/curation";
 import type { UnconfirmedJobSummary } from "@/types/observation";
+import type {
+  HermesEntryDetail,
+  HermesEntrySummary,
+  HermesStatus,
+  HermesSummary,
+} from "@/types/hermes";
 
 // --- Mock mode flag ---
 
@@ -416,6 +422,44 @@ export const fetchServerVersion = async (): Promise<string> => {
   }
   return version;
 };
+
+// --- Hermes 위임 입력 현황 API (real-only) ---
+
+// mock 프록시에 태우지 않는다. 운영자 전용 읽기 전용 진단 화면이라 mock 데이터셋에
+// 대응하는 hermes 산출물이 없고, 이 화면의 값은 실 산출물이어야 의미가 있다
+// (fetchServerVersion과 같은 real-only 취급).
+export const hermesAPI = {
+  getSummary: async (): Promise<SingleResponse<HermesSummary>> => {
+    const response = await api.get("/hermes/summary");
+    return response.data;
+  },
+
+  getEntries: async (params: {
+    page?: number;
+    limit?: number;
+    status?: HermesStatus | null;
+  }): Promise<ListResponse<HermesEntrySummary>> => {
+    const response = await api.get("/hermes/entries", {
+      // status는 켜졌을 때만 싣는다 — 항상 실으면 필터 off 요청이 서버에서 400이 된다.
+      params: {
+        page: params.page ?? 1,
+        limit: params.limit ?? 20,
+        ...(params.status ? { status: params.status } : {}),
+      },
+    });
+    return response.data;
+  },
+
+  getEntry: async (id: number): Promise<SingleResponse<HermesEntryDetail>> => {
+    const response = await api.get(`/hermes/entries/${id}`);
+    return response.data;
+  },
+};
+
+// 사진 URL 빌더 — axios 호출 아님, real-only(mock 부적합한 raw FileResponse).
+// <img src>에 직결한다(curationImageUrl과 같은 관례).
+export const hermesPhotoUrl = (id: number): string =>
+  `${getApiBaseUrl()}/hermes/entries/${id}/photo`;
 
 // --- Conditional exports: mock or real API ---
 
