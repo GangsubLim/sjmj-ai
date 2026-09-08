@@ -14,22 +14,6 @@ pytestmark = pytest.mark.usefixtures("db_conn")
 
 
 @pytest.fixture
-def client(db_conn):
-    """conftest의 `client`를 이 파일 한정으로 덮어쓴다.
-
-    data_root() 미설정 시 RuntimeError가 앱의 전역 `Exception` 핸들러(500)까지 가는데,
-    Starlette의 ServerErrorMiddleware는 그 핸들러 응답을 보낸 뒤에도 예외를 항상
-    재-raise한다(starlette/middleware/errors.py 주석: "We always continue to raise the
-    exception"). 기본 TestClient(raise_server_exceptions=True)는 이걸 그대로 다시 던져
-    테스트가 500 응답을 못 보고 예외로 죽는다 — AppError로 명시적으로 던지는 다른 500
-    케이스는 ExceptionMiddleware가 처리해 이 경로를 안 타므로 영향이 없다.
-    """
-    from app.main import app
-
-    return TestClient(app, raise_server_exceptions=False)
-
-
-@pytest.fixture
 def uploads(tmp_path, monkeypatch):
     """SJMJ_DATA_DIR을 임시 루트로 바꾸고 agent_uploads를 만들어 그 경로를 준다."""
     monkeypatch.setenv("SJMJ_DATA_DIR", str(tmp_path))
@@ -206,8 +190,21 @@ def test_summary_500_when_draft_json_is_corrupt(client, uploads):
     assert res.json()["error"]["code"] == "SERVER_ERROR"
 
 
-def test_summary_500_when_data_dir_unset(client, monkeypatch):
+def test_summary_500_when_data_dir_unset(db_conn, monkeypatch):
+    """이 건만 로컬 TestClient(raise_server_exceptions=False)를 쓴다.
+
+    data_root() 미설정 시 RuntimeError가 앱의 전역 `Exception` 핸들러(500)까지 가는데,
+    Starlette의 ServerErrorMiddleware는 그 핸들러 응답을 보낸 뒤에도 예외를 항상
+    재-raise한다(starlette/middleware/errors.py: "We always continue to raise the
+    exception"). 기본 conftest `client`(raise_server_exceptions=True)는 이걸 그대로
+    다시 던져 테스트가 500 응답을 못 보고 예외로 죽는다 — AppError로 명시적으로 던지는
+    다른 500 케이스(예: 위 draft.json 손상)는 이 경로를 안 타 영향이 없다. 이 완화를
+    파일 전체 `client` fixture로 올리면 아직 안 쓰인 뒤 태스크(목록·상세·사진)의 미처리
+    예외까지 조용히 삼켜 안전망이 낮아지므로, 이 건 안에서만 국소적으로 적용한다.
+    """
     monkeypatch.delenv("SJMJ_DATA_DIR", raising=False)
-    res = client.get("/api/hermes/summary")
+    from app.main import app
+
+    res = TestClient(app, raise_server_exceptions=False).get("/api/hermes/summary")
     assert res.status_code == 500
     assert res.json()["success"] is False
