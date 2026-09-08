@@ -208,3 +208,105 @@ def test_summary_500_when_data_dir_unset(db_conn, monkeypatch):
     res = TestClient(app, raise_server_exceptions=False).get("/api/hermes/summary")
     assert res.status_code == 500
     assert res.json()["success"] is False
+
+
+# --- entries 목록 ---
+
+
+def test_entries_returns_list_envelope_with_pagination(client, uploads, db_conn):
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    res = client.get("/api/hermes/entries")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["success"] is True
+    assert body["pagination"] == {"page": 1, "limit": 20, "total": 1, "totalPages": 1}
+    entry = body["data"][0]
+    assert entry["id"] == invoice_id
+    assert entry["status"] == "match"
+    assert entry["mismatch_fields"] == []
+    assert entry["recipient_draft"] == "○○상사"
+    assert entry["recipient_final"] == "○○상사"
+    assert entry["item_count_draft"] == 1
+    assert entry["item_count_final"] == 1
+    assert entry["grand_total_draft"] == 165000
+    assert entry["grand_total_final"] == 165000
+    assert entry["issue_date_draft"] == "2026-09-05"
+    assert entry["issue_date_final"] == "2026-09-05"
+    assert entry["has_photo"] is False
+    assert entry["has_raw"] is False
+
+
+def test_entries_deleted_entry_has_null_finals(client, uploads):
+    _write_draft(uploads, 999_002)
+    entry = client.get("/api/hermes/entries").json()["data"][0]
+    assert entry["status"] == "deleted"
+    assert entry["recipient_final"] is None
+    assert entry["issue_date_final"] is None
+    assert entry["item_count_final"] is None
+    assert entry["grand_total_final"] is None
+    assert entry["mismatch_fields"] == []
+
+
+def test_entries_mismatch_fields_are_folded_axes(client, uploads, db_conn):
+    """품목명만 고친 건 — 부모 타임스탬프 무변경이어도 mismatch로 잡힌다."""
+    invoice_id = _seed_invoice(db_conn, items=[("히터", 150000)])
+    _write_draft(uploads, invoice_id, _draft(items=[{"name": "히타", "supply": 150000}]))
+    entry = client.get("/api/hermes/entries").json()["data"][0]
+    assert entry["status"] == "mismatch"
+    assert entry["mismatch_fields"] == ["name"]
+
+
+def test_entries_reports_photo_and_raw_presence(client, uploads, db_conn):
+    invoice_id = _seed_invoice(db_conn)
+    _write_draft(uploads, invoice_id)
+    (uploads / f"{invoice_id}.jpg").write_bytes(b"\xff\xd8\xff")
+    (uploads / f"{invoice_id}.raw.json").write_text(
+        json.dumps({"rows": [{"raw": "히타", "conf": "중"}]}), encoding="utf-8"
+    )
+    entry = client.get("/api/hermes/entries").json()["data"][0]
+    assert entry["has_photo"] is True
+    assert entry["has_raw"] is True
+
+
+def test_entries_sorted_by_id_desc(client, uploads, db_conn):
+    """최신 건이 먼저 — 방금 텔레그램으로 보낸 건을 맨 위에서 본다."""
+    first = _seed_invoice(db_conn)
+    second = _seed_invoice(db_conn)
+    _write_draft(uploads, first)
+    _write_draft(uploads, second)
+    ids = [e["id"] for e in client.get("/api/hermes/entries").json()["data"]]
+    assert ids == [second, first]
+
+
+def test_entries_status_filter_narrows_list_and_total(client, uploads, db_conn):
+    """목록과 pagination.total이 같은 조건으로 좁혀진다(curation row_delta와 같은 계약)."""
+    matched = _seed_invoice(db_conn)
+    _write_draft(uploads, matched)
+    _write_draft(uploads, 999_003)  # 최종본 없음 → deleted
+    body = client.get("/api/hermes/entries", params={"status": "deleted"}).json()
+    assert body["pagination"]["total"] == 1
+    assert [e["id"] for e in body["data"]] == [999_003]
+
+
+def test_entries_rejects_unknown_status_with_400(client, uploads):
+    res = client.get("/api/hermes/entries", params={"status": "unknown"})
+    assert res.status_code == 400
+    body = res.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "VALIDATION_ERROR"
+    assert "status" in body["error"]["details"]
+
+
+def test_entries_clamps_page_and_limit(client, uploads):
+    body = client.get("/api/hermes/entries", params={"page": 0, "limit": 9999}).json()
+    assert body["pagination"]["page"] == 1
+    assert body["pagination"]["limit"] == 100
+
+
+def test_entries_empty_when_uploads_dir_absent(client, data_root_only):
+    res = client.get("/api/hermes/entries")
+    assert res.status_code == 200
+    assert res.json()["data"] == []
+    assert res.json()["pagination"]["total"] == 0
+    assert not (data_root_only / "agent_uploads").exists()

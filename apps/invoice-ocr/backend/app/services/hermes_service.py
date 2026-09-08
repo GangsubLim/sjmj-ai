@@ -13,7 +13,14 @@ from pathlib import Path
 from app.config import data_root
 from app.core.errors import AppError
 from app.repositories.hermes_repository import HermesRepository
-from app.services.hermes_diff import Comparison, compare, summarize, version_for
+from app.services.hermes_diff import (
+    Comparison,
+    compare,
+    mismatch_fields,
+    status_of,
+    summarize,
+    version_for,
+)
 
 UPLOAD_DIRNAME = "agent_uploads"
 KNOWLEDGE_DIRNAME = "agent_knowledge"
@@ -150,6 +157,56 @@ class HermesService:
             "totals": totals,
             "knowledge": self._knowledge_state(versions),
             "by_version": by_version,
+        }
+
+    def list_entries(
+        self, page: int, limit: int, status: str | None = None
+    ) -> tuple[list[dict], int]:
+        """초안 목록을 상태 필터·페이지로 조회한다.
+
+        필터는 목록과 total을 같은 조건으로 좁힌다 — 필터를 켠 화면의 총건수가 그대로
+        "남은 일"이 되게 하기 위함이다(curation의 row_delta와 같은 계약).
+
+        Args:
+            page: 1부터. 라우터가 clamp한 값이 온다.
+            limit: 페이지 크기. 라우터가 clamp한 값이 온다.
+            status: deleted/match/mismatch 중 하나 또는 None(전체). 라우터가 검증한다.
+
+        Returns:
+            (엔트리 목록, 필터 적용 후 총건수).
+        """
+        entries = [self._entry(e) for e in self._scan()]
+        if status is not None:
+            entries = [e for e in entries if e["status"] == status]
+        # id 내림차순 — 방금 들어온 건이 맨 위다.
+        entries.sort(key=lambda e: e["id"], reverse=True)
+        total = len(entries)
+        start = (page - 1) * limit
+        return entries[start : start + limit], total
+
+    def _entry(self, scanned: dict) -> dict:
+        """스캔 1건을 목록 행 DTO로 좁힌다.
+
+        발행일은 초안값·최종값을 나란히 싣기만 하고 상태 판정에 넣지 않는다 — hermes
+        스킬이 발행일을 판독하지 않고 항상 오늘로 채우므로, 불일치로 세면 사실상 전건이
+        mismatch가 되어 상태 축이 붕괴한다(spec §3.2).
+        """
+        draft, final, comparison = scanned["draft"], scanned["final"], scanned["comparison"]
+        invoice_id = scanned["id"]
+        return {
+            "id": invoice_id,
+            "issue_date_draft": draft.get("issue_date"),
+            "issue_date_final": final["issue_date"] if final else None,
+            "recipient_draft": draft.get("recipient"),
+            "recipient_final": final["recipient"] if final else None,
+            "item_count_draft": len(draft.get("items") or []),
+            "item_count_final": len(final["items"]) if final else None,
+            "grand_total_draft": draft.get("grand_total"),
+            "grand_total_final": final["grand_total"] if final else None,
+            "status": status_of(comparison),
+            "mismatch_fields": mismatch_fields(comparison) if comparison else [],
+            "has_photo": self._photo(invoice_id) is not None,
+            "has_raw": (self._uploads() / f"{invoice_id}.raw.json").is_file(),
         }
 
 

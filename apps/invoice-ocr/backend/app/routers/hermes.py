@@ -7,7 +7,8 @@
 from fastapi import APIRouter
 
 from app.core import envelope
-from app.services.hermes_service import HermesService
+from app.core.errors import bad_request
+from app.services.hermes_service import STATUSES, HermesService
 
 router = APIRouter()
 
@@ -27,3 +28,23 @@ def _service() -> HermesService:
 def summary():
     """초안 전량의 집계와 판독 지식 상태·버전별 일치율을 조회한다."""
     return envelope.single(_service().summary())
+
+
+@router.get("/hermes/entries")
+def list_entries(page: int = 1, limit: int = 20, status: str | None = None):
+    """초안 목록을 페이지 조회한다(status로 deleted/match/mismatch 필터)."""
+    page = max(1, min(_PAGE_MAX, page))
+    limit = max(1, min(_LIMIT_MAX, limit))
+    # status는 문자열로 받아 여기서 던진다 — Enum 타입 힌트로 두면 FastAPI가 422를 내는데,
+    # 이 API의 검증 실패는 400이 불변식이다(전역 RequestValidationError 핸들러가 400으로
+    # 바꾸긴 하지만, 실패 메시지를 이 슬라이스가 소유하는 편이 details 계약이 명확하다).
+    if status is not None and status not in STATUSES:
+        bad_request(
+            "검증에 실패했습니다.",
+            {"status": f"허용되지 않는 값입니다: {'/'.join(STATUSES)} 중 하나여야 합니다."},
+        )
+    entries, total = _service().list_entries(page, limit, status)
+    total_pages = (total + limit - 1) // limit if total else 1
+    return envelope.list_response(
+        entries, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
+    )
