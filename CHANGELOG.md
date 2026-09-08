@@ -5,6 +5,20 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.19.0] — 2026-09-08
+
+텔레그램 위임 입력(hermes) 경로의 상태를 macmini 명령 실행 없이 웹에서 상시 확인하게 만드는 릴리스 ([#207](https://github.com/GangsubLim/sjmj-ai/pull/207)).
+
+### Added
+
+- hermes 위임 입력 현황 페이지 2종 — `/hermes`에서 요약 카드·스킬 버전별 일치율 표·상태 필터·건별 목록 확인, `/hermes/:id`에서 원본 사진과 초안↔최종본 헤더·행별 3열 대조 확인 ([#205](https://github.com/GangsubLim/sjmj-ai/pull/205))
+- 백엔드 `hermes` 슬라이스 조회 4종 — 초안·전사값·사진 파일과 운영 DB를 요청 시점에 조인해 건별 상태(삭제·일치·불일치)와 집계 산출 ([#205](https://github.com/GangsubLim/sjmj-ai/pull/205))
+- 설정 페이지 하단에 현황 페이지 진입 링크 추가 ([#205](https://github.com/GangsubLim/sjmj-ai/pull/205))
+
+### Changed
+
+- 의존성 14건 일괄 갱신 — `minimatch` ReDoS 등 프론트 전이 보안 4건과 `fastapi`·`sqlalchemy`·`pydantic-settings`·`opencv-python-headless`·`paddleocr` 포함 ([#206](https://github.com/GangsubLim/sjmj-ai/pull/206))
+
 ## [v0.18.0] — 2026-09-07
 
 hermes 판독 지식을 재설계해 환각 오독 쌍이 담기던 교정 사전을 폐기하고, 확정 어휘를 실거래 빈도 등급으로 제공하며 결정적 변경은 LLM 없이 무인 발행하는 릴리스 ([#202](https://github.com/GangsubLim/sjmj-ai/pull/202)).
