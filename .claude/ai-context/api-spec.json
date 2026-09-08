@@ -457,6 +457,46 @@
         "res": "binary image/png (raw FileResponse, envelope 예외)",
         "router": "curation",
         "source": "app/routers/curation.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/hermes/summary",
+        "summary": "hermes 위임 입력 현황 요약 — 전체 집계 12키 + 판독 지식 상태(현재 버전·발행 시각·누적 교정 수) + 지식 버전별 일치율. agent_report.summarize의 13키 중 edited만 뺀다(타임스탬프 파생이라 품목 교정을 통째로 놓침). agent_uploads·agent_knowledge 부재는 빈 결과 200이며 디렉터리를 생성하지 않는다. 초안 JSON 파싱 실패·SJMJ_DATA_DIR 미설정은 500",
+        "auth": "public",
+        "req": null,
+        "res": "HermesSummary",
+        "router": "hermes",
+        "source": "app/routers/hermes.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/hermes/entries",
+        "summary": "hermes 초안 목록(id 내림차순·페이지네이션; status=deleted|match|mismatch면 목록과 total이 같은 조건으로 좁혀짐). 상태는 타임스탬프가 아니라 대조 결과로 판정하며 판정 주체는 백엔드 단독이다. 발행일은 초안값·최종값을 싣기만 하고 상태 판정에서 제외(hermes가 발행일을 판독하지 않고 항상 오늘로 채우므로 세면 전건 mismatch). limit 상한 100, page 상한 1000000000(범위 밖은 400이 아니라 clamp), status 미지값은 400",
+        "auth": "public",
+        "req": null,
+        "res": "HermesEntrySummary",
+        "router": "hermes",
+        "source": "app/routers/hermes.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/hermes/entries/{invoice_id}",
+        "summary": "초안 1건의 전사값(raw.json 패스1)·초안·최종본 3단 대조. rows 길이는 max(초안 행, 최종본 행)이라 사람이 추가한 행은 draft=null로 남는다(짝 없는 행의 mismatch는 빈 배열). raw.json 부재는 200 + raw=null, 초안 파일 부재는 404, 초안·raw.json 파싱 실패는 500",
+        "auth": "public",
+        "req": null,
+        "res": "HermesEntryDetail",
+        "router": "hermes",
+        "source": "app/routers/hermes.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/hermes/entries/{invoice_id}/photo",
+        "summary": "hermes가 보관한 원본 사진 (raw FileResponse, envelope 예외). 초안 부재·사진 부재 모두 404 — 목록·상세는 has_photo=false로 살아 있다",
+        "auth": "public",
+        "req": null,
+        "res": "binary image/jpeg 또는 image/png (raw FileResponse, envelope 예외)",
+        "router": "hermes",
+        "source": "app/routers/hermes.py"
       }
     ],
     "schema-usage": {
@@ -534,7 +574,18 @@
         "PATCH /api/curation/pairs/{id}"
       ],
       "CurationPairPatch": ["PATCH /api/curation/pairs/{id}"],
-      "CurationReviewRequest": ["POST /api/curation/jobs/{job_id}/review"]
+      "CurationReviewRequest": ["POST /api/curation/jobs/{job_id}/review"],
+      "HermesSummary": ["GET /api/hermes/summary"],
+      "HermesTotals": [
+        "GET /api/hermes/summary (data.totals)",
+        "GET /api/hermes/summary (data.by_version[])"
+      ],
+      "HermesKnowledge": ["GET /api/hermes/summary (data.knowledge)"],
+      "HermesEntrySummary": ["GET /api/hermes/entries"],
+      "HermesEntryDetail": ["GET /api/hermes/entries/{invoice_id}"],
+      "HermesRowCell": [
+        "GET /api/hermes/entries/{invoice_id} (data.rows[].draft·final)"
+      ]
     },
     "conventions": {
       "api-prefix": "/api (단, /health 는 prefix 없이도 노출 — /health + /api/health 둘 다)",
@@ -2473,7 +2524,12 @@
         "summary": "단계 기하 사이드카 조회 (ADR 0012 — result_json 계약 불변)",
         "tags": ["curation"],
         "parameters": [
-          { "name": "job_id", "in": "path", "required": true, "schema": { "type": "integer" } }
+          {
+            "name": "job_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
         ],
         "responses": {
           "200": {
@@ -2483,7 +2539,11 @@
                 "schema": {
                   "allOf": [
                     { "$ref": "#/components/schemas/SuccessSingle" },
-                    { "properties": { "data": { "$ref": "#/components/schemas/StageGeometry" } } }
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/StageGeometry" }
+                      }
+                    }
                   ]
                 }
               }
@@ -2491,15 +2551,27 @@
           },
           "404": {
             "description": "잡 없음 또는 기하 없음(관측 없음 — 과거 잡의 정상 상태)",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
           },
           "409": {
             "description": "이전 세대 기하 — 정수 generation ≠ ocr_jobs.reprocess_seq",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
           },
           "500": {
             "description": "기하 파일 손상 — generation 키 부재·정수 아님도 포함. 404로 위장하지 않는다",
-            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/ErrorEnvelope" } } }
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
           }
         }
       }
@@ -2789,6 +2861,199 @@
                 "schema": {
                   "$ref": "#/components/schemas/ErrorEnvelope"
                 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/summary": {
+      "get": {
+        "summary": "hermes 위임 입력 현황 요약(집계 + 판독 지식 상태 + 지식 버전별 일치율)",
+        "description": "요청 시 실시간 계산이다 — 야간 배치 산출물을 재사용하지 않는다(방금 텔레그램으로 보낸 건이 새로고침으로 보여야 하고, 현 규모에서 전량 스캔 비용이 사실상 0). name_rate·supply_rate만 쌍(pairs) 분모이고 나머지 rate는 건(count) 분모다. 분모 0이면 에러도 null도 아닌 0.0이다.",
+        "tags": ["hermes"],
+        "responses": {
+          "200": {
+            "description": "현황 요약",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": { "$ref": "#/components/schemas/HermesSummary" }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "SJMJ_DATA_DIR 미설정·부재, 또는 초안 JSON 파싱 실패(운영 이상 신호이므로 조용히 넘기지 않는다)",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/entries": {
+      "get": {
+        "summary": "hermes 초안 목록(상태 필터·페이지네이션)",
+        "description": "행 하나가 초안 1건이다. agent_uploads/{id}.draft.json의 존재가 'hermes 경로로 들어온 건'의 정의이며 ML 경로 건과 자연 분리된다.",
+        "tags": ["hermes"],
+        "parameters": [
+          {
+            "name": "page",
+            "in": "query",
+            "description": "범위 밖 값은 400이 아니라 clamp된다(1..1000000000).",
+            "schema": {
+              "type": "integer",
+              "default": 1,
+              "minimum": 1,
+              "maximum": 1000000000
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "description": "범위 밖 값은 400이 아니라 clamp된다(1..100).",
+            "schema": {
+              "type": "integer",
+              "default": 20,
+              "minimum": 1,
+              "maximum": 100
+            }
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "지정하면 그 상태만 남고 pagination.total도 같은 조건으로 좁혀진다. 선언된 3종 밖의 값은 400 VALIDATION_ERROR(details.status).",
+            "schema": {
+              "type": "string",
+              "enum": ["deleted", "match", "mismatch"]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "초안 목록",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessList" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/HermesEntrySummary"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "status가 선언된 3종 밖의 값. 범위 초과(page·limit)는 400이 아니라 clamp",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/entries/{invoice_id}": {
+      "get": {
+        "summary": "초안 1건의 전사값·초안·최종본 3단 대조",
+        "description": "전사값 열이 이 페이지의 고유 가치다 — 「획대로 읽은 글자」·「그럴듯하게 바꾼 이름」·「사람이 고친 정답」 3단이 한 줄에 놓여야 v0.18.0에서 잡으려는 '그럴듯한 오답'을 사람이 판정할 수 있다. raw.json은 v0.18.0부터 쌓이는 신규 산출물이라 과거 건은 raw=null이다.",
+        "tags": ["hermes"],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "대조 상세",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": {
+                          "$ref": "#/components/schemas/HermesEntryDetail"
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "초안 파일 부재",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          },
+          "500": {
+            "description": "초안 또는 raw.json JSON 파싱 실패",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hermes/entries/{invoice_id}/photo": {
+      "get": {
+        "summary": "hermes가 보관한 원본 사진 (raw FileResponse, envelope 예외)",
+        "tags": ["hermes"],
+        "parameters": [
+          {
+            "name": "invoice_id",
+            "in": "path",
+            "required": true,
+            "schema": { "type": "integer" }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "사진 raw 바이트. 업로드 포맷 그대로(FileResponse가 확장자로 추론)",
+            "content": {
+              "image/jpeg": {
+                "schema": { "type": "string", "format": "binary" }
+              },
+              "image/png": {
+                "schema": { "type": "string", "format": "binary" }
+              }
+            }
+          },
+          "404": {
+            "description": "초안 부재 또는 사진 파일 부재",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
               }
             }
           }
@@ -3957,27 +4222,104 @@
         "type": "object",
         "description": "한 잡이 각 단계에서 실제로 쓴 좌표·수치. 생산자는 ml 워커(handwriting/geometry.py)이고 계약 정본도 거기다 — 백엔드는 generation 한 키만 읽는다. 워커가 도달한 단계까지만 기록하므로 하류 키(hlines·pitch·item_x·amount_x·rows)는 강등 잡에서 **부재**한다(null이 아니라 키 자체가 없다).",
         "properties": {
-          "version": { "type": "integer", "description": "계약 버전(현재 1). 프론트는 모르는 값이면 패널을 렌더하지 않고 안내 문구로 닫는다" },
-          "generation": { "type": "integer", "description": "워커가 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq(migration_014). 백엔드가 현재 값과 대조해 다르면 409" },
-          "image_size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "EXIF 적용 후 원본 [width, height]. 쿼드 오버레이 viewBox의 입력" },
-          "warp_size": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "워프 결과 [width, height]. 워프 좌표계 패널 viewBox의 입력(상수 하드코딩 금지)" },
-          "quad": { "type": "array", "nullable": true, "items": { "type": "array", "items": { "type": "number" }, "minItems": 2, "maxItems": 2 }, "minItems": 4, "maxItems": 4, "description": "원본 좌표계 4점 [[x,y]×4]. 게이트 전량 강등이면 마지막 후보의 quad" },
-          "quad_source": { "type": "string", "nullable": true, "enum": ["dl", "color"], "description": "그 quad를 낸 공급자(corner_dl.quad_candidates 출력 그대로)" },
-          "deskew_deg": { "type": "number", "nullable": true, "description": "워프 후 적용한 deskew 각도(도)" },
-          "hlines": { "type": "array", "items": { "type": "integer" }, "description": "워프 좌표계 가로 격자선 y들. 강등 잡에는 키 자체가 없다" },
-          "pitch": { "type": "number", "description": "행 피치(중앙값). 강등 잡에는 키 자체가 없다" },
-          "item_x": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "품목 크롭의 실제 [x0, x1](rows.ITEM_X ±4). 템플릿 상수가 아니라 그 잡에 쓰인 값" },
-          "amount_x": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "금액 크롭의 실제 [x0, x1]. 좌측은 전표별 실측(grid_v4.amount_crop_left, #50)" },
+          "version": {
+            "type": "integer",
+            "description": "계약 버전(현재 1). 프론트는 모르는 값이면 패널을 렌더하지 않고 안내 문구로 닫는다"
+          },
+          "generation": {
+            "type": "integer",
+            "description": "워커가 이 잡을 점유한 시점의 ocr_jobs.reprocess_seq(migration_014). 백엔드가 현재 값과 대조해 다르면 409"
+          },
+          "image_size": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "EXIF 적용 후 원본 [width, height]. 쿼드 오버레이 viewBox의 입력"
+          },
+          "warp_size": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "워프 결과 [width, height]. 워프 좌표계 패널 viewBox의 입력(상수 하드코딩 금지)"
+          },
+          "quad": {
+            "type": "array",
+            "nullable": true,
+            "items": {
+              "type": "array",
+              "items": { "type": "number" },
+              "minItems": 2,
+              "maxItems": 2
+            },
+            "minItems": 4,
+            "maxItems": 4,
+            "description": "원본 좌표계 4점 [[x,y]×4]. 게이트 전량 강등이면 마지막 후보의 quad"
+          },
+          "quad_source": {
+            "type": "string",
+            "nullable": true,
+            "enum": ["dl", "color"],
+            "description": "그 quad를 낸 공급자(corner_dl.quad_candidates 출력 그대로)"
+          },
+          "deskew_deg": {
+            "type": "number",
+            "nullable": true,
+            "description": "워프 후 적용한 deskew 각도(도)"
+          },
+          "hlines": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "description": "워프 좌표계 가로 격자선 y들. 강등 잡에는 키 자체가 없다"
+          },
+          "pitch": {
+            "type": "number",
+            "description": "행 피치(중앙값). 강등 잡에는 키 자체가 없다"
+          },
+          "item_x": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "품목 크롭의 실제 [x0, x1](rows.ITEM_X ±4). 템플릿 상수가 아니라 그 잡에 쓰인 값"
+          },
+          "amount_x": {
+            "type": "array",
+            "items": { "type": "integer" },
+            "minItems": 2,
+            "maxItems": 2,
+            "description": "금액 크롭의 실제 [x0, x1]. 좌측은 전표별 실측(grid_v4.amount_crop_left, #50)"
+          },
           "rows": {
             "type": "array",
             "description": "prop.rows 전량과 평행한 행 목록(cont·empty·total 포함). 강등 잡에는 키 자체가 없다",
             "items": {
               "type": "object",
               "properties": {
-                "band": { "type": "array", "items": { "type": "integer" }, "minItems": 2, "maxItems": 2 },
-                "type": { "type": "string", "enum": ["new", "cont", "empty", "total"] },
-                "item_box": { "type": "array", "nullable": true, "items": { "type": "integer" }, "minItems": 2, "maxItems": 2, "description": "실제로 크롭된 행의 세로 박스 [y0, y1]. 크롭 대상이 아니면 null" },
-                "row_index": { "type": "integer", "nullable": true, "description": "row-{i}.png·crop_ref의 i와 같은 값. 크롭 대상이 아니면 null(spec 불변식 6)" }
+                "band": {
+                  "type": "array",
+                  "items": { "type": "integer" },
+                  "minItems": 2,
+                  "maxItems": 2
+                },
+                "type": {
+                  "type": "string",
+                  "enum": ["new", "cont", "empty", "total"]
+                },
+                "item_box": {
+                  "type": "array",
+                  "nullable": true,
+                  "items": { "type": "integer" },
+                  "minItems": 2,
+                  "maxItems": 2,
+                  "description": "실제로 크롭된 행의 세로 박스 [y0, y1]. 크롭 대상이 아니면 null"
+                },
+                "row_index": {
+                  "type": "integer",
+                  "nullable": true,
+                  "description": "row-{i}.png·crop_ref의 i와 같은 값. 크롭 대상이 아니면 null(spec 불변식 6)"
+                }
               }
             }
           }
@@ -4011,6 +4353,174 @@
             "type": "string",
             "description": "잡 상세에서 받은 세대 토큰. 필수 — 재처리로 게이트가 열린 잡을 옛 화면이 다시 닫는 것을 409로 막는다(spec §12)."
           }
+        }
+      },
+      "HermesTotals": {
+        "type": "object",
+        "description": "초안↔최종본 대조 집계. agent_report.summarize의 13키에서 edited만 뺀 12키다 — edited는 invoices.updated_at != created_at 파생인데, 품목 교정이 delete_items + 재삽입이라 부모 행이 안 움직여 가장 흔한 교정을 통째로 놓친다(spec §3.2).",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "description": "최종본이 있는 초안 수(집계 분모)"
+          },
+          "missing": {
+            "type": "integer",
+            "description": "최종본이 없는(사람이 지운) 초안 수"
+          },
+          "pairs": {
+            "type": "integer",
+            "description": "품목 쌍 수. name_rate·supply_rate의 분모"
+          },
+          "name_hits": { "type": "integer" },
+          "supply_hits": { "type": "integer" },
+          "untouched": {
+            "type": "integer",
+            "description": "대조 축 전부 일치한 건 수"
+          },
+          "recipient_rate": {
+            "type": "number",
+            "description": "분모 0이면 에러도 null도 아닌 0.0"
+          },
+          "item_count_rate": { "type": "number" },
+          "name_rate": { "type": "number", "description": "분모는 pairs" },
+          "supply_rate": { "type": "number", "description": "분모는 pairs" },
+          "grand_total_rate": { "type": "number" },
+          "untouched_rate": { "type": "number" }
+        }
+      },
+      "HermesKnowledge": {
+        "type": "object",
+        "description": "판독 지식 파이프라인 상태. versions.jsonl·corrections.jsonl에서 파생하며 파일 부재는 기본값(version 0 · published_at null · corrections 0)이다.",
+        "properties": {
+          "version": {
+            "type": "integer",
+            "description": "거부 기록을 제외한 최신 발행 버전. 발행 이력이 없으면 0"
+          },
+          "published_at": { "type": "string", "nullable": true },
+          "corrections": {
+            "type": "integer",
+            "description": "corrections.jsonl 누적 줄 수"
+          }
+        }
+      },
+      "HermesSummary": {
+        "type": "object",
+        "properties": {
+          "totals": { "$ref": "#/components/schemas/HermesTotals" },
+          "knowledge": { "$ref": "#/components/schemas/HermesKnowledge" },
+          "by_version": {
+            "type": "array",
+            "description": "지식 버전 구간별 집계. version은 정수이며 0이 '발행 이전'이다(ml agent_learn.version_for의 \"none\"과 같은 구간, 표기만 다르다). 최종본 created_at을 versions.jsonl의 published_at 구간에 매핑해 산출하므로 deleted 건은 여기 들어가지 않는다.",
+            "items": {
+              "allOf": [
+                { "$ref": "#/components/schemas/HermesTotals" },
+                { "properties": { "version": { "type": "integer" } } }
+              ]
+            }
+          }
+        }
+      },
+      "HermesEntrySummary": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "invoice id. 초안 파일명이 곧 이 값이다"
+          },
+          "issue_date_draft": { "type": "string", "nullable": true },
+          "issue_date_final": { "type": "string", "nullable": true },
+          "recipient_draft": { "type": "string", "nullable": true },
+          "recipient_final": { "type": "string", "nullable": true },
+          "item_count_draft": { "type": "integer" },
+          "item_count_final": { "type": "integer", "nullable": true },
+          "grand_total_draft": { "type": "integer", "nullable": true },
+          "grand_total_final": { "type": "integer", "nullable": true },
+          "status": {
+            "type": "string",
+            "enum": ["deleted", "match", "mismatch"],
+            "description": "대조 결과로 판정한다. deleted는 최종본 부재(사람이 지움). 한계 — '열어보고 고칠 게 없어 닫은 건'과 '아예 열지 않은 건'은 구분 불가하며 둘 다 match다"
+          },
+          "mismatch_fields": {
+            "type": "array",
+            "description": "items[i].name 같은 인덱스 필드는 축 이름으로 접힌다. deleted 건은 빈 배열",
+            "items": {
+              "type": "string",
+              "enum": [
+                "recipient",
+                "item_count",
+                "name",
+                "supply",
+                "grand_total"
+              ]
+            }
+          },
+          "has_photo": { "type": "boolean" },
+          "has_raw": {
+            "type": "boolean",
+            "description": "raw.json 존재 — 없으면 화면이 전사값 열을 숨긴다"
+          }
+        }
+      },
+      "HermesEntryDetail": {
+        "type": "object",
+        "properties": {
+          "id": { "type": "integer" },
+          "status": {
+            "type": "string",
+            "enum": ["deleted", "match", "mismatch"]
+          },
+          "draft": {
+            "type": "object",
+            "description": "초안 원문(POST /api/invoices 바디 그대로)"
+          },
+          "final": {
+            "type": "object",
+            "nullable": true,
+            "description": "최종본 invoices 행 전체(SELECT *). 최종본이 없으면 null"
+          },
+          "rows": {
+            "type": "array",
+            "description": "길이는 max(초안 행, 최종본 행). 사람이 추가한 행은 draft=null, 사람이 지운 행은 final=null이며 짝이 없는 행의 mismatch는 빈 배열이다(항목 수 불일치로 이미 드러난다).",
+            "items": {
+              "type": "object",
+              "properties": {
+                "index": { "type": "integer" },
+                "raw": {
+                  "type": "object",
+                  "nullable": true,
+                  "description": "1단계 패스1 전사값. raw.json 부재면 null",
+                  "properties": {
+                    "text": { "type": "string", "nullable": true },
+                    "conf": {
+                      "type": "string",
+                      "nullable": true,
+                      "description": "확신 등급 상/중/하"
+                    }
+                  }
+                },
+                "draft": { "$ref": "#/components/schemas/HermesRowCell" },
+                "final": { "$ref": "#/components/schemas/HermesRowCell" },
+                "mismatch": {
+                  "type": "array",
+                  "items": { "type": "string", "enum": ["name", "supply"] }
+                }
+              }
+            }
+          },
+          "has_photo": { "type": "boolean" }
+        }
+      },
+      "HermesRowCell": {
+        "type": "object",
+        "nullable": true,
+        "description": "행 1개의 6열. 짝이 없는 쪽은 null",
+        "properties": {
+          "name": { "type": "string", "nullable": true },
+          "quantity": { "type": "integer", "nullable": true },
+          "unit": { "type": "string", "nullable": true },
+          "unit_price": { "type": "integer", "nullable": true },
+          "supply": { "type": "integer", "nullable": true },
+          "deduction": { "type": "boolean" }
         }
       }
     }
