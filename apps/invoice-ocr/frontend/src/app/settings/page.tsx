@@ -121,12 +121,19 @@ export default function SettingsPage() {
           />
           <SalespeopleSection />
         </div>
-        <div className="mt-8 hidden border-t pt-4 lg:block">
+        {/* 운영자 전용 진단 도구 — TopNav·BottomNav에는 넣지 않는다(기존 관례). */}
+        <div className="mt-8 hidden gap-4 border-t pt-4 lg:flex">
           <Link
             to="/curation"
             className="text-muted-foreground hover:text-foreground text-sm underline"
           >
             OCR 학습 큐레이션
+          </Link>
+          <Link
+            to="/hermes"
+            className="text-muted-foreground hover:text-foreground text-sm underline"
+          >
+            hermes 위임 입력 현황
           </Link>
         </div>
       </PageContainer>

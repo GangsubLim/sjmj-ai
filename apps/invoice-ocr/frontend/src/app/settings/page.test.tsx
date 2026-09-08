@@ -81,6 +81,21 @@ describe("SettingsPage", () => {
     setup();
     const link = screen.getByRole("link", { name: "OCR 학습 큐레이션" });
     expect(link.parentElement?.className ?? "").toMatch(/hidden/);
-    expect(link.parentElement?.className ?? "").toMatch(/lg:block/);
+    expect(link.parentElement?.className ?? "").toMatch(/lg:/);
+  });
+
+  it("하단에 hermes 위임 입력 현황 보조 링크를 /hermes로 렌더한다", () => {
+    setup();
+    const link = screen.getByRole("link", { name: "hermes 위임 입력 현황" });
+    expect(link).toHaveAttribute("href", "/hermes");
+  });
+
+  it("hermes 링크는 큐레이션 링크와 같은 데스크톱 전용 블록 안에 있다", () => {
+    setup();
+    const curation = screen.getByRole("link", { name: "OCR 학습 큐레이션" });
+    const hermes = screen.getByRole("link", {
+      name: "hermes 위임 입력 현황",
+    });
+    expect(hermes.parentElement).toBe(curation.parentElement);
   });
 });

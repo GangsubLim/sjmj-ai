@@ -11,6 +11,7 @@ from app.core.errors import register_error_handlers
 from app.routers import (
     companies,
     curation,
+    hermes,
     invoices,
     items,
     ocr,
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     application.include_router(invoices.router, prefix="/api")
     application.include_router(ocr.router, prefix="/api")
     application.include_router(curation.router, prefix="/api")
+    application.include_router(hermes.router, prefix="/api")
     application.include_router(companies.router, prefix="/api")
     application.include_router(items.router, prefix="/api")
     application.include_router(settings.router, prefix="/api")

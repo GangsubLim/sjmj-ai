@@ -39,16 +39,17 @@ API 명세는 `.claude/ai-context/api-spec.json` (OpenAPI 3.0 기반)에서 관�
 
 API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api")` 로 마운트된다(`app/main.py`).
 
-| Router        | 파일                           | Prefix               | 목적                                                 |
-| ------------- | ------------------------------ | -------------------- | ---------------------------------------------------- |
-| system        | `app/main.py`                  | (없음) / `/api`      | `/health`, `/api/health` 헬스체크                    |
-| invoices      | `app/routers/invoices.py`      | `/api/invoices`      | 거래명세서 CRUD + duplicate + CSV export             |
-| companies     | `app/routers/companies.py`     | `/api/companies`     | 거래처 자동완성 CRUD + 거래처별 명세서 목록          |
-| items         | `app/routers/items.py`         | `/api/items`         | 품목 자동완성 CRUD                                   |
-| salespeople   | `app/routers/salespeople.py`   | `/api/salespeople`   | 영업사원 CRUD(soft-delete)                           |
-| settings      | `app/routers/settings.py`      | `/api/settings`      | 발급자 정보·도장 업로드·앱 설정                      |
-| sales_records | `app/routers/sales_records.py` | `/api/sales-records` | 영업 실적 월별 집계·upsert·삭제                      |
-| curation      | `app/routers/curation.py`      | `/api/curation`      | 큐레이션 검수 큐·잡 상세·쌍 큐레이션·검수완료·이미지 |
+| Router        | 파일                           | Prefix               | 목적                                                                  |
+| ------------- | ------------------------------ | -------------------- | --------------------------------------------------------------------- |
+| system        | `app/main.py`                  | (없음) / `/api`      | `/health`, `/api/health` 헬스체크                                     |
+| invoices      | `app/routers/invoices.py`      | `/api/invoices`      | 거래명세서 CRUD + duplicate + CSV export                              |
+| companies     | `app/routers/companies.py`     | `/api/companies`     | 거래처 자동완성 CRUD + 거래처별 명세서 목록                           |
+| items         | `app/routers/items.py`         | `/api/items`         | 품목 자동완성 CRUD                                                    |
+| salespeople   | `app/routers/salespeople.py`   | `/api/salespeople`   | 영업사원 CRUD(soft-delete)                                            |
+| settings      | `app/routers/settings.py`      | `/api/settings`      | 발급자 정보·도장 업로드·앱 설정                                       |
+| sales_records | `app/routers/sales_records.py` | `/api/sales-records` | 영업 실적 월별 집계·upsert·삭제                                       |
+| curation      | `app/routers/curation.py`      | `/api/curation`      | 큐레이션 검수 큐·잡 상세·쌍 큐레이션·검수완료·이미지                  |
+| hermes        | `app/routers/hermes.py`        | `/api/hermes`        | hermes 위임 입력 현황 요약·목록·대조 상세·원본 사진(읽기 전용, GET만) |
 
 신규 slice 추가 시 위 4종(router+service+repository) + `tests/{contract,unit,integration}/` 3종 패턴을 그대로 따른다.
 
@@ -141,6 +142,9 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
    **media_type:** `kind=warped`·`crop` 는 항상 `image/png`(서버에서 변환·저장). `kind=original` 은 업로드 포맷
    그대로(`image/jpeg` 또는 `image/png` — `FileResponse` media_type 미지정이므로 파일 확장자로 추론됨).
    없는 산출물(백필된 구 잡의 `warped.png` 등)은 404 에러 envelope.
+6. **`GET /api/hermes/entries/{invoice_id}/photo`** — envelope 밖 **raw 이미지 바이트**(`FileResponse`).
+   `agent_uploads/{invoice_id}.{jpg,jpeg,png}` 를 그대로 반환하며 media_type 은 미지정(업로드 포맷 그대로
+   추론). 초안 부재·사진 부재 모두 404 에러 envelope — 목록·상세는 `has_photo=false` 로 살아 있다.
 
 ## Pagination 방식
 
