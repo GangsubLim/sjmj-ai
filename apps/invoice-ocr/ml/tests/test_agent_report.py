@@ -238,3 +238,41 @@ def test_main_skips_drafts_without_final(tmp_path: Path, monkeypatch, capsys):
     agent_report.main(["--data-dir", str(tmp_path), "--out", str(tmp_path / "o")])
     assert "최종본 없음(삭제됨): [9]" in capsys.readouterr().out
     assert "| 최종본 없음(삭제) | 1 |" in (tmp_path / "o" / "report.md").read_text(encoding="utf-8")
+
+
+# --- 공유 골든 픽스처 (backend app/services/hermes_diff.py와 동치 강제, spec §7.2) ---
+
+# ml/tests/ → ml/ → apps/invoice-ocr/ 이므로 parents[2].
+_CASES_PATH = Path(__file__).resolve().parents[2] / "fixtures" / "hermes_compare_cases.json"
+
+
+def _load_cases() -> dict:
+    return json.loads(_CASES_PATH.read_text(encoding="utf-8"))
+
+
+def test_shared_fixture_cases_match_compare():
+    """골든 케이스마다 compare가 픽스처의 expected를 그대로 낸다."""
+    for case in _load_cases()["cases"]:
+        if case["final"] is None:
+            continue  # 최종본 부재는 compare 대상이 아니다 — 아래 summarize 테스트가 missing으로 센다
+        c = compare(case["draft"], case["final"])
+        assert c.recipient == case["expected"]["recipient"], case["name"]
+        assert c.item_count == case["expected"]["item_count"], case["name"]
+        assert c.name_hits == case["expected"]["name_hits"], case["name"]
+        assert c.supply_hits == case["expected"]["supply_hits"], case["name"]
+        assert c.pairs == case["expected"]["pairs"], case["name"]
+        assert c.grand_total == case["expected"]["grand_total"], case["name"]
+        assert c.edited == case["expected"]["edited"], case["name"]
+        assert [list(m) for m in c.mismatches] == case["expected"]["mismatches"], case["name"]
+
+
+def test_shared_fixture_summary_matches_summarize():
+    """골든 케이스 전체를 집계하면 픽스처의 expected_summary와 같다."""
+    fixture = _load_cases()
+    rows = [
+        (i, compare(case["draft"], case["final"]))
+        for i, case in enumerate(fixture["cases"])
+        if case["final"] is not None
+    ]
+    missing = sum(1 for case in fixture["cases"] if case["final"] is None)
+    assert summarize(rows, missing=missing) == fixture["expected_summary"]

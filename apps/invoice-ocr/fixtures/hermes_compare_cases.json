@@ -1,0 +1,173 @@
+{
+  "_doc": "hermes 초안↔최종본 대조 규칙의 공유 골든 케이스. ml/tools/agent_report.py(compare·summarize)와 backend app/services/hermes_diff.py는 서로를 import하지 않고 같은 규칙을 각자 구현한다(spec §8.1 A안). 두 구현이 이 파일을 각자 먹어 동치를 CI로 강제한다 — ml 잡과 backend 잡이 둘 다 돌므로 한쪽만 바뀌면 그쪽이 깨진다. 한계: 여기 없는 입력에서 갈리는 것은 못 잡는다. expected는 손으로 적은 값이 아니라 현재 agent_report 구현의 실제 출력이다.",
+  "cases": [
+    {
+      "name": "all_match",
+      "note": "전건 일치 — 기준선",
+      "draft": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "items": [{ "name": "각파이프 50x50", "supply": 150000 }]
+      },
+      "final": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "created_at": "2026-09-05 10:00:00",
+        "updated_at": "2026-09-05 10:00:00",
+        "items": [{ "name": "각파이프 50x50", "supply": 150000 }]
+      },
+      "expected": {
+        "recipient": true,
+        "item_count": true,
+        "name_hits": 1,
+        "supply_hits": 1,
+        "pairs": 1,
+        "grand_total": true,
+        "edited": false,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "whitespace_normalized",
+      "note": "공백 정규화 — 연속 공백·양끝 공백은 일치로 접힌다",
+      "draft": {
+        "recipient": "  ○○상사 ",
+        "grand_total": 165000,
+        "items": [{ "name": "각파이프   50x50", "supply": 150000 }]
+      },
+      "final": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "created_at": "2026-09-05 10:00:00",
+        "updated_at": "2026-09-05 10:00:00",
+        "items": [{ "name": "각파이프 50x50", "supply": 150000 }]
+      },
+      "expected": {
+        "recipient": true,
+        "item_count": true,
+        "name_hits": 1,
+        "supply_hits": 1,
+        "pairs": 1,
+        "grand_total": true,
+        "edited": false,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "item_count_mismatch",
+      "note": "항목 수 불일치 — 쌍 비교는 겹치는 앞부분만 본다",
+      "draft": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "items": [{ "name": "각파이프 50x50", "supply": 150000 }]
+      },
+      "final": {
+        "recipient": "○○상사",
+        "grand_total": 231000,
+        "created_at": "2026-09-05 10:00:00",
+        "updated_at": "2026-09-05 10:05:00",
+        "items": [
+          { "name": "각파이프 50x50", "supply": 150000 },
+          { "name": "용접봉", "supply": 60000 }
+        ]
+      },
+      "expected": {
+        "recipient": true,
+        "item_count": false,
+        "name_hits": 1,
+        "supply_hits": 1,
+        "pairs": 1,
+        "grand_total": false,
+        "edited": true,
+        "mismatches": [
+          ["item_count", 1, 2],
+          ["grand_total", 165000, 231000]
+        ]
+      }
+    },
+    {
+      "name": "items_only_edited",
+      "note": "품목만 교정·부모 무변경 — 타임스탐프 판정으로는 통째로 놓치는 회귀(spec §3.2)",
+      "draft": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "items": [{ "name": "히타", "supply": 150000 }]
+      },
+      "final": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "created_at": "2026-09-05 10:00:00",
+        "updated_at": "2026-09-05 10:00:00",
+        "items": [{ "name": "히터", "supply": 150000 }]
+      },
+      "expected": {
+        "recipient": true,
+        "item_count": true,
+        "name_hits": 0,
+        "supply_hits": 1,
+        "pairs": 1,
+        "grand_total": true,
+        "edited": false,
+        "mismatches": [["items[0].name", "히타", "히터"]]
+      }
+    },
+    {
+      "name": "deduction_negative",
+      "note": "deduction 음수 행 — 음수 supply도 정수 비교로 일치",
+      "draft": {
+        "recipient": "○○상사",
+        "grand_total": 140000,
+        "items": [
+          { "name": "각파이프 50x50", "supply": 150000 },
+          { "name": "고철 차감", "supply": -10000 }
+        ]
+      },
+      "final": {
+        "recipient": "○○상사",
+        "grand_total": 140000,
+        "created_at": "2026-09-05 10:00:00",
+        "updated_at": "2026-09-05 10:00:00",
+        "items": [
+          { "name": "각파이프 50x50", "supply": 150000 },
+          { "name": "고철 차감", "supply": -10000 }
+        ]
+      },
+      "expected": {
+        "recipient": true,
+        "item_count": true,
+        "name_hits": 2,
+        "supply_hits": 2,
+        "pairs": 2,
+        "grand_total": true,
+        "edited": false,
+        "mismatches": []
+      }
+    },
+    {
+      "name": "final_missing",
+      "note": "최종본 부재 — 사람이 지운 건. compare 대상이 아니라 missing으로만 센다",
+      "draft": {
+        "recipient": "○○상사",
+        "grand_total": 165000,
+        "items": [{ "name": "각파이프 50x50", "supply": 150000 }]
+      },
+      "final": null,
+      "expected": null
+    }
+  ],
+  "expected_summary": {
+    "count": 5,
+    "missing": 1,
+    "edited": 1,
+    "recipient_rate": 1.0,
+    "item_count_rate": 0.8,
+    "pairs": 6,
+    "name_hits": 5,
+    "name_rate": 0.8333333333333334,
+    "supply_hits": 6,
+    "supply_rate": 1.0,
+    "grand_total_rate": 0.8,
+    "untouched": 3,
+    "untouched_rate": 0.6
+  }
+}
