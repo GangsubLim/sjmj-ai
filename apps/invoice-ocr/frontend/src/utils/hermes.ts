@@ -29,6 +29,12 @@ export const HERMES_MISMATCH_LABELS: Record<HermesMismatchField, string> = {
   grand_total: "합계",
 };
 
+// 초안↔최종 대조 셀 강조 클래스 — 목록(DraftFinal)·상세(CompareLine·ItemCell)가 공유한다.
+// 강조 여부는 서버가 준 mismatch_fields로만 판단하고(값 재비교 금지, spec §6), 여기는
+// "판정된 불일치를 어떻게 그리는지"만 소유한다.
+export const HERMES_HIGHLIGHT_OLD_CLASS = "text-muted-foreground line-through";
+export const HERMES_HIGHLIGHT_NEW_CLASS = "font-medium text-amber-600";
+
 /** 목록·상세가 공유하는 상태 필터 URL 파라미터 이름. */
 export const HERMES_STATUS_PARAM = "status";
 

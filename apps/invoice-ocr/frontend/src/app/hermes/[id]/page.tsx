@@ -7,6 +7,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { usePageParam } from "@/hooks/use-page-param";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import {
+  HERMES_HIGHLIGHT_NEW_CLASS,
+  HERMES_HIGHLIGHT_OLD_CLASS,
   HERMES_STATUS_CLASSES,
   HERMES_STATUS_LABELS,
   HERMES_STATUS_PARAM,
@@ -121,34 +123,38 @@ function HeaderCompare({ entry }: { entry: HermesEntryDetail }) {
         label="수신처"
         draft={draft.recipient ?? "—"}
         final={final?.recipient ?? null}
+        highlight={entry.mismatch_fields.includes("recipient")}
       />
       <CompareLine
         label="합계"
         draft={formatAmount(draft.grand_total ?? null)}
         final={final ? formatAmount(final.grand_total) : null}
+        highlight={entry.mismatch_fields.includes("grand_total")}
       />
     </div>
   );
 }
 
+// highlight는 서버 mismatch_fields가 판정한다(값 재비교 금지 — spec §6).
 function CompareLine({
   label,
   draft,
   final,
+  highlight,
 }: {
   label: string;
   draft: string;
   final: string | null;
+  highlight: boolean;
 }) {
-  const differs = final !== null && final !== draft;
   return (
     <p>
       <span className="text-muted-foreground mr-2">{label}</span>
-      <span className={differs ? "text-muted-foreground line-through" : ""}>
-        {draft}
+      <span className={highlight ? HERMES_HIGHLIGHT_OLD_CLASS : ""}>
+        {highlight ? draft : (final ?? draft)}
       </span>
-      {final !== null && final !== draft && (
-        <span className="ml-2 font-medium text-amber-600">{final}</span>
+      {highlight && final !== null && (
+        <span className={`ml-2 ${HERMES_HIGHLIGHT_NEW_CLASS}`}>{final}</span>
       )}
       {final === null && (
         <span className="text-muted-foreground ml-2">→ —</span>
@@ -212,10 +218,10 @@ function ItemCell({
 }) {
   if (cell === null) return <span className="text-muted-foreground">—</span>;
   const nameClass = highlight.includes("name")
-    ? "font-medium text-amber-600"
+    ? HERMES_HIGHLIGHT_NEW_CLASS
     : "";
   const supplyClass = highlight.includes("supply")
-    ? "font-medium text-amber-600"
+    ? HERMES_HIGHLIGHT_NEW_CLASS
     : "";
   return (
     <div>

@@ -45,6 +45,8 @@ function detail(over: Partial<HermesEntryDetail> = {}): HermesEntryDetail {
       },
     ],
     has_photo: true,
+    // 기본 픽스처는 품목명만 갈린 실제 판정과 같은 축을 싣는다 — 수신처·합계는 일치.
+    mismatch_fields: ["name"],
     ...over,
   };
 }
@@ -112,6 +114,31 @@ describe("HermesEntryPage", () => {
     // 아니라 내부에 강조용 자식 요소를 심어도 걸리도록 innerHTML까지 함께 검사한다.
     expect(issued.className).not.toMatch(/amber|destructive/);
     expect(issued.innerHTML).not.toMatch(/amber|destructive/);
+  });
+
+  it("서버가 match로 판정하면 공백 차이뿐인 수신처를 강조하지 않는다", () => {
+    // draft.recipient·final.recipient가 원문 문자열로는 다르지만(공백), 서버 norm()
+    // 정규화로 match라 mismatch_fields에 recipient가 없다 — 프론트가 문자열을 재비교해
+    // 강조를 다시 그리면(회귀) 이 단언이 실패한다.
+    setup({
+      entry: detail({
+        mismatch_fields: [],
+        draft: {
+          issue_date: "2026-09-05",
+          recipient: "  ○○상사 ",
+          grand_total: 165000,
+        },
+        final: {
+          id: 573,
+          issue_date: "2026-09-03",
+          recipient: "○○상사",
+          grand_total: 165000,
+        },
+      }),
+    });
+    const recipientLine = screen.getByText("수신처").closest("p");
+    if (!recipientLine) throw new Error("recipient line not found");
+    expect(recipientLine.innerHTML).not.toMatch(/amber|line-through/);
   });
 
   it("사람이 추가한 행은 초안 칸을 —로 그린다", () => {

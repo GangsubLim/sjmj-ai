@@ -108,4 +108,6 @@ export interface HermesEntryDetail {
   final: HermesInvoiceHeader | null;
   rows: HermesRow[];
   has_photo: boolean;
+  // 판정 주체는 백엔드 단독이다 — 프론트가 값 비교로 재도출하면 목록과 갈린다.
+  mismatch_fields: HermesMismatchField[];
 }

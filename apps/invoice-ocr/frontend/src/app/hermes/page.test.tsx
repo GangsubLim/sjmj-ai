@@ -152,6 +152,26 @@ describe("HermesStatusPage", () => {
     expect(chips).toHaveTextContent("공급가");
   });
 
+  it("서버가 match로 판정하면 공백 차이뿐인 수신처를 강조하지 않는다", () => {
+    // recipient_draft·recipient_final이 원문 문자열로는 다르지만(공백), 서버 norm()
+    // 정규화로 match라 mismatch_fields가 비어 있다 — 프론트가 문자열을 재비교해 강조를
+    // 다시 그리면(회귀) 이 단언이 실패한다.
+    setup({
+      total: 1,
+      data: [
+        entry({
+          id: 576,
+          recipient_draft: "  ○○상사 ",
+          recipient_final: "○○상사",
+          mismatch_fields: [],
+        }),
+      ],
+    });
+    const row = screen.getByRole("button", { name: "#576 상세" }).closest("tr");
+    if (!row) throw new Error("row not found");
+    expect(row.innerHTML).not.toMatch(/amber|line-through/);
+  });
+
   it("삭제된 건은 최종본 열을 —로 그린다", () => {
     setup({
       total: 1,

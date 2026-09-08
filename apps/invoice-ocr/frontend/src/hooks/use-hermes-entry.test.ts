@@ -41,6 +41,7 @@ const DETAIL: HermesEntryDetail = {
     },
   ],
   has_photo: true,
+  mismatch_fields: ["name"],
 };
 
 describe("useHermesEntry", () => {

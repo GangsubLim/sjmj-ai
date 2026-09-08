@@ -21,6 +21,8 @@ import {
 } from "@/components/ui/pagination";
 import { getVisiblePages } from "@/lib/pagination";
 import {
+  HERMES_HIGHLIGHT_NEW_CLASS,
+  HERMES_HIGHLIGHT_OLD_CLASS,
   HERMES_MISMATCH_LABELS,
   HERMES_STATUSES,
   HERMES_STATUS_CLASSES,
@@ -179,6 +181,7 @@ export default function HermesStatusPage() {
                   <DraftFinal
                     draft={e.recipient_draft ?? "—"}
                     final={e.recipient_final}
+                    highlight={e.mismatch_fields.includes("recipient")}
                   />
                 </td>
                 <td className="tabular-nums">
@@ -189,6 +192,7 @@ export default function HermesStatusPage() {
                         ? null
                         : String(e.item_count_final)
                     }
+                    highlight={e.mismatch_fields.includes("item_count")}
                   />
                 </td>
                 <td className="tabular-nums">
@@ -199,6 +203,7 @@ export default function HermesStatusPage() {
                         ? null
                         : formatAmount(e.grand_total_final)
                     }
+                    highlight={e.mismatch_fields.includes("grand_total")}
                   />
                 </td>
                 <td>
@@ -278,15 +283,24 @@ export default function HermesStatusPage() {
   );
 }
 
-// 초안값 → 최종값. 다르면 최종값을 강조한다(발행일 열은 이 컴포넌트를 쓰지 않는다).
-function DraftFinal({ draft, final }: { draft: string; final: string | null }) {
+// 초안값 → 최종값. highlight는 서버 mismatch_fields가 판정한다(값 재비교 금지 — spec §6.
+// 발행일 열은 대조 축이 아니라 이 컴포넌트를 쓰지 않는다).
+function DraftFinal({
+  draft,
+  final,
+  highlight,
+}: {
+  draft: string;
+  final: string | null;
+  highlight: boolean;
+}) {
   if (final === null)
     return <span className="text-muted-foreground">{draft} → —</span>;
-  if (final === draft) return <span>{draft}</span>;
+  if (!highlight) return <span>{final}</span>;
   return (
     <span>
-      <span className="text-muted-foreground line-through">{draft}</span>{" "}
-      <span className="font-medium text-amber-600">{final}</span>
+      <span className={HERMES_HIGHLIGHT_OLD_CLASS}>{draft}</span>{" "}
+      <span className={HERMES_HIGHLIGHT_NEW_CLASS}>{final}</span>
     </span>
   );
 }
