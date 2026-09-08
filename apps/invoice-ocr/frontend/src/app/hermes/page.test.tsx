@@ -1,4 +1,4 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import HermesStatusPage from "./page";
@@ -113,7 +113,18 @@ describe("HermesStatusPage", () => {
         },
       },
     );
-    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    // 전역 "—" 개수가 아니라 일치율 셀을 특정해 단언한다 — knowledge-line의
+    // published_at ?? "—" 폴백이 만드는 "—"와 섞이면 formatRate 회귀를 못 잡는다.
+    const summaryCards = screen.getByTestId("summary-cards");
+    const nameCard = within(summaryCards).getByText("품목명").closest("div");
+    const untouchedCard = within(summaryCards)
+      .getByText("무수정률")
+      .closest("div");
+    if (!nameCard || !untouchedCard) {
+      throw new Error("summary card not found");
+    }
+    expect(within(nameCard).getByText("—")).toBeInTheDocument();
+    expect(within(untouchedCard).getByText("—")).toBeInTheDocument();
   });
 
   it("목록 행과 상태 배지를 그린다", () => {
@@ -156,6 +167,14 @@ describe("HermesStatusPage", () => {
       ],
     });
     expect(screen.getByTestId("entry-status")).toHaveTextContent("🗑 삭제됨");
+    // 배지뿐 아니라 최종본 열 자체가 "초안값 → —"로 렌더되는지 행 스코프에서
+    // 단언한다(DraftFinal의 final===null 분기 — page.tsx:283-286 회귀를 잡는다).
+    const row = screen.getByRole("button", { name: "#575 상세" }).closest("tr");
+    if (!row) throw new Error("row not found");
+    const withinRow = within(row);
+    expect(withinRow.getByText("○○상사 → —")).toBeInTheDocument();
+    expect(withinRow.getByText("3 → —")).toBeInTheDocument();
+    expect(withinRow.getByText("165,000 → —")).toBeInTheDocument();
   });
 
   it("상태 필터 버튼이 setStatus를 부르고 켜진 필터는 다시 누르면 꺼진다", () => {
