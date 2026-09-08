@@ -592,7 +592,7 @@
       "auth": "NONE — 모든 엔드포인트 public. 인증/세션/토큰 미들웨어 없음 (tailscale serve 8443 네트워크 경계로만 보호; app/db.py의 token 은 contextvar 토큰이지 인증 아님).",
       "error-format": "{ \"success\": false, \"error\": { \"code\": SCREAMING_SNAKE_CASE, \"message\": string, \"details\"?: object } }. codes: VALIDATION_ERROR(400) | NOT_FOUND(404) | DUPLICATE_NAME(409) | CONFLICT(409) | SERVER_ERROR(500). 검증 실패 details 는 {필드: 메시지} 문자열 맵(contract 테스트로 고정).",
       "response-envelope": "단일: {success:true, data:T}. 컬렉션: {success:true, data:T[], pagination}. 생성(201): {success:true, data:T}. 삭제: {success:true, data:null, message}. 직렬화는 jsonable_encoder (date→'YYYY-MM-DD', Decimal 처리).",
-      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/ocr/jobs/{id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). 에러(404)는 여전히 에러 envelope.",
+      "envelope-exceptions": "GET /api/invoices/export 는 envelope 밖 raw text/csv. GET /api/sales-records 는 컬렉션 성격이나 single()({salespeople,records})로 반환 — pagination 없음. GET /api/curation/jobs/{job_id}/image/{kind} 와 GET /api/ocr/jobs/{id}/crop/{row} 는 envelope 밖 raw image/png (FileResponse). GET /api/hermes/entries/{invoice_id}/photo 는 envelope 밖 raw 이미지 바이트(FileResponse, 업로드 포맷 그대로 image/jpeg 또는 image/png). 에러(404)는 여전히 에러 envelope.",
       "wire-format": "응답 data 는 DB 행 그대로 snake_case (column names). camelCase 변환 없음.",
       "pagination": "offset 기반 {page, limit, total, totalPages}. companies/{id}/invoices 와 salespeople 은 가짜 pagination(전건, page1/totalPages1).",
       "execution-model": "라우터 핸들러는 sync def → FastAPI threadpool 실행 (전역 Engine 공유 + service.transaction() conn 바인딩이 같은 콜스택이라 안전).",
@@ -4468,6 +4468,20 @@
           "status": {
             "type": "string",
             "enum": ["deleted", "match", "mismatch"]
+          },
+          "mismatch_fields": {
+            "type": "array",
+            "description": "items[i].name 같은 인덱스 필드는 축 이름으로 접힌다. deleted 건은 빈 배열",
+            "items": {
+              "type": "string",
+              "enum": [
+                "recipient",
+                "item_count",
+                "name",
+                "supply",
+                "grand_total"
+              ]
+            }
           },
           "draft": {
             "type": "object",
