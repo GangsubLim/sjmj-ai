@@ -84,25 +84,25 @@ jobs:
       - name: Ruff lint
         uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
-          version: 0.15.12
+          version: 0.16.5
           args: check --output-format=github
           src: apps/invoice-ocr/backend
       - name: Ruff format check
         uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
-          version: 0.15.12
+          version: 0.16.5
           args: format --check
           src: apps/invoice-ocr/backend
       - name: Ruff lint (ml)
         uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
-          version: 0.15.12
+          version: 0.16.5
           args: check --output-format=github
           src: apps/invoice-ocr/ml
       - name: Ruff format check (ml)
         uses: astral-sh/ruff-action@4919ec5cf1f49eff0871dbcea0da843445b837e6 # v3
         with:
-          version: 0.15.12
+          version: 0.16.5
           args: format --check
           src: apps/invoice-ocr/ml
 
@@ -130,7 +130,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: apps/invoice-ocr/frontend/package-lock.json
       - name: Install dependencies

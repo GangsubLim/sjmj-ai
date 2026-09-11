@@ -6,12 +6,13 @@ from pathlib import Path
 ML_ROOT = Path(__file__).resolve().parents[1]
 REPO_ROOT = Path(__file__).resolve().parents[4]
 
-# 로컬 .venv 실측치(2026-08-28): torch 2.12.1 · torchvision 0.27.1 · transformers 5.12.1.
+# 실측치(2026-09-11, #187): torch 2.13.0 · torchvision 0.28.0 · transformers 5.16.1.
 # 상한을 그 minor에 고정해 학습 환경이 ft_prod.pt를 적재하는 추론 환경과 갈리지 않게 한다.
+# 상향 근거(실물 체크포인트 strict 적재·임베딩 sha256 일치·보안 경보 2건 해소)는 pyproject 주석 참조.
 EXPECTED_TRAIN = [
-    "torch>=2.12,<2.13",
-    "torchvision>=0.27,<0.28",
-    "transformers>=5.12,<5.13",
+    "torch>=2.13,<2.14",
+    "torchvision>=0.28,<0.29",
+    "transformers>=5.16,<5.17",
 ]
 
 
@@ -37,7 +38,7 @@ def test_train_extra_pins_the_torch_stack_to_the_measured_local_versions():
 def test_train_extra_does_not_change_the_existing_extras():
     extras = _pyproject()["project"]["optional-dependencies"]
 
-    assert extras["cv"] == ["opencv-python-headless>=4.10,<5", "numpy>=1.26,<3"]
+    assert extras["cv"] == ["opencv-python-headless>=4.10,<5", "numpy>=2.5,<3"]
     assert extras["worker"] == ["sqlalchemy>=2.0", "pymysql>=1.1"]
     assert extras["dl"] == ["onnxruntime==1.22.0"]
 
