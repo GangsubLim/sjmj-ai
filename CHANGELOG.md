@@ -5,6 +5,21 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.20.1] — 2026-09-11
+
+의존성을 보안 권고 기준까지 일괄 상향하고 CI 실행 환경을 여기에 맞춘 유지보수 릴리스 ([#233](https://github.com/GangsubLim/sjmj-ai/pull/233)).
+
+### Changed
+
+- 프론트 테스트 러너를 vitest 5.0.0으로 올리고 prettier 3.9.6 적용 ([#229](https://github.com/GangsubLim/sjmj-ai/pull/229))
+- ML 학습 스택을 torch 2.13 · transformers 5.16으로 상향 ([#231](https://github.com/GangsubLim/sjmj-ai/pull/231))
+- ML numpy 2.5.2, 백엔드 ruff 0.16.5로 갱신 ([#228](https://github.com/GangsubLim/sjmj-ai/pull/228), [#227](https://github.com/GangsubLim/sjmj-ai/pull/227))
+- 개발·테스트 의존성 5건 일괄 갱신 — globals · testing-library/react · sqlalchemy · playwright · vitest ([#226](https://github.com/GangsubLim/sjmj-ai/pull/226))
+
+### Fixed
+
+- CI 프론트엔드 잡의 Node를 22로 올려 vitest 5 실행 요건과 맞춤 ([#232](https://github.com/GangsubLim/sjmj-ai/pull/232))
+
 ## [v0.20.0] — 2026-09-11
 
 hermes 위임 입력이 앞 글자만 적힌 수신처·품목을 다시 정식 이름으로 회수하고, 약칭 대응을 야간 루프가 스스로 누적하게 만드는 릴리스 ([#223](https://github.com/GangsubLim/sjmj-ai/pull/223)).
