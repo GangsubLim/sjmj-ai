@@ -4,11 +4,7 @@
 export type HermesStatus = "deleted" | "match" | "mismatch";
 
 export type HermesMismatchField =
-  | "recipient"
-  | "item_count"
-  | "name"
-  | "supply"
-  | "grand_total";
+  "recipient" | "item_count" | "name" | "supply" | "grand_total";
 
 /** agent_report.summarize의 13키 중 edited를 뺀 12키. edited는 타임스탬프 파생이라
  * 품목 교정(부모 행 무변경)을 통째로 놓쳐 서버가 응답에서 뺀다. */
