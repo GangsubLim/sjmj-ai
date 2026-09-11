@@ -5,6 +5,25 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.20.0] — 2026-09-11
+
+hermes 위임 입력이 앞 글자만 적힌 수신처·품목을 다시 정식 이름으로 회수하고, 약칭 대응을 야간 루프가 스스로 누적하게 만드는 릴리스 ([#223](https://github.com/GangsubLim/sjmj-ai/pull/223)).
+
+### Added
+
+- 판독 지식에 `관례 약칭` 절 신설 — 초안이 최종 품목명의 접두일 때 야간 학습 루프가 대응 쌍을 자동 수집, 최근 관측 40쌍·현행 어휘 생존분으로 상계 ([#222](https://github.com/GangsubLim/sjmj-ai/pull/222))
+
+### Changed
+
+- 확정 어휘를 마스터가 아닌 참고 스냅샷으로 격하 — 어휘로 못 맞히면 품목·거래처 조회로 진행해 `엔` 같은 한 글자 초안의 정규화 회복 ([#222](https://github.com/GangsubLim/sjmj-ai/pull/222))
+- 수신처 후보를 「귀하」 줄 고정에서 헤더 전체 수집으로 확장, 숫자만인 값은 차량번호로 분리 ([#222](https://github.com/GangsubLim/sjmj-ai/pull/222))
+- 품목명(열린 집합, 스냅 금지)과 수신처(닫힌 집합, 접두 허용)의 비대칭을 지식에 근거와 함께 명시 ([#222](https://github.com/GangsubLim/sjmj-ai/pull/222))
+- 거래명세서 PDF 생성 라이브러리를 jspdf 4.2.1로 전환해 취약점 10건 해소, 출력물은 동등 ([#213](https://github.com/GangsubLim/sjmj-ai/pull/213))
+
+### Fixed
+
+- 판독 지식 절이 하나 늘자 야간 발행이 데이터 현황 절에 근거 id를 요구하며 거부되던 정수 인덱스 결합 해소 ([#222](https://github.com/GangsubLim/sjmj-ai/pull/222))
+
 ## [v0.19.0] — 2026-09-08
 
 텔레그램 위임 입력(hermes) 경로의 상태를 macmini 명령 실행 없이 웹에서 상시 확인하게 만드는 릴리스 ([#207](https://github.com/GangsubLim/sjmj-ai/pull/207)).
