@@ -1,9 +1,9 @@
 """hermes 위임 입력의 사용자 교정을 회수해 판독 지식(active.md)으로 누적하는 야간 배치 DAG.
 
 extract: ``agent_uploads/{id}.draft.json`` ↔ 운영 DB 최종본 diff → ``corrections.jsonl``
-         append(원장 해시로 멱등) → 결정적 절(1~3) 재생성 + 현재 LLM 절(4~5) 유지 → ``proposed.md``.
+         append(원장 해시로 멱등) → 결정적 절(1~4) 재생성 + 현재 LLM 절(5~6) 유지 → ``proposed.md``.
          신규 0건이면 stdout 마지막 줄 ``{"wakeAgent": false}``(hermes cron wake-gate).
-publish: ``proposed.md`` 검증(헤딩 5개·결정적 절 무변조·상한·근거 id·금지어) →
+publish: ``proposed.md`` 검증(헤딩 6개·결정적 절 무변조·상한·근거 id·금지어) →
          ``knowledge/v{N}.md`` + ``active.md`` 교체 + ``versions.jsonl`` 기록.
 report:  ``tools.agent_report``에 지식 버전 축을 더해 버전별 일치율 표.
 
@@ -43,16 +43,19 @@ KNOWLEDGE_DIRNAME = "agent_knowledge"
 TITLE = "# sjmj 판독 지식"
 HEADINGS = (
     "## 확정 어휘",
+    "## 관례 약칭",
     "## 금액 오류 통계",
     "## 데이터 현황",
     "## 거래처 프로필",
     "## 일반화 규칙",
 )
-DET_HEADINGS = HEADINGS[:3]
-LLM_HEADINGS = HEADINGS[3:]
+DET_HEADINGS = HEADINGS[:4]
+LLM_HEADINGS = HEADINGS[4:]
+SEED_ABBREVS = (("센", "센터보도"),)
 MAX_CHARS = 12000
 MAX_PROFILE_LINES = 30
 MAX_RULE_LINES = 20
+MAX_ABBREV_PAIRS = 40
 FORBIDDEN = ("curl", "POST", "DELETE", "http://", "→", "->")
 _ID_RE = re.compile(r"#(\d+)")
 _PHOTO_RE = re.compile(r"^(\d+)\.(jpg|jpeg|png)$")
@@ -202,6 +205,35 @@ def _vocab_body(vocab: dict) -> str:
     return "\n".join([*lines, "", "거래처", *(comps or ["(없음)"])])
 
 
+def abbrev_body(corrections: list[Correction], vocab: dict) -> str:
+    """품목 약칭 — 초안이 최종의 접두이고 그 자체로는 독립 품목이 아닐 때만.
+
+    corrections.jsonl이 append-only이므로 절이 무한히 자라지 않도록 두 겹으로 가둔다 —
+    최종이 현재 어휘에 살아 있는 쌍만(12개월 창을 벗어난 품목의 약칭은 판독에 못 씀),
+    그중 최근 관측 ``MAX_ABBREV_PAIRS``쌍까지. 시드는 손으로 넣은 관례라 두 제한 모두 면제.
+    근거만 싣고 빈도·시각은 싣지 않아 집합이 바뀔 때만 절이 변한다.
+    """
+    names = {it["item_name"] for it in vocab.get("items", [])}
+    learned: dict[tuple[str, str], str] = {}
+    for c in corrections:
+        if c.kind != "name":
+            continue
+        draft, final = str(c.draft).strip(), str(c.final).strip()
+        if not draft or draft == final or not final.startswith(draft):
+            continue
+        if draft in names or final not in names:
+            continue
+        learned.setdefault((draft, final), f"#{c.invoice_id}")
+    pairs: dict[str, dict[str, str]] = {a: {f: "관례"} for a, f in SEED_ABBREVS}
+    for (draft, final), src in list(learned.items())[-MAX_ABBREV_PAIRS:]:
+        pairs.setdefault(draft, {}).setdefault(final, src)
+    lines = [
+        f"- {abbrev} : " + " · ".join(f"{f} ({src})" for f, src in sorted(finals.items()))
+        for abbrev, finals in sorted(pairs.items())
+    ]
+    return "\n".join(["품목칸에 아래 글자만 홀로 있으면 정식 이름 후보", *lines])
+
+
 def _amount_stats(corrections: list[Correction]) -> str:
     sup = [c for c in corrections if c.kind == "supply"]
     lines = [
@@ -230,11 +262,12 @@ def _status(corrections: list[Correction], ledger_size: int) -> str:
 def render_deterministic(
     corrections: list[Correction], vocab: dict, ledger_size: int
 ) -> dict[str, str]:
-    """1~3절(확정 어휘·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
+    """1~4절(확정 어휘·관례 약칭·금액 오류 통계·데이터 현황)을 같은 입력이면 같은 문자열로 만든다."""
     return {
         HEADINGS[0]: _vocab_body(vocab),
-        HEADINGS[1]: _amount_stats(corrections),
-        HEADINGS[2]: _status(corrections, ledger_size),
+        HEADINGS[1]: abbrev_body(corrections, vocab),
+        HEADINGS[2]: _amount_stats(corrections),
+        HEADINGS[3]: _status(corrections, ledger_size),
     }
 
 
@@ -272,7 +305,7 @@ def assemble(det: dict[str, str], llm: dict[str, str]) -> str:
 def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]) -> list[str]:
     """proposed.md 검증 — 위반 사유 목록(비어 있으면 통과).
 
-    헤딩 5개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
+    헤딩 6개 정확·순서, 결정적 절 무변조, LLM 절 줄 상한, 불릿마다 근거 id, 금지어, 전체 크기.
     """
     errors: list[str] = []
     if len(md) > MAX_CHARS:
@@ -287,7 +320,7 @@ def validate_proposed(md: str, det_expected: dict[str, str], known_ids: set[int]
     for h in DET_HEADINGS:
         if sections.get(h, "") != det_expected[h].strip():
             errors.append(f"결정적 절 변조: {h}")
-    for h, cap in ((HEADINGS[3], MAX_PROFILE_LINES), (HEADINGS[4], MAX_RULE_LINES)):
+    for h, cap in zip(LLM_HEADINGS, (MAX_PROFILE_LINES, MAX_RULE_LINES), strict=True):
         lines = [line for line in sections.get(h, "").splitlines() if line.strip()]
         if len(lines) > cap:
             errors.append(f"{h} {len(lines)}줄 > {cap}줄")
@@ -562,7 +595,7 @@ def _publish_line(r: PublishResult, kdir: Path) -> str:
     md = (kdir / "active.md").read_text(encoding="utf-8")
     rules = [
         line
-        for line in split_sections(md).get(HEADINGS[4], "").splitlines()
+        for line in split_sections(md).get(LLM_HEADINGS[-1], "").splitlines()
         if line.lstrip().startswith("- ")
     ]
     return f"published v{r.version} · 어휘 {_vocab_items(md)}종 · 규칙 {len(rules)}줄"
