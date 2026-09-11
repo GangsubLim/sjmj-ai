@@ -50,16 +50,22 @@ dl = [
 # 학습 전용(#133 AC2 학습곡선 · 이후 AC3 재학습) — CI는 이 extra 없이 돈다.
 # 실험계획·채점은 torch-free 모듈 tools/train_input.py에 있어 CI가 그쪽을 테스트하고,
 # handwriting/train_contrastive.py는 로컬(M5 Max MPS)·macmini에서만 실행된다.
-# 상한은 로컬 .venv 실측치의 minor에 고정한다(2026-08-28: torch 2.12.1 · torchvision
-# 0.27.1 · transformers 5.12.1) — 학습 환경이 ft_prod.pt를 적재하는 추론 환경과 갈리면
+# 상한은 실측치의 minor에 고정한다(2026-09-11: torch 2.13.0 · torchvision 0.28.0 ·
+# transformers 5.16.1) — 학습 환경이 ft_prod.pt를 적재하는 추론 환경과 갈리면
 # state_dict 정합·transformers ViT 레이어 접근(vit.layers[i], 5.x API)이 조용히 흔들린다.
+# 2.12/0.27/5.12에서 올린 근거(#187, 2026-09-11 macmini 실측 — CI는 train extra를 설치하지
+# 않으므로 CI green이 이 정합을 보증하지 않는다):
+#   · 운영 ft_prod.pt(347MB) 실물이 신규 조합에서 load_state_dict(strict=True) 적재 통과
+#   · projection·backbone 임베딩 sha256 일치(e8e8f82e593245cc·35b14b1262ad2e04) + bank.npz top-1 동일
+#   · vit.layers(12층)·vit.layernorm·torch_dtype= 인자 전부 유지, state_dict 키 집합 sha256 일치
+#   · torch 2.12.1의 `setuptools<82`가 GHSA-h35f-9h28-mq5c(패치 83.0.0)를 막고 있던 것을 해소 —
+#     torch 2.13 상향이 유일 경로이며 락은 setuptools 81.0.0→84.0.0 · tokenizers 0.22.2→0.23.2 이동
+#   · 동등성 실측은 전부 CPU float32 — MPS 학습 경로는 미검증(운영 추론은 infer_photo가 CPU 고정)
 # cv와 함께 동기화한다: `uv sync --extra train --extra cv`.
-# lock 재해석으로 setuptools 83.0.0→81.0.0·tokenizers 0.23.1→0.22.2 이동(ml extra 한정,
-# worker+cv 무영향) — 사유: torch/transformers 상한과의 공동 해석.
 train = [
-    "torch>=2.12,<2.13",
-    "torchvision>=0.27,<0.28",
-    "transformers>=5.12,<5.13",
+    "torch>=2.13,<2.14",
+    "torchvision>=0.28,<0.29",
+    "transformers>=5.16,<5.17",
 ]
 
 [dependency-groups]
