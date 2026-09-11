@@ -11,9 +11,11 @@ from tools.agent_learn import (
     FORBIDDEN,
     HEADINGS,
     LLM_HEADINGS,
+    MAX_ABBREV_PAIRS,
     MAX_RULE_LINES,
     Correction,
     PublishResult,
+    abbrev_body,
     append_corrections,
     assemble,
     cmd_extract,
@@ -176,9 +178,9 @@ def test_render_deterministic_vocab_amount_status():
     assert "- 히타 (EA)" in det[HEADINGS[0]]
     assert "- 센터보도\n" in det[HEADINGS[0]] + "\n"
     assert "- 테스트" in det[HEADINGS[0]]
-    assert "- 앞자리 누락(prefix_drop): 1" in det[HEADINGS[1]]
-    assert "- #571 items[1].supply: 560000 → 60000 (prefix_drop)" in det[HEADINGS[1]]
-    assert det[HEADINGS[2]] == (
+    assert "- 앞자리 누락(prefix_drop): 1" in det[HEADINGS[2]]
+    assert "- #571 items[1].supply: 560000 → 60000 (prefix_drop)" in det[HEADINGS[2]]
+    assert det[HEADINGS[3]] == (
         "- 누적 교정: 2건\n- 초안(원장): 5건\n- 마지막 교정 관측: 2026-09-06T03:00:00"
     )
 
@@ -186,7 +188,7 @@ def test_render_deterministic_vocab_amount_status():
 def test_render_deterministic_empty_inputs():
     det = render_deterministic([], {"items": [], "companies": []}, 0)
     assert "(없음)" in det[HEADINGS[0]]
-    assert det[HEADINGS[2]].endswith("- 마지막 교정 관측: -")
+    assert det[HEADINGS[3]].endswith("- 마지막 교정 관측: -")
     assert list(det) == list(DET_HEADINGS)
 
 
@@ -241,11 +243,71 @@ def test_vocab_body_tolerates_legacy_snapshot_without_cnt():
     assert "가끔(2회)\n- 히타 (EA)" in body
 
 
+def _vocab_of(*names) -> dict:
+    return {
+        "items": [{"item_name": n, "cnt": 5, "default_unit": None} for n in ("센터보도", *names)],
+        "companies": [],
+    }
+
+
+def test_abbrev_body_collects_prefix_only():
+    cs = [
+        _corr(580, "items[0].name", "name", "엔", "엔진오일"),
+        _corr(583, "items[1].name", "name", "밸트", "볼트"),
+        _corr(573, "items[3].name", "name", "부동액(4L)", "부동액"),
+        _corr(582, "items[0].name", "name", "깔깔이", "콜드호수"),
+        _corr(580, "items[0].supply", "supply", 140000, 170000, "other"),
+    ]
+    body = abbrev_body(cs, _vocab_of("엔진오일", "볼트", "부동액", "콜드호수"))
+    assert "- 엔 : 엔진오일 (#580)" in body
+    for excluded in ("밸트", "부동액(4L)", "깔깔이", "140000"):
+        assert excluded not in body
+
+
+def test_abbrev_body_skips_vocab_collision():
+    cs = [_corr(590, "items[0].name", "name", "히타", "히타펌프")]
+    assert "히타펌프" not in abbrev_body(cs, _vocab_of("히타", "히타펌프"))
+
+
+def test_abbrev_body_drops_final_missing_from_vocab():
+    """12개월 어휘에서 사라진 품목의 약칭은 판독에 쓸 수 없으므로 절에서 빠진다."""
+    cs = [_corr(593, "items[0].name", "name", "단", "단종부품")]
+    assert "단종부품" not in abbrev_body(cs, _vocab_of("엔진오일"))
+
+
+def test_abbrev_body_caps_pairs_keeping_recent():
+    """append-only 교정이 절을 무한히 키우지 못하도록 최근 관측분만 남긴다(시드는 항상 유지)."""
+    names = [f"품목{i:03d}" for i in range(MAX_ABBREV_PAIRS + 5)]
+    cs = [_corr(600 + i, "items[0].name", "name", f"약{i:03d}", n) for i, n in enumerate(names)]
+    cs = [c._replace(final=f"{c.draft}{c.final}") for c in cs]
+    body = abbrev_body(cs, _vocab_of(*[c.final for c in cs]))
+    lines = body.splitlines()[1:]
+    assert len(lines) == MAX_ABBREV_PAIRS + 1  # 학습 상한 + 시드
+    assert "- 센 : 센터보도 (관례)" in lines
+    assert "- 약000" not in body  # 가장 오래된 5건은 밀려남
+    assert f"- 약{MAX_ABBREV_PAIRS + 4:03d}" in body
+
+
+def test_abbrev_body_includes_seed_and_sorts():
+    cs = [
+        _corr(591, "items[0].name", "name", "엔", "엔도대"),
+        _corr(580, "items[0].name", "name", "엔", "엔진오일"),
+        _corr(592, "items[0].name", "name", "가", "가스켓"),
+    ]
+    vocab = _vocab_of("엔도대", "엔진오일", "가스켓")
+    assert abbrev_body(cs, vocab).splitlines() == [
+        "품목칸에 아래 글자만 홀로 있으면 정식 이름 후보",
+        "- 가 : 가스켓 (#592)",
+        "- 센 : 센터보도 (관례)",
+        "- 엔 : 엔도대 (#591) · 엔진오일 (#580)",
+    ]
+
+
 def test_render_deterministic_is_deterministic_and_has_no_lexicon():
     cs = [_corr(1, "items[0].name", "name", "킹핀교환", "히타")]
     det = render_deterministic(cs, VOCAB, 1)
     assert det == render_deterministic(cs, VOCAB, 1)
-    assert list(det) == ["## 확정 어휘", "## 금액 오류 통계", "## 데이터 현황"]
+    assert list(det) == ["## 확정 어휘", "## 관례 약칭", "## 금액 오류 통계", "## 데이터 현황"]
     assert "킹핀교환" not in "\n".join(det.values())
 
 
@@ -255,8 +317,8 @@ def test_render_deterministic_is_deterministic_and_has_no_lexicon():
 def test_assemble_then_split_roundtrip():
     det = render_deterministic([], VOCAB, 0)
     llm = {
-        HEADINGS[3]: "- 테스트: 자동차 부품 (#573)",
-        HEADINGS[4]: "- 오일은 스프링일 수 있음 (#574)",
+        HEADINGS[4]: "- 테스트: 자동차 부품 (#573)",
+        HEADINGS[5]: "- 오일은 스프링일 수 있음 (#574)",
     }
     md = assemble(det, llm)
     assert md.startswith("# sjmj 판독 지식\n")
@@ -270,7 +332,7 @@ def test_assemble_then_split_roundtrip():
 
 def test_assemble_fills_missing_llm_sections():
     md = assemble(render_deterministic([], VOCAB, 0), {})
-    assert split_sections(md)[HEADINGS[4]] == "(없음)"
+    assert split_sections(md)[HEADINGS[5]] == "(없음)"
 
 
 def test_split_sections_rejects_duplicate_heading():
@@ -289,8 +351,8 @@ def _good_md() -> str:
     return assemble(
         _det(),
         {
-            HEADINGS[3]: "- 테스트: 자동차 부품 위주 (#573)",
-            HEADINGS[4]: "- 합계가 안 맞으면 각 행 자릿수 재판독 (#573)",
+            HEADINGS[4]: "- 테스트: 자동차 부품 위주 (#573)",
+            HEADINGS[5]: "- 합계가 안 맞으면 각 행 자릿수 재판독 (#573)",
         },
     )
 
@@ -313,20 +375,20 @@ def test_validate_rejects_tampered_deterministic_section():
 
 
 def test_validate_rejects_rule_without_or_with_unknown_id():
-    md = assemble(_det(), {HEADINGS[4]: "- 근거 없는 규칙"})
+    md = assemble(_det(), {HEADINGS[5]: "- 근거 없는 규칙"})
     assert any("근거 id 없음" in e for e in validate_proposed(md, _det(), {573}))
-    md = assemble(_det(), {HEADINGS[4]: "- 규칙 (#999)"})
+    md = assemble(_det(), {HEADINGS[5]: "- 규칙 (#999)"})
     assert any("미지의 근거 id" in e for e in validate_proposed(md, _det(), {573}))
 
 
 def test_validate_rejects_line_cap_and_forbidden_and_size():
     rules = "\n".join(f"- 규칙 {i} (#573)" for i in range(MAX_RULE_LINES + 1))
-    errs = validate_proposed(assemble(_det(), {HEADINGS[4]: rules}), _det(), {573})
+    errs = validate_proposed(assemble(_det(), {HEADINGS[5]: rules}), _det(), {573})
     assert any("줄" in e for e in errs)
     for w in FORBIDDEN:
-        md = assemble(_det(), {HEADINGS[4]: f"- {w} 써라 (#573)"})
+        md = assemble(_det(), {HEADINGS[5]: f"- {w} 써라 (#573)"})
         assert any("금지어" in e for e in validate_proposed(md, _det(), {573})), w
-    big = assemble(_det(), {HEADINGS[3]: "x" * 12000})
+    big = assemble(_det(), {HEADINGS[4]: "x" * 12000})
     assert any("자" in e for e in validate_proposed(big, _det(), {573}))
 
 
@@ -338,10 +400,10 @@ def test_validate_allows_placeholder_and_non_bullet_lines():
 def test_validate_rejects_arrow_in_llm_sections_only():
     sup = [_corr(571, "items[1].supply", "supply", 560000, 60000, "prefix_drop")]
     det = render_deterministic(sup, VOCAB, 1)
-    assert "560000 → 60000" in det[HEADINGS[1]]
+    assert "560000 → 60000" in det[HEADINGS[2]]
     assert validate_proposed(assemble(det, {}), det, {571}) == []
     for arrow in ("→", "->"):
-        md = assemble(det, {HEADINGS[4]: f"- 킹핀교환{arrow}히타 우선 검토 (#571)"})
+        md = assemble(det, {HEADINGS[5]: f"- 킹핀교환{arrow}히타 우선 검토 (#571)"})
         errs = validate_proposed(md, det, {571})
         assert any(e == f"금지어 {arrow!r}" for e in errs), (arrow, errs)
 
@@ -447,7 +509,7 @@ def test_cmd_extract_writes_artifacts_and_summary(tmp_path: Path):
     assert json.loads((kdir / "vocab_snapshot.json").read_text(encoding="utf-8")) == VOCAB
     proposed = split_sections((kdir / "proposed.md").read_text(encoding="utf-8"))
     assert "- 히타 (EA)" in proposed[HEADINGS[0]]
-    assert proposed[HEADINGS[4]] == "(없음)"
+    assert proposed[HEADINGS[5]] == "(없음)"
     assert not (kdir / "active.md").exists()
 
 
@@ -455,11 +517,11 @@ def test_cmd_extract_preserves_llm_sections_from_active(tmp_path: Path):
     _seed(tmp_path)
     kdir = tmp_path / "agent_knowledge"
     kdir.mkdir()
-    md = assemble(render_deterministic([], VOCAB, 0), {HEADINGS[4]: "- 기존 규칙 (#573)"})
+    md = assemble(render_deterministic([], VOCAB, 0), {HEADINGS[5]: "- 기존 규칙 (#573)"})
     (kdir / "active.md").write_text(md, encoding="utf-8")
     cmd_extract(tmp_path, _finals, lambda: VOCAB, "t")
     proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
-    assert split_sections(proposed)[HEADINGS[4]] == "- 기존 규칙 (#573)"
+    assert split_sections(proposed)[HEADINGS[5]] == "- 기존 규칙 (#573)"
 
 
 def test_cmd_extract_migrates_legacy_six_section_active(tmp_path: Path):
@@ -504,8 +566,8 @@ def test_cmd_extract_migrates_legacy_six_section_active(tmp_path: Path):
     proposed = (kdir / "proposed.md").read_text(encoding="utf-8")
     assert [line for line in proposed.splitlines() if line.startswith("## ")] == list(HEADINGS)
     sections = split_sections(proposed)
-    assert sections[HEADINGS[3]] == "- 테스트: 자동차 부품 위주 (#573)"
-    assert sections[HEADINGS[4]] == "- 합계 불일치 시 자릿수 재판독 (#573)"
+    assert sections[HEADINGS[4]] == "- 테스트: 자동차 부품 위주 (#573)"
+    assert sections[HEADINGS[5]] == "- 합계 불일치 시 자릿수 재판독 (#573)"
     assert s["auto_publish"] == {"version": 1, "reason": "published"}
     active = split_sections((kdir / "active.md").read_text(encoding="utf-8"))
     assert list(active) == list(HEADINGS)
@@ -522,7 +584,7 @@ def _stale_active(kdir: Path, rules: str) -> str:
     corrections = load_corrections(kdir / "corrections.jsonl")
     md = assemble(
         render_deterministic(corrections, {"items": [], "companies": []}, 2),
-        {HEADINGS[4]: rules},
+        {HEADINGS[5]: rules},
     )
     (kdir / "active.md").write_text(md, encoding="utf-8")
     return md
@@ -541,7 +603,7 @@ def test_cmd_extract_auto_publishes_when_det_changed_without_new(tmp_path: Path)
     assert s["active_version"] == 1
     active = split_sections((kdir / "active.md").read_text(encoding="utf-8"))
     assert "- 히타 (EA)" in active[HEADINGS[0]]
-    assert active[HEADINGS[4]] == "- 기존 규칙 (#573)"
+    assert active[HEADINGS[5]] == "- 기존 규칙 (#573)"
     assert load_versions(kdir / "versions.jsonl") == [
         {"version": 1, "published_at": "2026-09-08T03:00:00", "corrections_through": 1}
     ]

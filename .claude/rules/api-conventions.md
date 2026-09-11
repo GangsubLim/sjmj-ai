@@ -48,6 +48,7 @@ API 라우터는 모두 `app/routers/` 하위, `include_router(..., prefix="/api
 | salespeople   | `app/routers/salespeople.py`   | `/api/salespeople`   | 영업사원 CRUD(soft-delete)                                            |
 | settings      | `app/routers/settings.py`      | `/api/settings`      | 발급자 정보·도장 업로드·앱 설정                                       |
 | sales_records | `app/routers/sales_records.py` | `/api/sales-records` | 영업 실적 월별 집계·upsert·삭제                                       |
+| ocr           | `app/routers/ocr.py`           | `/api/ocr`           | OCR 잡 업로드·목록·상세·확정 + 행 crop 이미지(envelope 예외)          |
 | curation      | `app/routers/curation.py`      | `/api/curation`      | 큐레이션 검수 큐·잡 상세·쌍 큐레이션·검수완료·이미지                  |
 | hermes        | `app/routers/hermes.py`        | `/api/hermes`        | hermes 위임 입력 현황 요약·목록·대조 상세·원본 사진(읽기 전용, GET만) |
 
