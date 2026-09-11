@@ -26,9 +26,13 @@ worker = [
 # numpy도 <3 상한: cv2와 동일하게 major 정합까지만 보장한다(1.26~2.x는 허용, 3.x부터 차단).
 # 워커 numpy도 2.x(2.5.0, Task 7 실측)라 이 상한이 1.x를 강제하는 것은 아니다 — 무상한이면
 # cv2처럼 향후 3.x가 미리 잡혀 워커와 테스트 환경의 산술(NEP 50 등)이 갈릴 위험을 막는다.
+# numpy 하한 >=2.5(2026-09-11 실측): ml extra는 paddlex 3.7.2의 `numpy<2.4,>=1.24`에 묶여
+# 2.3.5로 고정되는데, cv 하한이 1.26이면 `uv lock --upgrade-package numpy`가 extra 분기를
+# 접고 cv까지 2.3.5로 끌어내림(실측). 하한을 워커 실측 계열(2.5.x)에 맞춰 분기를 고정하고
+# cv·dev의 numpy 역행을 차단. ml 쪽 numpy 상향은 paddleocr 3.7.0→3.4.1 강등을 동반하므로 제외.
 cv = [
     "opencv-python-headless>=4.10,<5",
-    "numpy>=1.26,<3",
+    "numpy>=2.5,<3",
 ]
 # 로컬 검증·워커 런타임 전용 — DL 코너검출(DocAligner point/lcnet050) ONNX 추론.
 # CI는 이 extra 없이 돈다(worker+cv): corner_dl의 onnxruntime import가 _make_session 안으로
