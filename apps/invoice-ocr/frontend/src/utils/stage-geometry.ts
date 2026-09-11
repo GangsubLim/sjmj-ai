@@ -33,12 +33,7 @@ export function isSupportedGeometryVersion(g: StageGeometry): boolean {
 }
 
 export type StagePanelId =
-  | "quad"
-  | "warp"
-  | "rows"
-  | "rowClass"
-  | "itemCrop"
-  | "amountCrop";
+  "quad" | "warp" | "rows" | "rowClass" | "itemCrop" | "amountCrop";
 
 /** 패널 라벨 — spec §2가 정한 번호를 그대로 붙여 단계 대조가 눈으로 되게 한다. */
 export const STAGE_PANEL_LABELS: Record<StagePanelId, string> = {
