@@ -45,7 +45,7 @@ cv = [
 # paddlex 경유로 cv2를 끌어오는 ml)와 함께 동기화한다: `uv sync --extra worker --extra cv --extra dl`.
 # 여기에 opencv/numpy를 직접 넣지 않는 이유는 위 [tool.uv].conflicts의 cv2 이중설치 회피 규약이다.
 dl = [
-    "onnxruntime==1.22.0",
+    "onnxruntime==1.29.0",
 ]
 # 학습 전용(#133 AC2 학습곡선 · 이후 AC3 재학습) — CI는 이 extra 없이 돈다.
 # 실험계획·채점은 torch-free 모듈 tools/train_input.py에 있어 CI가 그쪽을 테스트하고,
