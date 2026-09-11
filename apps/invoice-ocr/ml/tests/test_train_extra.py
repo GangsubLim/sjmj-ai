@@ -37,7 +37,7 @@ def test_train_extra_pins_the_torch_stack_to_the_measured_local_versions():
 def test_train_extra_does_not_change_the_existing_extras():
     extras = _pyproject()["project"]["optional-dependencies"]
 
-    assert extras["cv"] == ["opencv-python-headless>=4.10,<5", "numpy>=1.26,<3"]
+    assert extras["cv"] == ["opencv-python-headless>=4.10,<5", "numpy>=2.5,<3"]
     assert extras["worker"] == ["sqlalchemy>=2.0", "pymysql>=1.1"]
     assert extras["dl"] == ["onnxruntime==1.22.0"]
 
