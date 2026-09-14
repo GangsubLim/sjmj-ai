@@ -37,19 +37,24 @@ function PaginationItem({ ...props }: React.ComponentProps<"li">) {
   return <li data-slot="pagination-item" {...props} />;
 }
 
+// 호출부가 전부 onClick만 넘기는데 `<a>`에 href가 없어 키보드 포커스도, link 역할도
+// 없었다 — 목록 화면들에서 2페이지 이후로 키보드·스크린리더 진입이 불가능했다.
+// 네이티브 button으로 바꿔 tab 순서와 Enter/Space를 되찾는다.
 type PaginationLinkProps = {
   isActive?: boolean;
 } & Pick<React.ComponentProps<typeof Button>, "size"> &
-  React.ComponentProps<"a">;
+  React.ComponentProps<"button">;
 
 function PaginationLink({
   className,
   isActive,
   size = "icon",
+  type = "button",
   ...props
 }: PaginationLinkProps) {
   return (
-    <a
+    <button
+      type={type}
       aria-current={isActive ? "page" : undefined}
       data-slot="pagination-link"
       data-active={isActive}

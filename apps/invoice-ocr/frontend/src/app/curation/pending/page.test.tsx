@@ -212,8 +212,8 @@ describe("UnconfirmedJobsPage", () => {
   });
 
   it("페이지네이션 클릭이 URL의 page를 바꿔 재조회를 일으킨다", async () => {
-    // PaginationLink는 href 없는 <a>라 role="link"가 아니다 — 페이지 탐색 nav 안에서
-    // 텍스트로 찾는다. 페이지네이션 블록은 totalPages > 1일 때만 렌더된다.
+    // PaginationLink는 네이티브 button이다 — role로 집어 href 없는 <a>(키보드 진입 불가)로
+    // 되돌아가는 회귀를 잡는다. 페이지네이션 블록은 totalPages > 1일 때만 렌더된다.
     mockGetJobs.mockResolvedValue({
       success: true,
       data: [summary({ job_id: 11 })],
@@ -223,7 +223,7 @@ describe("UnconfirmedJobsPage", () => {
     const router = renderPage("/curation/pending");
 
     const nav = await screen.findByRole("navigation", { name: "페이지 탐색" });
-    fireEvent.click(within(nav).getByText("2"));
+    fireEvent.click(within(nav).getByRole("button", { name: "2" }));
 
     await waitFor(() => expect(router.state.location.search).toBe("?page=2"));
     expect(mockGetJobs).toHaveBeenCalledWith({ page: 2, limit: 20 });
