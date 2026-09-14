@@ -5,6 +5,21 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.21.0] — 2026-09-14
+
+`/hermes` 지식 버전 표에서 버전마다 판독 지식이 어떻게 바뀌었는지 직접 확인 가능 ([#238](https://github.com/GangsubLim/sjmj-ai/pull/238)).
+
+### Added
+
+- `/hermes` 지식 버전 표에 버전별 변경 요약 칩과 행 펼침 상세 추가 — 절 단위 추가·삭제·이동·변경을 직전 버전과 대조해 표시 ([#237](https://github.com/GangsubLim/sjmj-ai/pull/237))
+- 발행 이력 조회 API `GET /api/hermes/knowledge/versions` 신설 — 초안이 없는 발행 버전과 거부 기록까지 최신순으로 게재 ([#237](https://github.com/GangsubLim/sjmj-ai/pull/237))
+
+### Changed
+
+- 지식 버전 표의 행 기준을 초안 있는 버전에서 전 발행 버전으로 확대, 일치율은 집계가 있을 때만 표시 ([#237](https://github.com/GangsubLim/sjmj-ai/pull/237))
+- 이력 조회 실패 시에도 요약 카드와 기존 표 유지 ([#237](https://github.com/GangsubLim/sjmj-ai/pull/237))
+- Dependabot ML 엔트리에서 `onnxruntime` 상시 제외 — 검증된 정확핀과 충돌하는 주간 재생성 PR 차단 ([#236](https://github.com/GangsubLim/sjmj-ai/pull/236))
+
 ## [v0.20.1] — 2026-09-11
 
 의존성을 보안 권고 기준까지 일괄 상향하고 CI 실행 환경을 여기에 맞춘 유지보수 릴리스 ([#233](https://github.com/GangsubLim/sjmj-ai/pull/233)).
