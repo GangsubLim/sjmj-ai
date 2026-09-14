@@ -3,14 +3,13 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useHermesEntry } from "@/hooks/use-hermes-entry";
 import { hermesPhotoUrl } from "@/services/api";
 import { PageContainer } from "@/components/layout";
+import { HermesStatusBadge } from "@/components/hermes/HermesStatusBadge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { usePageParam } from "@/hooks/use-page-param";
 import { placeholderSvg, fallbackToPlaceholder } from "@/utils/placeholder";
 import {
   HERMES_HIGHLIGHT_NEW_CLASS,
   HERMES_HIGHLIGHT_OLD_CLASS,
-  HERMES_STATUS_CLASSES,
-  HERMES_STATUS_LABELS,
   HERMES_STATUS_PARAM,
   formatAmount,
   hermesListUrl,
@@ -67,9 +66,7 @@ export default function HermesEntryPage() {
     <PageContainer className="py-4">
       <div className="mb-3 flex items-center justify-between">
         <h1 className="text-xl font-semibold">#{entry.id} 대조</h1>
-        <span className={HERMES_STATUS_CLASSES[entry.status]}>
-          {HERMES_STATUS_LABELS[entry.status]}
-        </span>
+        <HermesStatusBadge status={entry.status} />
       </div>
 
       <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)]">

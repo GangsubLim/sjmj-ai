@@ -20,6 +20,10 @@
     --accent-foreground: 207 35% 18%;
     --destructive: 0 84% 60%;
     --destructive-foreground: 0 0% 100%;
+    /* 상태 신호색. 본문 크기로 쓰이므로 --background 대비 4.5:1(WCAG AA)을 만족하는
+       명도로 고정한다 — Tailwind 팔레트 직접 사용(green-600/amber-600)은 3.0:1이었다. */
+    --success: 143 64% 24%;
+    --warning: 26 90% 37%;
     --border: 200 12% 86%;
     --input: 200 8% 87%;
     --ring: 207 43% 16%;
@@ -54,6 +58,8 @@
     --accent-foreground: 187 25% 80%;
     --destructive: 0 63% 31%;
     --destructive-foreground: 0 0% 100%;
+    --success: 142 69% 58%;
+    --warning: 43 96% 56%;
     --border: 207 18% 23%;
     --input: 207 18% 23%;
     --ring: 187 35% 48%;
@@ -123,6 +129,8 @@
   --color-accent-foreground: hsl(var(--accent-foreground));
   --color-destructive: hsl(var(--destructive));
   --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
   --color-border: hsl(var(--border));
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
