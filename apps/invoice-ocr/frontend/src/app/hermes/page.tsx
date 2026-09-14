@@ -53,11 +53,7 @@ export default function HermesStatusPage() {
     loading: summaryLoading,
     error: summaryError,
   } = useHermesSummary();
-  const {
-    versions,
-    loading: versionsLoading,
-    error: versionsError,
-  } = useHermesKnowledgeVersions();
+  const { versions, error: versionsError } = useHermesKnowledgeVersions();
   const {
     data,
     total,
@@ -107,13 +103,11 @@ export default function HermesStatusPage() {
               지식 버전 이력을 불러오지 못했습니다: {versionsError}
             </p>
           )}
-          {!versionsLoading &&
-            (versions.length > 0 || summary.by_version.length > 0) && (
-              <VersionTable
-                versions={versions}
-                byVersion={summary.by_version}
-              />
-            )}
+          {/* 이력 로딩을 기다리지 않는다 — 이 API에는 타임아웃이 없어 멈추면 기존
+              by_version 표까지 무기한 가려진다. 이력은 도착하는 대로 합쳐진다. */}
+          {(versions.length > 0 || summary.by_version.length > 0) && (
+            <VersionTable versions={versions} byVersion={summary.by_version} />
+          )}
         </>
       )}
 
@@ -460,7 +454,14 @@ function VersionRow({
   isOpen: boolean;
   onToggle: () => void;
 }) {
-  const label = row.version === 0 ? "발행 이전" : `v${row.version}`;
+  // 거부 기록의 version은 거부 당시 활성 버전이라 행이 말하는 버전은 시도한 v{N+1}이다.
+  // 발행 이전(0) 구간 집계와 첫 발행 거부(version 0)가 같은 라벨로 겹치지 않게 한다.
+  const label =
+    row.knowledge?.rejected != null
+      ? `v${row.version + 1}`
+      : row.version === 0
+        ? "발행 이전"
+        : `v${row.version}`;
   const note = row.knowledge ? knowledgeVersionNote(row.knowledge) : null;
   const canExpand = changes.length > 0;
   const Chevron = isOpen ? ChevronDownIcon : ChevronRightIcon;

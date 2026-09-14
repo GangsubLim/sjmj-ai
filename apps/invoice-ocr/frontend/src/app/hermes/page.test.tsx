@@ -389,6 +389,47 @@ describe("HermesStatusPage", () => {
       expect(screen.queryByTestId("knowledge-change-detail")).toBeNull();
     });
 
+    it("이력이 아직 안 왔어도 by_version 표는 먼저 그린다", () => {
+      // 이력 API가 멈춰도(타임아웃 미설정) 기존 by_version 표가 무기한 가려지지 않는다.
+      setup({}, {}, { versions: [], loading: true });
+      const table = screen.getByTestId("version-table");
+      expect(table).toHaveTextContent("v2");
+      expect(table).toHaveTextContent("60.0%");
+    });
+
+    it("첫 발행 이전 거부 기록을 발행 이전 구간과 구분한다", () => {
+      setup(
+        {},
+        {
+          summary: {
+            totals: TOTALS,
+            knowledge: { version: 0, published_at: null, corrections: 0 },
+            by_version: [{ version: 0, ...TOTALS }],
+          },
+        },
+        {
+          versions: [
+            knowledgeVersion({
+              version: 0,
+              published_at: "2026-09-01T03:00:00",
+              corrections_through: null,
+              rejected: "헤딩 누락",
+              changes: null,
+            }),
+          ],
+        },
+      );
+      const rows = within(screen.getByTestId("version-table"))
+        .getAllByRole("row")
+        .slice(1);
+      // 집계 구간 행 하나만 "발행 이전"이고, 거부 기록은 시도한 버전으로 선다.
+      expect(
+        rows.filter((r) => r.textContent?.includes("발행 이전")),
+      ).toHaveLength(1);
+      expect(rows[0]).toHaveTextContent("v1");
+      expect(rows[0]).toHaveTextContent("거부: 헤딩 누락");
+    });
+
     it("지식 버전 API가 실패해도 요약과 by_version 표는 그리고 오류를 알린다", () => {
       setup({}, {}, { versions: [], error: "knowledge down" });
       expect(screen.getByTestId("summary-cards")).toHaveTextContent("60.0%");
