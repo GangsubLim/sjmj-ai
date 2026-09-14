@@ -1,4 +1,4 @@
-"""hermes 라우터 — 위임 입력 현황 요약/목록/대조 상세/사진. /api/hermes/*, 전부 GET.
+"""hermes 라우터 — 위임 입력 현황 요약/목록/대조 상세/사진/지식 버전. /api/hermes/*, 전부 GET.
 
 원본 사진(entries/{id}/photo)은 FileResponse raw 바이트로 success envelope의 명시적
 예외다(api-conventions.md의 curation image/{kind} 선례와 동일 취급). 그 외는 표준 envelope.
@@ -49,6 +49,12 @@ def list_entries(page: int = 1, limit: int = 20, status: str | None = None):
     return envelope.list_response(
         entries, {"page": page, "limit": limit, "total": total, "totalPages": total_pages}
     )
+
+
+@router.get("/hermes/knowledge/versions")
+def knowledge_versions():
+    """판독 지식 버전 changelog를 최신순으로 조회한다(발행 건마다 직전 대비 절별 변경)."""
+    return envelope.single(_service().knowledge_versions())
 
 
 @router.get("/hermes/entries/{invoice_id}")

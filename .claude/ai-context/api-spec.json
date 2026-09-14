@@ -497,6 +497,16 @@
         "res": "binary image/jpeg 또는 image/png (raw FileResponse, envelope 예외)",
         "router": "hermes",
         "source": "app/routers/hermes.py"
+      },
+      {
+        "method": "GET",
+        "path": "/api/hermes/knowledge/versions",
+        "summary": "판독 지식 버전 changelog — versions.jsonl 전량을 최신순으로, 발행 건마다 직전 발행(v{N-1}.md) 대비 절별 변경(added/removed/moved/changed). 등급 이동은 moved 1건, '라벨: 값'·근거 (#…)만 다른 문장은 changed 1건으로 접는다. v1(직전 없음)·거부 기록은 changes=null, 자기·직전 파일 부재는 changes=null + missing_file=true(500 아님). versions.jsonl 부재는 빈 배열 200이며 디렉터리를 생성하지 않는다",
+        "auth": "public",
+        "req": null,
+        "res": "HermesKnowledgeVersion[]",
+        "router": "hermes",
+        "source": "app/routers/hermes.py"
       }
     ],
     "schema-usage": {
@@ -585,6 +595,13 @@
       "HermesEntryDetail": ["GET /api/hermes/entries/{invoice_id}"],
       "HermesRowCell": [
         "GET /api/hermes/entries/{invoice_id} (data.rows[].draft·final)"
+      ],
+      "HermesKnowledgeVersion": ["GET /api/hermes/knowledge/versions (data[])"],
+      "HermesKnowledgeChange": [
+        "GET /api/hermes/knowledge/versions (data[].changes[])"
+      ],
+      "HermesKnowledgeItem": [
+        "GET /api/hermes/knowledge/versions (data[].changes[].added·removed[])"
       ]
     },
     "conventions": {
@@ -3059,6 +3076,45 @@
           }
         }
       }
+    },
+    "/api/hermes/knowledge/versions": {
+      "get": {
+        "summary": "판독 지식 버전 changelog(최신순, 발행 건마다 직전 대비 절별 변경)",
+        "description": "agent_learn.publish가 남긴 knowledge/v{N}.md를 요청 시 읽어 v{N-1}.md와 대조한다. md는 '## 절 → 그룹 라벨 → 불릿' 3단으로만 읽으므로 v1(등급 없는 목록·교정 사전 표)↔v2(등급 3단) 같은 형식 전환도 같은 규칙으로 대조된다. 변경이 있는 절만 changes에 실린다. 판정 주체는 백엔드 단독이다 — 프론트는 md를 받지 않는다.",
+        "tags": ["hermes"],
+        "responses": {
+          "200": {
+            "description": "지식 버전 목록(최신순). versions.jsonl 부재는 빈 배열",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "allOf": [
+                    { "$ref": "#/components/schemas/SuccessSingle" },
+                    {
+                      "properties": {
+                        "data": {
+                          "type": "array",
+                          "items": {
+                            "$ref": "#/components/schemas/HermesKnowledgeVersion"
+                          }
+                        }
+                      }
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "SJMJ_DATA_DIR 미설정·부재, 또는 versions.jsonl 줄 파싱 실패",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/ErrorEnvelope" }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -4535,6 +4591,87 @@
           "unit_price": { "type": "integer", "nullable": true },
           "supply": { "type": "integer", "nullable": true },
           "deduction": { "type": "boolean" }
+        }
+      },
+      "HermesKnowledgeVersion": {
+        "type": "object",
+        "description": "versions.jsonl 기록 1줄 + 직전 발행 대비 변경. 발행 기록은 rejected=null, 거부 기록은 corrections_through=null·changes=null이다",
+        "properties": {
+          "version": { "type": "integer" },
+          "published_at": { "type": "string" },
+          "corrections_through": {
+            "type": "integer",
+            "nullable": true,
+            "description": "발행 시점의 corrections.jsonl 누적 줄 수. 거부 기록은 null"
+          },
+          "rejected": {
+            "type": "string",
+            "nullable": true,
+            "description": "발행 거부 사유(validate_proposed). 발행 기록은 null"
+          },
+          "changes": {
+            "type": "array",
+            "nullable": true,
+            "description": "직전 발행(v{N-1}) 대비 변경이 있는 절만. null은 초기 발행(v1)·거부 기록·파일 부재(missing_file 참조). 빈 배열은 '내용 동일 재발행'",
+            "items": { "$ref": "#/components/schemas/HermesKnowledgeChange" }
+          },
+          "missing_file": {
+            "type": "boolean",
+            "description": "자기 v{N}.md 또는 직전 v{N-1}.md 부재(운영 이상 신호). true면 changes는 null"
+          }
+        }
+      },
+      "HermesKnowledgeChange": {
+        "type": "object",
+        "description": "절 1개의 변경. 항목은 절 안의 그룹 라벨(등급명·소제목, 없으면 \"\")과 텍스트로 식별한다",
+        "properties": {
+          "section": {
+            "type": "string",
+            "description": "'## ' 를 뗀 헤딩 텍스트"
+          },
+          "added": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/HermesKnowledgeItem" }
+          },
+          "removed": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/HermesKnowledgeItem" }
+          },
+          "moved": {
+            "type": "array",
+            "description": "같은 텍스트가 같은 절의 다른 그룹으로 이동(등급 이동이 전형)",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": { "type": "string" },
+                "from": { "type": "string" },
+                "to": { "type": "string" }
+              }
+            }
+          },
+          "changed": {
+            "type": "array",
+            "description": "같은 그룹·같은 키의 값 변경. '라벨: 값' 꼴은 라벨이 키, 서술문은 끝의 근거 (#…) 를 뗀 본문이 키이고 근거가 값",
+            "items": {
+              "type": "object",
+              "properties": {
+                "group": { "type": "string" },
+                "key": { "type": "string" },
+                "before": { "type": "string" },
+                "after": { "type": "string" }
+              }
+            }
+          }
+        }
+      },
+      "HermesKnowledgeItem": {
+        "type": "object",
+        "properties": {
+          "group": {
+            "type": "string",
+            "description": "그룹 라벨. 없으면 \"\""
+          },
+          "text": { "type": "string" }
         }
       }
     }
