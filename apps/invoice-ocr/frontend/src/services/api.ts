@@ -24,6 +24,7 @@ import type { UnconfirmedJobSummary } from "@/types/observation";
 import type {
   HermesEntryDetail,
   HermesEntrySummary,
+  HermesKnowledgeVersion,
   HermesStatus,
   HermesSummary,
 } from "@/types/hermes";
@@ -452,6 +453,13 @@ export const hermesAPI = {
 
   getEntry: async (id: number): Promise<SingleResponse<HermesEntryDetail>> => {
     const response = await api.get(`/hermes/entries/${id}`);
+    return response.data;
+  },
+
+  getKnowledgeVersions: async (): Promise<
+    SingleResponse<HermesKnowledgeVersion[]>
+  > => {
+    const response = await api.get("/hermes/knowledge/versions");
     return response.data;
   },
 };

@@ -3,15 +3,24 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import HermesStatusPage from "./page";
 import { useHermesEntries, useHermesSummary } from "@/hooks/use-hermes-entries";
-import type { HermesEntrySummary, HermesSummary } from "@/types/hermes";
+import { useHermesKnowledgeVersions } from "@/hooks/use-hermes-knowledge-versions";
+import type {
+  HermesEntrySummary,
+  HermesKnowledgeVersion,
+  HermesSummary,
+} from "@/types/hermes";
 
 vi.mock("@/hooks/use-hermes-entries", () => ({
   useHermesEntries: vi.fn(),
   useHermesSummary: vi.fn(),
   HERMES_PAGE_SIZE: 20,
 }));
+vi.mock("@/hooks/use-hermes-knowledge-versions", () => ({
+  useHermesKnowledgeVersions: vi.fn(),
+}));
 const mockEntries = vi.mocked(useHermesEntries);
 const mockSummary = vi.mocked(useHermesSummary);
+const mockKnowledge = vi.mocked(useHermesKnowledgeVersions);
 
 const mockNavigate = vi.fn();
 vi.mock("react-router-dom", async (importOriginal) => {
@@ -53,10 +62,31 @@ function entry(over: Partial<HermesEntrySummary> = {}): HermesEntrySummary {
   };
 }
 
+function knowledgeVersion(
+  over: Partial<HermesKnowledgeVersion> = {},
+): HermesKnowledgeVersion {
+  return {
+    version: 2,
+    published_at: "2026-09-07T03:00:00",
+    corrections_through: 25,
+    rejected: null,
+    changes: [],
+    missing_file: false,
+    ...over,
+  };
+}
+
 function setup(
   entriesOver: Partial<ReturnType<typeof useHermesEntries>> = {},
   summaryOver: Partial<ReturnType<typeof useHermesSummary>> = {},
+  knowledgeOver: Partial<ReturnType<typeof useHermesKnowledgeVersions>> = {},
 ) {
+  mockKnowledge.mockReturnValue({
+    versions: [knowledgeVersion()],
+    loading: false,
+    error: null,
+    ...knowledgeOver,
+  });
   mockEntries.mockReturnValue({
     data: [],
     total: 0,
@@ -233,5 +263,140 @@ describe("HermesStatusPage", () => {
     );
     expect(screen.getByText("#573")).toBeInTheDocument();
     expect(screen.getByText(/summary down/)).toBeInTheDocument();
+  });
+
+  describe("지식 버전 표", () => {
+    const CHANGES: HermesKnowledgeVersion["changes"] = [
+      {
+        section: "확정 어휘",
+        added: [{ group: "보통(3~9회)", text: "콜드호수 (EA)" }],
+        removed: [],
+        moved: [{ text: "챔바 (EA)", from: "보통(3~9회)", to: "가끔(2회)" }],
+        changed: [],
+      },
+      {
+        section: "일반화 규칙",
+        added: [],
+        removed: [{ group: "", text: "옛 규칙" }],
+        moved: [],
+        changed: [
+          {
+            group: "",
+            key: "합계를 다시 계산한다.",
+            before: "(#580)",
+            after: "(#580, #584)",
+          },
+        ],
+      },
+    ];
+
+    it("전 발행 버전을 최신순으로 그리고 일치율은 by_version에 있는 버전만 채운다", () => {
+      setup(
+        {},
+        {},
+        {
+          versions: [
+            knowledgeVersion({
+              version: 3,
+              published_at: "2026-09-10T03:00:03",
+            }),
+            knowledgeVersion({ version: 2 }),
+          ],
+        },
+      );
+      const table = screen.getByTestId("version-table");
+      const rows = within(table).getAllByRole("row").slice(1); // 헤더 제외
+      expect(rows[0]).toHaveTextContent("v3");
+      expect(rows[0]).toHaveTextContent("09-10");
+      expect(rows[1]).toHaveTextContent("v2");
+      // v3에는 초안이 없어 by_version에 없다 — 건수·일치율은 —.
+      expect(within(rows[0]).getAllByText("—").length).toBeGreaterThanOrEqual(
+        3,
+      );
+      expect(rows[1]).toHaveTextContent("60.0%");
+    });
+
+    it("발행 이전 구간은 맨 아래에 그린다", () => {
+      setup(
+        {},
+        {
+          summary: {
+            totals: TOTALS,
+            knowledge: { version: 2, published_at: null, corrections: 0 },
+            by_version: [
+              { version: 0, ...TOTALS },
+              { version: 2, ...TOTALS },
+            ],
+          },
+        },
+      );
+      const rows = within(screen.getByTestId("version-table"))
+        .getAllByRole("row")
+        .slice(1);
+      expect(rows[0]).toHaveTextContent("v2");
+      expect(rows[rows.length - 1]).toHaveTextContent("발행 이전");
+    });
+
+    it("변경 칩을 절별로 접어 그린다", () => {
+      setup({}, {}, { versions: [knowledgeVersion({ changes: CHANGES })] });
+      const chips = screen.getByTestId("knowledge-change-chips");
+      expect(chips).toHaveTextContent("확정 어휘 +1 ↔1");
+      expect(chips).toHaveTextContent("일반화 규칙 −1 ~1");
+    });
+
+    it("초기 발행·변경 없음·거부·파일 없음을 한 줄 설명으로 그린다", () => {
+      setup(
+        {},
+        {},
+        {
+          versions: [
+            knowledgeVersion({
+              version: 4,
+              rejected: "헤딩 누락",
+              changes: null,
+            }),
+            knowledgeVersion({ version: 3, changes: null, missing_file: true }),
+            knowledgeVersion({ version: 2, changes: [] }),
+            knowledgeVersion({ version: 1, changes: null }),
+          ],
+        },
+      );
+      const table = screen.getByTestId("version-table");
+      expect(table).toHaveTextContent("거부: 헤딩 누락");
+      expect(table).toHaveTextContent("파일 없음");
+      expect(table).toHaveTextContent("변경 없음");
+      expect(table).toHaveTextContent("초기 발행");
+      // 펼칠 것이 없는 행에는 펼침 버튼이 없다.
+      expect(screen.queryByRole("button", { name: /변경 펼치기/ })).toBeNull();
+    });
+
+    it("행을 펼치면 추가·삭제·이동·변경 상세가 나온다", () => {
+      setup({}, {}, { versions: [knowledgeVersion({ changes: CHANGES })] });
+      expect(screen.queryByTestId("knowledge-change-detail")).toBeNull();
+      const toggle = screen.getByRole("button", { name: "v2 변경 펼치기" });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      const detail = screen.getByTestId("knowledge-change-detail");
+      expect(detail).toHaveTextContent("보통(3~9회)");
+      expect(detail).toHaveTextContent("콜드호수 (EA)");
+      expect(detail).toHaveTextContent("챔바 (EA)");
+      expect(detail).toHaveTextContent("보통(3~9회) → 가끔(2회)");
+      expect(detail).toHaveTextContent("옛 규칙");
+      expect(detail).toHaveTextContent("합계를 다시 계산한다.");
+      expect(detail).toHaveTextContent("(#580) → (#580, #584)");
+      fireEvent.click(toggle);
+      expect(screen.queryByTestId("knowledge-change-detail")).toBeNull();
+    });
+
+    it("지식 버전 API가 실패해도 요약과 by_version 표는 그리고 오류를 알린다", () => {
+      setup({}, {}, { versions: [], error: "knowledge down" });
+      expect(screen.getByTestId("summary-cards")).toHaveTextContent("60.0%");
+      expect(screen.getByText(/knowledge down/)).toBeInTheDocument();
+      // 훅이 죽어도 by_version에 있는 v2 행은 일치율과 함께 남는다.
+      const table = screen.getByTestId("version-table");
+      expect(table).toHaveTextContent("v2");
+      expect(table).toHaveTextContent("60.0%");
+    });
   });
 });

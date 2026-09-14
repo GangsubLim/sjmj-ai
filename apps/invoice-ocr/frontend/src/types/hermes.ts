@@ -107,3 +107,49 @@ export interface HermesEntryDetail {
   // 판정 주체는 백엔드 단독이다 — 프론트가 값 비교로 재도출하면 목록과 갈린다.
   mismatch_fields: HermesMismatchField[];
 }
+
+// --- 판독 지식 버전 changelog (GET /api/hermes/knowledge/versions) ---
+
+/** 절 안의 항목 1개. group은 등급명·소제목 같은 그룹 라벨이며 없으면 "". */
+export interface HermesKnowledgeItem {
+  group: string;
+  text: string;
+}
+
+/** 같은 텍스트가 같은 절의 다른 그룹으로 이동(어휘 등급 이동이 전형). */
+export interface HermesKnowledgeMove {
+  text: string;
+  from: string;
+  to: string;
+}
+
+/** 같은 그룹·같은 키의 값 변경. '라벨: 값' 꼴은 라벨이 키, 서술문은 근거 (#…)를 뗀
+ * 본문이 키이고 근거가 값이다. */
+export interface HermesKnowledgeValueChange {
+  group: string;
+  key: string;
+  before: string;
+  after: string;
+}
+
+/** 절 1개의 변경. 변경이 있는 절만 온다. */
+export interface HermesKnowledgeChange {
+  section: string;
+  added: HermesKnowledgeItem[];
+  removed: HermesKnowledgeItem[];
+  moved: HermesKnowledgeMove[];
+  changed: HermesKnowledgeValueChange[];
+}
+
+export interface HermesKnowledgeVersion {
+  version: number;
+  published_at: string;
+  /** 거부 기록은 null. */
+  corrections_through: number | null;
+  /** 발행 거부 사유. 발행 기록은 null. */
+  rejected: string | null;
+  /** 직전 발행 대비 변경. null은 초기 발행·거부·파일 부재(missing_file), 빈 배열은
+   * 내용 동일 재발행. 판정 주체는 백엔드 단독이다 — 프론트는 md를 받지 않는다. */
+  changes: HermesKnowledgeChange[] | null;
+  missing_file: boolean;
+}
