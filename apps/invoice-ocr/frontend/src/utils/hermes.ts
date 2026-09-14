@@ -1,4 +1,9 @@
-import type { HermesMismatchField, HermesStatus } from "@/types/hermes";
+import type {
+  HermesKnowledgeChange,
+  HermesKnowledgeVersion,
+  HermesMismatchField,
+  HermesStatus,
+} from "@/types/hermes";
 
 // 이 모듈은 **표시만** 소유한다. 상태는 백엔드가 판정한 enum을 그대로 쓰며 여기서
 // 재판정하지 않는다 — 판정이 두 벌이면 서버측 status 필터의 결과와 배지가 갈린다(spec §6).
@@ -81,4 +86,34 @@ export function hermesEntryUrl(
   status: HermesStatus | null,
 ): string {
   return `/hermes/${id}${query(page, status)}`;
+}
+
+// --- 판독 지식 버전 changelog 표시 ---
+
+/** 절별 변경 요약 칩 — "확정 어휘 +1 ↔2" 처럼 절 이름 뒤에 종류별 건수만 붙인다.
+ * 종류 기호: + 추가 · − 삭제 · ↔ 그룹 이동 · ~ 값 변경. 건수 0인 종류는 생략한다. */
+export function summarizeKnowledgeChanges(
+  changes: readonly HermesKnowledgeChange[],
+): string[] {
+  return changes.map((c) => {
+    const parts = [
+      c.added.length > 0 ? `+${c.added.length}` : null,
+      c.removed.length > 0 ? `−${c.removed.length}` : null,
+      c.moved.length > 0 ? `↔${c.moved.length}` : null,
+      c.changed.length > 0 ? `~${c.changed.length}` : null,
+    ].filter((p): p is string => p !== null);
+    return [c.section, ...parts].join(" ");
+  });
+}
+
+/** 변경 칩 대신 보여줄 한 줄 설명. 변경이 있으면 null(칩이 말한다). 서버의
+ * changes=null은 거부·파일 부재·초기 발행 세 뜻이라 missing_file·rejected로 먼저 가른다. */
+export function knowledgeVersionNote(
+  row: HermesKnowledgeVersion,
+): string | null {
+  if (row.rejected !== null) return `거부: ${row.rejected}`;
+  if (row.missing_file) return "파일 없음";
+  if (row.changes === null) return "초기 발행";
+  if (row.changes.length === 0) return "변경 없음";
+  return null;
 }

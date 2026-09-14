@@ -6,8 +6,14 @@ import {
   formatRate,
   hermesEntryUrl,
   hermesListUrl,
+  knowledgeVersionNote,
   parseHermesStatus,
+  summarizeKnowledgeChanges,
 } from "./hermes";
+import type {
+  HermesKnowledgeChange,
+  HermesKnowledgeVersion,
+} from "@/types/hermes";
 
 describe("parseHermesStatus", () => {
   it("선언된 3종만 필터로 인정한다", () => {
@@ -70,5 +76,102 @@ describe("라벨", () => {
   it("상태 3종과 대조 축 5종 라벨을 모두 소유한다", () => {
     expect(Object.keys(HERMES_STATUS_LABELS)).toHaveLength(3);
     expect(Object.keys(HERMES_MISMATCH_LABELS)).toHaveLength(5);
+  });
+});
+
+describe("summarizeKnowledgeChanges", () => {
+  const change = (
+    over: Partial<HermesKnowledgeChange> = {},
+  ): HermesKnowledgeChange => ({
+    section: "확정 어휘",
+    added: [],
+    removed: [],
+    moved: [],
+    changed: [],
+    ...over,
+  });
+
+  it("절마다 종류별 건수를 한 칩으로 접는다", () => {
+    expect(
+      summarizeKnowledgeChanges([
+        change({
+          section: "확정 어휘",
+          added: [{ group: "보통(3~9회)", text: "콜드호수 (EA)" }],
+          moved: [
+            { text: "챔바 (EA)", from: "보통(3~9회)", to: "가끔(2회)" },
+            { text: "하부 (EA)", from: "가끔(2회)", to: "보통(3~9회)" },
+          ],
+        }),
+        change({
+          section: "데이터 현황",
+          changed: [
+            { group: "", key: "누적 교정", before: "44건", after: "50건" },
+          ],
+        }),
+        change({
+          section: "거래처 프로필",
+          added: [{ group: "", text: "a" }],
+          removed: [{ group: "", text: "b" }],
+        }),
+      ]),
+    ).toEqual(["확정 어휘 +1 ↔2", "데이터 현황 ~1", "거래처 프로필 +1 −1"]);
+  });
+
+  it("변경이 없으면 빈 목록이다", () => {
+    expect(summarizeKnowledgeChanges([])).toEqual([]);
+  });
+});
+
+describe("knowledgeVersionNote", () => {
+  const row = (
+    over: Partial<HermesKnowledgeVersion> = {},
+  ): HermesKnowledgeVersion => ({
+    version: 3,
+    published_at: "2026-09-10T03:00:03",
+    corrections_through: 25,
+    rejected: null,
+    changes: [],
+    missing_file: false,
+    ...over,
+  });
+
+  it("거부 기록은 사유를 낸다", () => {
+    expect(knowledgeVersionNote(row({ rejected: "헤딩 누락" }))).toBe(
+      "거부: 헤딩 누락",
+    );
+  });
+
+  it("파일 부재를 초기 발행보다 먼저 판정한다", () => {
+    expect(
+      knowledgeVersionNote(row({ changes: null, missing_file: true })),
+    ).toBe("파일 없음");
+  });
+
+  it("직전이 없는 발행은 초기 발행이다", () => {
+    expect(knowledgeVersionNote(row({ version: 1, changes: null }))).toBe(
+      "초기 발행",
+    );
+  });
+
+  it("빈 변경은 변경 없음이다", () => {
+    expect(knowledgeVersionNote(row({ changes: [] }))).toBe("변경 없음");
+  });
+
+  it("변경이 있으면 null — 칩이 대신 말한다", () => {
+    expect(
+      knowledgeVersionNote(
+        row({
+          changes: [
+            {
+              section: "일반화 규칙",
+              added: [{ group: "", text: "x" }],
+              removed: [],
+              moved: [],
+              changed: [],
+            },
+          ],
+        }),
+      ),
+    ).toBeNull();
   });
 });
