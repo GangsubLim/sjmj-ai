@@ -52,86 +52,97 @@ async function bootMainAt(path: string) {
   });
 }
 
-describe("main.tsx 라우트 등록 (/curation, /curation/:jobId)", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    Object.defineProperty(window, "matchMedia", {
-      writable: true,
-      configurable: true,
-      value: vi.fn().mockImplementation((query: string) => ({
-        matches: false,
-        media: query,
-        addEventListener: vi.fn(),
-        removeEventListener: vi.fn(),
-      })),
+// 각 테스트가 vi.resetModules 후 main.tsx의 모듈 그래프 전체를 새로 임포트하므로
+// 트랜스폼·평가 비용을 매번 다시 치른다. 기본 5초로는 부하가 큰 CI 러너에서 경계를
+// 넘겨 간헐 실패하므로(로컬 파일 전체 약 3초) 이 파일만 여유를 둔다.
+describe(
+  "main.tsx 라우트 등록 (/curation, /curation/:jobId)",
+  { timeout: 30_000 },
+  () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+      Object.defineProperty(window, "matchMedia", {
+        writable: true,
+        configurable: true,
+        value: vi.fn().mockImplementation((query: string) => ({
+          matches: false,
+          media: query,
+          addEventListener: vi.fn(),
+          removeEventListener: vi.fn(),
+        })),
+      });
     });
-  });
 
-  it("/curation 경로에서 CurationQueuePage를 렌더한다", async () => {
-    mockUseCurationJobs.mockReturnValue({
-      data: [],
-      total: 0,
-      page: 1,
-      totalPages: 0,
-      loading: false,
-      error: null,
-      setPage: vi.fn(),
-      rowDelta: false,
-      setRowDelta: vi.fn(),
-      refetch: vi.fn(),
+    it("/curation 경로에서 CurationQueuePage를 렌더한다", async () => {
+      mockUseCurationJobs.mockReturnValue({
+        data: [],
+        total: 0,
+        page: 1,
+        totalPages: 0,
+        loading: false,
+        error: null,
+        setPage: vi.fn(),
+        rowDelta: false,
+        setRowDelta: vi.fn(),
+        refetch: vi.fn(),
+      });
+      await bootMainAt("/curation");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "OCR 학습 큐레이션" }),
+        ).toBeInTheDocument(),
+      );
     });
-    await bootMainAt("/curation");
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: "OCR 학습 큐레이션" }),
-      ).toBeInTheDocument(),
-    );
-  });
 
-  it("/curation/:jobId 경로에서 jobId 파라미터로 CurationJobPage를 렌더한다", async () => {
-    mockUseCurationJob.mockReturnValue({
-      job: job({ job_id: 42 }),
-      loading: false,
-      error: null,
-      patchPair: vi.fn(),
-      reviewJob: vi.fn(),
-      refetch: vi.fn(),
+    it("/curation/:jobId 경로에서 jobId 파라미터로 CurationJobPage를 렌더한다", async () => {
+      mockUseCurationJob.mockReturnValue({
+        job: job({ job_id: 42 }),
+        loading: false,
+        error: null,
+        patchPair: vi.fn(),
+        reviewJob: vi.fn(),
+        refetch: vi.fn(),
+      });
+      await bootMainAt("/curation/42");
+      await waitFor(() =>
+        expect(screen.getByText(/잡 #42/)).toBeInTheDocument(),
+      );
+      expect(mockUseCurationJob).toHaveBeenCalledWith(42);
     });
-    await bootMainAt("/curation/42");
-    await waitFor(() => expect(screen.getByText(/잡 #42/)).toBeInTheDocument());
-    expect(mockUseCurationJob).toHaveBeenCalledWith(42);
-  });
 
-  it("/curation/pending 경로에서 확정 전 관측 목록을 렌더한다", async () => {
-    mockUseUnconfirmedJobs.mockReturnValue({
-      data: [],
-      total: 0,
-      page: 1,
-      totalPages: 0,
-      loading: false,
-      error: null,
-      setPage: vi.fn(),
-      refetch: vi.fn(),
+    it("/curation/pending 경로에서 확정 전 관측 목록을 렌더한다", async () => {
+      mockUseUnconfirmedJobs.mockReturnValue({
+        data: [],
+        total: 0,
+        page: 1,
+        totalPages: 0,
+        loading: false,
+        error: null,
+        setPage: vi.fn(),
+        refetch: vi.fn(),
+      });
+      await bootMainAt("/curation/pending");
+      await waitFor(() =>
+        expect(
+          screen.getByRole("heading", { name: "확정 전 잡 관측" }),
+        ).toBeInTheDocument(),
+      );
     });
-    await bootMainAt("/curation/pending");
-    await waitFor(() =>
-      expect(
-        screen.getByRole("heading", { name: "확정 전 잡 관측" }),
-      ).toBeInTheDocument(),
-    );
-  });
 
-  it("/curation/pending/:jobId 경로에서 jobId로 관측 상세를 렌더한다", async () => {
-    vi.mocked(ocrAPI.getJob).mockResolvedValue({
-      success: true,
-      data: {
-        id: 42,
-        status: "done",
-        result: { rows: [], supply_sum: 0, warp_ok: true },
-      },
+    it("/curation/pending/:jobId 경로에서 jobId로 관측 상세를 렌더한다", async () => {
+      vi.mocked(ocrAPI.getJob).mockResolvedValue({
+        success: true,
+        data: {
+          id: 42,
+          status: "done",
+          result: { rows: [], supply_sum: 0, warp_ok: true },
+        },
+      });
+      await bootMainAt("/curation/pending/42");
+      await waitFor(() =>
+        expect(screen.getByText(/잡 #42/)).toBeInTheDocument(),
+      );
+      expect(vi.mocked(ocrAPI.getJob)).toHaveBeenCalledWith(42);
     });
-    await bootMainAt("/curation/pending/42");
-    await waitFor(() => expect(screen.getByText(/잡 #42/)).toBeInTheDocument());
-    expect(vi.mocked(ocrAPI.getJob)).toHaveBeenCalledWith(42);
-  });
-});
+  },
+);
