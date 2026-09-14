@@ -23,6 +23,7 @@ from app.services.hermes_diff import (
     summarize,
     version_for,
 )
+from app.services.hermes_knowledge import diff_knowledge
 
 UPLOAD_DIRNAME = "agent_uploads"
 KNOWLEDGE_DIRNAME = "agent_knowledge"
@@ -166,6 +167,46 @@ class HermesService:
             "knowledge": self._knowledge_state(versions),
             "by_version": by_version,
         }
+
+    def _read_knowledge(self, version: int) -> str | None:
+        """knowledge/v{N}.md 전문. 부재는 None(발행 기록만 남고 파일이 지워진 운영 이상 신호)."""
+        path = self._knowledge() / "knowledge" / f"v{version}.md"
+        return path.read_text(encoding="utf-8") if path.is_file() else None
+
+    def knowledge_versions(self) -> list[dict]:
+        """지식 버전 changelog — versions.jsonl 전량을 최신순으로, 발행 건마다 직전 대비 변경.
+
+        직전은 v{N-1}이다(publish가 cur+1로만 발행하므로 번호가 곧 순서다). v1처럼 직전이
+        없으면 changes는 None(초기 발행). 자기 파일이나 직전 파일이 없으면 changes None에
+        missing_file True — 파일 하나가 없다고 목록 전체를 500으로 죽이지 않는다.
+        거부 기록은 사유만 실리고 대조하지 않는다.
+
+        Returns:
+            [{version, published_at, corrections_through, rejected, changes, missing_file}].
+        """
+        out = []
+        for v in reversed(self._load_versions()):
+            row = {
+                "version": v["version"],
+                "published_at": v["published_at"],
+                "corrections_through": v.get("corrections_through"),
+                "rejected": v.get("rejected"),
+                "changes": None,
+                "missing_file": False,
+            }
+            if row["rejected"] is not None:
+                out.append(row)
+                continue
+            # v1도 자기 파일은 읽는다 — 직전이 없다는 이유로 파일 부재를 '초기 발행'으로
+            # 접으면 운영 이상이 정상으로 보고된다.
+            cur = self._read_knowledge(v["version"])
+            prev = self._read_knowledge(v["version"] - 1) if v["version"] > 1 else None
+            if cur is None or (v["version"] > 1 and prev is None):
+                row["missing_file"] = True
+            elif prev is not None:
+                row["changes"] = diff_knowledge(prev, cur)
+            out.append(row)
+        return out
 
     def list_entries(
         self, page: int, limit: int, status: str | None = None

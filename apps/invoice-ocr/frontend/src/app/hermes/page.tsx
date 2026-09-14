@@ -1,11 +1,13 @@
+import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { InboxIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronRightIcon, InboxIcon } from "lucide-react";
 
 import {
   HERMES_PAGE_SIZE,
   useHermesEntries,
   useHermesSummary,
 } from "@/hooks/use-hermes-entries";
+import { useHermesKnowledgeVersions } from "@/hooks/use-hermes-knowledge-versions";
 import { PageContainer } from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/ui/empty-state";
@@ -30,8 +32,15 @@ import {
   formatAmount,
   formatRate,
   hermesEntryUrl,
+  knowledgeVersionNote,
+  summarizeKnowledgeChanges,
 } from "@/utils/hermes";
-import type { HermesTotals, HermesVersionRow } from "@/types/hermes";
+import type {
+  HermesKnowledgeChange,
+  HermesKnowledgeVersion,
+  HermesTotals,
+  HermesVersionRow,
+} from "@/types/hermes";
 
 function shortDate(iso: string | null): string {
   return iso ? iso.slice(5, 10) : "—";
@@ -44,6 +53,7 @@ export default function HermesStatusPage() {
     loading: summaryLoading,
     error: summaryError,
   } = useHermesSummary();
+  const { versions, error: versionsError } = useHermesKnowledgeVersions();
   const {
     data,
     total,
@@ -88,8 +98,15 @@ export default function HermesStatusPage() {
             {" · 누적 교정 "}
             {summary.knowledge.corrections}건
           </div>
-          {summary.by_version.length > 0 && (
-            <VersionTable rows={summary.by_version} />
+          {versionsError && (
+            <p className="text-muted-foreground mt-2 text-sm">
+              지식 버전 이력을 불러오지 못했습니다: {versionsError}
+            </p>
+          )}
+          {/* 이력 로딩을 기다리지 않는다 — 이 API에는 타임아웃이 없어 멈추면 기존
+              by_version 표까지 무기한 가려진다. 이력은 도착하는 대로 합쳐진다. */}
+          {(versions.length > 0 || summary.by_version.length > 0) && (
+            <VersionTable versions={versions} byVersion={summary.by_version} />
           )}
         </>
       )}
@@ -334,36 +351,229 @@ function SummaryCards({ totals }: { totals: HermesTotals }) {
   );
 }
 
-function VersionTable({ rows }: { rows: HermesVersionRow[] }) {
+interface VersionTableRow {
+  key: string;
+  /** 0은 발행 이전 구간. */
+  version: number;
+  publishedAt: string | null;
+  knowledge: HermesKnowledgeVersion | null;
+  stats: HermesVersionRow | null;
+}
+
+// 지식 버전 이력(최신순)과 버전별 일치율을 버전 번호로 합친다. 이력 API가 죽어도
+// by_version만으로 행을 만들고, 발행 이전(0) 구간은 항상 맨 아래다. 거부 기록은 같은
+// 번호가 두 번 올 수 있어 key에 발행 시각을 섞는다.
+function mergeVersionRows(
+  versions: HermesKnowledgeVersion[],
+  byVersion: HermesVersionRow[],
+): VersionTableRow[] {
+  const stats = new Map(byVersion.map((r) => [r.version, r]));
+  const listed = new Set(versions.map((v) => v.version));
+  const fromKnowledge = versions.map((v) => ({
+    key: `${v.version}-${v.published_at}`,
+    version: v.version,
+    publishedAt: v.published_at,
+    knowledge: v,
+    stats: v.rejected === null ? (stats.get(v.version) ?? null) : null,
+  }));
+  // toSorted는 tsconfig lib(ES2020)에 없다 — filter가 이미 새 배열이라 sort가 원본을 건드리지 않는다.
+  const statsOnly = byVersion
+    .filter((r) => r.version !== 0 && !listed.has(r.version))
+    .sort((a, b) => b.version - a.version)
+    .map((r) => ({
+      key: `${r.version}-stats`,
+      version: r.version,
+      publishedAt: null,
+      knowledge: null,
+      stats: r,
+    }));
+  const before = stats.get(0);
+  const beforeRow = before
+    ? [
+        {
+          key: "0",
+          version: 0,
+          publishedAt: null,
+          knowledge: null,
+          stats: before,
+        },
+      ]
+    : [];
+  return [...fromKnowledge, ...statsOnly, ...beforeRow];
+}
+
+function VersionTable({
+  versions,
+  byVersion,
+}: {
+  versions: HermesKnowledgeVersion[];
+  byVersion: HermesVersionRow[];
+}) {
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const rows = mergeVersionRows(versions, byVersion);
   return (
-    <table className="mt-4 w-full text-sm">
+    <table data-testid="version-table" className="mt-4 w-full text-sm">
       <thead className="text-muted-foreground border-b text-left">
         <tr>
           <th className="py-2">지식 버전</th>
+          <th>발행</th>
           <th>건수</th>
           <th>품목명</th>
           <th>공급가</th>
           <th>무수정률</th>
+          <th>변경</th>
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => (
-          <tr key={r.version} className="border-b">
-            {/* version 0은 지식 발행 이전 구간이다. */}
-            <td className="py-2">
-              {r.version === 0 ? "발행 이전" : `v${r.version}`}
-            </td>
-            <td className="tabular-nums">{r.count}</td>
-            <td className="tabular-nums">{formatRate(r.name_rate, r.pairs)}</td>
-            <td className="tabular-nums">
-              {formatRate(r.supply_rate, r.pairs)}
-            </td>
-            <td className="tabular-nums">
-              {formatRate(r.untouched_rate, r.count)}
-            </td>
-          </tr>
-        ))}
+        {rows.map((r) => {
+          const changes = r.knowledge?.changes ?? [];
+          const isOpen = expanded === r.key;
+          return (
+            <VersionRow
+              key={r.key}
+              row={r}
+              changes={changes}
+              isOpen={isOpen}
+              onToggle={() => setExpanded(isOpen ? null : r.key)}
+            />
+          );
+        })}
       </tbody>
     </table>
+  );
+}
+
+function VersionRow({
+  row,
+  changes,
+  isOpen,
+  onToggle,
+}: {
+  row: VersionTableRow;
+  changes: HermesKnowledgeChange[];
+  isOpen: boolean;
+  onToggle: () => void;
+}) {
+  // 거부 기록의 version은 거부 당시 활성 버전이라 행이 말하는 버전은 시도한 v{N+1}이다.
+  // 발행 이전(0) 구간 집계와 첫 발행 거부(version 0)가 같은 라벨로 겹치지 않게 한다.
+  const label =
+    row.knowledge?.rejected != null
+      ? `v${row.version + 1}`
+      : row.version === 0
+        ? "발행 이전"
+        : `v${row.version}`;
+  const note = row.knowledge ? knowledgeVersionNote(row.knowledge) : null;
+  const canExpand = changes.length > 0;
+  const Chevron = isOpen ? ChevronDownIcon : ChevronRightIcon;
+  return (
+    <>
+      <tr className="border-b">
+        <td className="py-2">
+          {canExpand ? (
+            <button
+              type="button"
+              aria-expanded={isOpen}
+              aria-label={`${label} 변경 펼치기`}
+              className="focus-visible:ring-ring inline-flex items-center gap-1 rounded hover:underline focus-visible:ring-2 focus-visible:outline-none"
+              onClick={onToggle}
+            >
+              <Chevron className="size-3.5" aria-hidden="true" />
+              {label}
+            </button>
+          ) : (
+            label
+          )}
+        </td>
+        <td className="text-muted-foreground tabular-nums">
+          {shortDate(row.publishedAt)}
+        </td>
+        <td className="tabular-nums">{row.stats ? row.stats.count : "—"}</td>
+        <td className="tabular-nums">
+          {row.stats ? formatRate(row.stats.name_rate, row.stats.pairs) : "—"}
+        </td>
+        <td className="tabular-nums">
+          {row.stats ? formatRate(row.stats.supply_rate, row.stats.pairs) : "—"}
+        </td>
+        <td className="tabular-nums">
+          {row.stats
+            ? formatRate(row.stats.untouched_rate, row.stats.count)
+            : "—"}
+        </td>
+        <td>
+          {note !== null ? (
+            <span className="text-muted-foreground text-xs">{note}</span>
+          ) : (
+            <div
+              data-testid="knowledge-change-chips"
+              className="flex flex-wrap gap-1"
+            >
+              {summarizeKnowledgeChanges(changes).map((chip) => (
+                <span
+                  key={chip}
+                  className="bg-muted rounded px-1.5 py-0.5 text-xs"
+                >
+                  {chip}
+                </span>
+              ))}
+            </div>
+          )}
+        </td>
+      </tr>
+      {isOpen && (
+        <tr className="border-b">
+          <td colSpan={7} className="py-2 pl-6">
+            <ChangeDetail changes={changes} />
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+// 항목 텍스트 앞에 그룹 라벨(등급명·소제목)을 붙인다 — 어휘 절은 같은 텍스트가
+// 등급마다 의미가 다르다.
+function itemText(group: string, text: string): string {
+  return group ? `[${group}] ${text}` : text;
+}
+
+function ChangeDetail({ changes }: { changes: HermesKnowledgeChange[] }) {
+  return (
+    <div data-testid="knowledge-change-detail" className="space-y-3">
+      {changes.map((c) => (
+        <div key={c.section}>
+          <p className="mb-1 text-xs font-semibold">{c.section}</p>
+          <ul className="space-y-0.5 text-xs">
+            {c.added.map((i) => (
+              <li key={`+${i.group}${i.text}`} className="text-green-600">
+                + {itemText(i.group, i.text)}
+              </li>
+            ))}
+            {c.removed.map((i) => (
+              <li
+                key={`-${i.group}${i.text}`}
+                className={HERMES_HIGHLIGHT_OLD_CLASS}
+              >
+                − {itemText(i.group, i.text)}
+              </li>
+            ))}
+            {c.moved.map((m) => (
+              <li key={`↔${m.text}`}>
+                ↔ {m.text}{" "}
+                <span className="text-muted-foreground">
+                  {m.from} → {m.to}
+                </span>
+              </li>
+            ))}
+            {c.changed.map((v) => (
+              <li key={`~${v.group}${v.key}`}>
+                ~ {itemText(v.group, v.key)}{" "}
+                <span className={HERMES_HIGHLIGHT_OLD_CLASS}>{v.before}</span> →{" "}
+                <span className={HERMES_HIGHLIGHT_NEW_CLASS}>{v.after}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ))}
+    </div>
   );
 }

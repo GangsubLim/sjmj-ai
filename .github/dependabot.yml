@@ -48,3 +48,9 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+      # dl extra의 onnxruntime은 2026-08-12 스파이크가 검증한 의도적 정확핀(==1.22.0)이며
+      # tests/test_train_extra.py가 단언한다 — bump PR은 항상 CI RED라 상시 제외한다.
+      # 핀 상향은 DL 코너검출 경로 재활성화(#118) 시 스파이크 재검증과 함께 수동으로 한다.
+      - dependency-name: "onnxruntime"
+        update-types:
+          ["version-update:semver-minor", "version-update:semver-patch"]
