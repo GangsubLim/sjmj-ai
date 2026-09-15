@@ -1,3 +1,7 @@
+import { isAxiosError } from "axios";
+import { CheckIcon, PencilIcon, Trash2Icon } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
 import type {
   HermesKnowledgeChange,
   HermesKnowledgeVersion,
@@ -12,18 +16,29 @@ import type {
 export const HERMES_STATUSES: HermesStatus[] = ["deleted", "match", "mismatch"];
 
 export const HERMES_STATUS_LABELS: Record<HermesStatus, string> = {
-  deleted: "🗑 삭제됨",
-  match: "✓ 일치",
-  mismatch: "✎ 불일치",
+  deleted: "삭제됨",
+  match: "일치",
+  mismatch: "불일치",
+};
+
+// 라벨에서 유니코드 글리프를 걷어내고 아이콘 세트로 옮긴다 — 글리프는 스크린리더가
+// "쓰레기통 삭제됨"으로 읽어 이름을 오염시키고, 앱의 나머지 아이콘(lucide)과도 어긋났다.
+export const HERMES_STATUS_ICONS: Record<HermesStatus, LucideIcon> = {
+  deleted: Trash2Icon,
+  match: CheckIcon,
+  mismatch: PencilIcon,
 };
 
 // Record로 묶어 HermesStatus에 상태가 추가되면 컴파일 에러로 막는다
 // (app/curation/page.tsx의 BADGE_CLASSES와 같은 관례).
+// 색은 globals.css의 --success/--warning 토큰을 탄다 — Tailwind 팔레트 직접 사용
+// (green-600/amber-600)은 본문 배경 대비 3.0:1로 WCAG AA(4.5:1) 미달이었고, 토큰 밖이라
+// .dark에서 대비가 재계산되지도 않았다.
 export const HERMES_STATUS_CLASSES: Record<HermesStatus, string> = {
   deleted: "text-muted-foreground",
-  match: "text-green-600",
+  match: "text-success",
   // 불일치가 이 화면에서 볼 것이 있는 유일한 상태다 — 볼드로 갈라 눈에 먼저 들어오게 한다.
-  mismatch: "font-bold text-amber-600",
+  mismatch: "font-bold text-warning",
 };
 
 export const HERMES_MISMATCH_LABELS: Record<HermesMismatchField, string> = {
@@ -38,7 +53,8 @@ export const HERMES_MISMATCH_LABELS: Record<HermesMismatchField, string> = {
 // 강조 여부는 서버가 준 mismatch_fields로만 판단하고(값 재비교 금지, spec §6), 여기는
 // "판정된 불일치를 어떻게 그리는지"만 소유한다.
 export const HERMES_HIGHLIGHT_OLD_CLASS = "text-muted-foreground line-through";
-export const HERMES_HIGHLIGHT_NEW_CLASS = "font-medium text-amber-600";
+export const HERMES_HIGHLIGHT_NEW_CLASS =
+  "font-medium text-warning no-underline";
 
 /** 목록·상세가 공유하는 상태 필터 URL 파라미터 이름. */
 export const HERMES_STATUS_PARAM = "status";
@@ -116,4 +132,20 @@ export function knowledgeVersionNote(
   if (row.changes === null) return "초기 발행";
   if (row.changes.length === 0) return "변경 없음";
   return null;
+}
+
+/** axios 원문(`Request failed with status code 500`)이 한국어 운영 화면에 그대로 뜨는 것을
+ * 막는다. axios 에러만 상태코드로 갈라 옮기고, 그 밖의 Error는 message를 보존한다 —
+ * 도메인 코드가 직접 던진 한국어 메시지를 일반문으로 덮어쓰면 정보가 줄어든다. */
+export function hermesErrorMessage(e: unknown, fallback: string): string {
+  if (isAxiosError(e)) {
+    const status = e.response?.status;
+    if (status === undefined)
+      return "서버에 연결하지 못했습니다 — 네트워크를 확인하세요";
+    if (status >= 500)
+      return "서버가 응답하지 않습니다 — 잠시 후 다시 시도하세요";
+    if (status === 404) return "요청한 자료를 찾을 수 없습니다";
+    return `요청이 거부되었습니다 (HTTP ${status})`;
+  }
+  return e instanceof Error ? e.message : fallback;
 }
