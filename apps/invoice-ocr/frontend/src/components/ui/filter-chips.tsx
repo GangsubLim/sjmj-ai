@@ -25,7 +25,7 @@ function FilterChips({
     <div
       data-slot="filter-chips"
       className={cn(
-        "scrollbar-none flex snap-x gap-2 overflow-x-auto pb-1",
+        "flex snap-x scrollbar-none gap-2 overflow-x-auto pb-1",
         className,
       )}
     >
