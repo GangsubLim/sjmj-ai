@@ -1,10 +1,13 @@
 import { describe, it, expect } from "vitest";
+import { AxiosError, AxiosHeaders } from "axios";
 import {
   HERMES_MISMATCH_LABELS,
+  HERMES_STATUS_ICONS,
   HERMES_STATUS_LABELS,
   formatAmount,
   formatRate,
   hermesEntryUrl,
+  hermesErrorMessage,
   hermesListUrl,
   knowledgeVersionNote,
   parseHermesStatus,
@@ -173,5 +176,71 @@ describe("knowledgeVersionNote", () => {
         }),
       ),
     ).toBeNull();
+  });
+});
+
+describe("HERMES_STATUS_LABELS / ICONS", () => {
+  it("라벨에 유니코드 글리프를 섞지 않는다", () => {
+    // 글리프를 라벨에 두면 스크린리더가 "쓰레기통 삭제됨"으로 읽어 접근 이름이 오염된다.
+    for (const label of Object.values(HERMES_STATUS_LABELS)) {
+      expect(label).toMatch(/^[가-힣]+$/);
+    }
+  });
+
+  it("상태마다 아이콘이 하나씩 있다", () => {
+    expect(Object.keys(HERMES_STATUS_ICONS)).toEqual(
+      Object.keys(HERMES_STATUS_LABELS),
+    );
+  });
+});
+
+describe("hermesErrorMessage", () => {
+  function axiosError(status?: number): AxiosError {
+    const config = { headers: new AxiosHeaders() };
+    const e = new AxiosError(
+      "Request failed with status code 500",
+      "ERR",
+      config,
+    );
+    if (status !== undefined) {
+      e.response = {
+        status,
+        statusText: "",
+        data: null,
+        headers: new AxiosHeaders(),
+        config,
+      };
+    }
+    return e;
+  }
+
+  it("5xx는 한국어 안내로 옮긴다", () => {
+    const msg = hermesErrorMessage(axiosError(500), "fallback");
+    expect(msg).toContain("서버가 응답하지 않습니다");
+    expect(msg).not.toContain("status code");
+  });
+
+  it("응답이 없으면 네트워크 문제로 안내한다", () => {
+    expect(hermesErrorMessage(axiosError(), "fallback")).toContain("네트워크");
+  });
+
+  it("404와 그 밖의 4xx를 구분한다", () => {
+    expect(hermesErrorMessage(axiosError(404), "fallback")).toContain(
+      "찾을 수 없습니다",
+    );
+    expect(hermesErrorMessage(axiosError(400), "fallback")).toContain(
+      "HTTP 400",
+    );
+  });
+
+  it("axios가 아닌 Error의 message는 보존한다", () => {
+    // 도메인 코드가 던진 한국어 메시지를 일반문으로 덮어쓰면 정보가 줄어든다.
+    expect(hermesErrorMessage(new Error("항목이 비었습니다"), "fallback")).toBe(
+      "항목이 비었습니다",
+    );
+  });
+
+  it("Error가 아닌 값은 fallback으로 접는다", () => {
+    expect(hermesErrorMessage("nope", "fallback")).toBe("fallback");
   });
 });

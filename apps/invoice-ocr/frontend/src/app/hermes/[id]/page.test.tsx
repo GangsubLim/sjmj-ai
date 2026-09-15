@@ -173,7 +173,7 @@ describe("HermesEntryPage", () => {
         ],
       }),
     });
-    expect(screen.getByText("🗑 삭제됨")).toBeInTheDocument();
+    expect(screen.getByTestId("entry-status")).toHaveTextContent("삭제됨");
     // 상태 배지만으로는 "이 건의 최종본이 실제로 비어 있다"를 재지 못한다 —
     // 해당 행의 최종본 칸이 —로 그려지는지까지 확인한다.
     const draftCell = screen.getByText("히타");

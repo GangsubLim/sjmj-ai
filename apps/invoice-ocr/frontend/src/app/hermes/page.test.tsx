@@ -97,6 +97,7 @@ function setup(
     setPage: vi.fn(),
     status: null,
     setStatus: vi.fn(),
+    refetch: vi.fn(),
     ...entriesOver,
   });
   mockSummary.mockReturnValue({
@@ -111,6 +112,7 @@ function setup(
     },
     loading: false,
     error: null,
+    refetch: vi.fn(),
     ...summaryOver,
   });
   return render(
@@ -161,7 +163,7 @@ describe("HermesStatusPage", () => {
     setup({ total: 1, data: [entry({ id: 573 })] });
     expect(screen.getByText("#573")).toBeInTheDocument();
     // 같은 문자열이 상태 필터 버튼에도 있으므로 배지를 testid로 집는다.
-    expect(screen.getByTestId("entry-status")).toHaveTextContent("✓ 일치");
+    expect(screen.getByTestId("entry-status")).toHaveTextContent("일치");
   });
 
   it("불일치 건은 축 라벨 칩을 그린다", () => {
@@ -175,7 +177,7 @@ describe("HermesStatusPage", () => {
         }),
       ],
     });
-    expect(screen.getByTestId("entry-status")).toHaveTextContent("✎ 불일치");
+    expect(screen.getByTestId("entry-status")).toHaveTextContent("불일치");
     // "품목명"·"공급가"는 요약 카드·버전별 표 헤더에도 있어 칩 컨테이너로 좁힌다.
     const chips = screen.getByTestId("mismatch-chips");
     expect(chips).toHaveTextContent("품목명");
@@ -199,7 +201,8 @@ describe("HermesStatusPage", () => {
     });
     const row = screen.getByRole("button", { name: "#576 상세" }).closest("tr");
     if (!row) throw new Error("row not found");
-    expect(row.innerHTML).not.toMatch(/amber|line-through/);
+    // 강조 클래스가 토큰(text-warning)으로 옮겨졌다 — 옛 amber를 찾으면 항상 통과한다.
+    expect(row.innerHTML).not.toMatch(/text-warning|line-through/);
   });
 
   it("삭제된 건은 최종본 열을 —로 그린다", () => {
@@ -216,7 +219,7 @@ describe("HermesStatusPage", () => {
         }),
       ],
     });
-    expect(screen.getByTestId("entry-status")).toHaveTextContent("🗑 삭제됨");
+    expect(screen.getByTestId("entry-status")).toHaveTextContent("삭제됨");
     // 배지뿐 아니라 최종본 열 자체가 "초안값 → —"로 렌더되는지 행 스코프에서
     // 단언한다(DraftFinal의 final===null 분기 — page.tsx:283-286 회귀를 잡는다).
     const row = screen.getByRole("button", { name: "#575 상세" }).closest("tr");
@@ -230,9 +233,9 @@ describe("HermesStatusPage", () => {
   it("상태 필터 버튼이 setStatus를 부르고 켜진 필터는 다시 누르면 꺼진다", () => {
     const setStatus = vi.fn();
     setup({ setStatus, status: "mismatch" });
-    fireEvent.click(screen.getByRole("button", { name: "✎ 불일치" }));
+    fireEvent.click(screen.getByRole("button", { name: "불일치" }));
     expect(setStatus).toHaveBeenCalledWith(null);
-    fireEvent.click(screen.getByRole("button", { name: "✓ 일치" }));
+    fireEvent.click(screen.getByRole("button", { name: "일치" }));
     expect(setStatus).toHaveBeenCalledWith("match");
   });
 
@@ -251,9 +254,40 @@ describe("HermesStatusPage", () => {
     ).toBeInTheDocument();
   });
 
-  it("목록 실패 메시지를 노출한다", () => {
-    setup({ error: "boom" });
+  it("목록 실패 메시지를 노출하고 다시 시도로 재조회한다", () => {
+    const refetch = vi.fn();
+    setup({ error: "boom", refetch });
     expect(screen.getByText("boom")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "다시 시도" }));
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("로딩 중에는 총계를 0건으로 단정하지 않는다", () => {
+    setup({ loading: true, total: 0 });
+    expect(screen.getByTestId("list-total")).toHaveTextContent("집계 중");
+    expect(screen.getByTestId("list-total")).not.toHaveTextContent("0건");
+  });
+
+  it("필터가 켜지면 총계가 필터 스코프와 전체 건수를 함께 밝힌다", () => {
+    // 요약 카드(전체 기준)와 목록 총계(필터 기준)가 나란히 놓여도 두 진실로 읽히지 않아야 한다.
+    setup({ total: 2, status: "mismatch", data: [entry({ id: 573 })] });
+    const label = screen.getByTestId("list-total");
+    expect(label).toHaveTextContent("불일치 2건");
+    expect(label).toHaveTextContent("전체 8건");
+  });
+
+  it("필터 때문에 빈 목록이면 필터를 끄는 버튼을 준다", () => {
+    const setStatus = vi.fn();
+    setup({ status: "deleted", setStatus });
+    fireEvent.click(screen.getByRole("button", { name: "필터 끄기" }));
+    expect(setStatus).toHaveBeenCalledWith(null);
+  });
+
+  it("페이지 번호는 키보드로 닿는 button이다", () => {
+    // href 없는 <a>로 되돌아가면 2페이지 이후로 키보드·SR 진입이 불가능해진다.
+    setup({ total: 40, totalPages: 2, data: [entry({ id: 573 })] });
+    const nav = screen.getByRole("navigation", { name: "페이지 탐색" });
+    expect(within(nav).getByRole("button", { name: "2" })).toBeInTheDocument();
   });
 
   it("요약이 실패해도 목록은 그린다", () => {
@@ -263,6 +297,7 @@ describe("HermesStatusPage", () => {
     );
     expect(screen.getByText("#573")).toBeInTheDocument();
     expect(screen.getByText(/summary down/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("summary down");
   });
 
   describe("지식 버전 표", () => {

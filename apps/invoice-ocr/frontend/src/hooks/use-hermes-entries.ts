@@ -8,7 +8,11 @@ import type {
 } from "@/types/hermes";
 import { hermesAPI } from "@/services/api";
 import { usePageParam } from "@/hooks/use-page-param";
-import { HERMES_STATUS_PARAM, parseHermesStatus } from "@/utils/hermes";
+import {
+  HERMES_STATUS_PARAM,
+  hermesErrorMessage,
+  parseHermesStatus,
+} from "@/utils/hermes";
 
 /** 목록 페이지 크기. 훅과 페이지가 반드시 같은 값을 써야 pagination 표시가 어긋나지 않는다. */
 export const HERMES_PAGE_SIZE = 20;
@@ -17,37 +21,44 @@ interface UseHermesSummaryReturn {
   summary: HermesSummary | null;
   loading: boolean;
   error: string | null;
+  refetch: () => void;
 }
 
-/** 요약은 목록의 page·필터와 무관하다 — 마운트 시 한 번만 부른다. */
+/** 요약은 목록의 page·필터와 무관하다 — 마운트 시 한 번만 부르고, 실패했을 때만 사용자가
+ * 다시 부른다. 그래서 필터를 켜도 이 수치는 "전체 기준"으로 남으며, 화면이 그 스코프를
+ * 라벨로 밝혀야 한다(목록 총계와 나란히 놓이면 두 진실로 읽힌다). */
 export function useHermesSummary(): UseHermesSummaryReturn {
   const [summary, setSummary] = useState<HermesSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const reqId = useRef(0);
 
-  useEffect(() => {
-    let alive = true;
-    hermesAPI
-      .getSummary()
-      .then((res) => {
-        if (alive) setSummary(res.data);
-      })
-      .catch((e: unknown) => {
-        // 요약이 죽어도 목록은 살아 있어야 한다 — 페이지가 통째로 에러로 갈아엎히지 않는다.
-        if (alive)
-          setError(
-            e instanceof Error ? e.message : "요약을 불러올 수 없습니다",
-          );
-      })
-      .finally(() => {
-        if (alive) setLoading(false);
-      });
-    return () => {
-      alive = false;
-    };
+  const fetchSummary = useCallback(async () => {
+    const myId = ++reqId.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await hermesAPI.getSummary();
+      if (myId === reqId.current) setSummary(res.data);
+    } catch (e) {
+      // 요약이 죽어도 목록은 살아 있어야 한다 — 페이지가 통째로 에러로 갈아엎히지 않는다.
+      if (myId === reqId.current)
+        setError(hermesErrorMessage(e, "요약을 불러올 수 없습니다"));
+    } finally {
+      if (myId === reqId.current) setLoading(false);
+    }
   }, []);
 
-  return { summary, loading, error };
+  useEffect(() => {
+    fetchSummary();
+    return () => {
+      // 언마운트 후 도착하는 in-flight 응답을 stale 처리한다(use-hermes-entries와 같은 idiom).
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+      reqId.current++;
+    };
+  }, [fetchSummary]);
+
+  return { summary, loading, error, refetch: fetchSummary };
 }
 
 interface UseHermesEntriesReturn {
@@ -61,6 +72,8 @@ interface UseHermesEntriesReturn {
   /** 상태 필터(URL 소유). 상세 왕복 후에도 유지된다. */
   status: HermesStatus | null;
   setStatus: (s: HermesStatus | null) => void;
+  /** 실패한 목록을 사용자가 다시 부를 수 있게 한다 — 에러 상태가 막다른 길이 되지 않는다. */
+  refetch: () => void;
 }
 
 export function useHermesEntries(
@@ -109,7 +122,7 @@ export function useHermesEntries(
       setTotalPages(res.pagination?.totalPages ?? 0);
     } catch (e) {
       if (myId !== reqId.current) return;
-      setError(e instanceof Error ? e.message : "목록을 불러올 수 없습니다");
+      setError(hermesErrorMessage(e, "목록을 불러올 수 없습니다"));
     } finally {
       if (myId === reqId.current) setLoading(false);
     }
@@ -135,5 +148,6 @@ export function useHermesEntries(
     setPage,
     status,
     setStatus,
+    refetch: fetch,
   };
 }

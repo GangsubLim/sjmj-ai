@@ -142,10 +142,10 @@ describe("큐레이션 목록 위치 보존 수용 흐름", () => {
     );
     render(<RouterProvider router={router} />);
 
-    // PaginationLink는 href 없는 <a>라 role="link"가 아니다 — 페이지 탐색 nav 안에서
-    // 텍스트로 찾는다.
+    // PaginationLink는 네이티브 button이다 — role로 집어 href 없는 <a>(키보드 진입 불가)로
+    // 되돌아가는 회귀를 잡는다.
     const nav = await screen.findByRole("navigation", { name: "페이지 탐색" });
-    fireEvent.click(within(nav).getByText("4"));
+    fireEvent.click(within(nav).getByRole("button", { name: "4" }));
 
     await waitFor(() => expect(router.state.location.search).toBe("?page=4"));
     expect(mockGetJobs).toHaveBeenCalledWith({ page: 4, limit: 20 });
