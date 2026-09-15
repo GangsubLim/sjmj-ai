@@ -5,6 +5,26 @@
 
 릴리스 항목은 `scripts/release.sh`가 `## [vX.Y.Z] — YYYY-MM-DD` 헤더를 추가하면 my-release 스킬 Step 4에서 본문을 작성한다.
 
+## [v0.21.1] — 2026-09-15
+
+`/hermes` 현황 화면을 붙어 읽히던 표·키보드로 못 닿던 페이지 이동·영문 에러에서 벗어나게 하고, 의존성을 보안 권고 기준까지 일괄 상향 ([#250](https://github.com/GangsubLim/sjmj-ai/pull/250)).
+
+### Fixed
+
+- `/hermes` 표의 인접 열 값이 붙어 읽히던 것 해소 — 셀 가로 패딩 확보와 숫자 열 우측 정렬로 자릿수 비교 복구 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 페이지 번호를 키보드·스크린리더로 누를 수 없어 2페이지 이후 진입 수단이 없던 것 복구 — `/curation`·`/curation/pending`·`/list`도 동반 회복 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 상태·강조 색의 명도 대비가 본문 기준에 미달하던 것 해소, 다크 모드에서도 함께 적용 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 요약 카드·버전 표는 전체 기준인데 목록만 필터를 타면서 `총 0건`과 `건수 128`이 한 화면에 동시에 뜨던 모순 해소 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 오류 시 영문 원문(`Request failed with status code 500`)이 그대로 노출되던 것을 한국어 안내로 교체하고 다시 시도·필터 끄기 버튼 제공 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 상태 표시를 스크린리더가 "쓰레기통 삭제됨"으로 읽던 이름 오염 제거, 대조 셀의 옛 값·새 값 구분 낭독 복구 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+
+### Changed
+
+- 발행일 열을 거래일 단독 표기로 전환 — 초안 발행일이 전 행 동일해 대조 축으로 기능하지 못하던 상태 정리 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 좁은 화면에서 데스크톱 전용 진단 화면임을 화면에 명시, 표는 가로 스크롤로 열 무결성 보존 ([#248](https://github.com/GangsubLim/sjmj-ai/pull/248))
+- 프론트엔드 의존성 상향 — axios 1.20.0 · tailwindcss 4.3.3 · react-dom 19.2.8 · @playwright/test 1.63.0 · @vitejs/plugin-react 5.2.0 ([#249](https://github.com/GangsubLim/sjmj-ai/pull/249))
+- 백엔드 ruff 0.16.6 상향 — 로컬과 CI가 같은 버전을 집도록 핀 6곳 동시 갱신 ([#249](https://github.com/GangsubLim/sjmj-ai/pull/249))
+
 ## [v0.21.0] — 2026-09-14
 
 `/hermes` 지식 버전 표에서 버전마다 판독 지식이 어떻게 바뀌었는지 직접 확인 가능 ([#238](https://github.com/GangsubLim/sjmj-ai/pull/238)).
